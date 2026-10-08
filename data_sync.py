@@ -264,6 +264,7 @@ class DataSynchronizer:
         if time.monotonic() - self._last_fast_service >= 5:
             self._fast_sources(False)
             self._last_fast_service = time.monotonic()
+            self.store.set_sync_state({**self.summary, "last_at": utc_now()})
 
     def _feather(self, path: Path, key: str) -> int:
         import pandas as pd

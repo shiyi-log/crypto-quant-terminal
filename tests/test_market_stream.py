@@ -60,9 +60,13 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(normalize_pair("btcusdt"), "BTC/USDT:USDT")
         self.assertEqual(normalize_pair("BTC/USDT:USDT"), "BTC/USDT:USDT")
         self.assertEqual(normalize_pair("BTCUSDT", "spot"), "BTC/USDT")
-        for value in ("BTCUSDT/../../", "ETHBTC", ""):
+        for value in ("BTCUSDT/../../", "ETHBTC", "", "BTC/USDT:BTC"):
             with self.assertRaises(ValueError):
                 normalize_pair(value)
+
+    def test_spot_rejects_settlement_suffix(self):
+        with self.assertRaises(ValueError):
+            normalize_pair("BTC/USDT:USDT", "spot")
 
     def test_current_official_partitioned_endpoints(self):
         connections = dict(StreamConfig().connections())

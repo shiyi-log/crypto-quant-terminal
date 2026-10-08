@@ -61,3 +61,7 @@ skills-lock.json
 .atomcode
 datalog
 .playwright-mcp
+
+# 运行日志页面是源码，需要随仓库发布。
+!/apps/web-antd/src/views/quant/logs/
+!/apps/web-antd/src/views/quant/logs/**

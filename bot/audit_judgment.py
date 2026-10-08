@@ -76,6 +76,10 @@ for rid, items in byrun.items():
     else:
         qs = bh_fdr([v.get('p_value') for v in items])
     for v, q in zip(items, qs):
+        # 只核对带 fdr_m 的记录：老记录的 q 用的是当年口径，
+        # 无法用今天的账本复算，报出来只会长期挂着一个消不掉的假故障
+        if not v.get('fdr_m'):
+            continue
         old = v.get('q_value')
         if old is None or q is None:
             continue

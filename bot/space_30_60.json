@@ -1,0 +1,8 @@
+{
+  "kind": ["lstm", "gru", "transformer", "cnn"],
+  "seq_len": [30, 60],
+  "hidden": [32, 64, 128],
+  "layers": [1, 2],
+  "dropout": [0.3, 0.5],
+  "lr": [0.001, 0.0005]
+}

@@ -1,0 +1,69 @@
+# ===== 密钥（绝不提交）=====
+.env
+*.key
+*.pem
+*private*.json
+secrets.json
+
+# ===== 本地认证数据（密码哈希 + 会话签名密钥，绝不提交）=====
+auth/
+
+# ===== 数据与训练产物（体积大，且交易所数据通常禁止再分发）=====
+user_data/data/
+user_data/models/
+user_data/backtest_results/
+user_data/hyperopt_results/
+user_data/plot/
+user_data/logs/
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# ===== Python =====
+.venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+
+# ===== macOS =====
+.DS_Store
+
+# 本机状态、数据、凭据与构建产物不进入开源仓库
+/.env.*
+!/.env.example
+/auth/
+/database/*.sqlite*
+/database/*.db*
+/database/runtime/
+/database/backups/
+/logs/
+/shots/
+/web/
+/bot/logs/
+/bot/user_data/*
+!/bot/user_data/strategies/
+!/bot/user_data/freqaimodels/
+!/bot/user_data/hyperopts/
+/bot/*.bak
+*.sqlite3*
+*.db-wal
+*.db-shm
+*.bak
+**/node_modules/
+**/dist/
+**/.env
+**/.env.local
+**/.env.*.local
+**/.git/
+*.pid
+/start.sh
+/deploy.sh
+/audit.sh
+/shot.sh
+
+# 本机研究报告另行保留，公开开发记录统一维护在 docs/
+/*.md
+!/README.md
+!/THIRD_PARTY_NOTICES.md

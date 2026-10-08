@@ -22,7 +22,7 @@ uv sync --locked --extra trading
 pnpm --dir vben install --frozen-lockfile
 ```
 
-将 `.env.example` 复制为 `.env`，填写本地数据库连接与认证设置。`runtime_config.load_environment()` 自动加载项目根目录 `.env`，已在终端或 CI 中设置的变量优先。`.env`、认证记录、数据库目录、日志和行情原始数据不提交到 Git。交易引擎配置从 `bot/config_examples/` 中的模板复制到 `bot/user_data/` 后，按本机情况填写 API 凭据与交易设置；配置中的 `dry_run` 应与计划的运行模式一致。
+将 `.env.example` 复制为 `.env`，填写本地数据库连接与认证设置。`runtime_config.load_environment()` 自动加载项目根目录 `.env`，已在终端或 CI 中设置的变量优先。`.env`、认证记录、数据库目录、日志和行情原始数据不提交到 Git。使用 `uv run python manage.py init-config` 生成本机随机凭据的模拟盘配置后，按本机情况填写交易所 API 凭据与交易设置；配置中的 `dry_run` 应与计划的运行模式一致。
 
 ## 服务生命周期
 
@@ -77,3 +77,14 @@ uv run python manage.py shot market --wait 8
 `sync` 默认单次执行，增量同步源文件、旧 SQLite 交易库与用户记录。`--fast` 只处理经常变化的业务快照；`--force` 强制重扫。服务模式 `start sync` 使用后台常驻同步。数据库状态命令调用 `DataStore.stats()`，不打印数据库密码；PostgreSQL 原生服务的安装及启动配置见数据库文档。
 
 `audit` 只解析前后端运维与数据层 Python 入口、执行 `tests/` 下的 unittest，并检查前端类型。不会调用研究审计、模型训练或迭代程序。GitHub Actions 的后端测试使用 PostgreSQL 服务容器与 Python 3.12；前端任务独立安装、检查并构建 Vben。截图使用现有 Python `shot.py`，无需 shell 包装。
+
+## 新机器初始化 PostgreSQL
+
+安装 PostgreSQL 17 的 `initdb`、`pg_ctl` 与 `psql` 工具后，可执行：
+
+```text
+uv run python manage.py db init
+uv run python manage.py db start
+```
+
+`db init` 创建本项目独立 cluster、应用角色、业务库和测试库，生成随机密码并写入私有 `.env`。已有 `.env` 或 cluster 时拒绝覆盖。默认仅监听本机 5433。macOS 可使用 Homebrew 的 postgresql@17；其他安装路径可通过 `QUANT_PG_BIN` 指定。`db stop` 只操作本项目 cluster。外部 PostgreSQL 由外部运维管理，在 `.env` 中配置连接串即可。

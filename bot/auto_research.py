@@ -388,6 +388,7 @@ def evaluate(cfg: dict, cache: PanelCache, device: str, step: int, log,
         # **段内秩平均** —— 不能全局平均，否则分数尺度跨段漂移会造假（第 13 轮教训）
         n_seeds = max(1, int(seeds))
         preds = []
+        per_seed_scores = [np.full(len(seq), np.nan) for _ in range(n_seeds)]
         for si in range(n_seeds):
             m = ml_seq.train_seq(Xtr, y[tr], F, cfg["kind"], device, epochs=epochs, bs=bs,
                                  lr=float(cfg["lr"]), hidden=int(cfg["hidden"]),
@@ -400,6 +401,11 @@ def evaluate(cfg: dict, cache: PanelCache, device: str, step: int, log,
         else:
             R = np.vstack([pd.Series(x).rank(pct=True).values for x in preds])
             scores[te] = R.mean(axis=0)
+        # 逐种子分数也要留：集成分只说明"平均能到多少"，
+        # 逐种子分才能回答"稳不稳"（规则 13：种子方差占总方差 87%）
+        if n_seeds > 1:
+            for si, pr in enumerate(preds):
+                per_seed_scores[si][te] = pr
         del Xtr, Xte, preds
         if on_step:
             on_step(ci, n_cuts, f"训练 {pd.Timestamp(b).strftime('%Y-%m')} 前")
@@ -430,7 +436,27 @@ def evaluate(cfg: dict, cache: PanelCache, device: str, step: int, log,
             from math import erfc, sqrt
             p = float(erfc(abs(tw) / sqrt(2)))
 
+    # 逐种子 t（仅多种子时）：回答"这个配置是真稳，还是靠集成分兜住了"
+    seed_ts = []
+    if n_seeds > 1:
+        for si in range(n_seeds):
+            sc = per_seed_scores[si]
+            okk = ~np.isnan(sc)
+            if okk.sum() < 500:
+                continue
+            try:
+                _, t_si = ic_t(sc[okk], meta[okk]["ret"].values)
+                if t_si is not None and np.isfinite(t_si):
+                    seed_ts.append(round(float(t_si), 4))
+            except Exception:
+                pass
+
     return {"config": cfg, "n_seeds": max(1, int(seeds)),
+                "seed_ts": seed_ts,
+                "seed_t_min": (min(seed_ts) if seed_ts else None),
+                "seed_t_mean": (round(float(np.mean(seed_ts)), 4) if seed_ts else None),
+                "seed_t_std": (round(float(np.std(seed_ts, ddof=1)), 4)
+                               if len(seed_ts) > 1 else None),
             "ic_period": icw, "t_period": tw, "pos_windows": npos,
             "n_windows": nwin, "n": int(ok.sum()), "ic_pool": icp, "t_pool": tp,
             "robust": rmulti.get("robust"),

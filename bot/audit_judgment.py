@@ -121,11 +121,18 @@ print()
 print(f"  通过判据 {len(passed)} 个:")
 for v in sorted(passed, key=lambda x: -(x.get('t_quarter') or 0)):
     c = v.get('config', {})
+    # 有逐种子 t 就显示离散度（第 32 轮起落盘）
+    spread = ""
+    if v.get("seed_t_min") is not None:
+        _min = v["seed_t_min"]
+        spread = (f"  种子t 最差={_min:.2f} 均值={v.get('seed_t_mean') or 0:.2f}"
+                  f"±{(v.get('seed_t_std') or 0):.2f}"
+                  + ("（稳）" if _min > CRIT_T else "（不稳！）"))
     print(f"    {c.get('kind'):<11} L={c.get('seq_len'):<4} h={c.get('hidden'):<4} "
           f"ly={c.get('layers')} dp={c.get('dropout')}  "
           f"t季={v.get('t_quarter') or 0:>5.2f} t月={v.get('t_month') or 0:>5.2f} "
           f"稳健={v.get('robust_pass')}/{v.get('robust_total')} "
-          f"q={v.get('q_value'):.4f} seeds={v.get('n_seeds')}")
+          f"q={v.get('q_value'):.4f} seeds={v.get('n_seeds')}{spread}")
 
 # ⑦ 种子置信度：通过判据但种子数不足的，单独标出来
 #    规则 13：种子方差占总方差 87%。单种子的"通过"很可能是抽到了好种子，

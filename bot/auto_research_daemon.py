@@ -166,6 +166,9 @@ def main():
     ap.add_argument("--seeds", type=int, default=3,
                     help="每配置随机种子数（第 24 轮加入；实测种子方差占 87%）")
     ap.add_argument("--once", action="store_true", help="只跑一轮")
+    ap.add_argument("--start-round", type=int, default=1,
+                    help="从第几轮开始编号（重启守护后接着主题轮换用）。\n"
+                         "主题按 (轮次-1) %% 6 选择，所以 --start-round 2 会用第 2 个主题")
     args = ap.parse_args()
 
     if args.once:
@@ -177,10 +180,13 @@ def main():
     print(f"  每轮 {args.max_trials} trials / {args.max_minutes:.0f} 分钟 · "
           f"间隔 {args.interval}s")
     print(f"  最多 {args.max_rounds if args.max_rounds else '无限'} 轮")
+    print(f"  起始轮次 {args.start_round}")
     print(f"  状态 → {STATE}")
     print(f"  ⚠ 只产 challenger，不自动上线")
 
-    idx = 0
+    # 从 --start-round 起编号：重启守护后主题轮换能接着走，
+    # 而不是回到第 1 个主题重复探索已经跑过的空间。
+    idx = max(0, args.start_round - 1)
     while True:
         idx += 1
         if args.max_rounds and idx > args.max_rounds:

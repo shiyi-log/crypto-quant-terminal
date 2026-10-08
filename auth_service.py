@@ -31,16 +31,39 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import psycopg
+from psycopg_pool import PoolTimeout
+
+from runtime_config import load_environment
+from data_store import DataStore
+
+load_environment()
+
+def canonical_pair(value, market=None):
+    """统一交易对身份；当前合约接口仅支持 USDT 结算。"""
+    pair = value.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{1,24}/[A-Z0-9]{1,12}(?::[A-Z0-9]{1,12})?", pair):
+        raise ValueError("交易对必须使用 BASE/QUOTE[:SETTLEMENT] 格式")
+    inferred = "futures" if ":" in pair else "spot"
+    if market is not None and market != inferred:
+        raise ValueError("交易对格式与 market 不一致")
+    if inferred == "futures" and not pair.endswith("/USDT:USDT"):
+        raise ValueError("当前合约接口仅支持 USDT 结算")
+    return pair
+
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
-AUTH_DIR = os.path.join(ROOT, "auth")
+AUTH_DIR = os.environ.get("QUANT_AUTH_DIR", os.path.join(ROOT, "auth"))
 USERS_FILE = os.path.join(AUTH_DIR, "users.json")
 SECRET_FILE = os.path.join(AUTH_DIR, "secret.key")
 FT_CONFIG = os.path.join(ROOT, "bot", "user_data", "config_dashboard.private.json")
@@ -98,6 +121,21 @@ KLINE_TTL = 20          # 秒：页面 30s 轮询，缓存 20s 足以避免打�
 KLINE_TIMEOUT = 8
 _kline_cache: dict = {}
 
+# 一个服务实例共享连接池，连接由数据层按请求借出并在事务结束后归还。
+_store = None
+_store_lock = threading.Lock()
+
+
+def get_store():
+    global _store
+    if _store is None:
+        with _store_lock:
+            if _store is None:
+                candidate = DataStore(root=ROOT)
+                candidate.initialize()
+                _store = candidate
+    return _store
+
 
 # ══════════════════════════ 用户库 ══════════════════════════
 
@@ -129,7 +167,10 @@ def verify_password(password, salt, expected_hex):
 
 
 def load_users():
-    data = _load_json(USERS_FILE, None)
+    store = get_store()
+    # 只迁移一次旧用户库，保留盐和密码哈希，数据库故障时不重置用户。
+    store.migrate_users(USERS_FILE)
+    data = store.load_users()
     if not data or "users" not in data:
         initial_password = DEFAULT_PASS or secrets.token_urlsafe(18)
         salt, h = hash_password(initial_password)
@@ -142,8 +183,8 @@ def load_users():
                 }
             }
         }
-        _save_json(USERS_FILE, data)
-        print(f"[auth] 已创建账号 {DEFAULT_USER} -> {USERS_FILE}")
+        store.save_users(data)
+        print(f"[auth] 已在数据库创建账号 {DEFAULT_USER}")
         if not DEFAULT_PASS:
             print(f"[auth] 本机初始随机密码: {initial_password}")
         print("[auth] 请登录后在「密码管理」中修改，或使用登录页的重置入口。")
@@ -151,7 +192,7 @@ def load_users():
 
 
 def save_users(data):
-    _save_json(USERS_FILE, data)
+    get_store().save_users(data)
 
 
 # ══════════════════════════ 会话令牌 ══════════════════════════
@@ -340,9 +381,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        return self._database_safe(self._get_routes)
+
+    def _database_safe(self, route):
+        """数据库短时不可用时返回明确错误，不回退重建文件或默认账号。"""
+        try:
+            return route()
+        except (psycopg.Error, PoolTimeout) as exc:
+            # 只记录错误类别，连接串和数据库凭据不得出现在响应或日志中。
+            print(f"[auth] 数据库访问失败: {type(exc).__name__}", file=sys.stderr)
+            return self._send(503, {"detail": "数据库暂时不可用，请检查 PostgreSQL 服务"})
+
+    def _get_routes(self):
         self._read_body()
         if self.path.startswith("/auth/"):
             return self._auth_get()
+        if self.path.startswith("/api/locals/database/"):
+            return self._local_database()
         if self.path.startswith("/api/locals/klines"):
             return self._local_klines()
         if self.path.startswith("/api/locals/ohlcv"):
@@ -378,10 +433,37 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/ws-token"):
             return self._ws_token()
         if self.path.startswith("/run_progress.json"):
-            return self._proxy()
+            return self._local_json("run_progress.json")
         if self.path.startswith("/api/"):
             return self._proxy()
         return self._send(404, {"detail": "Not Found"})
+
+    def _local_database(self):
+        """数据中心只提供受认证保护的查询，不接受任意 SQL 或文件路径。"""
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+        path = self.path.split("?")[0]
+        store = get_store()
+        if path == "/api/locals/database/status":
+            result = store.stats()
+            result["collector"] = store.get_document("market_stream_status.json")
+            return self._send(200, result)
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        exchange = (qs.get("exchange") or ["binance"])[0]
+        market = (qs.get("market") or ["futures"])[0]
+        pair = (qs.get("pair") or ["BTC/USDT:USDT"])[0]
+        if market not in {"spot", "futures"}:
+            return self._send(400, {"detail": "market 仅支持 spot 或 futures"})
+        try:
+            pair = canonical_pair(pair, market)
+            limit = max(1, min(int((qs.get("limit") or ["50"])[0]), 1000))
+        except ValueError:
+            return self._send(400, {"detail": "交易对、市场或 limit 无效"})
+        if path == "/api/locals/database/ticks":
+            return self._send(200, {"items": store.get_ticks(exchange, market, pair, limit=limit)})
+        if path == "/api/locals/database/orderbooks":
+            return self._send(200, {"items": store.get_orderbooks(exchange, market, pair, limit=min(limit, 50))})
+        return self._send(404, {"detail": "数据查询接口不存在"})
 
     # ---------- WebSocket 凭据 ----------
     def _ws_token(self):
@@ -422,20 +504,10 @@ class Handler(BaseHTTPRequestHandler):
         if not verify_token(self._bearer()):
             return self._send(401, {"detail": "未登录或登录已过期"})
         items = []
-        for d in sorted(glob.glob(os.path.join(self._models_dir(), "*"))):
-            f = os.path.join(d, "backtest_detail.json")
-            if not os.path.exists(f):
-                continue
-            try:
-                with open(f, encoding="utf-8") as fh:
-                    j = json.load(fh)
-                items.append({
-                    "identifier": j.get("identifier"),
-                    "strategy": j.get("strategy"),
-                    "summary": j.get("summary"),
-                })
-            except Exception:
-                continue
+        for rec in get_store().list_documents(prefix="models/", suffix="/backtest_detail.json"):
+            j = rec["payload"]
+            items.append({"identifier": j.get("identifier"), "strategy": j.get("strategy"),
+                          "summary": j.get("summary")})
         items.sort(key=lambda x: (x["summary"] or {}).get("profit_pct") or -999, reverse=True)
         return self._send(200, {"items": items})
 
@@ -446,51 +518,22 @@ class Handler(BaseHTTPRequestHandler):
         ident = (qs.get("identifier") or [""])[0].strip()
         if not ident or "/" in ident or ".." in ident:
             return self._send(400, {"detail": "identifier 非法"})
-        f = os.path.join(self._models_dir(), ident, "backtest_detail.json")
-        if not os.path.exists(f):
-            return self._send(404, {"detail": f"未找到 {ident} 的交易明细"})
-        with open(f, encoding="utf-8") as fh:
-            data = fh.read().encode()
-        return self._send(200, raw=data, ctype="application/json; charset=utf-8")
+        data = get_store().get_document(f"models/{ident}/backtest_detail.json")
+        if data is None:
+            return self._send(404, {"detail": f"数据库尚未同步 {ident} 的交易明细"})
+        return self._send(200, data)
 
     # ---------- 策略研究汇总（模型对比 + 路线结论 + Carry 回测） ----------
     def _local_research(self):
-        if not verify_token(self._bearer()):
-            return self._send(401, {"detail": "未登录或登录已过期"})
-        f = os.path.join(ROOT, "bot", "user_data", "research_summary.json")
-        if not os.path.exists(f):
-            return self._send(404, {
-                "detail": "尚未生成研究汇总，请先运行 bot/build_research.py",
-            })
-        with open(f, encoding="utf-8") as fh:
-            data = fh.read().encode()
-        return self._send(200, raw=data, ctype="application/json; charset=utf-8")
+        return self._local_json("research_summary.json")
 
     # ---------- 实盘运维状态（策略信号 / 波动率中枢 / 因子健康度） ----------
     def _local_ops(self):
-        if not verify_token(self._bearer()):
-            return self._send(401, {"detail": "未登录或登录已过期"})
-        f = os.path.join(ROOT, "bot", "user_data", "ops_status.json")
-        if not os.path.exists(f):
-            return self._send(404, {
-                "detail": "尚无运维快照，请先运行 bot/monitor.py",
-            })
-        with open(f, encoding="utf-8") as fh:
-            data = fh.read().encode()
-        return self._send(200, raw=data, ctype="application/json; charset=utf-8")
+        return self._local_json("ops_status.json")
 
     # ---------- 模型迭代结果（走查四变量对比） ----------
     def _local_iteration(self):
-        if not verify_token(self._bearer()):
-            return self._send(401, {"detail": "未登录或登录已过期"})
-        f = os.path.join(ROOT, "bot", "user_data", "iteration_summary.json")
-        if not os.path.exists(f):
-            return self._send(404, {
-                "detail": "尚无迭代汇总，请先运行 bot/build_iteration.py",
-            })
-        with open(f, encoding="utf-8") as fh:
-            data = fh.read().encode()
-        return self._send(200, raw=data, ctype="application/json; charset=utf-8")
+        return self._local_json("iteration_summary.json")
 
     def _local_ml(self):
         """深度学习迭代状态汇总
@@ -504,19 +547,7 @@ class Handler(BaseHTTPRequestHandler):
         base = os.path.join(ROOT, "bot", "user_data")
 
         def tail(name, n=5):
-            f = os.path.join(base, name)
-            if not os.path.exists(f):
-                return []
-            out = []
-            with open(f, encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if line:
-                        try:
-                            out.append(json.loads(line))
-                        except Exception:
-                            pass
-            return out[-n:]
+            return get_store().read_events(name, limit=n)
 
         exp = tail("ml_experiments.jsonl", 8)
         seq = tail("ml_seq_results.jsonl", 1)
@@ -543,7 +574,7 @@ class Handler(BaseHTTPRequestHandler):
         # 当前轮次：模型注册表是唯一权威来源（UI 的「模型版本」也读它）
         rounds = None
         try:
-            reg_data = self._model_registry().load()
+            reg_data = get_store().get_document("model_versions.json", {"versions": []})
             rounds = max(
                 (v.get("round") for v in reg_data.get("versions", [])
                  if v.get("layer") == "ml_model" and v.get("round")),
@@ -577,14 +608,7 @@ class Handler(BaseHTTPRequestHandler):
                 seq_note += f"，正窗口 {pos_w}/{n_w}={pos_w / n_w * 100:.0f}%"
 
         # ── 模型自动迭代进度（第 24/25 轮新增：新判据 + 多种子）──
-        iter_prog = None
-        try:
-            fp = os.path.join(base, "research_progress.json")
-            if os.path.exists(fp):
-                with open(fp, encoding="utf-8") as fh:
-                    iter_prog = json.load(fh)
-        except Exception:
-            pass
+        iter_prog = get_store().get_document("research_progress.json")
         try:
             trials = tail("research_trials.jsonl", 400)
         except Exception:
@@ -608,14 +632,7 @@ class Handler(BaseHTTPRequestHandler):
                 "at": t.get("run_id"),
             })
         passing = [x for x in norm if x["passed"]]
-        try:
-            daemon = None
-            fp = os.path.join(base, "auto_research_daemon.json")
-            if os.path.exists(fp):
-                with open(fp, encoding="utf-8") as fh:
-                    daemon = json.load(fh)
-        except Exception:
-            daemon = None
+        daemon = get_store().get_document("auto_research_daemon.json")
 
         payload = {
             "iteration": {
@@ -657,51 +674,32 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, payload)
 
     def _local_research_status(self):
-        """
-        策略研究数据的刷新状态。
-
-        为什么需要这个接口：build_research.py 原先是纯手工脚本，没有任何调度，
-        面板就长期停在旧数据上且看不出原因。现在由 bot/refresh_research.py
-        定期重建，这里把「最近一次刷新的成败 + 当前 summary 的生成时间」暴露给页面。
-        """
         if not verify_token(self._bearer()):
             return self._send(401, {"detail": "未登录或登录已过期"})
+        store = get_store()
         out = {"attempt_at": None, "ok": None, "error": None,
                "duration_s": None, "summary_generated_at": None}
-        sf = os.path.join(ROOT, "bot", "user_data", "research_refresh.json")
-        if os.path.exists(sf):
-            try:
-                with open(sf, encoding="utf-8") as fh:
-                    rec = json.load(fh)
-                for k in out:
-                    if k in rec:
-                        out[k] = rec[k]
-            except Exception:
-                pass
-        # summary 自身的生成时间是权威值（状态文件可能被删）
-        mf = os.path.join(ROOT, "bot", "user_data", "research_summary.json")
-        if os.path.exists(mf):
-            try:
-                with open(mf, encoding="utf-8") as fh:
-                    out["summary_generated_at"] = json.load(fh).get("generated_at")
-                out["summary_mtime"] = int(os.path.getmtime(mf))
-            except Exception:
-                pass
+        rec = store.get_document("research_refresh.json", {})
+        out.update({k: rec[k] for k in out if k in rec})
+        summary = store.get_document("research_summary.json")
+        if summary is not None:
+            out["summary_generated_at"] = summary.get("generated_at")
+            src = store.source_state("bot/user_data/research_summary.json") or {}
+            if src.get("mtime_ns"):
+                out["summary_mtime"] = int(src["mtime_ns"] / 1_000_000_000)
         out["refresh_running"] = bool(
             os.popen("pgrep -f 'refresh_research.py --daemon' 2>/dev/null").read().strip()
         )
         return self._send(200, out)
 
     def _local_json(self, name):
-        """透传 bot/user_data 下的某个 json"""
+        """业务快照统一由数据库读取，文件只作为同步服务的输入。"""
         if not verify_token(self._bearer()):
             return self._send(401, {"detail": "未登录或登录已过期"})
-        f = os.path.join(ROOT, "bot", "user_data", name)
-        if not os.path.exists(f):
-            return self._send(404, {"detail": f"缺少 {name}"})
-        with open(f, encoding="utf-8") as fh:
-            data = fh.read().encode()
-        return self._send(200, raw=data, ctype="application/json; charset=utf-8")
+        data = get_store().get_document(name)
+        if data is None:
+            return self._send(404, {"detail": f"数据库尚未同步 {name}"})
+        return self._send(200, data)
 
     # ---------- 模型版本注册表（champion / challenger） ----------
     def _model_registry(self):
@@ -724,23 +722,10 @@ class Handler(BaseHTTPRequestHandler):
         return {"pid": int(pid) if pid.isdigit() else pid}
 
     def _trial_stats(self):
-        """自动迭代账本统计（全部 trial，含失败 —— 防选择性报告）"""
-        st = {"total": 0, "runs": 0, "best": None, "recent": []}
-        f = os.path.join(ROOT, "bot", "user_data", "research_trials.jsonl")
-        if not os.path.exists(f):
-            return st
-        rows = []
-        with open(f, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rows.append(json.loads(line))
-                except Exception:
-                    pass
-        st["total"] = len(rows)
-        st["runs"] = len({r.get("run_id") for r in rows if r.get("run_id")})
+        """从数据库读取完整试验账本，保留失败记录与来源顺序。"""
+        rows = get_store().read_events("research_trials.jsonl")
+        st = {"total": len(rows), "runs": len({r.get("run_id") for r in rows if r.get("run_id")}),
+              "best": None, "recent": []}
         ok = [r for r in rows if r.get("t_period") is not None]
         if ok:
             best = max(ok, key=lambda r: r.get("t_period") or -9e9)
@@ -780,14 +765,7 @@ class Handler(BaseHTTPRequestHandler):
                 return None
 
         def read_json(name):
-            f = os.path.join(ROOT, "bot", "user_data", name)
-            if not os.path.exists(f):
-                return None
-            try:
-                with open(f, encoding="utf-8") as fh:
-                    return json.load(fh)
-            except Exception:
-                return None
+            return get_store().get_document(name)
 
         # 端口服务
         ports = [(8888, "前端 Vben", "web"), (8890, "认证服务", "auth"),
@@ -828,20 +806,10 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _local_research_progress(self):
-        """
-        模型自动迭代任务的实时进度（供「回测与任务」页轮询）
-        结构对齐 run_backtest_task.py 的 run_progress.json，便于复用同一套卡片。
-        """
+        """只展示模型流程同步入库的进度，不介入训练执行。"""
         if not verify_token(self._bearer()):
             return self._send(401, {"detail": "未登录或登录已过期"})
-        f = os.path.join(ROOT, "bot", "user_data", "research_progress.json")
-        prog = None
-        if os.path.exists(f):
-            try:
-                with open(f, encoding="utf-8") as fh:
-                    prog = json.load(fh)
-            except Exception:
-                prog = None
+        prog = get_store().get_document("research_progress.json")
         return self._send(200, {"progress": prog, "trials": self._trial_stats()})
 
     def _local_model_versions(self):
@@ -851,11 +819,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         if not verify_token(self._bearer()):
             return self._send(401, {"detail": "未登录或登录已过期"})
-        try:
-            mr = self._model_registry()
-        except Exception as e:
-            return self._send(500, {"detail": f"加载注册表失败: {e}"})
-        reg = mr.load()
+        reg = get_store().get_document("model_versions.json", {"updated": None, "versions": [], "champions": {}})
         out = {"updated": reg.get("updated"), "layers": {}}
         for layer in ("live_strategy", "ml_model"):
             vs = [v for v in reg["versions"] if v.get("layer") == layer]
@@ -895,6 +859,7 @@ class Handler(BaseHTTPRequestHandler):
             })
         mr.set_champion(reg, vid, f"{note}（操作人 {user}）")
         mr.save(reg)
+        get_store().put_document("model_versions.json", reg)
         return self._send(200, {
             "status": "ok", "id": vid, "note": note, "operator": user,
             "gate_passed": passed, "champions": reg["champions"],
@@ -905,28 +870,14 @@ class Handler(BaseHTTPRequestHandler):
     def _local_auto_iterate(self):
         if not verify_token(self._bearer()):
             return self._send(401, {"detail": "未登录或登录已过期"})
-        cur = os.path.join(ROOT, "bot", "user_data", "auto_iterate_status.json")
-        hist = os.path.join(ROOT, "bot", "user_data", "iteration_history.jsonl")
-        if not os.path.exists(cur):
-            return self._send(404, {"detail": "尚未运行自动迭代，请执行 python auto_iterate.py"})
-        with open(cur, encoding="utf-8") as fh:
-            data = json.load(fh)
-        # 附上历史（最近 20 条摘要）
-        if os.path.exists(hist):
-            recs = []
-            with open(hist, encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if line:
-                        try:
-                            recs.append(json.loads(line))
-                        except Exception:
-                            pass
-            data["history"] = [
-                {"t": r.get("t"), "all_ok": r.get("all_ok"),
-                 "failed": r.get("failed", [])}
-                for r in recs[-20:]
-            ]
+        store = get_store()
+        data = store.get_document("auto_iterate_status.json")
+        if data is None:
+            return self._send(404, {"detail": "数据库尚未同步巡检状态"})
+        data["history"] = [
+            {"t": r.get("t"), "all_ok": r.get("all_ok"), "failed": r.get("failed", [])}
+            for r in store.read_events("iteration_history.jsonl", limit=20)
+        ]
         return self._send(200, data)
 
     # ---------- 实时行情（Binance 公共接口，服务端代理） ----------
@@ -948,6 +899,10 @@ class Handler(BaseHTTPRequestHandler):
             limit = 200
         limit = max(1, min(limit, 1000))
 
+        try:
+            pair = canonical_pair(pair)
+        except ValueError as exc:
+            return self._send(400, {"detail": str(exc)})
         raw = pair.split(":")[0].strip()
         if "/" not in raw:
             return self._send(400, {"detail": f"无法解析交易对: {pair}"})
@@ -995,69 +950,50 @@ class Handler(BaseHTTPRequestHandler):
             "source": f"binance-{market}",
             "length": len(data),
         }
+        get_store().upsert_candles("binance", market, pair, tf, market, [
+            {"timestamp": int(r[0]), "open": float(r[1]), "high": float(r[2]),
+             "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])}
+            for r in rows
+        ], source_key="live:binance-klines")
+        payload["storage"] = "postgresql"
         _kline_cache[key] = (time.time(), payload)
         return self._send(200, payload)
 
     # ---------- 本地行情（读已下载的 feather，不受机器人周期限制） ----------
     def _local_ohlcv(self):
-        """
-        Freqtrade 的 /pair_candles 只返回「策略自身周期」的数据，
-        机器人跑 5m 策略时 1h/4h 都取不到。
-        这里直接读本地已下载的历史数据，任意周期都能出图。
-        """
+        """查询已入库行情，按市场隔离，避免现货与合约混用。"""
         if not verify_token(self._bearer()):
             return self._send(401, {"detail": "未登录或登录已过期"})
-
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         pair = (qs.get("pair") or ["BTC/USDT:USDT"])[0]
         tf = (qs.get("timeframe") or ["1h"])[0]
+        exchange = (qs.get("exchange") or ["binance"])[0]
         try:
-            limit = int((qs.get("limit") or ["200"])[0])
+            pair = canonical_pair(pair)
+        except ValueError as exc:
+            return self._send(400, {"detail": str(exc)})
+        market = "futures" if ":" in pair else "spot"
+        try:
+            limit = max(1, min(int((qs.get("limit") or ["200"])[0]), 2000))
         except ValueError:
-            limit = 200
-        limit = max(1, min(limit, 2000))
-
-        symbol = pair.split("/")[0].upper()
-        base = os.path.join(ROOT, "bot", "user_data", "data", "binance")
-        candidates = [
-            os.path.join(base, "futures", f"{symbol}_USDT_USDT-{tf}-futures.feather"),
-            os.path.join(base, f"{symbol}_USDT-{tf}.feather"),
-        ]
-        path = next((p for p in candidates if os.path.exists(p)), None)
-        if not path:
-            return self._send(404, {
-                "detail": f"本地无 {symbol} 的 {tf} 数据，可用 freqtrade download-data 补齐",
-            })
-
-        try:
-            import pandas as pd  # 延迟导入：缺 pandas 时服务仍可启动
-        except Exception:
-            return self._send(500, {"detail": "服务端缺少 pandas，无法读取本地行情"})
-
-        try:
-            df = pd.read_feather(path)
-            cols = ["date", "open", "high", "low", "close", "volume"]
-            have = [c for c in cols if c in df.columns]
-            df = df[have].tail(limit).copy()
-            df["date"] = pd.to_datetime(df["date"], utc=True).dt.strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
-            )
-            for c in have:
-                if c != "date":
-                    df[c] = df[c].astype(float)
-            payload = {
-                "pair": pair,
-                "timeframe": tf,
-                "columns": have,
-                "data": df.values.tolist(),
-                "source": os.path.basename(path),
-                "length": len(df),
-            }
-            return self._send(200, payload)
-        except Exception as exc:
-            return self._send(500, {"detail": f"读取本地行情失败: {exc}"})
+            return self._send(400, {"detail": "limit 必须为整数"})
+        rows = get_store().get_candles(exchange, market, pair, tf, candle_type=market, limit=limit)
+        if not rows:
+            return self._send(404, {"detail": f"数据库尚无 {exchange} {market} {pair} {tf} 行情"})
+        data = [[time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(r["timestamp"] / 1000)),
+                 r.get("open"), r.get("high"), r.get("low"), r.get("close"), r.get("volume")]
+                for r in rows]
+        return self._send(200, {
+            "pair": pair, "timeframe": tf,
+            "columns": ["date", "open", "high", "low", "close", "volume"],
+            "data": data, "source": f"postgresql:{exchange}-{market}", "length": len(data),
+            "last_candle": data[-1][0],
+        })
 
     def do_POST(self):
+        return self._database_safe(self._post_routes)
+
+    def _post_routes(self):
         self._read_body()
         if self.path.startswith("/auth/"):
             return self._auth_post()
@@ -1104,12 +1040,17 @@ class Handler(BaseHTTPRequestHandler):
     def _auth_get(self):
         path = self.path.split("?")[0]
         if path == "/auth/health":
+            try:
+                database_reachable = bool(get_store().stats())
+            except Exception:
+                database_reachable = False
             return self._send(200, {
                 "status": "ok",
                 "uptime_s": int(time.time() - START_TS),
                 "freqtrade_reachable": bool(ft_token()),
                 # 回测/下载/分析类功能依赖这个实例；不可达时前端应给出提示
                 "webserver_reachable": bool(ft_web_token()),
+                "database_reachable": database_reachable,
             })
         if path == "/auth/me":
             user = verify_token(self._bearer())
@@ -1175,12 +1116,13 @@ class Handler(BaseHTTPRequestHandler):
         if not rec or not verify_password(old, rec["salt"], rec["hash"]):
             return self._send(400, {"detail": "当前密码不正确"})
         salt, h = hash_password(new)
-        data["users"][user] = {
+        record = {
             "salt": salt,
             "hash": h,
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        save_users(data)
+        if not get_store().update_user(user, record, expected_hash=rec["hash"]):
+            return self._send(409, {"detail": "密码已发生变化，请重新登录"})
         return self._send(200, {"status": "ok", "message": "密码已修改，请重新登录"})
 
     def _reset_password(self):
@@ -1200,12 +1142,13 @@ class Handler(BaseHTTPRequestHandler):
         if username not in data["users"]:
             return self._send(404, {"detail": f"用户 {username} 不存在"})
         salt, h = hash_password(new)
-        data["users"][username] = {
+        record = {
             "salt": salt,
             "hash": h,
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        save_users(data)
+        if not get_store().update_user(username, record):
+            return self._send(404, {"detail": "用户不存在"})
         print(f"[auth] 已重置 {username} 的密码")
         return self._send(200, {
             "status": "ok",
@@ -1297,7 +1240,7 @@ def main():
 
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     print(f"认证与代理服务已启动: http://{args.bind}:{args.port}")
-    print(f"  用户库: {USERS_FILE}")
+    print("  用户库: PostgreSQL（旧 JSON 仅作一次性迁移来源）")
     print(f"  代理至（实盘）: {FT_BASE}")
     print(f"  代理至（webserver）: {FT_WEB_BASE}  ← /api/web/ 前缀")
     try:

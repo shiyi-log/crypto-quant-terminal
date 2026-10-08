@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# 开源仓库只需要读取源码；测试不会部署、下单或修改远端仓库。
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  TZ: Asia/Shanghai
+
+jobs:
+  backend:
+    name: 后端与 PostgreSQL 集成测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # 仅用于本次 CI 容器的公开测试凭据，不读取本机 .env 或真实账户。
+      QUANT_TEST_DATABASE_URL: postgresql://quant_ci:quant_ci_only@127.0.0.1:5432/quant_ci
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: quant_ci
+          POSTGRES_PASSWORD: quant_ci_only
+          POSTGRES_DB: quant_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U quant_ci -d quant_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: 安装 uv 与 Python
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: 校验并安装锁定依赖
+        run: |
+          uv lock --check
+          uv sync --locked --group dev
+
+      - name: 编译后端与测试源码
+        # 不编译或执行模型训练目录，保持模型迭代独立运行。
+        run: >-
+          uv run --frozen --group dev python -m compileall -q
+          auth_service.py serve_web.py runtime_config.py manage.py
+          data_store.py data_sync.py market_stream.py tests
+
+      - name: 检查新增后端代码质量
+        run: uv run --frozen --group dev ruff check
+
+      - name: 执行单元与数据库集成测试
+        run: |
+          uv run --frozen --group dev python - <<'PY'
+          import os
+          import sys
+          import unittest
+
+          import psycopg
+
+          # 数据库连接失败必须使 CI 失败，不能被缺少环境变量的跳过逻辑掩盖。
+          database_url = os.environ["QUANT_TEST_DATABASE_URL"]
+          with psycopg.connect(database_url, connect_timeout=5) as conn:
+              database_name, server_version = conn.execute(
+                  "SELECT current_database(), current_setting('server_version_num')"
+              ).fetchone()
+              assert database_name == "quant_ci", "CI 必须使用专用测试数据库"
+              assert 170000 <= int(server_version) < 180000, "CI 必须使用 PostgreSQL 17"
+
+          suite = unittest.defaultTestLoader.discover("tests")
+
+          def iter_cases(items):
+              for item in items:
+                  if isinstance(item, unittest.TestSuite):
+                      yield from iter_cases(item)
+                  else:
+                      yield item
+
+          integration_ids = {
+              case.id()
+              for case in iter_cases(suite)
+              if case.__class__.__name__ == "DataStoreIntegrationTests"
+          }
+          if not integration_ids:
+              raise RuntimeError("未发现数据库集成测试，禁止空测试通过 CI")
+
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          skipped_integration = [
+              case.id()
+              for case, _reason in result.skipped
+              if case.id() in integration_ids
+              or "DataStoreIntegrationTests" in case.id()
+          ]
+          if skipped_integration:
+              raise RuntimeError(f"数据库集成测试被跳过: {skipped_integration}")
+          sys.exit(0 if result.wasSuccessful() else 1)
+          PY
+
+  frontend:
+    name: 前端类型检查与生产构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: 安装项目指定的 pnpm
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+        with:
+          package_json_file: vben/package.json
+          run_install: false
+          standalone: true
+
+      - name: 安装项目指定的 Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: vben/.node-version
+          cache: pnpm
+          cache-dependency-path: vben/pnpm-lock.yaml
+
+      - name: 安装锁定的前端依赖
+        run: pnpm --dir vben install --frozen-lockfile
+
+      - name: 使用公开的前端环境配置
+        run: >-
+          python3 -c "from pathlib import Path;
+          from shutil import copyfile;
+          root = Path('vben/apps/web-antd');
+          copyfile(root / '.env.example', root / '.env')"
+
+      - name: 检查业务前端类型
+        run: pnpm --dir vben/apps/web-antd typecheck
+
+      - name: 构建业务前端
+        run: pnpm --dir vben build:antd

@@ -42,6 +42,15 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        name: 'QuantData',
+        path: 'data',
+        component: () => import('#/views/quant/data/index.vue'),
+        meta: {
+          icon: 'lucide:database',
+          title: '数据中心',
+        },
+      },
+      {
         name: 'QuantBacktest',
         path: 'backtest',
         component: () => import('#/views/quant/backtest/index.vue'),

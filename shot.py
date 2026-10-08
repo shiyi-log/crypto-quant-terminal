@@ -1,4 +1,4 @@
-#!/Users/shiyi/DeepSeek/量化/bot/.venv/bin/python
+#!/usr/bin/env python3
 """
 页面截图工具（基于 Chrome DevTools Protocol）
 
@@ -51,6 +51,7 @@ PAGES = [
     ("research", "策略研究"),
     ("iteration", "模型迭代"),
     ("ops", "实盘运维"),
+    ("data", "数据中心"),
 ]
 
 

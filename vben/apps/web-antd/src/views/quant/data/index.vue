@@ -3,7 +3,6 @@ import type {
   DatabaseDataset,
   DatabaseMarketQuery,
   DatabaseOrderbook,
-  DatabaseSource,
   DatabaseStatus,
   DatabaseTick,
 } from '#/api/database';
@@ -39,9 +38,7 @@ const ticksError = ref('');
 const orderbooksError = ref('');
 const refreshedAt = ref<number | null>(null);
 const marketRefreshedAt = ref<number | null>(null);
-const sourceSearch = ref('');
 const datasetSearch = ref('');
-const sourceErrorsOnly = ref(false);
 const exchange = ref('binance');
 const market = ref('futures');
 const pair = ref('BTC/USDT:USDT');
@@ -73,16 +70,6 @@ const metrics = computed(() =>
     value: status.value?.counts?.[definition.key],
   })),
 );
-const sources = computed(() => {
-  const keyword = sourceSearch.value.trim().toLowerCase();
-  return (status.value?.sources ?? []).filter((source) => {
-    const matches = [source.key, source.path, source.kind]
-      .join(' ')
-      .toLowerCase()
-      .includes(keyword);
-    return matches && (!sourceErrorsOnly.value || Boolean(source.error));
-  });
-});
 const datasets = computed(() => {
   const keyword = datasetSearch.value.trim().toLowerCase();
   return (status.value?.datasets ?? []).filter((dataset) =>
@@ -184,13 +171,6 @@ const displayedMarket = computed(() => {
     : '尚未查询';
 });
 
-const sourceColumns = [
-  { title: '同步源', key: 'source', width: 360 },
-  { title: '类型', dataIndex: 'kind', width: 120 },
-  { title: '记录数', key: 'rows', width: 110 },
-  { title: '更新时间', key: 'updated_at', width: 190 },
-  { title: '同步结果', key: 'result', width: 300 },
-];
 const datasetColumns = [
   { title: '交易所', dataIndex: 'exchange', width: 100 },
   { title: '市场', dataIndex: 'market', width: 100 },
@@ -262,8 +242,6 @@ function localTime(value: unknown) {
     : '—';
 }
 
-const sourceKey = (source: DatabaseSource) =>
-  `${source.key}:${source.path ?? ''}`;
 const datasetKey = (dataset: DatabaseDataset) =>
   [
     dataset.exchange,
@@ -506,70 +484,6 @@ onUnmounted(() => {
             show-icon
             type="error"
           />
-        </Card>
-
-        <Card :bordered="false" title="同步来源">
-          <template #extra>
-            <span class="text-xs text-muted-foreground"
-              >{{ status.sources?.length ?? 0 }} 个来源 ·
-              {{ sourceErrorCount }} 个错误</span
-            >
-          </template>
-          <div class="mb-3 flex flex-wrap gap-2">
-            <Input
-              v-model:value="sourceSearch"
-              allow-clear
-              class="!max-w-sm"
-              placeholder="搜索来源、路径或类型"
-            />
-            <Button
-              :type="sourceErrorsOnly ? 'primary' : 'default'"
-              @click="sourceErrorsOnly = !sourceErrorsOnly"
-            >
-              {{ sourceErrorsOnly ? '正在筛选错误' : '只看错误' }}
-            </Button>
-          </div>
-          <Table
-            :columns="sourceColumns"
-            :data-source="sources"
-            :pagination="pagination"
-            :row-key="sourceKey"
-            :scroll="{ x: 1080 }"
-            size="small"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'source'">
-                <div class="font-medium">{{ record.key }}</div>
-                <div
-                  class="mt-1 break-all font-mono text-xs text-muted-foreground"
-                >
-                  {{ record.path ?? '—' }}
-                </div>
-              </template>
-              <template v-else-if="column.key === 'rows'">{{
-                formatCount(record.row_count)
-              }}</template>
-              <template v-else-if="column.key === 'updated_at'">{{
-                localTime(record.updated_at)
-              }}</template>
-              <template v-else-if="column.key === 'result'">
-                <div v-if="record.error" class="break-words text-red-500">
-                  {{ record.error }}
-                </div>
-                <Tag v-else-if="record.updated_at" color="success">已同步</Tag>
-                <Tag v-else>等待同步</Tag>
-              </template>
-            </template>
-            <template #emptyText>
-              <Empty
-                :description="
-                  sourceSearch || sourceErrorsOnly
-                    ? '没有符合筛选条件的来源'
-                    : '暂无已登记的同步来源'
-                "
-              />
-            </template>
-          </Table>
         </Card>
 
         <Card :bordered="false" title="行情数据集">

@@ -22,10 +22,19 @@
 """
 import sys
 import time
+from pathlib import Path
 import unittest
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, "/Users/shiyi/DeepSeek/量化/bot")
+try:
+    from freqtrade.enums import RunMode
+    from freqtrade.strategy import IStrategy
+except ImportError:
+    # The lightweight backend CI does not require the optional trading engine.
+    RunMode = None
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "bot"))
 
 PAIR = "BTC/USDT:USDT"
 OTHER = "ETH/USDT:USDT"
@@ -34,7 +43,6 @@ OTHER = "ETH/USDT:USDT"
 def load_strategy(live: bool):
     """构造一个仅够跑门控逻辑的策略实例。"""
     from user_data.strategies.TrendFollowing import TrendFollowing
-    from freqtrade.enums import RunMode
     st = TrendFollowing.__new__(TrendFollowing)
     st.config = {"runmode": RunMode.DRY_RUN if live else RunMode.BACKTEST}
     st.dp = MagicMock()
@@ -44,6 +52,7 @@ def load_strategy(live: bool):
     return st
 
 
+@unittest.skipUnless(RunMode is not None, "optional Freqtrade dependencies unavailable")
 class IndependentGateTests(unittest.TestCase):
     def setUp(self):
         self.st = load_strategy(live=False)

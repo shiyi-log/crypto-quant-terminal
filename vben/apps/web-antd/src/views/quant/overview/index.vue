@@ -113,6 +113,15 @@ const openStake = computed(() =>
   positions.value.reduce((a, t) => a + (t.stake_amount ?? 0), 0),
 );
 
+
+/** 直接汇总交易引擎的浮动盈亏金额；缺失数据不按零处理。 */
+const openProfit = computed(() => {
+  if (positions.value.some((trade) => trade.profit_abs == null || !Number.isFinite(Number(trade.profit_abs)))) {
+    return null;
+  }
+  return positions.value.reduce((sum, trade) => sum + Number(trade.profit_abs), 0);
+});
+
 /* ══════════ 第二行：策略与风控 ══════════ */
 const strategy = computed(() => {
   const s = cfg.value;
@@ -206,7 +215,8 @@ const posColumns = [
   { key: 'open_rate', title: '开仓价', align: 'right' as const },
   { dataIndex: 'current_rate', key: 'current_rate', title: '现价', align: 'right' as const },
   { key: 'stake_amount', title: '投入', align: 'right' as const },
-  { key: 'profit_pct', title: '浮动盈亏', align: 'right' as const },
+  { key: 'profit_pct', title: '浮动盈亏 (%)', align: 'right' as const },
+  { key: 'profit_abs', title: '浮动盈亏 (USDT)', align: 'right' as const },
   { key: 'open_date', title: '开仓时间', width: 110 },
 ];
 
@@ -391,7 +401,10 @@ onUnmounted(() => clearInterval(timer));
     <Card :bordered="false" class="mt-3 shadow-sm" title="当前持仓">
       <template #extra>
         <span class="text-xs text-gray-400">
-          {{ positions.length }} 笔 · 占用 {{ fmt(openStake) }} USDT<template
+          {{ positions.length }} 笔 · 占用 {{ fmt(openStake) }} USDT · 浮动盈亏
+          <span :class="cls(openProfit)">
+            {{ up(openProfit) ? '+' : '' }}{{ fmt(openProfit) }} USDT
+          </span><template
             v-if="exitPeriod"
           >
             · 离场：反向突破 {{ exitPeriod }} 日通道
@@ -428,6 +441,11 @@ onUnmounted(() => clearInterval(timer));
             <span class="font-mono text-xs font-semibold"
                   :class="cls(record.profit_pct)">
               {{ up(record.profit_pct) ? '+' : '' }}{{ fmt(record.profit_pct) }}%
+            </span>
+          </template>
+          <template v-else-if="column.key === 'profit_abs'">
+            <span class="font-mono text-xs font-semibold" :class="cls(record.profit_abs)">
+              {{ up(record.profit_abs) ? '+' : '' }}{{ fmt(record.profit_abs) }}
             </span>
           </template>
           <template v-else-if="column.key === 'open_date'">

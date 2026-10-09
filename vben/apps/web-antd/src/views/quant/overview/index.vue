@@ -347,6 +347,46 @@ onUnmounted(() => clearInterval(timer));
       </Row>
     </Card>
 
+    <!-- ══════════ 整个程序的运行状况 ══════════ -->
+    <Card
+      v-if="services"
+      :bordered="false"
+      class="mt-3 shadow-sm"
+      :title="`🖥 程序运行状况`"
+    >
+      <template #extra>
+        <Tag :color="services.running === services.total ? 'green' : 'orange'">
+          {{ services.running }}/{{ services.total }} 运行中
+        </Tag>
+        <span class="ml-2 text-xs text-gray-400">{{ services.generated_at }}</span>
+      </template>
+      <div class="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-5">
+        <div
+          v-for="sv in services.services"
+          :key="sv.key"
+          class="rounded-lg border p-2.5"
+          :class="sv.running
+            ? 'border-emerald-200 bg-emerald-50/40 dark:border-emerald-900 dark:bg-emerald-950/20'
+            : 'border-red-200 bg-red-50/40 dark:border-red-900 dark:bg-red-950/20'"
+        >
+          <div class="flex items-center gap-1.5">
+            <span>{{ sv.running ? '🟢' : '🔴' }}</span>
+            <span class="text-xs font-medium">{{ sv.name }}</span>
+          </div>
+          <div class="mt-1 truncate font-mono text-[11px] text-gray-500">
+            <template v-if="sv.port">{{ sv.port }} · </template>PID {{ sv.pid || '—' }}
+          </div>
+          <div
+            v-if="serviceNote(sv)"
+            class="mt-0.5 truncate text-[11px] text-blue-500"
+            :title="serviceNote(sv)"
+          >
+            {{ serviceNote(sv) }}
+          </div>
+        </div>
+      </div>
+    </Card>
+
     <!-- ③ 当前持仓 -->
     <Card :bordered="false" class="mt-3 shadow-sm" title="当前持仓">
       <template #extra>
@@ -397,47 +437,6 @@ onUnmounted(() => clearInterval(timer));
       </Table>
       <div v-else class="py-8 text-center text-sm text-gray-400">
         当前无持仓 —— 趋势策略等突破信号
-      </div>
-    </Card>
-
-    <!-- ④ 研究结论 -->
-    <!-- ══════════ 整个程序的运行状况 ══════════ -->
-    <Card
-      v-if="services"
-      :bordered="false"
-      class="mt-3 shadow-sm"
-      :title="`🖥 程序运行状况`"
-    >
-      <template #extra>
-        <Tag :color="services.running === services.total ? 'green' : 'orange'">
-          {{ services.running }}/{{ services.total }} 运行中
-        </Tag>
-        <span class="ml-2 text-xs text-gray-400">{{ services.generated_at }}</span>
-      </template>
-      <div class="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-5">
-        <div
-          v-for="sv in services.services"
-          :key="sv.key"
-          class="rounded-lg border p-2.5"
-          :class="sv.running
-            ? 'border-emerald-200 bg-emerald-50/40 dark:border-emerald-900 dark:bg-emerald-950/20'
-            : 'border-red-200 bg-red-50/40 dark:border-red-900 dark:bg-red-950/20'"
-        >
-          <div class="flex items-center gap-1.5">
-            <span>{{ sv.running ? '🟢' : '🔴' }}</span>
-            <span class="text-xs font-medium">{{ sv.name }}</span>
-          </div>
-          <div class="mt-1 truncate font-mono text-[11px] text-gray-500">
-            <template v-if="sv.port">{{ sv.port }} · </template>PID {{ sv.pid || '—' }}
-          </div>
-          <div
-            v-if="serviceNote(sv)"
-            class="mt-0.5 truncate text-[11px] text-blue-500"
-            :title="serviceNote(sv)"
-          >
-            {{ serviceNote(sv) }}
-          </div>
-        </div>
       </div>
     </Card>
 

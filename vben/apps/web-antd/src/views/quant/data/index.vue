@@ -486,51 +486,11 @@ onUnmounted(() => {
           />
         </Card>
 
-        <Card :bordered="false" title="行情数据集">
-          <template #extra>
-            <span class="text-xs text-muted-foreground"
-              >筛选结果 {{ datasets.length }} 组 ·
-              {{ formatCount(datasetRows) }} 条 K 线</span
-            >
-          </template>
-          <Input
-            v-model:value="datasetSearch"
-            allow-clear
-            class="mb-3 !max-w-sm"
-            placeholder="搜索交易所、市场、交易对或周期"
-          />
-          <Table
-            :columns="datasetColumns"
-            :data-source="datasets"
-            :pagination="pagination"
-            :row-key="datasetKey"
-            :scroll="{ x: 1180 }"
-            size="small"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'rows'">{{
-                formatCount(record.rows)
-              }}</template>
-              <template v-else-if="column.key === 'first_timestamp'">{{
-                localTime(record.first_timestamp)
-              }}</template>
-              <template v-else-if="column.key === 'last_timestamp'">{{
-                localTime(record.last_timestamp)
-              }}</template>
-            </template>
-            <template #emptyText>
-              <Empty
-                :description="
-                  datasetSearch ? '没有符合筛选条件的数据集' : '行情尚未入库'
-                "
-              />
-            </template>
-          </Table>
-        </Card>
+
       </template>
     </Spin>
 
-    <Card :bordered="false" title="最新逐笔与盘口">
+    <Card :bordered="false" title="市场数据查询">
       <template #extra>
         <span class="text-xs text-muted-foreground"
           >查询更新 {{ localTime(marketRefreshedAt) }}</span
@@ -570,143 +530,181 @@ onUnmounted(() => {
       <div class="mb-4 text-xs text-muted-foreground">
         {{ displayedMarket }}
       </div>
-      <div class="grid gap-4 xl:grid-cols-2">
+    </Card>
+
+    <Card :bordered="false" title="最近 50 笔成交">
+      <Alert
+        v-if="ticksError"
+        class="mb-3"
+        :description="ticksError"
+        :message="
+          ticks.length
+            ? '逐笔数据刷新失败，保留上次成功数据'
+            : '逐笔数据读取失败'
+        "
+        show-icon
+        type="error"
+      />
+      <Table
+        :columns="tickColumns"
+        :data-source="ticks"
+        :pagination="{ pageSize: 10, showSizeChanger: false }"
+        :row-key="tickKey"
+        :scroll="{ x: 625 }"
+        size="small"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'timestamp'">{{
+            localTime(record.timestamp)
+          }}</template>
+          <template v-else-if="column.key === 'price'">{{
+            formatNumber(record.price)
+          }}</template>
+          <template v-else-if="column.key === 'quantity'">{{
+            formatNumber(record.quantity)
+          }}</template>
+          <template v-else-if="column.key === 'side'">
+            <Tag
+              v-if="
+                buyerMaker(record.buyer_maker, record.is_buyer_maker) ===
+                true
+              "
+              color="red"
+              >主动卖出</Tag
+            >
+            <Tag
+              v-else-if="
+                buyerMaker(record.buyer_maker, record.is_buyer_maker) ===
+                false
+              "
+              color="green"
+              >主动买入</Tag
+            >
+            <span v-else>—</span>
+          </template>
+        </template>
+        <template #emptyText
+          ><Empty description="所选市场暂无已入库的逐笔成交"
+        /></template>
+      </Table>
+    </Card>
+
+    <Card :bordered="false" title="最新盘口 · 前 10 档">
+      <template #extra>
+        <span class="text-xs text-muted-foreground"
+          >{{ localTime(latestOrderbook?.timestamp) }} · 更新 ID
+          {{
+            latestOrderbook?.last_update_id ??
+            latestOrderbook?.update_id ??
+            '—'
+          }}</span
+        >
+      </template>
+      <Alert
+        v-if="orderbooksError"
+        class="mb-3"
+        :description="orderbooksError"
+        :message="
+          orderbooks.length
+            ? '盘口数据刷新失败，保留上次成功数据'
+            : '盘口数据读取失败'
+        "
+        show-icon
+        type="error"
+      />
+      <Empty
+        v-if="!latestOrderbook"
+        class="py-8"
+        description="所选市场暂无已入库的盘口快照"
+      />
+      <div v-else class="grid grid-cols-2 gap-3">
         <div class="min-w-0">
-          <div class="mb-2 text-sm font-medium">最近 50 笔成交</div>
-          <Alert
-            v-if="ticksError"
-            class="mb-3"
-            :description="ticksError"
-            :message="
-              ticks.length
-                ? '逐笔数据刷新失败，保留上次成功数据'
-                : '逐笔数据读取失败'
-            "
-            show-icon
-            type="error"
-          />
+          <div class="mb-2 text-xs font-medium text-emerald-500">买盘</div>
           <Table
-            :columns="tickColumns"
-            :data-source="ticks"
-            :pagination="{ pageSize: 10, showSizeChanger: false }"
-            :row-key="tickKey"
-            :scroll="{ x: 625 }"
+            :columns="orderbookColumns"
+            :data-source="bidLevels"
+            :pagination="false"
+            :scroll="{ x: 250 }"
+            row-key="level"
             size="small"
           >
             <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'timestamp'">{{
-                localTime(record.timestamp)
-              }}</template>
-              <template v-else-if="column.key === 'price'">{{
-                formatNumber(record.price)
-              }}</template>
+              <span
+                v-if="column.key === 'price'"
+                class="text-emerald-500"
+                >{{ formatNumber(record.price) }}</span
+              >
               <template v-else-if="column.key === 'quantity'">{{
                 formatNumber(record.quantity)
               }}</template>
-              <template v-else-if="column.key === 'side'">
-                <Tag
-                  v-if="
-                    buyerMaker(record.buyer_maker, record.is_buyer_maker) ===
-                    true
-                  "
-                  color="red"
-                  >主动卖出</Tag
-                >
-                <Tag
-                  v-else-if="
-                    buyerMaker(record.buyer_maker, record.is_buyer_maker) ===
-                    false
-                  "
-                  color="green"
-                  >主动买入</Tag
-                >
-                <span v-else>—</span>
-              </template>
             </template>
-            <template #emptyText
-              ><Empty description="所选市场暂无已入库的逐笔成交"
-            /></template>
+            <template #emptyText>暂无买盘档位</template>
           </Table>
         </div>
         <div class="min-w-0">
-          <div
-            class="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm"
+          <div class="mb-2 text-xs font-medium text-red-500">卖盘</div>
+          <Table
+            :columns="orderbookColumns"
+            :data-source="askLevels"
+            :pagination="false"
+            :scroll="{ x: 250 }"
+            row-key="level"
+            size="small"
           >
-            <span class="font-medium">最新盘口 · 前 10 档</span>
-            <span class="text-xs text-muted-foreground"
-              >{{ localTime(latestOrderbook?.timestamp) }} · 更新 ID
-              {{
-                latestOrderbook?.last_update_id ??
-                latestOrderbook?.update_id ??
-                '—'
-              }}</span
-            >
-          </div>
-          <Alert
-            v-if="orderbooksError"
-            class="mb-3"
-            :description="orderbooksError"
-            :message="
-              orderbooks.length
-                ? '盘口数据刷新失败，保留上次成功数据'
-                : '盘口数据读取失败'
-            "
-            show-icon
-            type="error"
-          />
-          <Empty
-            v-if="!latestOrderbook"
-            class="py-8"
-            description="所选市场暂无已入库的盘口快照"
-          />
-          <div v-else class="grid grid-cols-2 gap-3">
-            <div class="min-w-0">
-              <div class="mb-2 text-xs font-medium text-emerald-500">买盘</div>
-              <Table
-                :columns="orderbookColumns"
-                :data-source="bidLevels"
-                :pagination="false"
-                :scroll="{ x: 250 }"
-                row-key="level"
-                size="small"
-              >
-                <template #bodyCell="{ column, record }">
-                  <span
-                    v-if="column.key === 'price'"
-                    class="text-emerald-500"
-                    >{{ formatNumber(record.price) }}</span
-                  >
-                  <template v-else-if="column.key === 'quantity'">{{
-                    formatNumber(record.quantity)
-                  }}</template>
-                </template>
-                <template #emptyText>暂无买盘档位</template>
-              </Table>
-            </div>
-            <div class="min-w-0">
-              <div class="mb-2 text-xs font-medium text-red-500">卖盘</div>
-              <Table
-                :columns="orderbookColumns"
-                :data-source="askLevels"
-                :pagination="false"
-                :scroll="{ x: 250 }"
-                row-key="level"
-                size="small"
-              >
-                <template #bodyCell="{ column, record }">
-                  <span v-if="column.key === 'price'" class="text-red-500">{{
-                    formatNumber(record.price)
-                  }}</span>
-                  <template v-else-if="column.key === 'quantity'">{{
-                    formatNumber(record.quantity)
-                  }}</template>
-                </template>
-                <template #emptyText>暂无卖盘档位</template>
-              </Table>
-            </div>
-          </div>
+            <template #bodyCell="{ column, record }">
+              <span v-if="column.key === 'price'" class="text-red-500">{{
+                formatNumber(record.price)
+              }}</span>
+              <template v-else-if="column.key === 'quantity'">{{
+                formatNumber(record.quantity)
+              }}</template>
+            </template>
+            <template #emptyText>暂无卖盘档位</template>
+          </Table>
         </div>
       </div>
+    </Card>
+
+    <Card v-if="status" :bordered="false" title="行情数据集">
+      <template #extra>
+        <span class="text-xs text-muted-foreground"
+          >筛选结果 {{ datasets.length }} 组 ·
+          {{ formatCount(datasetRows) }} 条 K 线</span
+        >
+      </template>
+      <Input
+        v-model:value="datasetSearch"
+        allow-clear
+        class="mb-3 !max-w-sm"
+        placeholder="搜索交易所、市场、交易对或周期"
+      />
+      <Table
+        :columns="datasetColumns"
+        :data-source="datasets"
+        :pagination="pagination"
+        :row-key="datasetKey"
+        :scroll="{ x: 1180 }"
+        size="small"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'rows'">{{
+            formatCount(record.rows)
+          }}</template>
+          <template v-else-if="column.key === 'first_timestamp'">{{
+            localTime(record.first_timestamp)
+          }}</template>
+          <template v-else-if="column.key === 'last_timestamp'">{{
+            localTime(record.last_timestamp)
+          }}</template>
+        </template>
+        <template #emptyText>
+          <Empty
+            :description="
+              datasetSearch ? '没有符合筛选条件的数据集' : '行情尚未入库'
+            "
+          />
+        </template>
+      </Table>
     </Card>
   </div>
 </template>

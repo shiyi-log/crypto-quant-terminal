@@ -115,9 +115,23 @@ const balCols = [
   { dataIndex: 'currency', key: 'currency', title: '币种' },
   { dataIndex: 'free', key: 'free', title: '可用', align: 'right' as const },
   { dataIndex: 'used', key: 'used', title: '占用', align: 'right' as const },
-  { dataIndex: 'balance', key: 'balance', title: '总计', align: 'right' as const },
-  { dataIndex: 'est_stake', key: 'est_stake', title: '折合', align: 'right' as const },
+  { key: 'equity', title: '总计（含浮动盈亏）', align: 'right' as const },
+  { key: 'floating_profit', title: '浮动盈亏', align: 'right' as const },
 ];
+
+/** 合约权益取余额接口的实时估值，不能再次叠加持仓盈亏。 */
+const balanceRows = computed(() =>
+  (bal.value.currencies ?? [])
+    .filter((row: any) => !row.is_position && Math.abs(row.balance ?? 0) > 1e-9)
+    .map((row: any) => {
+      const isStake = row.currency === bal.value.stake;
+      return {
+        ...row,
+        equity: isStake ? bal.value.total : row.balance,
+        floating_profit: isStake ? openProfit.value : null,
+      };
+    }),
+);
 
 /* ══════════ 行级交易操作 ══════════
  * 全部走 Freqtrade api_trading 的实盘控制接口；当前 bot 是 dry-run，操作只影响模拟盘。
@@ -305,7 +319,9 @@ async function viewCustom(r: any) {
 }
 
 /** Dropdown 菜单统一入口（Menu 的 click 事件只带 { key }） */
-const onMenu = (r: any) => (info: any) => onAction(String(info?.key ?? ''), r);
+function onMenu(r: any, info: { key: number | string }) {
+  onAction(String(info.key), r);
+}
 
 function onAction(key: string, r: any) {
   switch (key) {
@@ -344,17 +360,20 @@ function onAction(key: string, r: any) {
 }
 
 async function load() {
+  if (loading.value) return;
   loading.value = true;
   try {
     const [o, t, b] = await Promise.all([
-      getOpenTrades().catch(() => []),
-      getTrades(30).catch(() => ({})),
-      getBalance().catch(() => ({})),
+      getOpenTrades(),
+      getTrades(30),
+      getBalance(),
     ]);
     open.value = o as any[];
     trades.value = (t as any).trades ?? [];
     total.value = (t as any).total_trades ?? 0;
     bal.value = b;
+  } catch (error) {
+    message.error(`余额与持仓刷新失败，保留上次数据：${errText(error)}`);
   } finally {
     loading.value = false;
   }
@@ -392,7 +411,46 @@ onUnmounted(() => {
 
 <template>
   <div class="p-4">
-    <!-- 顺序保持与改动前一致：先看持仓，再看成交与余额 -->
+    <Card
+      :bordered="false"
+      class="mb-3 shadow-sm"
+      title="账户余额"
+    >
+      <template #extra>
+        <span class="text-xs text-gray-400">
+          当前权益 {{ fmt(bal.total) }} {{ bal.stake ?? 'USDT' }} · 每 6 秒刷新
+        </span>
+        <Button class="ml-3" size="small" :loading="loading" @click="load">刷新</Button>
+      </template>
+      <Table
+        :columns="balCols"
+        :data-source="balanceRows"
+        :loading="loading"
+        :pagination="false"
+        row-key="currency"
+        size="small"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'currency'">
+            <span class="font-medium">{{ record.currency }}</span>
+          </template>
+          <template v-else-if="column.key === 'equity'">
+            <span class="font-medium">{{ fmt(record.equity, 6) }}</span>
+          </template>
+          <template v-else-if="column.key === 'floating_profit'">
+            <span :class="record.floating_profit > 0 ? 'text-red-500' : record.floating_profit < 0 ? 'text-emerald-500' : ''">
+              {{ record.floating_profit > 0 ? '+' : '' }}{{ fmt(record.floating_profit, 6) }}
+            </span>
+          </template>
+          <template v-else>
+            {{ fmt(record[column.dataIndex as string], 6) }}
+          </template>
+        </template>
+        <template #emptyText>
+          <div class="py-8 text-sm text-gray-400">无余额数据</div>
+        </template>
+      </Table>
+    </Card>
     <Card :bordered="false" class="shadow-sm" title="当前持仓">
       <template #extra>
         <span class="mr-3 text-xs text-gray-400">
@@ -453,7 +511,7 @@ onUnmounted(() => {
             <Dropdown :trigger="['click']" placement="bottomRight">
               <Button :loading="isBusy(record)" size="small">操作</Button>
               <template #overlay>
-                <Menu @click="onMenu(record)">
+                <Menu @click="onMenu(record, $event)">
                   <MenuItem key="exit-market">市价平仓</MenuItem>
                   <MenuItem key="exit-limit">限价平仓</MenuItem>
                   <MenuItem key="exit-partial">部分平仓</MenuItem>
@@ -475,10 +533,10 @@ onUnmounted(() => {
       </Table>
     </Card>
 
-    <div class="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-5">
+    <div class="mt-3">
       <Card
         :bordered="false"
-        class="shadow-sm xl:col-span-3"
+        class="shadow-sm"
         title="最近成交"
       >
       <template #extra>
@@ -555,44 +613,7 @@ onUnmounted(() => {
         </Table>
       </Card>
 
-      <Card
-        :bordered="false"
-        class="shadow-sm xl:col-span-2"
-        title="账户余额"
-      >
-        <template #extra>
-          <span class="text-xs text-gray-400">
-            合计 {{ fmt(bal.total) }} {{ bal.symbol ?? 'USDT' }}
-          </span>
-        </template>
-        <Table
-          :columns="balCols"
-          :data-source="
-            (bal.currencies ?? []).filter(
-              (c: any) => Math.abs(c.balance ?? 0) > 1e-9,
-            )
-          "
-          :loading="loading"
-          :pagination="false"
-          row-key="currency"
-          size="small"
-        >
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'currency'">
-              <span class="font-medium">{{ record.currency }}</span>
-            </template>
-            <template v-else-if="column.key === 'balance'">
-              <span class="font-medium">{{ fmt(record.balance, 6) }}</span>
-            </template>
-            <template v-else>
-              {{ fmt(record[column.dataIndex as string], 6) }}
-            </template>
-          </template>
-          <template #emptyText>
-            <div class="py-8 text-sm text-gray-400">无余额数据</div>
-          </template>
-        </Table>
-      </Card>
+
     </div>
 
     <!-- 限价平仓 / 部分平仓：同一弹窗按 mode 切换 -->

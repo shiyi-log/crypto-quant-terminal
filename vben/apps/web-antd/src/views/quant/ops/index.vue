@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { sortCoins } from '../utils/coinOrder';
 /**
  * 实盘运维 —— 策略信号 / 波动率中枢 / 因子健康度 / 重估信号
  *
@@ -208,7 +209,7 @@ onUnmounted(() => clearInterval(timer));
             { key: 'need', title: '距突破', align: 'right' },
             { key: 'vol', title: '波动率', align: 'right' },
           ]"
-          :data-source="ops.strategy.near_breakout"
+          :data-source="sortCoins(ops.strategy.near_breakout, (row) => row.pair)"
           :pagination="false"
           row-key="pair"
           size="small"

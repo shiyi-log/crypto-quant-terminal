@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { sortCoins } from '../utils/coinOrder';
 import type {
   DatabaseDataset,
   DatabaseMarketQuery,
@@ -70,6 +71,10 @@ const metrics = computed(() =>
     value: status.value?.counts?.[definition.key],
   })),
 );
+const metricGroups = computed(() => [
+  { title: '市场行情', items: metrics.value.slice(0, 4) },
+  { title: '业务与系统', items: metrics.value.slice(4) },
+]);
 const datasets = computed(() => {
   const keyword = datasetSearch.value.trim().toLowerCase();
   return (status.value?.datasets ?? []).filter((dataset) =>
@@ -216,11 +221,12 @@ function formatBytes(value: number | undefined) {
 function formatNumber(value: number | string | undefined) {
   const numeric = Number(value);
   if (value === undefined || !Number.isFinite(numeric)) return '—';
-  // 价量可能以精确小数字符串返回，展示时不转成浮点数或截断小数位。
+  // 保留精确小数字符串的有效位，仅去掉数据库定标补齐的末尾零。
   const text = String(value);
   if (!/^-?\d+(?:\.\d+)?$/.test(text)) return text;
   const [integer = '', fraction] = text.split('.');
-  return `${integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${fraction === undefined ? '' : `.${fraction}`}`;
+  const significantFraction = fraction?.replace(/0+$/, '');
+  return `${integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${significantFraction ? `.${significantFraction}` : ''}`;
 }
 
 /** 后端没有时区后缀的时间按 UTC 处理，再交给浏览器转为本地时间。 */
@@ -375,8 +381,8 @@ onUnmounted(() => {
           "
         />
       </Card>
-      <template v-else>
-        <Card :bordered="false" title="数据库概览">
+      <div v-else class="flex flex-col gap-4">
+        <Card :bordered="false" title="运行状态">
           <template #extra>
             <Tag color="blue">{{ status.engine ?? '数据库' }}</Tag>
             <Tag v-if="status.sync?.running" color="processing">同步中</Tag>
@@ -440,54 +446,65 @@ onUnmounted(() => {
               </ul>
             </template>
           </Alert>
-        </Card>
-
-        <div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-          <Card
-            v-for="metric in metrics"
-            :key="metric.key"
-            :bordered="false"
-            size="small"
-          >
-            <div class="text-xs text-muted-foreground">{{ metric.label }}</div>
-            <div class="mt-2 text-2xl font-semibold tabular-nums">
-              {{ formatCount(metric.value) }}
+          <div v-if="collector" class="mt-5 border-t border-border pt-4">
+            <div class="mb-3 text-sm font-medium">实时采集</div>
+            <div class="flex flex-wrap items-center gap-3 text-sm">
+              <Tag :color="collector.state === 'running' ? 'processing' : 'default'">
+                {{
+                  collector.state === 'running'
+                    ? '采集中'
+                    : (collector.state ?? '暂无运行状态')
+                }}
+              </Tag>
+              <span v-if="collector.exchange"
+                >{{ collector.exchange }} · {{ collector.market ?? '—' }}</span
+              >
+              <span class="text-xs text-muted-foreground">
+                状态时间
+                {{ localTime(collector.updated_at ?? collector.last_at) }}
+              </span>
             </div>
-            <div class="mt-1 text-xs text-muted-foreground">
-              {{ metric.description }}
-            </div>
-          </Card>
-        </div>
-
-        <Card v-if="collector" :bordered="false" title="实时采集状态">
-          <div class="flex flex-wrap items-center gap-3 text-sm">
-            <Tag :color="collector.state === 'running' ? 'processing' : 'default'">
-              {{
-                collector.state === 'running'
-                  ? '采集中'
-                  : (collector.state ?? '暂无运行状态')
-              }}
-            </Tag>
-            <span v-if="collector.exchange"
-              >{{ collector.exchange }} · {{ collector.market ?? '—' }}</span
-            >
-            <span class="text-xs text-muted-foreground">
-              状态时间
-              {{ localTime(collector.updated_at ?? collector.last_at) }}
-            </span>
+            <Alert
+              v-if="collectorError"
+              class="mt-3"
+              :description="collectorError"
+              message="采集错误"
+              show-icon
+              type="error"
+            />
           </div>
-          <Alert
-            v-if="collectorError"
-            class="mt-3"
-            :description="collectorError"
-            message="采集错误"
-            show-icon
-            type="error"
-          />
+        </Card>
+
+        <Card :bordered="false" title="数据规模">
+          <div class="space-y-5">
+            <section v-for="group in metricGroups" :key="group.title">
+              <div class="mb-3 text-sm font-medium text-muted-foreground">
+                {{ group.title }}
+              </div>
+              <div
+                class="grid grid-cols-1 gap-3 sm:grid-cols-2"
+                :class="group.items.length === 4 ? 'xl:grid-cols-4' : 'xl:grid-cols-5'"
+              >
+                <div
+                  v-for="metric in group.items"
+                  :key="metric.key"
+                  class="min-w-0 rounded-lg border border-border p-4"
+                >
+                  <div class="text-sm font-medium">{{ metric.label }}</div>
+                  <div class="my-2 text-2xl font-semibold tabular-nums">
+                    {{ formatCount(metric.value) }}
+                  </div>
+                  <div class="text-xs text-muted-foreground">
+                    {{ metric.description }}
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
         </Card>
 
 
-      </template>
+      </div>
     </Spin>
 
     <Card :bordered="false" title="市场数据查询">
@@ -680,7 +697,7 @@ onUnmounted(() => {
       />
       <Table
         :columns="datasetColumns"
-        :data-source="datasets"
+        :data-source="sortCoins(datasets, (row) => row.pair)"
         :pagination="pagination"
         :row-key="datasetKey"
         :scroll="{ x: 1180 }"

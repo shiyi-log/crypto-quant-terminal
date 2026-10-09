@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { sortCoins } from '../utils/coinOrder';
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 
 import {
@@ -121,7 +122,7 @@ const balCols = [
 
 /** 合约权益取余额接口的实时估值，不能再次叠加持仓盈亏。 */
 const balanceRows = computed(() =>
-  (bal.value.currencies ?? [])
+  sortCoins(bal.value.currencies ?? [], (row: any) => row.currency)
     .filter((row: any) => !row.is_position && Math.abs(row.balance ?? 0) > 1e-9)
     .map((row: any) => {
       const isStake = row.currency === bal.value.stake;
@@ -469,7 +470,7 @@ onUnmounted(() => {
       </template>
       <Table
         :columns="openCols"
-        :data-source="open"
+        :data-source="sortCoins(open, (row) => row.pair)"
         :loading="loading"
         :pagination="false"
         :scroll="{ x: 'max-content' }"
@@ -548,7 +549,7 @@ onUnmounted(() => {
       </template>
         <Table
           :columns="tradeCols"
-          :data-source="recentRows"
+          :data-source="sortCoins(recentRows, (row) => row.pair)"
           :loading="loading"
           :pagination="false"
           :scroll="{ x: 'max-content', y: 420 }"

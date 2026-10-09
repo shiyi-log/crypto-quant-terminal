@@ -19,6 +19,9 @@ import {
 
 import { getLiveKlines, getLocalOhlcv, getPairCandles } from '#/api/freqtrade';
 
+import type { LiveKline, LiveMarketState } from './liveMarket';
+
+import { subscribeLiveMarket } from './liveMarket';
 import { withMarketSlot } from './requestQueue';
 
 const props = defineProps<{ pair: string; timeframe: string }>();
@@ -648,11 +651,13 @@ const sourceKind = ref<'live' | 'local'>('live');
 const lastCandle = ref('');
 const loadedTimeframe = ref('');
 const chartRef = ref<EchartsUIType>();
-const { renderEcharts } = useEcharts(chartRef);
+const containerRef = ref<HTMLElement>();
+const { getChartInstance, renderEcharts, updateData } = useEcharts(chartRef);
 
 interface ChartData {
   closes: number[];
   dates: string[];
+  timestamps: number[];
   kline: number[][];
   marks: any[];
   vol: any[];
@@ -660,6 +665,21 @@ interface ChartData {
 
 /** 最近一次取到的行情：改指标配置时直接用它重绘，不必重新请求 */
 const chartData = shallowRef<ChartData | null>(null);
+const liveState = ref<'connected' | 'connecting' | 'reconnecting'>('connecting');
+const marketState = ref<'connected' | 'connecting' | 'reconnecting'>('connecting');
+const lastReceivedAt = ref(0);
+const lastLatency = ref('');
+let liveRenderTimer: ReturnType<typeof setTimeout> | undefined;
+let lastLiveEvent: LiveKline | null = null;
+let unsubscribeLive: (() => void) | undefined;
+let visibilityObserver: IntersectionObserver | undefined;
+const isVisible = ref(true);
+let lastRecoveryAt = 0;
+const freshnessTick = ref(Date.now());
+const isStale = computed(() => {
+  freshnessTick.value;
+  return !lastReceivedAt.value || Date.now() - lastReceivedAt.value > 10_000;
+});
 
 const localTime = (v: string) => {
   const d = new Date(v);
@@ -668,15 +688,23 @@ const localTime = (v: string) => {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
+function toTimestamp(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value < 10_000_000_000 ? value * 1000 : value;
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
 /**
  * 取 K 线：优先实时源（服务端代理 Binance），失败回落到本地 feather。
  *
  * 为什么要实时源：本地 feather 是「下载时点」的快照，机器人不重启就不会更新，
  * 图表会一直停在旧数据上（实测停在两天前）。
  */
-async function fetchKlines(requestPair: string, requestTf: string) {
+async function fetchKlines(requestPair: string, requestTf: string, fresh = false) {
   try {
-    const live = await getLiveKlines(requestPair, requestTf, 200);
+    const live = await getLiveKlines(requestPair, requestTf, 200, fresh);
     if (live?.data?.length) {
       sourceKind.value = 'live';
       return live;
@@ -689,7 +717,115 @@ async function fetchKlines(requestPair: string, requestTf: string) {
   return local;
 }
 
-async function load() {
+function updateLatency(message: LiveKline) {
+  lastReceivedAt.value = Date.now();
+  const source = message.received_timestamp - message.exchange_event_timestamp;
+  const relay = message.sent_timestamp - message.received_timestamp;
+  const browser = Date.now() - message.sent_timestamp;
+  const sourceText = source >= 0 ? `源接收 ${source} ms` : '交易所时钟偏差，源延迟待校准';
+  const relayText = relay >= 0 ? `本机转发 ${relay} ms` : '本机时间戳异常';
+  const browserText = browser >= 0 ? `浏览器接收约 ${browser} ms` : '时钟偏差，端到端延迟待校准';
+  lastLatency.value = `${sourceText} · ${relayText} · ${browserText}`;
+}
+
+function applyLiveCandle(message: LiveKline) {
+  if (disposed || message.pair !== pair.value || message.timeframe !== tf.value) return;
+  lastLiveEvent = message;
+  lastCandle.value = localTime(new Date(message.candle.timestamp).toISOString());
+  updateLatency(message);
+  sourceKind.value = 'live';
+  const d = chartData.value;
+  if (!d) return;
+  const timestamp = message.candle.timestamp;
+  const index = d.timestamps.indexOf(timestamp);
+  const row = [message.candle.open, message.candle.close, message.candle.low, message.candle.high];
+  if (index >= 0) {
+    d.kline[index] = row;
+    d.closes[index] = message.candle.close;
+    d.vol[index] = {
+      itemStyle: {
+        color: message.candle.close >= message.candle.open ? 'rgba(240,66,79,.5)' : 'rgba(18,184,134,.5)',
+      },
+      value: message.candle.volume,
+    };
+  } else if (!d.timestamps.length || timestamp > d.timestamps[d.timestamps.length - 1]!) {
+    d.timestamps.push(timestamp);
+    d.dates.push(localTime(new Date(timestamp).toISOString()));
+    d.kline.push(row);
+    d.closes.push(message.candle.close);
+    d.vol.push({
+      itemStyle: {
+        color: message.candle.close >= message.candle.open ? 'rgba(240,66,79,.5)' : 'rgba(18,184,134,.5)',
+      },
+      value: message.candle.volume,
+    });
+    if (d.timestamps.length > 200) {
+      d.timestamps.shift();
+      d.dates.shift();
+      d.kline.shift();
+      d.closes.shift();
+      d.vol.shift();
+      d.marks = d.marks
+        .map((mark) => ({ ...mark, coord: [Number(mark.coord?.[0]) - 1, mark.coord?.[1]] }))
+        .filter((mark) => mark.coord[0] >= 0);
+    }
+  } else {
+    return;
+  }
+  clearTimeout(liveRenderTimer);
+  liveRenderTimer = setTimeout(() => {
+    liveRenderTimer = undefined;
+    if (!disposed && isVisible.value) renderChart(true);
+  }, 50);
+}
+
+function onLiveState(state: LiveMarketState) {
+  liveState.value = state.transport;
+  marketState.value = state.source;
+}
+
+function setSignalMarks(signals: Map<string, { el: number; es: number; xl: number; xs: number }>) {
+  const d = chartData.value;
+  if (!d) return;
+  const marks: any[] = [];
+  d.timestamps.forEach((timestamp, i) => {
+    const sg = signals.get(String(timestamp)) ?? signals.get(new Date(timestamp).toISOString());
+    if (sg?.el) marks.push({ coord: [i, d.kline[i]?.[2]], value: '▲' });
+    if (sg?.es) marks.push({ coord: [i, d.kline[i]?.[3]], value: '▼' });
+    if (sg?.xl) marks.push({ coord: [i, d.kline[i]?.[3]], value: '×' });
+    if (sg?.xs) marks.push({ coord: [i, d.kline[i]?.[2]], value: '×' });
+  });
+  d.marks = marks;
+  renderChart(true);
+}
+
+async function loadSignals(requestPair: string, requestTf: string) {
+  try {
+    const pc = await getPairCandles(requestPair, requestTf, 200);
+    const signals = new Map<string, { el: number; es: number; xl: number; xs: number }>();
+    const jx = (name: string) => pc.columns.indexOf(name);
+    const jEL = jx('enter_long');
+    const jES = jx('enter_short');
+    const jXL = jx('exit_long');
+    const jXS = jx('exit_short');
+    pc.data?.forEach((r) => {
+      const raw = String(r[0]);
+      const timestamp = toTimestamp(raw);
+      signals.set(raw, {
+        el: jEL >= 0 ? +r[jEL] || 0 : 0,
+        es: jES >= 0 ? +r[jES] || 0 : 0,
+        xl: jXL >= 0 ? +r[jXL] || 0 : 0,
+        xs: jXS >= 0 ? +r[jXS] || 0 : 0,
+      });
+      if (Number.isFinite(timestamp)) signals.set(String(timestamp), signals.get(raw)!);
+    });
+    if (!disposed && pair.value === requestPair && tf.value === requestTf) setSignalMarks(signals);
+  } catch {
+    // Signals are optional and must not delay or invalidate price updates.
+  }
+}
+
+async function load(forceFresh = false) {
   if (!pair.value || disposed || loading.value) return;
   const requestPair = pair.value;
   const requestTf = tf.value;
@@ -702,7 +838,7 @@ async function load() {
   try {
     await withMarketSlot(async () => {
       if (disposed) return;
-      const res = await fetchKlines(requestPair, requestTf);
+      const res = await fetchKlines(requestPair, requestTf, forceFresh);
       const ix = (n: string) => res.columns.indexOf(n);
       const [iO, iH, iL, iC, iV] = [
         ix('open'),
@@ -712,35 +848,8 @@ async function load() {
         ix('volume'),
       ];
 
-      // 策略信号仍从 Freqtrade 取；只有周期与机器人一致时才有数据，取不到就跳过
-      const sigByDate = new Map<
-        string,
-        { el: number; es: number; xl: number; xs: number }
-      >();
-      try {
-        const pc = await getPairCandles(requestPair, requestTf, 200);
-        if (pc.data?.length) {
-          const jx = (n: string) => pc.columns.indexOf(n);
-          const [jEL, jES, jXL, jXS] = [
-            jx('enter_long'),
-            jx('enter_short'),
-            jx('exit_long'),
-            jx('exit_short'),
-          ];
-          pc.data.forEach((r) => {
-            sigByDate.set(String(r[0]), {
-              el: jEL >= 0 ? +r[jEL] || 0 : 0,
-              es: jES >= 0 ? +r[jES] || 0 : 0,
-              xl: jXL >= 0 ? +r[jXL] || 0 : 0,
-              xs: jXS >= 0 ? +r[jXS] || 0 : 0,
-            });
-          });
-        }
-      } catch {
-        /* 信号非必需 */
-      }
-
       const dates: string[] = [];
+      const timestamps: number[] = [];
       const kline: number[][] = [];
       const vol: any[] = [];
       const marks: any[] = [];
@@ -748,7 +857,9 @@ async function load() {
 
       res.data.forEach((r, i) => {
         const t = localTime(r[0]);
+        const timestamp = toTimestamp(r[0]);
         dates.push(t);
+        timestamps.push(Number.isFinite(timestamp) ? timestamp : i);
         const o = +r[iO];
         const c = +r[iC];
         closes.push(c);
@@ -759,11 +870,6 @@ async function load() {
           },
           value: +r[iV] || 0,
         });
-        const sg = sigByDate.get(String(r[0]));
-        if (sg?.el) marks.push({ coord: [i, +r[iL]], value: '▲' });
-        if (sg?.es) marks.push({ coord: [i, +r[iH]], value: '▼' });
-        if (sg?.xl) marks.push({ coord: [i, +r[iH]], value: '×' });
-        if (sg?.xs) marks.push({ coord: [i, +r[iL]], value: '×' });
       });
 
       if (disposed || pair.value !== requestPair || tf.value !== requestTf)
@@ -772,8 +878,10 @@ async function load() {
         ? localTime(String(res.data.at(-1)![0]))
         : '';
       loadedTimeframe.value = requestTf;
-      chartData.value = { closes, dates, kline, marks, vol };
+      chartData.value = { closes, dates, timestamps, kline, marks, vol };
+      if (lastLiveEvent) applyLiveCandle(lastLiveEvent);
       renderChart();
+      void loadSignals(requestPair, requestTf);
     });
   } catch {
     error.value = '该币种行情暂不可用，请稍后重试';
@@ -793,7 +901,7 @@ async function load() {
  * axisPointer.link 就能联动，不需要跨实例 connect（也就不会出现
  * 两个实例缩放/光标不同步的情况）。
  */
-function renderChart() {
+function renderChart(incremental = false) {
   const d = chartData.value;
   if (!d) return;
   const c = cfg.value;
@@ -942,7 +1050,7 @@ function renderChart() {
     }
   });
 
-  renderEcharts({
+  const options: any = {
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
     dataZoom: [
       { end: 100, start: 60, type: 'inside', xAxisIndex: axisIndexes },
@@ -960,10 +1068,17 @@ function renderChart() {
     tooltip: { axisPointer: { type: 'cross' }, trigger: 'axis' },
     xAxis,
     yAxis,
-  });
+  };
+  if (incremental && getChartInstance()) {
+    // Omit dataZoom on incremental updates so the user's current window is preserved.
+    delete options.dataZoom;
+    void updateData(options, false, true);
+  } else {
+    void renderEcharts(options);
+  }
 }
 
-watch([pair, tf], load);
+watch([pair, tf], () => void load());
 // 指标配置变化：写回 localStorage 并就地重绘（不重新请求行情）
 watch(
   cfg,
@@ -975,18 +1090,56 @@ watch(
 );
 
 let timer: any = null;
+let freshnessTimer: any = null;
+function subscribeCurrentMarket() {
+  unsubscribeLive?.();
+  unsubscribeLive = subscribeLiveMarket({
+    onKline: applyLiveCandle,
+    onReconnect: () => {
+      const now = Date.now();
+      if (now - lastRecoveryAt < 1000) return;
+      lastRecoveryAt = now;
+      void load(true);
+    },
+    onState: onLiveState,
+    subscription: { pair: pair.value, timeframe: tf.value },
+  });
+}
 onMounted(() => {
   void load();
-  timer = setInterval(load, 30_000);
+  subscribeCurrentMarket();
+  if (containerRef.value && typeof IntersectionObserver !== 'undefined') {
+    visibilityObserver = new IntersectionObserver(([entry]) => {
+      isVisible.value = !!entry?.isIntersecting;
+      if (isVisible.value && chartData.value) renderChart(true);
+    }, { rootMargin: '240px' });
+    visibilityObserver.observe(containerRef.value);
+  }
+  freshnessTimer = setInterval(() => {
+    freshnessTick.value = Date.now();
+    // A quiet stream is reconciled from the authoritative REST snapshot without
+    // adding a normal polling load while the stream is healthy.
+    if (isStale.value && !loading.value && Date.now() - lastRecoveryAt >= 15_000) {
+      lastRecoveryAt = Date.now();
+      void load(true);
+    }
+  }, 1000);
+});
+watch([pair, tf], () => {
+  subscribeCurrentMarket();
 });
 onUnmounted(() => {
   disposed = true;
   clearInterval(timer);
+  clearInterval(freshnessTimer);
+  clearTimeout(liveRenderTimer);
+  visibilityObserver?.disconnect();
+  unsubscribeLive?.();
 });
 </script>
 
 <template>
-  <div class="min-w-0">
+  <div ref="containerRef" class="min-w-0">
     <Card :bordered="false" class="shadow-sm" :title="pair">
       <template #extra>
         <Button size="small" @click="cfgOpen = true"
@@ -1010,11 +1163,14 @@ onUnmounted(() => {
       <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">
         <Tag
           v-if="chartData"
-          :color="sourceKind === 'live' ? 'green' : 'orange'"
+          :color="sourceKind === 'live' && liveState === 'connected' && marketState === 'connected' && !isStale ? 'green' : 'orange'"
         >
-          {{ sourceKind === 'live' ? '实时行情' : '数据库快照' }}
+          {{ sourceKind === 'live' && liveState === 'connected' && marketState === 'connected' && !isStale ? '实时行情' : '行情已降级/旧数据' }}
         </Tag>
         <span>{{ tf }} · {{ lastCandle || '等待行情' }}</span>
+        <span v-if="lastReceivedAt">收到 {{ new Date(lastReceivedAt).toLocaleTimeString() }} · {{ lastLatency }}</span>
+        <span v-else>等待实时推送</span>
+        <span>WS {{ liveState }} · 行情源 {{ marketState }}</span>
         <span
           v-for="o in overlayLegend"
           :key="o.name"

@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { sortCoins } from '../utils/coinOrder';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 
 import { Card, Col, Progress, Row, Table, Tag } from 'ant-design-vue';
@@ -368,7 +369,7 @@ onUnmounted(() => clearInterval(timer));
           <Card :bordered="false" class="shadow-sm" title="分币对表现">
             <Table
               :columns="pairCols"
-              :data-source="result.pairs ?? []"
+              :data-source="sortCoins(result.pairs ?? [], (row) => row.pair)"
               :pagination="false"
               row-key="pair"
               size="small"

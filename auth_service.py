@@ -26,13 +26,13 @@
 
 import argparse
 import base64
-import glob
 import hashlib
 import hmac
 import json
 import os
 import re
 import secrets
+import signal
 import sys
 import threading
 import time
@@ -46,6 +46,7 @@ from psycopg_pool import PoolTimeout
 
 from runtime_config import load_environment
 from data_store import DataStore
+from candle_archive import CandleArchiveWriter
 
 load_environment()
 
@@ -135,6 +136,10 @@ def get_store():
                 candidate.initialize()
                 _store = candidate
     return _store
+
+
+# REST 初始化与 WebSocket 增量都先返回行情，由独立线程归档。
+_kline_archive = CandleArchiveWriter(lambda: get_store())
 
 
 # ══════════════════════════ 用户库 ══════════════════════════
@@ -398,6 +403,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._auth_get()
         if self.path.startswith("/api/locals/database/"):
             return self._local_database()
+        if urllib.parse.urlsplit(self.path).path == "/api/locals/market-stream-info":
+            return self._local_market_stream_info()
         if self.path.startswith("/api/locals/klines"):
             return self._local_klines()
         if self.path.startswith("/api/locals/ohlcv"):
@@ -411,6 +418,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._local_research_progress()
         if self.path.startswith("/api/locals/research_status"):
             return self._local_research_status()
+        if urllib.parse.urlsplit(self.path).path == "/api/locals/research-ledger":
+            return self._local_research_ledger()
         if self.path.startswith("/api/locals/research"):
             return self._local_research()
         if self.path.startswith("/api/locals/ops"):
@@ -527,6 +536,33 @@ class Handler(BaseHTTPRequestHandler):
     def _local_research(self):
         return self._local_json("research_summary.json")
 
+    def _local_research_ledger(self):
+        """返回模型代际、实际交易和研究方向的统一证据账。
+
+        实际订单和成交始终从 DataStore 的外部交易快照读取。请求只做投影
+        查询，不在 HTTP 请求中同步或写入生产数据库。固定 source_id，避免
+        请求参数被用来读取任意本地文件。
+        """
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+        try:
+            import research_ledger
+
+            registry_path = os.path.join(ROOT, "bot", "user_data", "model_versions.json")
+            source_id = "bot/tradesv3.dryrun.sqlite"
+            store = get_store()
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            version_id = (query.get("version_id") or [None])[0]
+            payload = research_ledger.ledger_payload(
+                store, version_id=version_id, source_id=source_id,
+                registry_path=registry_path,
+            )
+            return self._send(200, payload)
+        except (OSError, ValueError, RuntimeError, psycopg.Error, PoolTimeout) as exc:
+            # 不把本地路径或源文件内容返回给浏览器；数据库异常由外层统一转 503。
+            print(f"[auth] 研究证据账同步失败: {type(exc).__name__}", file=sys.stderr)
+            return self._send(503, {"detail": "研究证据账暂时不可用，请检查同步源"})
+
     # ---------- 实盘运维状态（策略信号 / 波动率中枢 / 因子健康度） ----------
     def _local_ops(self):
         return self._local_json("ops_status.json")
@@ -544,8 +580,6 @@ class Handler(BaseHTTPRequestHandler):
         """
         if not verify_token(self._bearer()):
             return self._send(401, {"detail": "未登录或登录已过期"})
-        base = os.path.join(ROOT, "bot", "user_data")
-
         def tail(name, n=5):
             return get_store().read_events(name, limit=n)
 
@@ -881,6 +915,15 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, data)
 
     # ---------- 实时行情（Binance 公共接口，服务端代理） ----------
+    def _local_market_stream_info(self):
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+        # 外部 HTTPS 部署通过该变量提供反向代理的 wss 地址。
+        url = os.getenv("QUANT_LIVE_WS_URL") or (
+            f"ws://127.0.0.1:{os.getenv('QUANT_LIVE_PORT', '8892')}/ws/market"
+        )
+        return self._send(200, {"url": url})
+
     def _local_klines(self):
         """
         实时 K 线。交易对带 `:USDT` 后缀视为永续（fapi），否则现货（api）。
@@ -918,9 +961,11 @@ class Handler(BaseHTTPRequestHandler):
 
         key = (market, sym, tf, limit)
         hit = _kline_cache.get(key)
-        if hit and time.time() - hit[0] < KLINE_TTL:
+        fresh = (qs.get("fresh") or ["0"])[0] == "1"
+        if not fresh and hit and time.time() - hit[0] < KLINE_TTL:
             return self._send(200, hit[1])
 
+        snapshot_ms = int(time.time() * 1000)
         try:
             req = urllib.request.Request(
                 url, headers={"User-Agent": "quant-terminal/1.0"}
@@ -950,12 +995,14 @@ class Handler(BaseHTTPRequestHandler):
             "source": f"binance-{market}",
             "length": len(data),
         }
-        get_store().upsert_candles("binance", market, pair, tf, market, [
+        queued = _kline_archive.offer("binance", market, pair, tf, market, [
             {"timestamp": int(r[0]), "open": float(r[1]), "high": float(r[2]),
-             "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])}
+             "low": float(r[3]), "close": float(r[4]), "volume": float(r[5]),
+             "extras": {"live_snapshot_timestamp": snapshot_ms,
+                        "closed": len(r) > 6 and int(r[6]) < snapshot_ms}}
             for r in rows
         ], source_key="live:binance-klines")
-        payload["storage"] = "postgresql"
+        payload["storage"] = "queued" if queued else "archive_busy"
         _kline_cache[key] = (time.time(), payload)
         return self._send(200, payload)
 
@@ -1239,6 +1286,9 @@ def main():
     load_users()
 
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
+    def stop(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, stop)
     print(f"认证与代理服务已启动: http://{args.bind}:{args.port}")
     print("  用户库: PostgreSQL（旧 JSON 仅作一次性迁移来源）")
     print(f"  代理至（实盘）: {FT_BASE}")
@@ -1247,6 +1297,10 @@ def main():
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        if not _kline_archive.close(timeout=5.0):
+            print("[auth] 关闭超时，尚有未提交的 K 线归档，请重新加载历史对账", file=sys.stderr)
+        srv.server_close()
 
 
 if __name__ == "__main__":

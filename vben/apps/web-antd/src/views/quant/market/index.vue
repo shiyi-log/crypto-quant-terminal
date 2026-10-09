@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { compareCoins } from '../utils/coinOrder';
 import { onMounted, onUnmounted, ref } from 'vue';
 
 import { Alert, Button, Card, Radio, Spin } from 'ant-design-vue';
@@ -48,7 +49,7 @@ async function loadUniverse(initial = false) {
           .map((trade) => trade.pair)
           .filter((pair): pair is string => !!pair),
       ]),
-    ].sort();
+    ].sort(compareCoins);
     error.value = '';
   } catch {
     if (!disposed) error.value = '选币名单加载失败，请重试';

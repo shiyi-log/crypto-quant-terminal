@@ -1,0 +1,424 @@
+{
+  "generated_at": "2026-10-10T04:11:05.499530+08:00",
+  "scope": "Read-only audit of recorded research/strategy generations; no training, backtesting, strategy/config edits or restarts",
+  "main_conclusion": "研发轮号不等于有效模型代数，也不等于部署版本。自动第20轮沿用最早LSTM基线的全部超参数，旧研究指标未显示提升；没有证据表明ML已参与当前TrendFollowing下单或带来新增净收益。",
+  "numbering": [
+    {
+      "name": "人工深度学习日志第1轮",
+      "meaning": "重建事件采样、标签、purged CV、62特征的基础设施；不是可部署模型第一代",
+      "evidence": [
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/深度学习-迭代日志.md",
+          "line": 37,
+          "detail": "第1轮基础设施"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/深度学习-迭代日志.md",
+          "line": 47,
+          "detail": "62特征"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/深度学习-迭代日志.md",
+          "line": 55,
+          "detail": "标签按反向通道离场，平均33.4天"
+        }
+      ]
+    },
+    {
+      "name": "自动搜索第20轮",
+      "meaning": "auto_research运行编号；来自既有报告文件名/ml_seq_results最大round加1，首个自动报告是第9轮，不能称已有20代模型",
+      "evidence": [
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/bot/auto_research.py",
+          "line": 544,
+          "detail": "next_round_no依据文件名与结果round自增"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/模型迭代-第9轮-自动报告.md",
+          "line": 1,
+          "detail": "第一份保留的自动报告编号9"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/模型迭代-第20轮-自动报告.md",
+          "line": 26,
+          "detail": "本轮仅1个配置trial；日志表明该trial训练3个种子，trial数不等于种子数"
+        }
+      ]
+    },
+    {
+      "name": "人工日志第20轮",
+      "meaning": "多策略并行研究，与自动LSTM第20轮不同；结论已因回测缺陷撤回",
+      "evidence": [
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/深度学习-迭代日志.md",
+          "line": 1270,
+          "detail": "多策略并行"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/深度学习-迭代日志.md",
+          "line": 1390,
+          "detail": "第21轮撤回第20轮结论"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/深度学习-迭代日志.md",
+          "line": 1403,
+          "detail": "临时引擎跨时点重复计价"
+        }
+      ]
+    },
+    {
+      "name": "自动策略巡检",
+      "meaning": "auto_iterate定期检查C1-C5，不自动改策略；iteration_history有10条巡检而非10代模型",
+      "evidence": [
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/自动迭代系统.md",
+          "line": 5,
+          "detail": "自动诊断报警记录，但不自动改策略"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/自动迭代系统.md",
+          "line": 98,
+          "detail": "巡检记录文件"
+        }
+      ]
+    },
+    {
+      "name": "TrendFollowing v1/v2",
+      "meaning": "策略版本号；v1全部币/波动风险仓位，v2突破强度前8+固定分数仓位；与ML自动20轮无关",
+      "evidence": [
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/strategies/TrendFollowing.py",
+          "line": 6,
+          "detail": "v1定义"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/strategies/TrendFollowing.py",
+          "line": 9,
+          "detail": "v2定义"
+        }
+      ]
+    }
+  ],
+  "baseline_vs_auto_round20": {
+    "comparison_definition": "最早可核验序列LSTM基线（人工第8轮/自动第9轮）vs自动第20轮；人工第1轮没有完整可复现模型checkpoint，因此不存在严谨的第一代模型对第20代模型比较",
+    "same_config": true,
+    "same_config_scope": "只表示所列模型超参数相同；不表示种子数、预测集成方式、评估判据、FDR比较集合或训练权重相同",
+    "config": {
+      "kind": "lstm",
+      "seq_len": 30,
+      "hidden": 64,
+      "layers": 1,
+      "dropout": 0.3,
+      "lr": 0.001,
+      "epochs": 8
+    },
+    "same_config_key": "e3c3df7c",
+    "baseline_raw_record": {
+      "config": {
+        "kind": "lstm",
+        "seq_len": 30,
+        "hidden": 64,
+        "layers": 1,
+        "dropout": 0.3,
+        "lr": 0.001,
+        "epochs": 8
+      },
+      "ic_period": 0.07571933800730854,
+      "t_period": 3.020128028314941,
+      "pos_windows": 16,
+      "n_windows": 22,
+      "n": 61640,
+      "ic_pool": 0.014725288817474105,
+      "t_pool": 3.656244086015107,
+      "p_value": 0.00651487917244944,
+      "quick": false,
+      "phase": "A-ofat:baseline",
+      "key": "e3c3df7c",
+      "run_id": "20261008-222423",
+      "seconds": 268.0
+    },
+    "round20_raw_record": {
+      "config": {
+        "kind": "lstm",
+        "seq_len": 30,
+        "hidden": 64,
+        "layers": 1,
+        "dropout": 0.3,
+        "lr": 0.001,
+        "epochs": 8
+      },
+      "ic_period": 0.07136831107087437,
+      "t_period": 2.9190384492017554,
+      "pos_windows": 16,
+      "n_windows": 22,
+      "n": 61640,
+      "ic_pool": 0.06220344975527317,
+      "t_pool": 15.473215390571724,
+      "robust": true,
+      "robust_pass": 3,
+      "robust_total": 3,
+      "t_month": 2.067203698344774,
+      "t_quarter": 2.9190384492017554,
+      "t_half": 2.9190384492017554,
+      "p_value": 0.008202948400430997,
+      "quick": false,
+      "phase": "A-ofat:baseline",
+      "key": "e3c3df7c",
+      "run_id": "20261009-031249",
+      "seconds": 351.3,
+      "speed": {
+        "device": "mps",
+        "threads": 2,
+        "bs": 512,
+        "epochs": 8
+      }
+    },
+    "baseline_report_trials": 12,
+    "round20_report_trials": 1,
+    "trial_count_meaning": "trial是本轮参与评估和FDR比较的配置记录数；自动第20轮的1 trial包含每个走查段3个种子的训练，不能写成1 seed或1个训练权重实体",
+    "training_condition_comparison": {
+      "baseline_documented_n_seeds": 1,
+      "round20_documented_n_seeds": 3,
+      "baseline_n_seeds_field_present": false,
+      "round20_n_seeds_field_present": false,
+      "round20_prediction_aggregation": "每个走查段内对3个种子的预测做秩平均",
+      "strict_same_protocol": false,
+      "assessment": "日志与人工迭代记录证明自动第20轮使用3个种子；两条原始trial缺n_seeds是账本字段缺失，不能据此推断第20轮只用了1个种子。自动第9轮沿用的单种子基线与第20轮的3种子秩集成、判据和FDR比较集合不同，不是严格同口径的模型性能对比。",
+      "evidence": [
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/logs/research.log",
+          "line": 704,
+          "detail": "2026-10-09 03:12:44运行起始段明确每配置3个种子、段内秩平均；同段第20轮完成摘要与run_id=20261009-031249的报告和原始指标对应",
+          "anchor": "2026-10-09 03:12:44; 每配置 3 个种子; 第 20 轮自动迭代完成",
+          "snapshot_lines": {
+            "start": 701,
+            "end": 729,
+            "sha256": "3b936652ff5ce9e71c8ed018e8c8684a11a90eeb7eefed2961c4264dce3c8e8d"
+          },
+          "limitation": "research.log包含并行运行的交错输出；种子声明结合第20轮摘要、自动报告和JSONL对应，不把中间其他trial输出归给第20轮"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/深度学习-迭代日志.md",
+          "line": 1780,
+          "detail": "单种子基线与3种子平均对照：季度t 3.02→2.92、月度t 1.99→2.07；与自动第20轮指标一致"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/research_trials.jsonl",
+          "line": 67,
+          "detail": "第20轮原始记录无n_seeds；这是字段缺失而非1 seed证据",
+          "record_key": "run_id=20261009-031249,key=e3c3df7c"
+        }
+      ]
+    },
+    "evaluated_samples_each": 61640,
+    "ic_period_before": 0.07571933800730854,
+    "ic_period_after": 0.07136831107087437,
+    "ic_period_change": -0.004351026936434174,
+    "t_before": 3.020128028314941,
+    "t_after": 2.9190384492017554,
+    "positive_windows_each": "16/22",
+    "old_gate": "t>2 + positive_windows>=80% + BH-FDR q<0.05",
+    "round20_gate": "t>2 + BH-FDR q<0.05 + monthly/quarterly/halfyear t>2",
+    "assessment": "未达标到达标不能归因为模型改进：所列超参数未变，逐窗口ic_period和t_period略降，但单种子基线与第20轮3种子秩集成不是严格同口径；评判规则变化且FDR比较数由12变1。ic_pool/t_pool上升不能与逐窗口指标混称为IC提升；旧评估存在泄漏和池化口径风险，这些研究指标不能解读为实际盈利。",
+    "evidence": [
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/research_trials.jsonl",
+        "line": 1,
+        "detail": "最早基线记录",
+        "record_key": "run_id=20261008-222423,key=e3c3df7c"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/research_trials.jsonl",
+        "line": 67,
+        "detail": "自动20轮同配置新计算记录",
+        "record_key": "run_id=20261009-031249,key=e3c3df7c"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/ml_seq_results.jsonl",
+        "line": 1,
+        "detail": "人工8轮序列30特征基线",
+        "record_key": "round=8"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/ml_seq_results.jsonl",
+        "line": 13,
+        "detail": "自动20轮汇总",
+        "record_key": "round=20"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/模型迭代-第9轮-自动报告.md",
+        "line": 7,
+        "detail": "旧判据"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/模型迭代-第20轮-自动报告.md",
+        "line": 7,
+        "detail": "新判据"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/模型迭代-第20轮-自动报告.md",
+        "line": 31,
+        "detail": "同report对比t/ic下降且双方未上线"
+      }
+    ]
+  },
+  "deployment": {
+    "live_strategy_registry_champion": "live-trend-20-20",
+    "ml_registry_champion": "auto-r22-4b239151",
+    "ml_registry_champion_deployed": null,
+    "registered_champion_is_deployment_evidence": false,
+    "registry_semantics": "champion仅表示注册表中被选定的研究版本；promote/set_champion只改注册表，不能证明实盘配置已采用、权重已部署或下单推理路径已启用。实际部署须另外核验deployed记录、配置和运行推理路径。",
+    "all_ml_versions_deployed_null": true,
+    "auto_round20_status": "challenger",
+    "auto_round20_deployed": null,
+    "current_strategy_has_ml_inference_path": false,
+    "risk_controls": {
+      "entry_exit": "close Donchian 20/20",
+      "top_n": 8,
+      "target_exposure": 0.3,
+      "per_trade_fraction": 0.0375,
+      "stoploss": -0.6,
+      "minimal_roi": {
+        "0": 100.0
+      },
+      "trailing_stop": false,
+      "custom_leverage_method": false,
+      "custom_stoploss_method": false,
+      "custom_exit_method": false
+    },
+    "evidence": [
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/model_versions.json",
+        "line": 711,
+        "detail": "auto-r20 challenger同超参数，747行deployed=null"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/model_versions.json",
+        "line": 837,
+        "detail": "current ML champion deployed=null"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/model_versions.json",
+        "line": 845,
+        "detail": "promoted备注为测试测试"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/bot/model_registry.py",
+        "line": 119,
+        "detail": "set_champion只改注册表，不改配置"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/strategies/TrendFollowing.py",
+        "line": 76,
+        "detail": "没有固定止盈策略，极宽兜底止损"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/strategies/TrendFollowing.py",
+        "line": 196,
+        "detail": "趋势状态结束离场"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/strategies/TrendFollowing.py",
+        "line": 356,
+        "detail": "开仓按突破强度排名，无ML"
+      },
+      {
+        "path": "/Users/shiyi/DeepSeek/量化/bot/user_data/strategies/TrendFollowing.py",
+        "line": 405,
+        "detail": "固定wallet*exposure/top_n定仓"
+      }
+    ],
+    "return_conclusion": "不能证明第20轮带来任何实际新增收益；当前下单逻辑没有使用这些ML研究候选。"
+  },
+  "misleading_reporting": [
+    {
+      "finding": "champion被展示为正在使用，但deployed=null；registry promote不是部署",
+      "evidence": [
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/bot/auto_research.py",
+          "line": 627,
+          "detail": "report模板写正在使用"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/bot/model_registry.py",
+          "line": 301,
+          "detail": "CLI标示champion为正在使用"
+        }
+      ]
+    },
+    {
+      "finding": "自动搜索当前evaluate仍未执行t1 purge且整测试段rank；P1修正仅在deploy_check score_panel",
+      "evidence": [
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/bot/auto_research.py",
+          "line": 403,
+          "detail": "tr仅date<a"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/bot/auto_research.py",
+          "line": 433,
+          "detail": "rank整测试段"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/bot/deploy_check.py",
+          "line": 166,
+          "detail": "部署评估t1 purge"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/bot/deploy_check.py",
+          "line": 201,
+          "detail": "部署评估按同日groupby rank"
+        }
+      ]
+    },
+    {
+      "finding": "generation/轮次记录没有训练权重快照；evaluate训练后del m；注册表artifacts只指向trial日志",
+      "evidence": [
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/bot/auto_research.py",
+          "line": 429,
+          "detail": "预测后del m"
+        },
+        {
+          "path": "/Users/shiyi/DeepSeek/量化/bot/auto_research.py",
+          "line": 926,
+          "detail": "artifacts仅TRIALS_PATH"
+        }
+      ]
+    }
+  ],
+  "evidence_gaps": [
+    "首轮和第20轮没有冻结代码hash、数据快照hash、标签/特征schema、checkpoint hash、可部署模型实体的对应关系；不能重建完全相同因果评估口径。",
+    "相同config key是超参数哈希，不是模型权重或数据版本哈希；cfg_key当前也不包含epochs/seeds/评估口径。",
+    "基线与20轮原始trial均缺n_seeds字段，早期基线还缺bs/device；日志和人工迭代记录可补证单种子基线与第20轮3种子秩平均，但不补写原始记录。训练条件、集成方式、判据和FDR比较集合不同，不能把同超参数的数值变化解释为严格同条件的确定改进。",
+    "没有同一冻结事前候选集上，首轮与20轮分别改变了哪些放行/拒绝/仓位/退出，以及扣费后净增量的台账。",
+    "iteration_summary v1_vs_v2是旧历史研究比较，不能代表第1代vs第20代，也不能作为当前真实收益增量。"
+  ],
+  "log_counts": {
+    "research_trials_raw_lines": 450,
+    "distinct_run_key_pairs": 225,
+    "distinct_configs": 176,
+    "note": "原始450行含训练结果及后续FDR判定重复写入；225组run/key不能直接称225次新训练，仍有缓存复用。"
+  },
+  "recommended_comparison_contract": [
+    "每个版本明确列出假设、代码/配置hash、规则变化及其影响开仓/仓位/退出/执行的具体位置。",
+    "以当前行情事前冻结的同一候选/价格/资金/槽位/费用作baseline与shadow成对比较，禁止事后补分数。",
+    "逐笔披露为何改决策、风险金额与杠杆、触发止盈止损/订单簿条件、实际成交/影子成交假设及成本，汇总成熟净收益、浮盈亏、回撤与记录覆盖。",
+    "明确区分研究候选、影子运行、机器人实际采用；编号不能作为升级或收益效果的证明。"
+  ],
+  "source_sha256": {
+    "深度学习-迭代日志.md": "f9c4987e79fc2b9ad00a8b6b22635e461ba1d6f03673c68b7c2ef22c23934ead",
+    "模型迭代-第9轮-自动报告.md": "06fdd41c529f31d272086efc09e1d0558732d85c3bd2c321c53bda98a24cffe9",
+    "模型迭代-第20轮-自动报告.md": "5ca45193548b6e2becf9592776ce94cf22edc9572dc98df565fda54242a6071b",
+    "自动迭代系统.md": "0dd0fe40adcac0d7522cf846d85f97d46f6f86192b9c71b090596767a6aef02b",
+    "bot/auto_research.py": "e3f3e9fe34a1e8fe32a4f05d93f58a379aa487ccc2e96faf57a61c1d05fc2748",
+    "bot/model_registry.py": "67793cb8ca4b5e4cc180ca14b1c0f51b3ba0f734cda6a7029d8486831e14f66f",
+    "bot/user_data/model_versions.json": "fb5c2d45c513b401c29fdc1166c984bb929922ba7d6728aa5a7e8def894b5bea",
+    "bot/user_data/research_trials.jsonl": "ecc34bf1fb0f9d647703286f5ca2a656e8ce2e904046d83f2037c26c0689e63a",
+    "bot/user_data/ml_seq_results.jsonl": "2c5593b3accd91d2848d37662b21713422e1cf420f23ee8aae72f9741554488d",
+    "bot/user_data/iteration_summary.json": "2ebc1fa99306952d05b8e5c0306ab9d03f82489c603fc744076fe2985409ed40",
+    "bot/user_data/iteration_history.jsonl": "9f016f11a78ab480816d7472174b7b9f8574247c15d9b02047c37a2982ec3dda",
+    "bot/user_data/strategies/TrendFollowing.py": "e84b85ace3a3821118998f91cd2e2733c45cdd969bcbba29a03b3d86157965c1",
+    "bot/user_data/config_trend_live.json": "f071c085870fb91ac130564196f7dc6eb6f8f43a6fcedbf553d3a282c906c5b2"
+  }
+}

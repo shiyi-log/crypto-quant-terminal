@@ -1,0 +1,35 @@
+Verification completed: 2026-10-09 21:37:50 UTC (2026-10-10 05:37:50 Asia/Shanghai)
+
+Final backend tests/ discovery: 253 run, 253 passed, 0 failures, 0 errors, 0 skipped.
+Dedicated PostgreSQL integration tests executed. The test database name and location were
+validated against the configured business database before connecting; no credentials are recorded.
+
+Bridge offline discovery (earlier run, unchanged afterward): 103 run, 101 passed,
+0 failures, 0 errors, 2 skipped. Only the two opt-in real Codex model/network tests
+were skipped, with CODEX_BRIDGE_LIVE=0.
+Combined test count: 356 run, 354 passed, 2 skipped.
+
+Passed checks:
+- uv lock --check
+- uv run --frozen --group dev ruff check auth_service.py manage.py runtime_config.py
+  data_store.py data_sync.py market_stream.py market_live.py candle_archive.py
+  research_ledger.py bot/paper_dryrun.py bot/deploy_check.py bot/p0c_perturbation.py
+  bot/dryrun_monitor.py bot/dryrun_verify.py tests
+- uv run --frozen --group dev python -m compileall -q auth_service.py serve_web.py
+  runtime_config.py manage.py data_store.py data_sync.py market_stream.py market_live.py
+  candle_archive.py research_ledger.py bot/paper_dryrun.py bot/deploy_check.py
+  bot/p0c_perturbation.py bot/dryrun_monitor.py bot/dryrun_verify.py bot/dryrun_stats.py tests
+- git diff --check
+- Frontend typecheck and build:antd previously passed; no subsequent frontend changes.
+
+Test commands: uv run --frozen --group dev python with unittest.defaultTestLoader.discover('tests').
+The wrapper loads only QUANT_TEST_DATABASE_URL from local configuration when necessary,
+checks the independent database guard and connection, then runs discovery and counts outcomes.
+Bridge command uses unittest.defaultTestLoader.discover('tools/codex_bridge/tests') with
+CODEX_BRIDGE_LIVE=0. No training or historical full-data experiments were executed.
+
+Additional, out-of-scope lint check: legacy-guarded bot/dryrun_stats.py has 22 Ruff findings,
+including an undefined se in its JSON output branch. This file is outside the requested
+lint scope and current CI include; the finding was reported, not silently marked passed.
+
+No services were restarted, production configuration was changed, or changes were committed.

@@ -10,7 +10,7 @@
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 
-import { Button, Modal, Tag, message } from 'ant-design-vue';
+import { Alert, Button, Modal, Tag, message } from 'ant-design-vue';
 
 import {
   errText,
@@ -26,6 +26,9 @@ import { onFtWsMessage, useFtWs } from '#/views/quant/utils/useFtWs';
 
 /** 机器人运行状态：'running' / 'stopped' / 'paused' */
 const state = ref<string>('');
+const connectionError = ref('');
+const available = ref(false);
+const countAvailable = ref(false);
 const dryRun = ref(false);
 const strategy = ref('');
 const tradingMode = ref('');
@@ -40,26 +43,36 @@ const busy = ref('');
 
 /** 状态标签：运行中 / 已暂停买入 / 已停止 */
 const status = computed<{ color?: string; text: string }>(() => {
+  if (!available.value) return { color: 'warning', text: connectionError.value ? '交易服务不可用' : '正在连接' };
   if (state.value === 'running') return { color: 'green', text: '运行中' };
   if (state.value === 'paused') return { color: 'orange', text: '已暂停买入' };
-  return { color: undefined, text: '已停止' };
+  if (state.value === 'stopped') return { color: undefined, text: '已停止' };
+  return { color: 'warning', text: '状态未知' };
 });
 
 async function load() {
   // 两个接口互不依赖，任一失败也不能让整条控制条消失
-  const [cfg, cnt] = await Promise.all([
-    getConfig().catch(() => null),
-    getCount().catch(() => null),
-  ]);
-  const c: any = cfg ?? {};
-  const n: any = cnt ?? {};
-  state.value = c.state ?? '';
-  dryRun.value = c.dry_run === true;
-  strategy.value = c.strategy ?? '';
-  tradingMode.value = c.trading_mode ?? '';
-  exchange.value = c.exchange ?? '';
-  current.value = Number(n.current ?? 0);
-  maxOpen.value = n.max ?? c.max_open_trades ?? '—';
+  const [cfg, cnt] = await Promise.allSettled([getConfig(), getCount()]);
+  available.value = cfg.status === 'fulfilled';
+  countAvailable.value = cnt.status === 'fulfilled';
+  connectionError.value = cfg.status === 'rejected'
+    ? '无法读取交易状态，请检查交易 API 服务。服务恢复后会自动重连。'
+    : cnt.status === 'rejected'
+      ? '持仓数量读取失败，暂时无法执行全部平仓。'
+      : '';
+  if (cfg.status === 'fulfilled') {
+    const c = cfg.value;
+    state.value = c.state ?? '';
+    dryRun.value = c.dry_run === true;
+    strategy.value = c.strategy ?? '';
+    tradingMode.value = c.trading_mode ?? '';
+    exchange.value = c.exchange ?? '';
+    maxOpen.value = c.max_open_trades ?? '—';
+  }
+  if (cnt.status === 'fulfilled') {
+    current.value = Number(cnt.value.current ?? 0);
+    maxOpen.value = cnt.value.max ?? maxOpen.value;
+  }
 }
 
 let timer: any = null;
@@ -191,6 +204,8 @@ function onForceExit() {
 </script>
 
 <template>
+  <div class="space-y-3">
+    <Alert v-if="connectionError" :message="connectionError" type="warning" show-icon />
   <!-- 独立业务工具栏允许换行，状态文字和操作按钮保持完整可见。 -->
   <div
     class="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm"
@@ -205,19 +220,19 @@ function onForceExit() {
     ></span>
 
     <!-- 模拟盘必须一眼可见：实盘 bot 若跑在 dry-run，所有盈亏都不是真钱 -->
-    <Tag v-if="dryRun" color="red" class="m-0 font-medium">
+    <Tag v-if="available && dryRun" color="red" class="m-0 font-medium">
       模拟盘 dry-run
     </Tag>
 
     <span class="shrink-0 text-gray-500 dark:text-gray-400">
       持仓
       <span class="font-medium text-gray-800 dark:text-gray-200">
-        {{ current }}/{{ maxOpen }}
+        {{ available && countAvailable ? current : '—' }}/{{ available ? maxOpen : '—' }}
       </span>
     </span>
 
     <span
-      v-if="strategy"
+      v-if="available && strategy"
       class="shrink-0 text-gray-500 dark:text-gray-400"
       :title="`策略：${strategy}`"
     >
@@ -225,7 +240,7 @@ function onForceExit() {
     </span>
 
     <span
-      v-if="tradingMode || exchange"
+      v-if="available && (tradingMode || exchange)"
       class="shrink-0 text-gray-500 dark:text-gray-400"
     >
       {{ tradingMode }}<template v-if="tradingMode && exchange"> · </template
@@ -235,7 +250,7 @@ function onForceExit() {
     <span class="mx-1 h-4 w-px shrink-0 bg-gray-200 dark:bg-gray-700"></span>
 
     <Button
-      :disabled="busy !== '' || state === 'running'"
+      :disabled="!available || busy !== '' || state === 'running'"
       :loading="busy === 'start'"
       size="small"
       @click="onStart"
@@ -243,7 +258,7 @@ function onForceExit() {
       启动
     </Button>
     <Button
-      :disabled="busy !== '' || state !== 'running'"
+      :disabled="!available || busy !== '' || state !== 'running'"
       :loading="busy === 'stop'"
       size="small"
       @click="onStop"
@@ -251,7 +266,7 @@ function onForceExit() {
       停止
     </Button>
     <Button
-      :disabled="busy !== '' || state !== 'running'"
+      :disabled="!available || busy !== '' || state !== 'running'"
       :loading="busy === 'stopbuy'"
       size="small"
       @click="onStopBuy"
@@ -259,7 +274,7 @@ function onForceExit() {
       暂停买入
     </Button>
     <Button
-      :disabled="busy !== ''"
+      :disabled="!available || busy !== ''"
       :loading="busy === 'reload'"
       size="small"
       @click="onReload"
@@ -268,12 +283,13 @@ function onForceExit() {
     </Button>
     <Button
       danger
-      :disabled="busy !== '' || current === 0"
+      :disabled="!available || !countAvailable || busy !== '' || current === 0"
       :loading="busy === 'forceexit'"
       size="small"
       @click="onForceExit"
     >
       全部平仓
     </Button>
+  </div>
   </div>
 </template>

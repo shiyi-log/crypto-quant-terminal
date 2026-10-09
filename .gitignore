@@ -47,6 +47,7 @@ __pycache__/
 !/bot/user_data/freqaimodels/
 !/bot/user_data/hyperopts/
 /bot/*.bak
+/bot/*.bak*
 *.sqlite3*
 *.db-wal
 *.db-shm

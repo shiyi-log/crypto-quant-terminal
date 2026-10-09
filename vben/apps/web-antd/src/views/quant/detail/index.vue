@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { sortCoins } from '../utils/coinOrder';
 /**
  * 回测明细 —— 回答三个问题：
  *   1. 这轮赚了多少？（资金曲线 + 盈亏指标）
@@ -101,7 +102,7 @@ const identOptions = computed(() =>
 
 const pairOptions = computed(() => [
   { label: '全部币对', value: '' },
-  ...(detail.value?.by_pair ?? []).map((p: any) => ({ label: p.pair, value: p.pair })),
+  ...sortCoins(detail.value?.by_pair ?? [], (row: any) => row.pair).map((p: any) => ({ label: p.pair, value: p.pair })),
 ]);
 
 const columns = [
@@ -310,7 +311,7 @@ onUnmounted(() => clearInterval(timer));
 
       <Table
         :columns="columns"
-        :data-source="trades"
+        :data-source="sortCoins(trades, (row) => row.pair)"
         :pagination="{ pageSize: 20, showSizeChanger: false }"
         :scroll="{ x: 1500 }"
         row-key="open_date"

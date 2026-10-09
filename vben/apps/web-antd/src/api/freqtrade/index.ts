@@ -152,10 +152,11 @@ export async function getLiveKlines(
   pair: string,
   timeframe: string,
   limit = 200,
+  fresh = false,
 ): Promise<FtLocalOhlcv> {
   return unwrap<FtLocalOhlcv>(
     await ftClient.get(
-      `/locals/klines?pair=${encodeURIComponent(pair)}&timeframe=${timeframe}&limit=${limit}`,
+      `/locals/klines?pair=${encodeURIComponent(pair)}&timeframe=${timeframe}&limit=${limit}${fresh ? '&fresh=1' : ''}`,
     ),
   );
 }
@@ -269,7 +270,12 @@ export async function getBacktestList(): Promise<{
  */
 export async function getBacktestDetail(identifier: string): Promise<{
   by_exit: Array<{ reason: string; trades: number; profit_abs: number }>;
-  by_pair: Array<{ pair: string; trades: number; wins: number; profit_abs: number }>;
+  by_pair: Array<{
+    pair: string;
+    trades: number;
+    wins: number;
+    profit_abs: number;
+  }>;
   equity: [string, number][];
   identifier: string;
   strategy: string;
@@ -399,7 +405,10 @@ export function modelLabel(identifier?: string): string {
     let hit = false;
     for (const key of keys) {
       const kp = key.split('-');
-      if (kp.length <= parts.length - i && kp.every((p, j) => p === parts[i + j])) {
+      if (
+        kp.length <= parts.length - i &&
+        kp.every((p, j) => p === parts[i + j])
+      ) {
         out.push(IDENT_TOKENS[key]!);
         i += kp.length;
         hit = true;
@@ -613,7 +622,9 @@ export interface FtDaily {
 
 /** 按日/周/月的盈亏分解 */
 export async function getDaily(timescale = 30): Promise<FtDaily> {
-  return unwrap<FtDaily>(await ftClient.get(`/v1/daily?timescale=${timescale}`));
+  return unwrap<FtDaily>(
+    await ftClient.get(`/v1/daily?timescale=${timescale}`),
+  );
 }
 
 export async function getWeekly(timescale = 30): Promise<FtDaily> {
@@ -873,9 +884,7 @@ export async function postLookaheadAnalysis(
 
 /** 前视偏差分析结果 */
 export async function getLookaheadResult(jobId: string): Promise<any> {
-  return unwrap(
-    await ftClient.get(`/web/v1/lookahead_analysis/${jobId}`),
-  );
+  return unwrap(await ftClient.get(`/web/v1/lookahead_analysis/${jobId}`));
 }
 
 export interface FtRecursiveRequest {
@@ -894,9 +903,7 @@ export async function postRecursiveAnalysis(
 
 /** 递归分析结果 */
 export async function getRecursiveResult(jobId: string): Promise<any> {
-  return unwrap(
-    await ftClient.get(`/web/v1/recursive_analysis/${jobId}`),
-  );
+  return unwrap(await ftClient.get(`/web/v1/recursive_analysis/${jobId}`));
 }
 
 /** webserver 实例能看到的全部交易对（用于下载数据的选币） */
@@ -923,4 +930,109 @@ export interface FtWsInfo {
  */
 export async function getWsToken(): Promise<FtWsInfo> {
   return unwrap<FtWsInfo>(await ftClient.get('/ws-token'));
+}
+
+export interface ResearchLedgerVersion {
+  id: string;
+  round?: number | null;
+  layer?: string;
+  config?: Record<string, unknown> | string | null;
+  direction?: string;
+  changes?: Array<
+    | string
+    | {
+        t?: string | number | null;
+        event?: string | null;
+        note?: string | null;
+      }
+  >;
+  registry_status?: string;
+  deployment_status: 'not_deployed' | 'unverified' | 'verified';
+  evaluation_status: 'invalidated' | 'unverified' | 'forward_observation';
+  reported_metrics?: {
+    ic?: number | null;
+    t?: number | null;
+    q?: number | null;
+  };
+  effect?: {
+    actual_orders?: number | null;
+    closed_trades?: number | null;
+    realized_profit_abs?: number | null;
+  };
+  evidence?: string[];
+  limitations?: string[];
+}
+
+export interface ResearchLedger {
+  generated_at?: string | null;
+  last_synced_at?: string | null;
+  source_id?: string | null;
+  summary: {
+    version_count: number;
+    deployed_ml_count: number;
+    actual_trade_count: number;
+    actual_order_count: number;
+    closed_trade_count: number;
+    realized_profit_abs: number | null;
+    unattributed_trade_count: number;
+  };
+  versions: ResearchLedgerVersion[];
+  comparison?: {
+    baseline_id?: string | null;
+    candidate_id?: string | null;
+    config_changes?: Array<
+      | string
+      | {
+          key: string;
+          before?: unknown;
+          after?: unknown;
+        }
+    >;
+    note?: string;
+  } | null;
+  actual_trades: Array<{
+    trade_id: number | string;
+    pair: string;
+    side: string;
+    leverage?: number | null;
+    stake_amount?: number | null;
+    open_date?: string | null;
+    close_date?: string | null;
+    is_open?: boolean | null;
+    realized_profit_abs: number | null;
+    model_id: string | null;
+    attribution_status: string;
+  }>;
+  actual_orders: Array<{
+    order_id: number | string;
+    trade_id?: number | string | null;
+    pair: string;
+    side: string;
+    status: string;
+    amount?: number | null;
+    filled?: number | null;
+    price?: number | null;
+    order_date?: string | null;
+    model_id: string | null;
+  }>;
+  lessons: Array<{
+    id: string;
+    title: string;
+    status: string;
+    reason: string;
+    evidence: string[];
+    do_not_repeat: string | boolean;
+  }>;
+  directions: Array<{
+    id: string;
+    title: string;
+    status: string;
+    hypothesis: string;
+    next_check: string;
+  }>;
+  errors: string[];
+}
+
+export async function getResearchLedger(): Promise<ResearchLedger> {
+  return unwrap<ResearchLedger>(await ftClient.get('/locals/research-ledger'));
 }

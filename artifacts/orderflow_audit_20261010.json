@@ -1,0 +1,381 @@
+{
+  "schema_version": 1,
+  "audit_at_utc": "2026-10-09T20:11:59.836116+00:00",
+  "scope": "Read-only local sources and bounded most-recent PostgreSQL samples. No new network collection; no strategy/config/process mutations.",
+  "sources": [
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/bot/fetch_orderflow.py",
+      "start_line": 64,
+      "end_line": 110
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/bot/fetch_orderflow.py",
+      "start_line": 113,
+      "end_line": 130
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/bot/fetch_orderflow.py",
+      "start_line": 155,
+      "end_line": 159
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/bot/live_exec_monitor.py",
+      "start_line": 67,
+      "end_line": 95
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/bot/live_exec_monitor.py",
+      "start_line": 98,
+      "end_line": 114
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/bot/live_exec_monitor.py",
+      "start_line": 151,
+      "end_line": 175
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/bot/live_exec_monitor.py",
+      "start_line": 180,
+      "end_line": 207
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/bot/live_exec_monitor.py",
+      "start_line": 232,
+      "end_line": 260
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/market_stream.py",
+      "start_line": 114,
+      "end_line": 124
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/market_stream.py",
+      "start_line": 147,
+      "end_line": 191
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/market_stream.py",
+      "start_line": 502,
+      "end_line": 515
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/market_live.py",
+      "start_line": 523,
+      "end_line": 551
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/auth_service.py",
+      "start_line": 448,
+      "end_line": 472
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/vben/apps/web-antd/src/views/quant/data/index.vue",
+      "start_line": 136,
+      "end_line": 170
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/vben/apps/web-antd/src/views/quant/data/index.vue",
+      "start_line": 267,
+      "end_line": 332
+    },
+    {
+      "file": "/Users/shiyi/DeepSeek/量化/database/schema.sql",
+      "start_line": 73,
+      "end_line": 97
+    }
+  ],
+  "findings": [
+    {
+      "id": "OF01",
+      "title": "历史K线订单流不是挂单",
+      "evidence": "fetch_orderflow.py:86-109 retains taker buy volume and quote, trade count; it has no bids/asks. OI fetch uses sumOpenInterest.",
+      "implication": "taker_buy measures executed aggressive trades. OI measures outstanding derivatives contracts, not pending unfilled orders. Do not use these as order-wall size."
+    },
+    {
+      "id": "OF02",
+      "title": "旧快照只有一轮且陈旧",
+      "evidence": "orderbook_snapshots.jsonl has 10 symbols x one record; last timestamp Beijing 2026-10-08 23:42:42. live_exec_monitor.py:76-93 aggregates 20 levels and discards levels; daemon default is 900s.",
+      "implication": "Cannot compute OFI, cancellation/replenishment, queue persistence or forward price response from old snapshot file. Current monitor is not running."
+    },
+    {
+      "id": "OF03",
+      "title": "当前流可用但持仓覆盖为零",
+      "evidence": "market_stream.py:117-122 uses BTC/ETH aggregate trades and depth20@100ms. stream_stats currently contains only these pairs; all eight held symbols differ.",
+      "implication": "Prioritize actual held/candidate symbols before interpreting execution risk. BTC/ETH liquidity observations cannot be generalized to altcoins."
+    },
+    {
+      "id": "OF04",
+      "title": "20档不等于固定距离深度",
+      "evidence": "Latest samples visible ranges are substantially below 1bp.",
+      "implication": "For 0.5/1/2/5/10bp measures, persist coverage flags per side. Uncovered bands are visible-depth lower bounds. Larger relevant bands require a wider synchronized book; no zero fill or extrapolation."
+    },
+    {
+      "id": "OF05",
+      "title": "撤单与补单只能近似",
+      "evidence": "Partial snapshots + aggTrade; no order IDs, order-level add/cancel feed or authenticated open-order events.",
+      "implication": "Net volume disappearance may be trades, cancellations, movement beyond top20 or a missed event. Use net-depth-change / cancel_proxy with coverage and gap flags; no exact spoofing or causal support claims."
+    },
+    {
+      "id": "OF06",
+      "title": "冲击公式未按档位和方向计算",
+      "evidence": "live_exec_monitor.py:107 uses min(bid_depth,ask_depth); 110 clips order/depth to 1; 112 uses half-spread plus 2*ratio*spread; 191 fixes 337USDT.",
+      "implication": "Replace research estimate with side-specific price-level sweep at actual order notional (margin*leverage or order quantity*price). Insufficient visible volume must be unknown, not capped cost. Do not label dry_run simulations as realized execution."
+    },
+    {
+      "id": "OF07",
+      "title": "时钟和重连需进入样本有效性",
+      "evidence": "status reports data_gap_possible=true and 114 reconnects. Latest book receive-minus-exchange timestamp approximately -126ms while ticks approximately +17ms.",
+      "implication": "Preserve exchange E/T, local received and capture sequence. Use local availability time for shadow decisions, avoid mixing exchange and host clocks; diagnose clock offset before interpreting latency. Skip/reset feature windows across gaps."
+    },
+    {
+      "id": "OF08",
+      "title": "执行质量管道没有测到真实滑点",
+      "evidence": "live_exec_monitor.py:151-175 docstring promises comparison but code only copies trade fields and returns counts. flow feather cache skips any existing file at155-159; OI fetch days unused and limit500.",
+      "implication": "No evidence yet of order-book-based execution improvement. OI 5m sample covers about41.6h, not30d; existing files do not incrementally update."
+    }
+  ],
+  "experiment": {
+    "purpose": "事前量化挂单/订单流对短期价格变化与本策略执行成本的可观察增量，不重新扩大历史模型搜索。",
+    "stage_1": "First 24h judge only timestamp/coverage/completeness. Reuse existing streams and bounded batches; expand held/candidate collection separately if authorized by parent scope. No live order changes.",
+    "cadence": "Derive bounded 1-second feature rows from incoming snapshots/trades; retain raw source IDs. Never scan all data every tick.",
+    "freeze_features": [
+      "mid,spread_bp,best_bid_qty,best_ask_qty",
+      "depth USDT within 0.5/1/2/5bp, per-side full_coverage flag, visible_span_bp",
+      "band imbalance=(bid_notional-ask_notional)/(bid_notional+ask_notional)",
+      "1s/10s L1 OFI from changes of best quote price and queue quantity; explicitly sampled OFI",
+      "1s/10s signed aggressive buy-sell notional",
+      "same-price visible depletion/replenishment and wall persistence; label cancellation inference as proxy",
+      "actual order side,margin,leverage,quantity,notional; size-aware sweep at both open and exit sides",
+      "exchange_E/T,received_timestamp,source_ids,gap/stale flags,feature_version/rule_hash"
+    ],
+    "l1_ofi_formula": "e_n=I(pb_n>=pb_prev)*qb_n-I(pb_n<=pb_prev)*qb_prev-I(pa_n<=pa_prev)*qa_n+I(pa_n>=pa_prev)*qa_prev. Sum e over frozen window; normalize using only prior visible depth.",
+    "forward_labels": "Append realized future mid returns and adverse move at +5s/+30s/+300s using availability timestamps and gap-valid samples. Never backfill a missing feature.",
+    "execution_shadow": "At each real candidate, quote both baseline and frozen liquidity-guard shadow on identical candidate, notional, cash/slot and execution schedule. For rejected shadow orders keep cash, report missed follow-through separately. Report theoretical sweep and actual/dry_run fill as separate measures.",
+    "metrics": [
+      "book coverage %, stale/gap reject %, number of valid independent time blocks",
+      "p50/p95 static execution cost by size and side; cases not fully covered=unknown",
+      "same pair/time volatility/spread-conditioned signed price response vs past-only baseline",
+      "guarded vs baseline paired costs; rejected orders subsequent returns/opportunity cost",
+      "net economics include actual fee and funding when known; missing costs remain unknown"
+    ],
+    "acceptance": "No claimed gain before adequate prospective paired valid samples. Frozen rules and fixed calendar review; group uncertainty by calendar/time blocks, not independent100ms snapshots. Final dashboard must show an effect or state insufficient evidence.",
+    "risk_link": "Use liquidity and gap flags to cap/reject proposed leveraged notional and to assess stop-exit size. A visible wall alone must never widen a stop or justify leverage."
+  },
+  "legacy_snapshot": {
+    "rows": 10,
+    "symbols": [
+      "AAVEUSDT",
+      "ADAUSDT",
+      "AVAXUSDT",
+      "DOTUSDT",
+      "NEARUSDT",
+      "SANDUSDT",
+      "SUIUSDT",
+      "TRXUSDT",
+      "UNIUSDT",
+      "ZECUSDT"
+    ],
+    "first": "2026-10-08 23:42:42",
+    "last": "2026-10-08 23:42:42",
+    "last_aggregate": {
+      "symbol": "TRXUSDT",
+      "mid": 0.332805,
+      "bid": 0.3328,
+      "ask": 0.33281,
+      "spread_bp": 0.3005,
+      "bid_depth_usd": 119793.4,
+      "ask_depth_usd": 98547.3,
+      "imbalance": 0.0973,
+      "levels": 20,
+      "t": "2026-10-08 23:42:42",
+      "impact_337usd": {
+        "order_usd": 337,
+        "depth_usd": 98547.3,
+        "ratio": 0.00342,
+        "slippage_bp": 0.152
+      }
+    },
+    "stored_full_levels": false
+  },
+  "collector_status": {
+    "pairs": [
+      "BTC/USDT:USDT",
+      "ETH/USDT:USDT"
+    ],
+    "state": "running",
+    "book_type": "partial_snapshot",
+    "depth": 20,
+    "depth_interval_ms": 100,
+    "received": 1227691,
+    "persisted": 1227671,
+    "dropped": 0,
+    "database_failures": 0,
+    "reconnects": 114,
+    "data_gap_possible": true,
+    "last_message": 1791576718050,
+    "updated_at": 1791576718090
+  },
+  "stream_stats": [
+    {
+      "kind": "orderbooks",
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "BTC/USDT:USDT",
+      "rows": 607021,
+      "first_timestamp": 1791498180225,
+      "last_timestamp": 1791576719404,
+      "updated_at": "2026-10-10 04:11:59.332103+08:00"
+    },
+    {
+      "kind": "orderbooks",
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "ETH/USDT:USDT",
+      "rows": 611914,
+      "first_timestamp": 1791498180278,
+      "last_timestamp": 1791576719398,
+      "updated_at": "2026-10-10 04:11:59.326876+08:00"
+    },
+    {
+      "kind": "ticks",
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "BTC/USDT:USDT",
+      "rows": 639735,
+      "first_timestamp": 1791498180359,
+      "last_timestamp": 1791576718571,
+      "updated_at": "2026-10-10 04:11:59.323146+08:00"
+    },
+    {
+      "kind": "ticks",
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "ETH/USDT:USDT",
+      "rows": 538749,
+      "first_timestamp": 1791498180364,
+      "last_timestamp": 1791576719157,
+      "updated_at": "2026-10-10 04:11:59.338507+08:00"
+    }
+  ],
+  "fresh_book_samples": {
+    "BTC/USDT:USDT": {
+      "exchange_timestamp_ms": 1791576719404,
+      "received_timestamp_ms": 1791576719275,
+      "exchange_E_ms": 1791576719405,
+      "exchange_T_ms": 1791576719404,
+      "apparent_receive_minus_exchange_ms": -129,
+      "mid": 82351.85,
+      "spread_bp": 0.012143018036785918,
+      "bid_depth20_usdt": 647531.3993,
+      "ask_depth20_usdt": 846908.9275999999,
+      "visible_bid_span_bp": 0.44322015838244444,
+      "visible_ask_span_bp": 0.37036205015289375,
+      "latest_1000_gap_ms_median": 102,
+      "latest_1000_gap_ms_max": 312,
+      "static_sweep_337usdt": {
+        "buy": {
+          "notional_usdt": 337,
+          "visible_book_coverage": true,
+          "vwap": 82351.9,
+          "cost_vs_mid_bp": 0.006071509017768761
+        },
+        "sell": {
+          "notional_usdt": 337,
+          "visible_book_coverage": true,
+          "vwap": 82351.8,
+          "cost_vs_mid_bp": 0.006071509018878984
+        }
+      },
+      "sweep_limitation": "Frozen-book theoretical quote only. Excludes fee, funding, replenishment/cancellation, latency, queue position and own impact. Not actual realized slippage."
+    },
+    "ETH/USDT:USDT": {
+      "exchange_timestamp_ms": 1791576719398,
+      "received_timestamp_ms": 1791576719272,
+      "exchange_E_ms": 1791576719402,
+      "exchange_T_ms": 1791576719398,
+      "apparent_receive_minus_exchange_ms": -126,
+      "mid": 2477.7349999999997,
+      "spread_bp": 0.04035944118222301,
+      "bid_depth20_usdt": 491913.71329999994,
+      "ask_depth20_usdt": 294891.86619,
+      "visible_bid_span_bp": 0.7870091030707843,
+      "visible_ask_span_bp": 0.7870091030726197,
+      "latest_1000_gap_ms_median": 103,
+      "latest_1000_gap_ms_max": 318,
+      "static_sweep_337usdt": {
+        "buy": {
+          "notional_usdt": 337,
+          "visible_book_coverage": true,
+          "vwap": 2477.74,
+          "cost_vs_mid_bp": 0.020179720592317096
+        },
+        "sell": {
+          "notional_usdt": 337,
+          "visible_book_coverage": true,
+          "vwap": 2477.73,
+          "cost_vs_mid_bp": 0.02017972059009665
+        }
+      },
+      "sweep_limitation": "Frozen-book theoretical quote only. Excludes fee, funding, replenishment/cancellation, latency, queue position and own impact. Not actual realized slippage."
+    }
+  },
+  "dry_run_open_positions": [
+    {
+      "pair": "ADA/USDT:USDT",
+      "stake_amount": 337.3568,
+      "leverage": 1.0,
+      "is_short": 0
+    },
+    {
+      "pair": "AVAX/USDT:USDT",
+      "stake_amount": 331.872,
+      "leverage": 1.0,
+      "is_short": 0
+    },
+    {
+      "pair": "LINK/USDT:USDT",
+      "stake_amount": 337.4991,
+      "leverage": 1.0,
+      "is_short": 0
+    },
+    {
+      "pair": "LTC/USDT:USDT",
+      "stake_amount": 337.472,
+      "leverage": 1.0,
+      "is_short": 0
+    },
+    {
+      "pair": "APT/USDT:USDT",
+      "stake_amount": 337.4235,
+      "leverage": 1.0,
+      "is_short": 0
+    },
+    {
+      "pair": "AAVE/USDT:USDT",
+      "stake_amount": 335.26,
+      "leverage": 1.0,
+      "is_short": 0
+    },
+    {
+      "pair": "FIL/USDT:USDT",
+      "stake_amount": 337.4039,
+      "leverage": 1.0,
+      "is_short": 0
+    },
+    {
+      "pair": "SAND/USDT:USDT",
+      "stake_amount": 337.46556,
+      "leverage": 1.0,
+      "is_short": 0
+    }
+  ],
+  "coverage_intersection": {
+    "open_pairs_with_live_depth": [],
+    "note": "At audit time depth stream BTC/ETH does not overlap eight open positions."
+  },
+  "definitions": {
+    "resting_orders": "Public visible bids/asks: unfilled price-level quantities, cancelable at any time.",
+    "open_interest": "Outstanding futures/perpetual contracts; one matched contract has both long and short, OI is not bid/ask pending volume.",
+    "aggressive_flow": "Executed trade volume, signed buy if buyer_maker=false and sell if buyer_maker=true."
+  }
+}

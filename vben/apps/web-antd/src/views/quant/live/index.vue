@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { compareCoins } from '../utils/coinOrder';
 /**
  * 实盘统计 —— 真实实盘口径的账户与交易统计
  *
@@ -475,7 +476,9 @@ function normRows(
       profitAbs: r?.profit_abs,
       profitPct: r?.profit_pct,
     }))
-    .sort((a, b) => (Number(b.profitAbs) || 0) - (Number(a.profitAbs) || 0));
+    .sort((a, b) => field === 'pair'
+      ? compareCoins(a.name, b.name)
+      : (Number(b.profitAbs) || 0) - (Number(a.profitAbs) || 0));
 }
 
 const attrTables = computed(() => [

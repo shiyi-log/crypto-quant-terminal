@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { sortCoins } from '../utils/coinOrder';
 /**
  * 总览 —— 一屏看全：账户 / 实盘策略 / 持仓 / 研究结论 / 回测曲线
  *
@@ -414,7 +415,7 @@ onUnmounted(() => clearInterval(timer));
       <Table
         v-if="positions.length"
         :columns="posColumns"
-        :data-source="positions"
+        :data-source="sortCoins(positions, (row) => row.pair)"
         :pagination="false"
         row-key="trade_id"
         size="small"
@@ -532,7 +533,7 @@ onUnmounted(() => clearInterval(timer));
       <Table
         v-if="recentRows.length"
         :columns="tradeColumns"
-        :data-source="recentRows"
+        :data-source="sortCoins(recentRows, (row) => row.pair)"
         :pagination="false"
         row-key="trade_id"
         size="small"

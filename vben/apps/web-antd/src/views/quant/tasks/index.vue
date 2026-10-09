@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { sortCoins } from '../utils/coinOrder';
 /**
  * 研究任务 —— 在浏览器里发起回测 / 下载数据 / 前瞻分析 / 递归分析，并查看进度
  *
@@ -430,6 +431,12 @@ function confirmDeleteHistory(rec: any) {
 const pairOptions = ref<Array<{ label: string; value: string }>>([]);
 const dlMode = ref('list');
 const dlPairs = ref<string[]>([]);
+const orderedDlPairs = computed({
+  get: () => sortCoins(dlPairs.value),
+  set: (pairs: string[]) => {
+    dlPairs.value = sortCoins(pairs);
+  },
+});
 const dlPairsText = ref('');
 const dlTimeframes = ref<string[]>(['5m', '1h']);
 const dlRangeMode = ref('days');
@@ -445,7 +452,7 @@ const dlSubmitting = ref(false);
 async function loadPairs() {
   try {
     const r = await getWebAvailablePairs();
-    pairOptions.value = (r?.pairs ?? []).map((p) => ({ label: p, value: p }));
+    pairOptions.value = sortCoins(r?.pairs ?? []).map((p) => ({ label: p, value: p }));
   } catch (e) {
     reportBannerError(e);
   }
@@ -456,7 +463,7 @@ async function loadWhitelist() {
   try {
     const r = await getWhitelist();
     const list = r?.whitelist ?? [];
-    if (dlPairs.value.length === 0) dlPairs.value = list.slice(0, 5);
+    if (dlPairs.value.length === 0) dlPairs.value = sortCoins(list).slice(0, 5);
   } catch (e) {
     reportBannerError(e);
   }
@@ -474,12 +481,12 @@ function onRangeModeChange() {
 /** 列表选择 / 手工输入 二选一，最终都要变成 string[] */
 function resolvedPairs(): string[] {
   if (dlMode.value === 'list') {
-    return dlPairs.value.map((p) => p.trim()).filter(Boolean);
+    return sortCoins(dlPairs.value.map((p) => p.trim()).filter(Boolean));
   }
-  return dlPairsText.value
+  return sortCoins(dlPairsText.value
     .split(/[\s,;，、]+/)
     .map((p) => p.trim())
-    .filter(Boolean);
+    .filter(Boolean));
 }
 
 function startDownload() {
@@ -1046,7 +1053,7 @@ onMounted(() => {
         </div>
         <Select
           v-if="dlMode === 'list'"
-          v-model:value="dlPairs"
+          v-model:value="orderedDlPairs"
           :max-tag-count="6"
           :options="pairOptions"
           class="w-full"

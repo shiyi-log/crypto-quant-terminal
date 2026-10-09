@@ -89,6 +89,93 @@ class AutoLoginContractTests(unittest.TestCase):
         self.assertNotIn("access_token", payload)
         self.make_token.assert_not_called()
 
+    def test_market_stream_discovery_requires_login_and_honors_external_url(self):
+        self.handler.path = "/api/locals/market-stream-info"
+        self.handler._bearer = Mock(return_value="test-only-token")
+        with patch.object(self.auth, "verify_token", return_value=None):
+            self.assertEqual(self.handler.do_GET()[0], 401)
+        with patch.object(self.auth, "verify_token", return_value="admin"), \
+             patch.dict(os.environ, {"QUANT_LIVE_WS_URL": "wss://example.test/market"}):
+            code, payload = self.handler.do_GET()
+        self.assertEqual(code, 200)
+        self.assertEqual(payload, {"url": "wss://example.test/market"})
+        self.load_users.assert_not_called()
+
+    def test_research_ledger_requires_login(self):
+        self.handler.path = "/api/locals/research-ledger"
+        self.handler._bearer = Mock(return_value=None)
+        with patch.object(self.auth, "verify_token", return_value=None):
+            code, payload = self.handler.do_GET()
+        self.assertEqual(code, 401)
+        self.assertEqual(payload["detail"], "未登录或登录已过期")
+
+    def test_research_ledger_reads_fixed_source_projection(self):
+        self.handler.path = "/api/locals/research-ledger?version_id=demo"
+        self.handler._bearer = Mock(return_value="test-only-token")
+        expected = {"summary": {"version_count": 1}, "versions": []}
+        store = Mock()
+        with patch.object(self.auth, "verify_token", return_value="admin"), \
+             patch.object(self.auth, "get_store", return_value=store), \
+             patch("research_ledger.ledger_payload", return_value=expected) as payload_fn:
+            code, payload = self.handler.do_GET()
+        self.assertEqual(code, 200)
+        self.assertEqual(payload, expected)
+        payload_fn.assert_called_once_with(
+            store, version_id="demo", source_id="bot/tradesv3.dryrun.sqlite",
+            registry_path=self.auth.os.path.join(self.auth.ROOT, "bot", "user_data", "model_versions.json"),
+        )
+        store.get_document.assert_not_called()
+        store.read_events.assert_not_called()
+
+    def test_research_ledger_returns_service_unavailable_on_database_error(self):
+        self.handler.path = "/api/locals/research-ledger"
+        self.handler._bearer = Mock(return_value="test-only-token")
+        with patch.object(self.auth, "verify_token", return_value="admin"), \
+             patch.object(self.auth, "get_store", side_effect=self.auth.psycopg.OperationalError("offline")):
+            code, payload = self.handler.do_GET()
+        self.assertEqual(code, 503)
+        self.assertEqual(payload["detail"], "研究证据账暂时不可用，请检查同步源")
+
+    def test_research_ledger_returns_service_unavailable_on_missing_database_config(self):
+        self.handler.path = "/api/locals/research-ledger"
+        self.handler._bearer = Mock(return_value="test-only-token")
+        with patch.object(self.auth, "verify_token", return_value="admin"), \
+             patch.object(self.auth, "get_store", side_effect=RuntimeError("private database config missing")):
+            code, payload = self.handler.do_GET()
+        self.assertEqual(code, 503)
+        self.assertEqual(payload, {"detail": "研究证据账暂时不可用，请检查同步源"})
+
+    def test_research_ledger_returns_service_unavailable_on_projection_read_failure(self):
+        self.handler.path = "/api/locals/research-ledger"
+        self.handler._bearer = Mock(return_value="test-only-token")
+        with patch.object(self.auth, "verify_token", return_value="admin"), \
+             patch.object(self.auth, "get_store", return_value=Mock()), \
+             patch("research_ledger.ledger_payload", side_effect=self.auth.psycopg.OperationalError("mirror offline")):
+            code, payload = self.handler.do_GET()
+        self.assertEqual(code, 503)
+        self.assertEqual(payload, {"detail": "研究证据账暂时不可用，请检查同步源"})
+
+    def test_kline_response_does_not_wait_for_database_archive(self):
+        self.handler.path = "/api/locals/klines?pair=BTC%2FUSDT%3AUSDT&timeframe=1h&limit=1&fresh=1"
+        self.handler._bearer = Mock(return_value="test-only-token")
+        import json
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = json.dumps([[1700000000000, "100", "103", "99", "102", "5"]]).encode()
+        cached = {("futures", "BTCUSDT", "1h", 1): (self.auth.time.time(), {"data": [["old"]]})}
+        with patch.object(self.auth, "verify_token", return_value="admin"), \
+             patch.object(self.auth, "_kline_cache", cached), \
+             patch.object(self.auth.urllib.request, "urlopen", return_value=response), \
+             patch.object(self.auth, "_kline_archive") as archive, \
+             patch.object(self.auth, "get_store", side_effect=AssertionError("HTTP 不能同步访问数据库")):
+            archive.offer.return_value = True
+            code, payload = self.handler.do_GET()
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["data"][0][4], 102)
+        self.assertEqual(payload["storage"], "queued")
+        archive.offer.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

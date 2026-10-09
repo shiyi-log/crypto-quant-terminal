@@ -1,0 +1,2 @@
+# Unified diff artifacts keep their required context marker on blank lines.
+artifacts/*.patch -whitespace

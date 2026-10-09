@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { sortCoins } from '../utils/coinOrder';
 /**
  * 交易对与风控锁
  *
@@ -58,6 +59,9 @@ const selectedRowKeys = ref<any[]>([]);
 
 /** 表格只显示交易对，用对象包一层以满足 Table 的 dataSource 结构 */
 const blackRows = computed(() => blacklist.value.map((p) => ({ pair: p })));
+const blacklistErrors = computed(() =>
+  sortCoins(Object.entries(blErrors.value), ([pair]) => pair),
+);
 
 /** 输入框内容 → 交易对数组：支持逗号（中英文）、分号、空格分隔，顺手去重 */
 const parsedPairs = computed(() => {
@@ -65,7 +69,7 @@ const parsedPairs = computed(() => {
     .split(/[\s,，;；]+/)
     .map((s) => s.trim())
     .filter(Boolean);
-  return [...new Set(raw)];
+  return sortCoins([...new Set(raw)]);
 });
 
 const blackCols = [
@@ -216,7 +220,7 @@ function askAdd() {
 }
 
 function askRemoveSelected() {
-  const pairs = selectedRowKeys.value.map((k: any) => String(k));
+  const pairs = sortCoins(selectedRowKeys.value.map((k: any) => String(k)));
   if (!pairs.length) {
     message.warning('请先勾选要移出的交易对');
     return;
@@ -281,7 +285,7 @@ onUnmounted(() => clearInterval(timer));
         pairlist（已过过滤），不是配置文件里的静态副本。
       </div>
       <div v-if="whitelist.length" class="flex flex-wrap gap-1">
-        <Tag v-for="p in whitelist" :key="p" color="blue">{{ p }}</Tag>
+        <Tag v-for="p in sortCoins(whitelist)" :key="p" color="blue">{{ p }}</Tag>
       </div>
       <div v-else class="py-6 text-center text-sm text-gray-400">白名单为空</div>
     </Card>
@@ -327,7 +331,7 @@ onUnmounted(() => clearInterval(timer));
 
       <div v-if="Object.keys(blErrors).length" class="mb-3">
         <Alert
-          v-for="(msg, pair) in blErrors"
+          v-for="[pair, msg] in blacklistErrors"
           :key="pair"
           :message="`${pair}：${msg}`"
           banner
@@ -339,7 +343,7 @@ onUnmounted(() => clearInterval(timer));
 
       <Table
         :columns="blackCols"
-        :data-source="blackRows"
+        :data-source="sortCoins(blackRows, (row) => row.pair)"
         :loading="loading"
         :pagination="false"
         :row-selection="{
@@ -364,7 +368,7 @@ onUnmounted(() => clearInterval(timer));
           {{ showExpanded ? '收起实际生效名单' : `查看展开后的实际生效名单（${expanded.length}）` }}
         </Button>
         <div v-show="showExpanded" class="mt-2 flex flex-wrap gap-1">
-          <Tag v-for="p in expanded" :key="p">{{ p }}</Tag>
+          <Tag v-for="p in sortCoins(expanded)" :key="p">{{ p }}</Tag>
         </div>
       </div>
     </Card>
@@ -384,7 +388,7 @@ onUnmounted(() => clearInterval(timer));
 
       <Table
         :columns="lockCols"
-        :data-source="locks"
+        :data-source="sortCoins(locks, (row) => row.pair)"
         :loading="loading"
         :pagination="false"
         :scroll="{ y: 360 }"

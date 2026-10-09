@@ -459,6 +459,8 @@ const headerSlots = computed(() => {
 
     <!-- 主体内容 -->
     <template #content>
+      <!-- 页面上方可放置业务工具栏，避免挤占导航顶栏。 -->
+      <slot name="content-top"></slot>
       <LayoutContent />
     </template>
 

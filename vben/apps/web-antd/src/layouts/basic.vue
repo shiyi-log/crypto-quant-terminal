@@ -8,6 +8,8 @@ import { BasicLayout, LockScreen, UserDropdown } from '@vben/layouts';
 import { preferences, usePreferences } from '@vben/preferences';
 import { useAccessStore, useUserStore } from '@vben/stores';
 
+import { Card } from 'ant-design-vue';
+
 import { $t } from '#/locales';
 import { useAuthStore } from '#/store';
 import LoginForm from '#/views/_core/authentication/login.vue';
@@ -99,8 +101,11 @@ watch(
     @clear-preferences-and-logout="handleLogout"
     @logout="handleLogout"
   >
-    <template #header-right-1>
-      <BotControls />
+    <template #content-top>
+      <!-- 交易状态与操作作为正文卡片展示，窄屏时自动换行。 -->
+      <Card class="mx-4 mt-4" :bordered="false" title="交易状态与操作">
+        <BotControls />
+      </Card>
     </template>
     <template #user-dropdown>
       <UserDropdown

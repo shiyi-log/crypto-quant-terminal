@@ -191,9 +191,9 @@ function onForceExit() {
 </script>
 
 <template>
-  <!-- 顶栏空间有限：不换行、不溢出，字号压到 xs -->
+  <!-- 独立业务工具栏允许换行，状态文字和操作按钮保持完整可见。 -->
   <div
-    class="mr-2 flex flex-nowrap items-center gap-2 overflow-hidden text-xs whitespace-nowrap"
+    class="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm"
   >
     <Tag :color="status.color" class="m-0">{{ status.text }}</Tag>
 

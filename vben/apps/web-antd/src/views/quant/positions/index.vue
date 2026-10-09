@@ -78,6 +78,14 @@ const recentRows = computed(() => [
   ...trades.value,
 ]);
 
+/** 汇总真实持仓金额，缺失值不当作零。 */
+const openProfit = computed(() => {
+  if (open.value.some((trade) => trade.profit_abs == null || !Number.isFinite(Number(trade.profit_abs)))) {
+    return null;
+  }
+  return open.value.reduce((sum, trade) => sum + Number(trade.profit_abs), 0);
+});
+
 const openCols = [
   { dataIndex: 'pair', key: 'pair', title: '币对' },
   { key: 'side', title: '方向', width: 80 },
@@ -85,7 +93,8 @@ const openCols = [
   { dataIndex: 'current_rate', key: 'current_rate', title: '现价', align: 'right' as const },
   { dataIndex: 'stake_amount', key: 'stake_amount', title: '投入', align: 'right' as const },
   { dataIndex: 'leverage', key: 'leverage', title: '杠杆', align: 'right' as const, width: 70 },
-  { key: 'pnl', title: '浮动盈亏', align: 'right' as const },
+  { key: 'pnl', title: '浮动盈亏 (%)', align: 'right' as const },
+  { key: 'profit_abs', title: '浮动盈亏 (USDT)', align: 'right' as const },
   { dataIndex: 'open_date', key: 'open_date', title: '开仓时间', width: 120 },
   { key: 'action', title: '操作', width: 90, fixed: 'right' as const },
 ];
@@ -393,7 +402,12 @@ onUnmounted(() => {
           ></span>
           {{ wsConnected ? '实时推送已连接' : '轮询模式' }}
         </span>
-        <span class="text-xs text-gray-400">{{ open.length }} 笔</span>
+        <span class="text-xs text-gray-400">
+          {{ open.length }} 笔 · 浮动盈亏
+          <span :class="Number(openProfit) > 0 ? 'text-red-500' : Number(openProfit) < 0 ? 'text-emerald-500' : ''">
+            {{ Number(openProfit) > 0 ? '+' : '' }}{{ fmt(openProfit) }} USDT
+          </span>
+        </span>
       </template>
       <Table
         :columns="openCols"
@@ -419,6 +433,14 @@ onUnmounted(() => {
               class="font-medium"
             >
               {{ pct(record) > 0 ? '+' : '' }}{{ fmt(pct(record)) }}%
+            </span>
+          </template>
+          <template v-else-if="column.key === 'profit_abs'">
+            <span
+              :class="Number(record.profit_abs) > 0 ? 'text-red-500' : Number(record.profit_abs) < 0 ? 'text-emerald-500' : ''"
+              class="font-medium"
+            >
+              {{ Number(record.profit_abs) > 0 ? '+' : '' }}{{ fmt(record.profit_abs) }}
             </span>
           </template>
           <template v-else-if="column.key === 'open_date'">

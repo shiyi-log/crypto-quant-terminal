@@ -470,12 +470,13 @@ onUnmounted(() => clearInterval(timer));
             <div
               v-for="f in strongFactors.slice(0, 5)"
               :key="f.factor"
-              class="flex items-center justify-between text-xs"
+              class="grid grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)_max-content] items-center gap-3 text-xs"
             >
-              <span class="font-mono">{{ f.factor }}</span>
-              <span class="text-gray-400">基线 {{ f.ic_base }}</span>
-              <span class="text-gray-400">近期 {{ f.ic_recent }}</span>
-              <Tag :color="f.status === '正常' ? 'green' : 'orange'">{{ f.status }}</Tag>
+              <!-- 固定列宽、统一小数位，名称长短不会推挤后面的数值。 -->
+              <span class="truncate font-mono" :title="f.factor">{{ f.factor }}</span>
+              <span class="text-right tabular-nums text-gray-400">基线 {{ fmt(f.ic_base, 4) }}</span>
+              <span class="text-right tabular-nums text-gray-400">近期 {{ fmt(f.ic_recent, 4) }}</span>
+              <Tag class="m-0" :color="f.status === '正常' ? 'green' : 'orange'">{{ f.status }}</Tag>
             </div>
             <div v-if="!strongFactors.length"
                  class="py-4 text-center text-gray-400">

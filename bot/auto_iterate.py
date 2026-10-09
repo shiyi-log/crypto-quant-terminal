@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+状态：旧策略结论巡检入口已禁用；鉴权和序列化工具仍可导入。
+
 自动迭代系统（Auto-Iteration）
 
 作用：
@@ -30,6 +32,7 @@
 """
 
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -83,6 +86,8 @@ def to_py(o):
 
 def check_consistency():
     """研究（事件驱动） vs 实盘（Freqtrade）"""
+    return {"ok": False, "status": "legacy_disabled",
+            "detail": "旧 run() 的收益和交易对账已作废；一致性检查暂停。"}
     try:
         import event_backtest as eb
         cfg = json.load(open(LIVE))
@@ -156,6 +161,8 @@ CURRENT = live_params.current_entry_exit()
 
 def check_params():
     """近 12 个月滚动走查：当前参数还在不在最优区间"""
+    return {"ok": False, "status": "legacy_disabled",
+            "detail": "简化收盘收益引擎不等于部署策略；旧参数排名检查暂停。"}
     try:
         import event_backtest as eb
         cfg = json.load(open(LIVE))
@@ -214,19 +221,12 @@ def check_params():
 
 def check_live_vs_expect():
     """干跑实际表现 vs 回测预期"""
+    return {"ok": False, "status": "legacy_disabled",
+            "detail": "短观察期折年化不作为策略可用性证据；请查看研究账本。"}
     try:
-        import urllib.request
         # 从认证服务取收益
-        req = urllib.request.Request(
-            "http://127.0.0.1:8890/api/v1/profit",
-            headers={"Authorization": "Bearer " + _token()})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            p = json.load(r)
-        req2 = urllib.request.Request(
-            "http://127.0.0.1:8890/api/v1/health",
-            headers={"Authorization": "Bearer " + _token()})
-        with urllib.request.urlopen(req2, timeout=10) as r:
-            h = json.load(r)
+        p = _api_get("/api/v1/profit", timeout=10)
+        h = _api_get("/api/v1/health", timeout=10)
         started = pd.Timestamp(h["bot_startup"])
         days = max((pd.Timestamp.now(tz="UTC") - started).days, 1)
         closed = p.get("closed_trade_count", 0)
@@ -251,12 +251,7 @@ def check_live_vs_expect():
 
 def check_factors():
     try:
-        import urllib.request
-        req = urllib.request.Request(
-            "http://127.0.0.1:8890/api/locals/ops",
-            headers={"Authorization": "Bearer " + _token()})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            ops = json.load(r)
+        ops = _api_get("/api/locals/ops", timeout=20)
         facs = ops.get("factors", [])
         alert = [f for f in facs if f.get("alert")]
         return {
@@ -275,12 +270,7 @@ def check_factors():
 def check_signal():
     """策略是否「哑火」：最近有没有开仓"""
     try:
-        import urllib.request
-        req = urllib.request.Request(
-            "http://127.0.0.1:8890/api/v1/trades?limit=50",
-            headers={"Authorization": "Bearer " + _token()})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            d = json.load(r)
+        d = _api_get("/api/v1/trades?limit=50", timeout=15)
         trades = d.get("trades", [])
         if not trades:
             return {"ok": True, "detail": "尚无成交（策略刚启动）"}
@@ -295,19 +285,66 @@ def check_signal():
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
-_token_cache = {"v": None}
+AUTH_BASE = "http://127.0.0.1:8890"
+_TOKEN_REFRESH_MARGIN = 300      # 提前 5 分钟刷新，避开临界过期
+_TOKEN_FALLBACK_TTL = 3600       # 解析不出 exp 时的保守缓存时长
+
+_token_cache = {"v": None, "exp": 0.0}
 
 
-def _token():
-    if _token_cache["v"]:
+def _token_exp(tok):
+    """
+    从 token 载荷读 exp。
+    服务端 make_token 的格式是 base64url(json).hmac，不是标准 JWT，但载荷可直接解码。
+    解析失败返回 0，由调用方退回保守 TTL。
+    """
+    try:
+        body = tok.split(".")[0]
+        body += "=" * (-len(body) % 4)
+        return float(json.loads(base64.urlsafe_b64decode(body))["exp"])
+    except Exception:
+        return 0.0
+
+
+def _token(force=False):
+    """
+    取本机自动登录 token，带过期缓存。
+    ⚠️ 曾经的 bug：缓存永不失效，而 token TTL 只有 12 小时、巡检周期 6 小时，
+    于是第 3 轮（约 12 小时后）开始 C3/C4/C5 全部 401。
+    现在以服务端 exp 为准 + 401 重试兜底。
+    """
+    if not force and _token_cache["v"] and time.time() < _token_cache["exp"]:
         return _token_cache["v"]
     import urllib.request
     req = urllib.request.Request(
-        "http://127.0.0.1:8890/auth/auto-login",
+        AUTH_BASE + "/auth/auto-login",
         data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=10) as r:
-        _token_cache["v"] = json.load(r)["access_token"]
-    return _token_cache["v"]
+        tok = json.load(r)["access_token"]
+    exp = _token_exp(tok)
+    _token_cache["v"] = tok
+    _token_cache["exp"] = (exp - _TOKEN_REFRESH_MARGIN) if exp \
+        else (time.time() + _TOKEN_FALLBACK_TTL)
+    return tok
+
+
+def _api_get(path, timeout=15):
+    """带鉴权的本地 GET。遇 401 强制换新 token 重试一次，其余错误照抛。"""
+    import urllib.error
+    import urllib.request
+    last = None
+    for attempt in (0, 1):
+        req = urllib.request.Request(
+            AUTH_BASE + path,
+            headers={"Authorization": "Bearer " + _token(force=bool(attempt))})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as exc:
+            last = exc
+            if exc.code != 401:
+                raise
+    raise last
 
 
 # ══════════════════ 主流程 ══════════════════
@@ -351,6 +388,10 @@ def one_round(verbose=True, interval=None):
 
 
 def main():
+    raise SystemExit(
+        "LEGACY_DISABLED: auto_iterate.py 旧结论巡检已禁用。C1/C2/C3 口径已作废；"
+        "不会启动巡检 daemon，也不写历史状态。鉴权 helpers 仍可导入。"
+    )
     ap = argparse.ArgumentParser()
     ap.add_argument("--daemon", action="store_true")
     ap.add_argument("--interval", type=int, default=6 * 3600)

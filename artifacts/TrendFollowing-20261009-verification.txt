@@ -1,0 +1,53 @@
+TrendFollowing 修复与验收（2026-10-09）
+
+修改文件：
+/Users/shiyi/DeepSeek/量化/bot/user_data/strategies/TrendFollowing.py
+/Users/shiyi/DeepSeek/量化/tests/test_trend_following.py
+完整 diff：/Users/shiyi/DeepSeek/量化/artifacts/TrendFollowing-20261009.patch
+策略 diff 基于当前 Git HEAD；新测试以新增文件形式包含。
+
+修改函数：
+_is_live_mode（新增）：识别 live/dry，历史运行不等待真实时间。
+bot_start（新增）：初始化缓存，设非阻塞 30 秒启动入场门控。
+bot_loop_start（新增）：每轮分析前使排名缓存失效。
+_current_strengths：live/dry 必须全白名单在同一根当前已收盘 UTC K 线上数据完整；
+空池、缺列、无数据、非法指标、不同步/旧 K 线均拒绝。不完整快照不缓存。
+缓存使用真实 date/白名单/通道参数/预期 K 线/首币状态强度；
+同轮首币列失效或状态/强度改变也重新扫描。历史切片保留既有聚合语义。
+confirm_trade_entry：空 strengths 永不放行，稳定 top_n 排名和方向检查；
+live/dry 还须完整快照和启动时间门控；捕获整个钩子的异常并拒绝，
+避免 Freqtrade 外层 wrapper 的 default_retval=True。
+Freqtrade logger：候选数量与强度、数据就绪/缺失原因、pair/side/rank/top_n、
+allowed/reason、UTC candle 时间与调用时间、启动剩余秒数。
+
+问题 1 的直接回归：
+测试 test_original_empty_strengths_bypass_is_closed 将 _current_strengths mock 为 {}，
+assertIs(confirm_trade_entry(...), False)。
+修复前原表达式在 {} 时结果为 True，修复后测试明确得到 False。
+空池同时区分“完整数据无趋势”与“数据未就绪”，两者均不开仓。
+
+最终验证（真实 Freqtrade 2026.9）：
+.venv/bin/python -m unittest discover -s tests -p test_trend_following.py -q
+  Ran 33 tests, OK（0.114 秒）
+bot/.venv/bin/python -m unittest discover -s tests -p test_trend_following.py -q
+  Ran 33 tests, OK（0.119 秒）
+.venv/bin/ruff check bot/user_data/strategies/TrendFollowing.py tests/test_trend_following.py
+  All checks passed
+.venv/bin/python -m py_compile bot/user_data/strategies/TrendFollowing.py tests/test_trend_following.py
+  exit 0
+
+覆盖：空池、部分未就绪与同 K 线恢复、异常包装器、UTC/北京08:00边界、
+稳定排名、方向、30秒前/边界、门控后数据仍未就绪、同轮首币缓存失效/值变化、
+历史切片和 Hyperopt 无真实等待、日志字段、默认参数不变。
+默认 enter_period=20、exit_period=20、top_n=8、target_exposure=0.30 未改变。
+未改 config_trend_live.json，未重启机器人、未启动训练。
+当前运行机器人继续使用已加载的旧策略；文件修复在下次正常加载策略时生效。
+
+独立验收及全池中止规则：
+DeepSeek 自写13项独立测试通过，并确认默认参数、配置mtime及机器人PID未变。
+已有数据未就绪日志为WARNING；最终另加 entry_blocked_all_live=True，
+显式说明整个live/dry池暂停新增入场；恢复后该字段False。
+保持全池完整规则，不以就绪子集降级排名。恢复数据源后下轮重新扫描；
+监控在启动等待之后若持续不完整，应报“整个策略新增入场暂停”并列缺失pair和UTC时间。
+门控只控制新增入场，不停止已有仓位的退出逻辑。
+此日志增强后的33项测试再次在两环境通过（以上最终耗时）。

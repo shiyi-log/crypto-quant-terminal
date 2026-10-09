@@ -32,8 +32,28 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(BASE, "user_data", "cache")
 
 
-def paths(seq_len: int, dense: bool = True):
-    tag = f"{seq_len}" + ("" if dense else "_sparse")
+def data_source() -> str:
+    """当前行情来源：database（默认）或 feather。"""
+    return (os.environ.get("QUANT_OHLCV_SOURCE") or "database").lower()
+
+
+def paths(seq_len: int, dense: bool = True, source: str | None = None):
+    """缓存路径。
+
+    ⚠ 缓存键【必须包含数据来源】。
+      feather 与 database 两条路的数据虽然等价（实测重排后零差异），
+      但【行序不同】—— 共用缓存会让切换静默失效，或者读到另一种排序的面板，
+      进而让跨轮比较、以及"到底用的哪份数据"变得不可知。
+      （同第 58 轮那个 bug 的教训：静默的错比响亮的错危险得多。）
+    """
+    src = (source or data_source()).lower()
+    # ⚠ 缓存键必须包含【schema 版本】。
+    #   v1 的 meta 没有 t1 列；若沿用旧文件名，加了 t1 之后会静默读到缺列的老缓存，
+    #   purge 就会变成"看起来做了、实际没做"。
+    #   与第 58 轮"缓存键漏了数据来源"是同一类错误：静默的错比响亮的错危险。
+    tag = f"v2_{seq_len}" + ("" if dense else "_sparse")
+    if src != "feather":
+        tag += f"_{src}"
     return (os.path.join(CACHE_DIR, f"panel_{tag}_seq.npy"),
             os.path.join(CACHE_DIR, f"panel_{tag}_meta.parquet"),
             os.path.join(CACHE_DIR, f"panel_{tag}_feats.json"))

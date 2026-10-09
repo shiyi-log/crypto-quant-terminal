@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+状态：训练暂停，仅允许 --dry-plan 打印离线计划；历史判据不代表部署可用性。
+
 自动迭代闭环 —— 自动【生产】新版本候选（challenger），绝不自动上线
 
 与「自动迭代系统.md」的分工：
@@ -247,24 +249,53 @@ def cfg_key(cfg: dict) -> str:
     return hashlib.sha1(json.dumps(core, sort_keys=True).encode()).hexdigest()[:8]
 
 
+# 选优口径（--select-by 设置）。
+#   "t"          按集成 t（历史行为）
+#   "worst-seed" 按【最差种子】的 t —— 直接优化最坏情况
+# 为什么需要后者：第 38/41 轮实测表明，集成 t 不反映种子稳健性。
+#   · lstm L=30 h=96 ly=1  集成 t季=3.37（3 种子）→ 5 种子只过 2/5，最差种子 1.95
+#   · gru  L=30 h=128 ly=2 集成 t季=2.90（3 种子）→ 5 种子全过，  最差种子 2.60
+#   按集成 t 排会把前者排在前面；按最差种子排会把后者排前面。
+# ⚠ 注意：缺少 seed_t_min 的老记录会退回 t_period，
+#   两类记录的数值不完全同尺度（seed_t_min 系统性地 ≤ t_period）——
+#   这是过渡期的已知偏差，新记录都带 seed_ts 后会消失。
+SELECT_BY = "t"
+
+
 def objective(r: dict) -> tuple:
-    """主判据 t 值；并列时看正窗口占比，再看 IC。"""
-    t = r.get("t_period")
+    """选优键；并列时看正窗口占比，再看 IC。
+
+    --select-by worst-seed 时用最差种子的 t（没有则退回集成 t）。
+    """
+    if SELECT_BY == "worst-seed":
+        _sm = r.get("seed_t_min")
+        t = _sm if _sm is not None else r.get("t_period")
+    else:
+        t = r.get("t_period")
     t = -9e9 if t is None or not np.isfinite(t) else t
     pos = (r.get("pos_windows") or 0) / max(r.get("n_windows") or 1, 1)
     ic = r.get("ic_period") or 0.0
     return (round(t, 6), round(pos, 6), round(ic, 6))
 
 
-def propose(evaluated: list, space: dict, baseline: dict):
+def propose(evaluated: list, space: dict, baseline: dict, skip=None):
     """
     纯函数：给定已评估集合，返回下一组待跑配置和所处阶段。
     三个阶段（顺序确定，可中断续跑 —— 因为只依赖已评估集合）：
       A ofat-baseline  以基线为中心的单变量扫描（先看各维度方向）
       B hill           以当前最优为中心的单变量爬山（收敛即结束）
       C explore        组合探索：2~3 维组合（剩余预算内继续找更多可能）
+
+    skip：已经评估过、且一定会命中缓存的配置 key 集合。
+        ⚠ 必须传！否则 propose 只看到本轮，会从同一条确定性序列的开头重新走，
+        前面全是缓存命中 —— 预算被"重走已知区域"吃光（实测重复率 71%，
+        搜索空间覆盖率只有 6%）。
+        只传【会命中缓存的】key：需要重跑的（如种子数不符）不能跳，
+        否则那些配置永远得不到重评。
     """
     have = {cfg_key(e["config"]) for e in evaluated}
+    if skip:
+        have |= set(skip)
     if not evaluated:
         return dict(baseline), "A-ofat:baseline"
 
@@ -342,6 +373,10 @@ def evaluate(cfg: dict, cache: PanelCache, device: str, step: int, log,
              quick: bool = False, on_step=None, bs: int = 512,
              seeds: int = 1) -> dict:
     """扩展窗口走查 + 逐窗口 IC（quarterly，与第 6/7/8 轮完全同口径）。"""
+    raise RuntimeError(
+        "LEGACY_DISABLED: auto_research.evaluate 训练已暂停。旧切分未按 t1 净化、"
+        "整段排名不可部署；修正前不得继续训练或登记候选。"
+    )
     import torch
     import ml_seq
     from ml_regime import ic_t
@@ -363,6 +398,10 @@ def evaluate(cfg: dict, cache: PanelCache, device: str, step: int, log,
 
     epochs = 1 if quick else int(cfg.get("epochs", 8))
     scores = np.full(len(meta), np.nan)
+    # 逐种子分数容器：必须在段循环【外面】初始化，
+    # 否则每段都重置，只剩最后一段（第 36 轮踩过这个坑）
+    n_seeds = max(1, int(seeds))
+    per_seed_scores = [np.full(len(meta), np.nan) for _ in range(n_seeds)]
     n_cuts = len(cuts)
     if on_step:
         on_step(0, n_cuts, f"面板就绪 {seq.shape[0]} 事件")
@@ -386,9 +425,7 @@ def evaluate(cfg: dict, cache: PanelCache, device: str, step: int, log,
         np.nan_to_num(Xte, copy=False)
         # 多种子（第 24 轮）：同一配置跑 n_seeds 个随机初始化，
         # **段内秩平均** —— 不能全局平均，否则分数尺度跨段漂移会造假（第 13 轮教训）
-        n_seeds = max(1, int(seeds))
         preds = []
-        per_seed_scores = [np.full(len(seq), np.nan) for _ in range(n_seeds)]
         for si in range(n_seeds):
             m = ml_seq.train_seq(Xtr, y[tr], F, cfg["kind"], device, epochs=epochs, bs=bs,
                                  lr=float(cfg["lr"]), hidden=int(cfg["hidden"]),
@@ -445,7 +482,10 @@ def evaluate(cfg: dict, cache: PanelCache, device: str, step: int, log,
             if okk.sum() < 500:
                 continue
             try:
-                _, t_si = ic_t(sc[okk], meta[okk]["ret"].values)
+                # ⚠ 必须与集成分用【同一口径】：逐窗口 IC 的 t（period_ic），
+                # 不能用 ic_t() —— 那是池化 t，把全部事件当一个样本，
+                # n 被夸大导致 t 虚高（实测集成分 2.5 vs 池化 7.9，差 3 倍）。
+                _, t_si, _, _ = ml_seq.period_ic(meta[okk], sc[okk])
                 if t_si is not None and np.isfinite(t_si):
                     seed_ts.append(round(float(t_si), 4))
             except Exception:
@@ -471,10 +511,17 @@ def evaluate(cfg: dict, cache: PanelCache, device: str, step: int, log,
 # ══════════════════ 多重比较校正 ══════════════════
 
 def bh_fdr(pvals: list) -> list:
-    """Benjamini-Hochberg FDR。返回与输入同序的 q 值。"""
-    m = len(pvals)
-    q = np.ones(m)
+    """Benjamini-Hochberg FDR。返回与输入同序的 q 值。
+
+    ⚠ m 必须用【有效检验数】（非 None 的个数），不能用 len(pvals)。
+      否则一旦有 trial 失败（错误记录没有 p_value），
+      函数内部用的 m 会大于落盘的 fdr_m，
+      q 值算出来对不上 → audit_judgment 的「FDR 可复算」检查会永久失败。
+      （实测：m=5/fdr_m=4 时 q 从 0.004 变成 0.005）
+    """
     idx = [i for i, p in enumerate(pvals) if p is not None and np.isfinite(p)]
+    m = len(idx)                      # ← 有效检验数，与 fdr_m 口径一致
+    q = np.ones(len(pvals))
     if not idx:
         return list(q)
     ps = sorted(idx, key=lambda i: pvals[i])
@@ -624,7 +671,19 @@ def main():
     ap.add_argument("--quick", action="store_true", help="冒烟：1 trial、少窗口、1 epoch")
     ap.add_argument("--no-wait", action="store_true", help="不等待 freqtrade 回测")
     ap.add_argument("--dry-plan", action="store_true", help="只打印搜索计划，不训练")
+    ap.add_argument("--select-by", choices=["t", "worst-seed"], default="t",
+                    help="选优口径：t=集成 t（默认）；"
+                         "worst-seed=最差种子的 t（直接优化最坏情况）")
     args = ap.parse_args()
+
+    if not args.dry_plan:
+        raise SystemExit(
+            "LEGACY_DISABLED: auto_research.py 训练已暂停。旧切分未按 t1 净化、"
+            "整段排名不可部署；仅允许 --dry-plan，不写账本、不登记、不训练。"
+        )
+
+    global SELECT_BY
+    SELECT_BY = args.select_by
 
     global SPACE
     if args.space_file:
@@ -633,6 +692,18 @@ def main():
     if args.quick:
         args.max_trials = min(args.max_trials, 1)
         args.max_minutes = min(args.max_minutes, 10)
+
+    # The allowed plan path is deliberately before Tee, Progress, cache builds,
+    # model imports and registry writes. It does not reopen a paused daemon.
+    print("TRAINING_PAUSED: 仅打印离线计划，不训练、不读取旧 trial 分数、不写文件。")
+    planned = []
+    for _ in range(max(0, args.max_trials)):
+        cfg, phase = propose(planned, SPACE, {**BASELINE, "epochs": args.epochs})
+        if cfg is None:
+            break
+        print(f"  [plan] {phase} {cfg_key(cfg)} {cfg}")
+        planned.append({"config": cfg, "t_period": 0, "pos_windows": 0, "n_windows": 1})
+    return
 
     log = Tee(LOG_PATH)
     smoke = args.quick
@@ -656,6 +727,17 @@ def main():
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     trials = load_trials()
     done = {t["key"]: t for t in trials if t.get("key")} if not smoke else {}
+
+    # 哪些配置【一定会命中缓存】—— propose 应该跳过它们。
+    # 条件与下面缓存分支完全一致，只跳"必然复用"的，
+    # 种子数不符 / 缺 robust 的仍然会被提议并重跑。
+    _want_seeds = 1 if args.quick else args.seeds
+    cacheable_keys = {
+        k for k, v in done.items()
+        if not v.get("quick")
+        and v.get("robust") is not None
+        and int(v.get("n_seeds") or 1) == _want_seeds
+    } if not smoke else set()
 
     # 续跑：把历史同配置 trial 直接纳入本次评估集合（不重复训练）
     cache, evaluated_src = PanelCache(args.panel_cache), []
@@ -681,7 +763,8 @@ def main():
     if args.dry_plan:
         ev = []
         for _ in range(args.max_trials):
-            c, phase = propose(ev, SPACE, {**BASELINE, "epochs": args.epochs})
+            c, phase = propose(ev, SPACE, {**BASELINE, "epochs": args.epochs},
+                               skip=cacheable_keys)
             if c is None:
                 break
             log(f"  [plan] {phase:<28} {cfg_key(c)}  {c}")
@@ -697,7 +780,9 @@ def main():
                 prog.flush(status="stopped", phase=f"达到时间预算 "
                                                   f"{args.max_minutes:.0f} 分钟")
                 break
-            cfg, phase = propose(evaluated_src, SPACE, {**BASELINE, "epochs": args.epochs})
+            cfg, phase = propose(evaluated_src, SPACE,
+                                 {**BASELINE, "epochs": args.epochs},
+                                 skip=cacheable_keys)
             if cfg is None:
                 log("  ⏹ 声明的搜索空间已穷尽")
                 prog.flush(status="done", phase="搜索空间已穷尽")

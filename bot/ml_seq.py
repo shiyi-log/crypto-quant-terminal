@@ -81,7 +81,7 @@ def build_panel(dense=True, seq_len=30, feature_set="base"):
     """
     返回：
         seq_all  (N, L, F) float32   事件序列
-        meta     DataFrame[date, coin, ret, label]
+        meta     DataFrame[date, coin, ret, label, t1]
         feat_cols
     """
     data = ml.load_ohlcv()
@@ -129,7 +129,10 @@ def build_panel(dense=True, seq_len=30, feature_set="base"):
             miss += 1
             continue
         rows.append(arr[i - seq_len + 1: i + 1])
-        metas.append({"date": dt, "coin": c, "ret": row["ret"], "label": row["label"]})
+        # ⚠ 必须带上 t1（标签成熟时点）—— 否则无法按"训练截止时实际已知的标签"做 purge。
+        #   漏掉它的后果是隐蔽的：purge 无从实现，边界标签静默泄漏。
+        metas.append({"date": dt, "coin": c, "ret": row["ret"], "label": row["label"],
+                      "t1": row["t1"]})
 
     seq = np.stack(rows).astype(np.float32) if rows else np.zeros((0, seq_len, len(feats)),
                                                                  dtype=np.float32)

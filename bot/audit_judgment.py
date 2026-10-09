@@ -16,6 +16,42 @@ import numpy as np
 _HERE = os.path.dirname(os.path.abspath(__file__))
 P = os.path.join(_HERE, 'user_data', 'research_trials.jsonl')
 
+# ── verify_top.log 的 5 种子结论（顶部解析，通过清单与种子置信度都要用）──
+# key 保留 kind：lstm/gru 的同名超参组合必须区分开；老日志无 kind 用 vkey_alt 退化匹配
+def _load_vres():
+    out = {}
+    vf = os.path.join(_HERE, '..', 'logs', 'verify_top.log')
+    if not os.path.exists(vf):
+        return out
+    try:
+        import re as _re
+        cur = None
+        for line in open(vf, encoding='utf-8'):
+            m = _re.match(r'\s*【(.+?)】', line)
+            if m:
+                cur = m.group(1).strip(); continue
+            m = _re.search(r'通过 (\d+)/(\d+) 个种子', line)
+            if m and cur:
+                mm = _re.search(r'(L=\d+\s+h=\d+\s+ly=\d+)', cur)
+                if mm:
+                    kk = _re.match(r'\s*(\w+)\s+L=', cur)
+                    k = (f"{kk.group(1)} {mm.group(1)}" if kk else mm.group(1))
+                    out[k] = (int(m.group(1)), int(m.group(2)))
+                cur = None
+    except Exception:
+        pass
+    return out
+
+vres = _load_vres()
+
+def vkey(c):
+    return (f"{c.get('kind', 'lstm')} "
+            f"L={c.get('seq_len')} h={c.get('hidden')} ly={c.get('layers')}")
+
+def vkey_alt(c):
+    """老版 verify_top.log 的标签不带 kind —— 退化匹配"""
+    return f"L={c.get('seq_len')} h={c.get('hidden')} ly={c.get('layers')}"
+
 recs = []
 for line in open(P, encoding='utf-8'):
     line = line.strip()
@@ -122,6 +158,7 @@ print(f"  ⑤ 种子数分布: {dict(seeds)}")
 # ⑥ 通过清单
 passed = [v for v in cur.values() if v.get('passed')]
 print()
+
 print(f"  通过判据 {len(passed)} 个:")
 for v in sorted(passed, key=lambda x: -(x.get('t_quarter') or 0)):
     c = v.get('config', {})
@@ -129,14 +166,24 @@ for v in sorted(passed, key=lambda x: -(x.get('t_quarter') or 0)):
     spread = ""
     if v.get("seed_t_min") is not None:
         _min = v["seed_t_min"]
-        spread = (f"  种子t 最差={_min:.2f} 均值={v.get('seed_t_mean') or 0:.2f}"
-                  f"±{(v.get('seed_t_std') or 0):.2f}"
-                  + ("（稳）" if _min > CRIT_T else "（不稳！）"))
+        _mean = v.get("seed_t_mean") or 0
+        # 「集成−最差」差距是稳定性的指纹（第 46 轮）：
+        # <0.5 的配置 5 种子通过率都高；>1.0 的都不稳
+        _gap = (v.get("t_quarter") or 0) - _min
+        spread = (f"  最差={_min:.2f} 差距={_gap:.2f}"
+                  + ("（稳）" if _min > CRIT_T and _gap < 0.6 else
+                     ("（不稳！）" if _min <= CRIT_T else "")))
+    # 5 种子结论（来自 verify_top.log）—— 直接标在配置后面
+    v5 = ""
+    _hit = vres.get(vkey(c)) or vres.get(vkey_alt(c))
+    if _hit:
+        ok5, tot5 = _hit
+        v5 = f"  【5种子 {ok5}/{tot5}】" + ("⭐" if ok5 == tot5 else ("⚠" if ok5 * 2 < tot5 else ""))
     print(f"    {c.get('kind'):<11} L={c.get('seq_len'):<4} h={c.get('hidden'):<4} "
           f"ly={c.get('layers')} dp={c.get('dropout')}  "
           f"t季={v.get('t_quarter') or 0:>5.2f} t月={v.get('t_month') or 0:>5.2f} "
           f"稳健={v.get('robust_pass')}/{v.get('robust_total')} "
-          f"q={v.get('q_value'):.4f} seeds={v.get('n_seeds')}{spread}")
+          f"q={v.get('q_value'):.4f} seeds={v.get('n_seeds')}{spread}{v5}")
 
 # ⑦ 种子置信度：通过判据但种子数不足的，单独标出来
 #    规则 13：种子方差占总方差 87%。单种子的"通过"很可能是抽到了好种子，
@@ -164,13 +211,6 @@ if os.path.exists(vf):
     except Exception:
         pass
 
-def vkey(c):
-    return vkey_str(c.get('kind', 'lstm'), c.get('seq_len'), c.get('hidden'), c.get('layers'))
-
-def vkey_str(kind, L, h, ly):
-    """verify_top.log 里的标签有两种写法：带 kind 前缀和不带。
-    统一成不带前缀的形式再比对。"""
-    return f"L={L} h={h} ly={ly}"
 
 weak = [v for v in passed if int(v.get('n_seeds') or 1) < 3]
 if weak:
@@ -179,9 +219,9 @@ if weak:
     for v in weak:
         c = v.get('config', {})
         k = vkey(c)
-        extra = ""
-        if k in vres:
-            ok, tot = vres[k]
+        _hit = vres.get(k) or vres.get(vkey_alt(c))
+        if _hit:
+            ok, tot = _hit
             extra = (f"  ← 已做 5 种子复核：通过 {ok}/{tot}"
                      + ("（稳）" if ok == tot else "（不稳！）"))
         else:
@@ -194,13 +234,29 @@ else:
 if vres:
     print(f"  （已交叉引用 logs/verify_top.log 的 {len(vres)} 条 5 种子复核结论）")
 
+# ⑦.5 有效独立数：通过的配置真的互相独立吗？
+#     BH-FDR 假设检验独立，但这些配置共享同一特征集、同一段数据，
+#     只改架构超参 —— "通过 N 个"不等于 N 重独立证据。
+print()
+if passed:
+    kinds = Counter((v.get('config') or {}).get('kind') for v in passed)
+    seqs = Counter((v.get('config') or {}).get('seq_len') for v in passed)
+    ts = [v.get('t_quarter') or 0 for v in passed]
+    t_sd = float(np.std(ts, ddof=1)) if len(ts) > 1 else 0.0
+    print(f"  ⚠ 有效独立数：通过 {len(passed)} 个，但只跨 {len(kinds)} 种架构 "
+          f"({dict(kinds)})")
+    print(f"      seq_len 分布 {dict(seqs)} · t 标准差仅 {t_sd:.2f}")
+    print(f"      → 这些配置共享同一特征集与数据段，**不是 {len(passed)} 重独立确认**")
+
 # ⑧ 搜索空间饱和检测
 print()
 sigs = defaultdict(list)
 for v in passed:
     c = v.get('config', {})
     sigs[(c.get('kind'), c.get('seq_len'), c.get('hidden'), c.get('layers'))].append(v)
-print(f"  ⑥ 搜索饱和检测: {len(passed)} 个通过 → {len(sigs)} 个不同架构")
+_dup = sum(1 for v in sigs.values() if len(v) > 1)
+print(f"  ⑧ 重复确认检测: {len(passed)} 个通过 → {len(sigs)} 个不同超参组合"
+      + (f"，其中 {_dup} 个组合被重复确认过" if _dup else "，无重复"))
 for s, vs in sorted(sigs.items(), key=lambda x: -len(x[1])):
     if len(vs) > 1:
         print(f"     ⚠ {s} 被重复确认 {len(vs)} 次")

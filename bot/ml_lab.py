@@ -44,7 +44,8 @@ NEWSRC = "user_data/newsrc"
 #  数据加载
 # ═══════════════════════════════════════════════════════════
 
-def load_ohlcv(coins=None, min_days=400):
+def _load_ohlcv_feather(coins=None, min_days=400):
+    """旧路径：本地 feather 文件。保留作回退与对照。"""
     import glob
     out = {}
     for f in sorted(glob.glob(f"{PERP}/*-1d-futures.feather")):
@@ -58,6 +59,98 @@ def load_ohlcv(coins=None, min_days=400):
             continue
         out[s] = d[["open", "high", "low", "close", "volume"]]
     return out
+
+
+def _load_ohlcv_db(coins=None, min_days=400):
+    """新路径：从本地 PostgreSQL 的 quant.candles 读。
+
+    与 _load_ohlcv_feather 的返回契约完全一致：
+        {币符号: DataFrame(index=date[naive UTC], columns=[open,high,low,close,volume])}
+    币符号取自 pair 的第一段（"1000PEPE/USDT:USDT" → "1000PEPE"），
+    与 feather 文件名 "1000PEPE_USDT_USDT-1d-futures.feather" 的取法一致。
+    """
+    import sys as _sys
+    _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _ROOT not in _sys.path:
+        _sys.path.insert(0, _ROOT)
+    from data_store import DataStore
+
+    # 为什么不用 runtime_config.load_environment()：
+    #   bot/.venv 里没有 python-dotenv（只有根 .venv 有），
+    #   而 ML 迭代必须在 bot/.venv 里跑（它才有 torch）。
+    #   所以这里自己解析 .env，把 DSN 直接交给 DataStore，
+    #   避免为了一个 dotenv 往 ML 环境塞依赖。
+    def _read_env_dsn(root):
+        env_path = os.path.join(root, ".env")
+        if not os.path.exists(env_path):
+            return None
+        with open(env_path, encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip() == "QUANT_DATABASE_URL":
+                    return v.strip().strip('"').strip("'")
+        return None
+
+    _dsn = os.environ.get("QUANT_DATABASE_URL") or _read_env_dsn(_ROOT)
+
+    _EXCHANGE = os.environ.get("QUANT_OHLCV_EXCHANGE", "binance")
+    _MARKET   = os.environ.get("QUANT_OHLCV_MARKET", "futures")
+    _TF       = os.environ.get("QUANT_OHLCV_TIMEFRAME", "1d")
+    _TYPE     = os.environ.get("QUANT_OHLCV_CANDLE_TYPE", "futures")
+
+    ds = DataStore(dsn=_dsn) if _dsn else DataStore()
+    ds.initialize()
+    try:
+        with ds._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """select pair, timestamp, open, high, low, close, volume
+                         from quant.candles
+                        where exchange = %s and market = %s
+                          and timeframe = %s and candle_type = %s
+                        order by pair, timestamp""",
+                    (_EXCHANGE, _MARKET, _TF, _TYPE))
+                rows = cur.fetchall()
+    finally:
+        ds.close()
+
+    if not rows:
+        raise RuntimeError(
+            f"数据库 quant.candles 里没有 {_EXCHANGE}/{_MARKET}/{_TF}/{_TYPE} 的行情；"
+            f"先跑数据同步，或设置 QUANT_OHLCV_SOURCE=feather 回退到本地文件")
+
+    df = pd.DataFrame(rows)
+    df["coin"] = df["pair"].str.split("/").str[0]
+    df["date"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).dt.tz_localize(None)
+
+    out = {}
+    for coin, g in df.groupby("coin", sort=True):
+        if coins and coin not in coins:
+            continue
+        if len(g) < min_days:
+            continue
+        out[coin] = (g.sort_values("date")
+                      .set_index("date")[["open", "high", "low", "close", "volume"]])
+    return out
+
+
+def load_ohlcv(coins=None, min_days=400, source=None):
+    """行情加载入口。
+
+    source（或环境变量 QUANT_OHLCV_SOURCE）:
+        "database"（默认）→ 本地 PostgreSQL quant.candles
+        "feather"         → 旧的本地 feather 文件
+
+    数据库读失败时【不会静默回退】—— 直接抛错。
+    静默回退会让"用数据库迭代"这件事悄悄失效（第 58 轮那个 bug 的同类教训）。
+    """
+    src = (source or os.environ.get("QUANT_OHLCV_SOURCE") or "database").lower()
+    if src == "feather":
+        return _load_ohlcv_feather(coins, min_days)
+    return _load_ohlcv_db(coins, min_days)
 
 
 def load_funding():

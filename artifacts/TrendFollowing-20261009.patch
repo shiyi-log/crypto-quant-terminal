@@ -1,0 +1,729 @@
+diff --git a/bot/user_data/strategies/TrendFollowing.py b/bot/user_data/strategies/TrendFollowing.py
+index 712627c..d11f865 100644
+--- a/bot/user_data/strategies/TrendFollowing.py
++++ b/bot/user_data/strategies/TrendFollowing.py
+@@ -47,12 +47,20 @@ v2  本版本 —— 走查验证后的两项改进
+     target_exposure  0.30   组合目标敞口（总仓位占资金比例）
+ """
+ 
++from datetime import datetime, timezone
++from time import monotonic
++
+ import numpy as np
+ import pandas as pd
+ from pandas import DataFrame
+ 
++from freqtrade.enums import RunMode
++from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
++from freqtrade.loggers import logger as freqtrade_logger
+ from freqtrade.strategy import DecimalParameter, IntParameter, IStrategy
+ 
++logger = freqtrade_logger.getChild("TrendFollowing")
++
+ 
+ class TrendFollowing(IStrategy):
+     INTERFACE_VERSION = 3
+@@ -79,6 +87,33 @@ class TrendFollowing(IStrategy):
+     target_exposure = DecimalParameter(0.10, 0.60, default=0.30, decimals=2,
+                                        space="buy", optimize=True)
+ 
++    # 运行门控，不参与策略参数优化；历史回测不等待真实时间。
++    _startup_entry_delay_seconds = 30.0
++
++    def _is_live_mode(self) -> bool:
++        mode = self.config.get("runmode")
++        if mode is None and getattr(self, "dp", None) is not None:
++            mode = self.dp.runmode
++        return mode in (RunMode.LIVE, RunMode.DRY_RUN)
++
++    def bot_start(self, **kwargs) -> None:
++        self._strength_cache_key = None
++        self._strength_cache = {}
++        self._strength_snapshot = {}
++        self._entry_not_before = (
++            monotonic() + self._startup_entry_delay_seconds if self._is_live_mode() else None
++        )
++        logger.info(
++            "TrendFollowing startup entry_delay_seconds=%s live_mode=%s",
++            self._startup_entry_delay_seconds if self._is_live_mode() else 0,
++            self._is_live_mode(),
++        )
++
++    def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
++        # 此钩子在 analyze() 之前调用。只使上一轮快照失效，不能在这里宣告数据 ready。
++        self._strength_cache_key = None
++        self._strength_reference_time = current_time
++
+     # ══════════════════ 指标 ══════════════════
+ 
+     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+@@ -169,42 +204,138 @@ class TrendFollowing(IStrategy):
+ 
+     def _current_strengths(self) -> dict:
+         """
+-        取所有白名单币在【最后一根 K 线】上的突破强度。只用已收盘数据，无前视。
++        读取可审计的排名快照。live/dry 必须全池同一根已收盘 K 线就绪。
+ 
+-        ⚡ 缓存：confirm_trade_entry 对每个入场信号调用一次，
+-        每次都遍历全部白名单是 O(信号数 × 币数)。实测 100 币时最坏 1.5 秒。
+-        这里按「最后一根 K 线的时间戳」缓存 —— 同一根 K 线内只算一次，
+-        复杂度降到 O(币数)。
++        完整快照按真实 date、白名单及参数缓存，每轮分析前失效；
++        不完整快照不缓存，数据恢复后即使 date 不变也会重算。
++        历史模式沿用 DataProvider 的逐币历史切片，不套用 live 全池同步门控。
+         """
+-        # 先取一个币的时间戳作为缓存键（同一次分析周期内所有币一致）
+-        key = None
++        live = self._is_live_mode()
++        expected_candle = None
++        snapshot = {
++            "ready": False, "reason": "incomplete_data", "strengths": {},
++            "states": {}, "candle_dates": {}, "missing": {},
++        }
++        frames = {}
+         try:
+-            wl = self.dp.current_whitelist()
++            wl = list(self.dp.current_whitelist())
++            if live:
++                reference = pd.Timestamp(getattr(
++                    self, "_strength_reference_time", datetime.now(timezone.utc)
++                ))
++                reference = (reference.tz_localize("UTC") if reference.tzinfo is None
++                             else reference.tz_convert("UTC"))
++                expected_candle = pd.Timestamp(timeframe_to_prev_date(
++                    self.timeframe, reference.to_pydatetime()
++                )) - pd.Timedelta(minutes=timeframe_to_minutes(self.timeframe))
++            key = None
+             if wl:
+                 df0, _ = self.dp.get_analyzed_dataframe(wl[0], self.timeframe)
+-                if df0 is not None and not df0.empty:
+-                    key = str(df0.index[-1])
+-        except Exception:
+-            key = None
+-        if key is not None and getattr(self, "_strength_cache_key", None) == key:
+-            return self._strength_cache
+-
++                frames[wl[0]] = df0
++                required = {"date", "trend_state", "break_strength"}
++                if df0 is not None and not df0.empty and required.issubset(df0.columns):
++                    try:
++                        first_row = df0.iloc[-1]
++                        first_date = pd.Timestamp(first_row["date"])
++                        first_state = float(first_row["trend_state"])
++                        first_strength = (float(first_row["break_strength"])
++                                          if first_state != 0 else None)
++                        valid_first_row = (
++                            not pd.isna(first_date) and np.isfinite(first_state)
++                            and first_state in (-1.0, 0.0, 1.0)
++                            and (first_strength is None or np.isfinite(first_strength))
++                        )
++                        if valid_first_row:
++                            first_date = (first_date.tz_localize("UTC") if first_date.tzinfo is None
++                                          else first_date.tz_convert("UTC"))
++                            # 同轮首币字段失效或指标改变，也不能命中旧的 ready 快照。
++                            key = (first_date.isoformat(), tuple(wl), self.enter_period.value,
++                                   self.exit_period.value,
++                                   expected_candle.isoformat() if live else None,
++                                   first_state, first_strength)
++                    except (TypeError, ValueError, OverflowError):
++                        # 只禁用缓存，交给完整扫描按 pair 记原因并区分 live/历史模式。
++                        key = None
++            if key is not None and getattr(self, "_strength_cache_key", None) == key:
++                return self._strength_cache
++        except Exception as exc:
++            # 包括 dp 未安装、白名单不可读；绝不向入口返回部分排名。
++            snapshot["missing"]["whitelist"] = type(exc).__name__
++            self._strength_cache_key = None
++            self._strength_snapshot = snapshot
++            logger.warning(
++                "TrendFollowing ranking ready=False count=0 strengths={} "
++                "entry_blocked_all_live=%s missing=%s", live, snapshot["missing"],
++            )
++            return {}
++
++        snapshot["expected_candle"] = expected_candle.isoformat() if live else None
+         out = {}
+-        for pair in self.dp.current_whitelist():
++        for pair in wl:
+             try:
+-                df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+-            except Exception:
+-                continue
+-            if df is None or df.empty or "break_strength" not in df.columns:
+-                continue
+-            if df["trend_state"].iloc[-1] == 0:
+-                continue                      # 无趋势 → 不参与排名
+-            v = df["break_strength"].iloc[-1]
+-            if pd.notna(v) and np.isfinite(v):
++                if pair in frames:
++                    df = frames[pair]
++                else:
++                    df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
++                if df is None or df.empty:
++                    snapshot["missing"][pair] = "empty_dataframe"
++                    continue
++                required = {"date", "trend_state", "break_strength"}
++                if not required.issubset(df.columns):
++                    snapshot["missing"][pair] = "missing_columns:" + ",".join(
++                        sorted(required.difference(df.columns))
++                    )
++                    continue
++                row = df.iloc[-1]
++                candle = pd.Timestamp(row["date"])
++                if pd.isna(candle):
++                    snapshot["missing"][pair] = "invalid_candle_date"
++                    continue
++                candle = (candle.tz_localize("UTC") if candle.tzinfo is None
++                          else candle.tz_convert("UTC"))
++                snapshot["candle_dates"][pair] = candle.isoformat()
++                if live and candle != expected_candle:
++                    snapshot["missing"][pair] = "candle_not_current_closed"
++                    continue
++                state = float(row["trend_state"])
++                if not np.isfinite(state) or state not in (-1.0, 0.0, 1.0):
++                    snapshot["missing"][pair] = "invalid_trend_state"
++                    continue
++                snapshot["states"][pair] = state
++                if state == 0:
++                    continue
++                v = float(row["break_strength"])
++                if not np.isfinite(v):
++                    snapshot["missing"][pair] = "invalid_break_strength"
++                    continue
+                 out[pair] = float(v)
+-
+-        self._strength_cache_key = key
++            except Exception as exc:
++                snapshot["missing"][pair] = type(exc).__name__
++
++        if not wl:
++            snapshot["missing"]["whitelist"] = "empty_whitelist"
++        # 历史 DP 逐币推进，保留原有可见切片聚合；live 不容许拿局部池冒充完整排名。
++        complete = bool(wl) and not snapshot["missing"]
++        snapshot["ready"] = complete if live else bool(wl)
++        if live and not complete:
++            out = {}
++        snapshot["strengths"] = out
++        if snapshot["ready"]:
++            snapshot["reason"] = "ready" if out else "no_candidates"
++        self._strength_snapshot = snapshot
++        self._strength_cache_key = key if complete else None
+         self._strength_cache = out
++        logger.log(
++            20 if snapshot["ready"] else 30,
++            "TrendFollowing ranking ready=%s reason=%s count=%s whitelist_count=%s "
++            "strengths=%s candle_dates_utc=%s expected_candle_utc=%s "
++            "entry_blocked_all_live=%s missing=%s",
++            snapshot["ready"], snapshot["reason"], len(out), len(wl),
++            sorted(out.items(), key=lambda kv: (-kv[1], kv[0])),
++            snapshot["candle_dates"], snapshot["expected_candle"],
++            live and not snapshot["ready"], snapshot["missing"],
++        )
++
+         return out
+ 
+     def confirm_trade_entry(self, pair: str, order_type: str, amount: float,
+@@ -214,23 +345,51 @@ class TrendFollowing(IStrategy):
+         只在突破强度排名前 top_n 的币上开仓。
+         这是 v2 的核心改进：把「谁都能做」改成「只做最果断的突破」。
+         """
+-        strengths = self._current_strengths()
+-        n = self.top_n.value
+-
+-        # ⚠️ 原实现的 bug：pair 不在 strengths 里时 return True（放行），
+-        #    导致「取不到强度」或「无趋势」的币绕过排名直接开仓 ——
+-        #    实测把强度最低的 UNI/ZEC 放了进来，而 SOL/BTC 被拒。
+-        #    正确逻辑：只有进入前 N 名的才放行，其余一律拒绝。
+-        if len(strengths) <= n:
+-            return pair in strengths or len(strengths) == 0  # 候选不足时按有无强度判断
+-
+-        ranked = sorted(strengths.items(), key=lambda kv: -kv[1])
+-        top = {p for p, _ in ranked[:n]}
+-        allowed = pair in top
+-        if not allowed:
+-            self._last_denied = getattr(self, "_last_denied", {})
+-            self._last_denied[pair] = strengths.get(pair)
+-        return allowed
++        # Freqtrade 外层 wrapper 的异常默认值为 True，因此整个入口必须自行拒绝异常。
++        try:
++            self._strength_reference_time = current_time
++            live = self._is_live_mode()
++            if live and getattr(self, "_entry_not_before", None) is None:
++                # 防御未执行 bot_start 的调用路径，同样不能绕过首次等待。
++                self._entry_not_before = monotonic() + self._startup_entry_delay_seconds
++            remaining = max(0.0, self._entry_not_before - monotonic()) if live else 0.0
++            strengths = self._current_strengths()
++            n = self.top_n.value
++            ranked = sorted(strengths, key=lambda p: (-strengths[p], p))
++            rank = ranked.index(pair) + 1 if pair in strengths else None
++            snapshot = getattr(self, "_strength_snapshot", {})
++            allowed = rank is not None and rank <= n
++            reason = "top_n" if allowed else ("outside_top_n" if rank else "no_candidate")
++            if not strengths:
++                allowed = False
++                reason = snapshot.get("reason", "no_candidates")
++            if live and not snapshot.get("ready", False):
++                allowed, reason = False, "incomplete_data"
++            if allowed:
++                state = snapshot.get("states", {}).get(pair)
++                if state is None or (side == "long" and state <= 0) or (
++                    side == "short" and state >= 0
++                ) or side not in ("long", "short"):
++                    allowed, reason = False, "side_mismatch"
++            if remaining > 0:
++                allowed, reason = False, "startup_warmup"
++            logger.info(
++                "TrendFollowing entry pair=%s side=%s rank=%s count=%s top_n=%s "
++                "allowed=%s reason=%s candle_dates_utc=%s current_time=%s "
++                "startup_remaining_seconds=%.3f",
++                pair, side, rank, len(strengths), n, allowed, reason,
++                snapshot.get("candle_dates", {}), current_time, remaining,
++            )
++            if not allowed:
++                self._last_denied = getattr(self, "_last_denied", {})
++                self._last_denied[pair] = strengths.get(pair)
++            return allowed
++        except Exception:
++            logger.exception(
++                "TrendFollowing entry pair=%s side=%s rank=None allowed=False "
++                "reason=callback_error current_time=%s", pair, side, current_time,
++            )
++            return False
+ 
+     # ══════════════════ 仓位 ══════════════════
+ 
+diff --git a/tests/test_trend_following.py b/tests/test_trend_following.py
+new file mode 100644
+index 0000000..507b4c8
+--- /dev/null
++++ b/tests/test_trend_following.py
+@@ -0,0 +1,429 @@
++"""Verify entry ranking with real Freqtrade hooks; no trading process is started."""
++
++from __future__ import annotations
++
++from contextlib import contextmanager
++from datetime import datetime, timedelta, timezone
++import importlib.util
++from pathlib import Path
++import unittest
++from unittest.mock import patch
++
++try:
++    import pandas as pd
++    from freqtrade.enums import RunMode
++    from freqtrade.strategy import IStrategy
++    from freqtrade.strategy.strategy_wrapper import strategy_safe_wrapper
++except ImportError:
++    # The lightweight backend CI does not require the optional trading engine.
++    RunMode = None
++
++
++ROOT = Path(__file__).resolve().parents[1]
++NOW = datetime(2026, 10, 9, 8, 30, tzinfo=timezone.utc)
++CANDLE = datetime(2026, 10, 8, tzinfo=timezone.utc)
++PAIR = "BTC/USDT:USDT"
++OTHER = "ETH/USDT:USDT"
++LOGGER = "freqtrade.loggers.TrendFollowing"
++
++
++class FakeDP:
++    """Model the already-analyzed provider boundary, including delayed symbols."""
++
++    def __init__(self, frames, runmode, whitelist=None):
++        self.frames = frames
++        self.runmode = runmode
++        self.whitelist = list(frames) if whitelist is None else list(whitelist)
++        self.reads = []
++
++    def current_whitelist(self):
++        return list(self.whitelist)
++
++    def get_analyzed_dataframe(self, pair, timeframe):
++        self.reads.append((pair, timeframe))
++        frame = self.frames.get(pair)
++        if isinstance(frame, Exception):
++            raise frame
++        return frame, NOW
++
++
++@unittest.skipUnless(RunMode is not None, "optional Freqtrade dependencies unavailable")
++class TrendFollowingEntryTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        spec = importlib.util.spec_from_file_location(
++            "quant_trend_following_test", ROOT / "bot/user_data/strategies/TrendFollowing.py"
++        )
++        assert spec is not None and spec.loader is not None
++        cls.module = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(cls.module)
++
++    def setUp(self):
++        self.clock = self.enterContext(patch.object(self.module, "monotonic", return_value=100.0))
++        self.strategy = self.make_strategy()
++        # Tests other than the startup boundary run after the 30-second warmup.
++        self.clock.return_value = 130.0
++
++    @staticmethod
++    def frame(strength=0.5, state=1, date=CANDLE):
++        return pd.DataFrame({
++            "date": [pd.Timestamp(date)],
++            "trend_state": [state],
++            "break_strength": [strength],
++        })
++
++    def make_strategy(self, mode=None, frames=None, whitelist=None):
++        mode = RunMode.DRY_RUN if mode is None else mode
++        strategy = self.module.TrendFollowing({"runmode": mode})
++        self.assertIsInstance(strategy, IStrategy)
++        strategy.dp = FakeDP(
++            {PAIR: self.frame()} if frames is None else frames, mode, whitelist
++        )
++        strategy.bot_start()
++        return strategy
++
++    def confirm(self, pair=PAIR, side="long", current_time=NOW, strategy=None):
++        strategy = self.strategy if strategy is None else strategy
++        return strategy.confirm_trade_entry(
++            pair=pair,
++            order_type="limit",
++            amount=1.0,
++            rate=100.0,
++            time_in_force="GTC",
++            current_time=current_time,
++            entry_tag="trend_up" if side == "long" else "trend_dn",
++            side=side,
++        )
++
++    @staticmethod
++    @contextmanager
++    def parameter_value(parameter, value):
++        # Restore Freqtrade's .value property via its setter; it has no deleter.
++        original = parameter.value
++        parameter.value = value
++        try:
++            yield
++        finally:
++            parameter.value = original
++
++    def test_original_empty_strengths_bypass_is_closed(self):
++        with patch.object(self.strategy, "_current_strengths", return_value={}):
++            self.assertIs(self.confirm(), False)
++
++    def test_no_whitelist_denies_entry(self):
++        self.strategy.dp.whitelist = []
++        self.assertIs(self.confirm(), False)
++        self.assertFalse(self.strategy._strength_snapshot["ready"])
++
++    def test_missing_frame_cannot_create_partial_ranking_and_recovers_same_candle(self):
++        self.strategy.dp.whitelist.append(OTHER)
++        self.strategy.dp.frames[OTHER] = None
++        self.assertIs(self.confirm(), False)
++        self.assertFalse(self.strategy._strength_snapshot["ready"])
++        self.assertIn(OTHER, self.strategy._strength_snapshot["missing"])
++        # A failed snapshot must not cache BTC's RangeIndex/date as a valid ranking.
++        self.strategy.dp.frames[OTHER] = self.frame(strength=0.2)
++        self.assertIs(self.confirm(), True)
++        self.assertTrue(self.strategy._strength_snapshot["ready"])
++        self.assertEqual(set(self.strategy._current_strengths()), {PAIR, OTHER})
++
++    def test_provider_failure_denies_entry_and_recovers(self):
++        self.strategy.dp.frames[PAIR] = RuntimeError("analyzed data not ready")
++        self.assertIs(self.confirm(), False)
++        self.assertFalse(self.strategy._strength_snapshot["ready"])
++        self.strategy.dp.frames[PAIR] = self.frame()
++        self.assertIs(self.confirm(), True)
++
++    def test_empty_dataframe_denies_entry(self):
++        self.strategy.dp.frames[PAIR] = self.frame().iloc[:0]
++        self.assertIs(self.confirm(), False)
++        self.assertFalse(self.strategy._strength_snapshot["ready"])
++
++    def test_required_columns_missing_fail_closed(self):
++        for column in ("date", "trend_state", "break_strength"):
++            with self.subTest(column=column):
++                self.strategy.bot_loop_start(current_time=NOW)
++                self.strategy.dp.frames[PAIR] = self.frame().drop(columns=[column])
++                self.assertIs(self.confirm(), False)
++                self.assertFalse(self.strategy._strength_snapshot["ready"])
++                self.strategy.dp.frames[PAIR] = self.frame()
++                self.assertIs(self.confirm(), True)
++
++    def test_same_loop_cache_cannot_hide_missing_first_pair_columns(self):
++        for column in ("date", "trend_state", "break_strength"):
++            with self.subTest(column=column):
++                self.strategy.dp.frames[PAIR] = self.frame()
++                self.assertIs(self.confirm(), True)
++                self.assertTrue(self.strategy._strength_snapshot["ready"])
++                # Change the provider row after a valid cache hit, without a new loop.
++                self.strategy.dp.frames[PAIR] = self.frame().drop(columns=[column])
++                self.assertIs(self.confirm(), False)
++                self.assertFalse(self.strategy._strength_snapshot["ready"])
++                self.assertEqual(self.strategy._strength_snapshot["strengths"], {})
++
++    def test_same_loop_cache_cannot_hide_invalid_first_pair_values(self):
++        for column, value in (
++            ("trend_state", 2), ("trend_state", float("nan")), ("trend_state", "bad"),
++            ("break_strength", float("nan")), ("break_strength", float("inf")),
++            ("break_strength", "bad"),
++        ):
++            with self.subTest(column=column, value=value):
++                self.strategy.dp.frames[PAIR] = self.frame()
++                self.assertIs(self.confirm(), True)
++                changed = self.frame()
++                changed[column] = [value]
++                self.strategy.dp.frames[PAIR] = changed
++                self.assertIs(self.confirm(), False)
++                self.assertFalse(self.strategy._strength_snapshot["ready"])
++                self.assertEqual(self.strategy._strength_snapshot["strengths"], {})
++
++    def test_same_loop_valid_first_pair_state_changes_refresh_direction(self):
++        self.assertIs(self.confirm(), True)
++        self.strategy.dp.frames[PAIR] = self.frame(state=-1)
++        self.assertIs(self.confirm(side="long"), False)
++        self.assertIs(self.confirm(side="short"), True)
++        self.assertEqual(self.strategy._strength_snapshot["states"][PAIR], -1.0)
++        self.strategy.dp.frames[PAIR] = self.frame(state=0)
++        self.assertIs(self.confirm(side="short"), False)
++        self.assertTrue(self.strategy._strength_snapshot["ready"])
++        self.assertEqual(self.strategy._strength_snapshot["strengths"], {})
++        self.strategy.dp.frames[PAIR] = self.frame(state=1)
++        self.assertIs(self.confirm(side="long"), True)
++
++    def test_same_loop_valid_first_pair_strength_changes_refresh_top_n(self):
++        pairs = [PAIR] + [f"COIN{i:02}/USDT:USDT" for i in range(8)]
++        self.strategy.dp.whitelist = pairs
++        self.strategy.dp.frames = {
++            pair: self.frame(strength=9 - i) for i, pair in enumerate(pairs)
++        }
++        self.assertIs(self.confirm(), True)
++        self.strategy.dp.frames[PAIR] = self.frame(strength=0.1)
++        self.assertIs(self.confirm(), False)
++        self.assertTrue(self.strategy._strength_snapshot["ready"])
++        self.assertEqual(self.strategy._strength_snapshot["strengths"][PAIR], 0.1)
++        self.strategy.dp.frames[PAIR] = self.frame(strength=9)
++        self.assertIs(self.confirm(), True)
++        self.assertEqual(self.strategy._strength_snapshot["strengths"][PAIR], 9.0)
++
++    def test_invalid_active_strengths_fail_closed(self):
++        for value in (None, float("nan"), float("inf"), float("-inf"), "bad"):
++            with self.subTest(value=value):
++                self.strategy.bot_loop_start(current_time=NOW)
++                self.strategy.dp.frames[PAIR] = self.frame(strength=value)
++                self.assertIs(self.confirm(), False)
++                self.assertFalse(self.strategy._strength_snapshot["ready"])
++
++    def test_invalid_trend_states_fail_closed(self):
++        for value in (None, float("nan"), float("inf"), "bad", 2):
++            with self.subTest(value=value):
++                self.strategy.bot_loop_start(current_time=NOW)
++                self.strategy.dp.frames[PAIR] = self.frame(state=value)
++                self.assertIs(self.confirm(), False)
++                self.assertFalse(self.strategy._strength_snapshot["ready"])
++
++    def test_stale_unclosed_or_invalid_daily_dates_fail_closed(self):
++        for date in (CANDLE - timedelta(days=1), CANDLE + timedelta(days=1), pd.NaT, "bad"):
++            with self.subTest(date=date):
++                self.strategy.bot_loop_start(current_time=NOW)
++                frame = self.frame()
++                frame["date"] = [date]
++                self.strategy.dp.frames[PAIR] = frame
++                self.assertIs(self.confirm(), False)
++                self.assertFalse(self.strategy._strength_snapshot["ready"])
++
++    def test_mixed_daily_dates_fail_closed_and_recovery_is_not_cached_out(self):
++        self.strategy.dp.whitelist.append(OTHER)
++        self.strategy.dp.frames[OTHER] = self.frame(date=CANDLE - timedelta(days=1))
++        self.assertIs(self.confirm(), False)
++        self.strategy.dp.frames[OTHER] = self.frame(strength=0.2)
++        self.assertIs(self.confirm(), True)
++
++    def test_range_index_reuse_does_not_hide_a_new_daily_candle(self):
++        self.assertIs(self.confirm(), True)
++        next_day = NOW + timedelta(days=1)
++        self.strategy.dp.frames[PAIR] = self.frame(
++            state=0, date=CANDLE + timedelta(days=1)
++        )
++        # Both frames have RangeIndex([0]); the actual UTC date must be the key.
++        self.assertIs(self.confirm(current_time=next_day), False)
++        self.assertTrue(self.strategy._strength_snapshot["ready"])
++        self.assertEqual(self.strategy._strength_snapshot["strengths"], {})
++
++    def test_utc_day_boundary_does_not_reuse_a_previously_valid_stale_cache(self):
++        self.assertIs(self.confirm(), True)
++        self.assertIs(self.confirm(current_time=NOW + timedelta(days=1)), False)
++        self.assertFalse(self.strategy._strength_snapshot["ready"])
++
++    def test_beijing_eight_am_is_the_utc_daily_boundary(self):
++        beijing = timezone(timedelta(hours=8))
++        before_close = datetime(2026, 10, 9, 7, 59, 59, tzinfo=beijing)
++        just_closed = datetime(2026, 10, 9, 8, 0, tzinfo=beijing)
++        self.assertIs(self.confirm(current_time=before_close), False)
++        self.assertIs(self.confirm(current_time=just_closed), True)
++
++    def test_whitelist_changes_recalculate_same_candle(self):
++        self.assertIs(self.confirm(), True)
++        self.strategy.dp.whitelist.append(OTHER)
++        self.strategy.dp.frames[OTHER] = None
++        self.assertIs(self.confirm(), False)
++        self.strategy.dp.frames[OTHER] = self.frame()
++        self.assertIs(self.confirm(pair=OTHER), True)
++
++    def test_parameter_changes_recalculate_same_candle(self):
++        for parameter in ("enter_period", "exit_period"):
++            with self.subTest(parameter=parameter):
++                self.strategy.bot_loop_start(current_time=NOW)
++                self.strategy.dp.frames[PAIR] = self.frame()
++                self.assertIs(self.confirm(), True)
++                self.strategy.dp.frames[PAIR] = self.frame(state=0)
++                value = getattr(self.strategy, parameter).value
++                with self.parameter_value(getattr(self.strategy, parameter), value + 1):
++                    self.assertIs(self.confirm(), False)
++                    self.assertTrue(self.strategy._strength_snapshot["ready"])
++
++    def test_new_bot_loop_refreshes_same_candle_snapshot(self):
++        self.assertIs(self.confirm(), True)
++        self.strategy.dp.frames[PAIR] = RuntimeError("provider temporarily unavailable")
++        self.strategy.bot_loop_start(current_time=NOW)
++        self.assertIs(self.confirm(), False)
++        self.assertFalse(self.strategy._strength_snapshot["ready"])
++
++    def test_complete_pool_without_trends_is_distinct_from_missing_data(self):
++        self.strategy.dp.frames[PAIR] = self.frame(state=0)
++        self.assertIs(self.confirm(), False)
++        snapshot = self.strategy._strength_snapshot
++        self.assertTrue(snapshot["ready"])
++        self.assertEqual(snapshot["strengths"], {})
++        self.assertFalse(snapshot["missing"])
++        no_trend_reason = snapshot["reason"]
++        self.strategy.bot_loop_start(current_time=NOW)
++        self.strategy.dp.frames[PAIR] = None
++        self.assertIs(self.confirm(), False)
++        self.assertFalse(self.strategy._strength_snapshot["ready"])
++        self.assertNotEqual(no_trend_reason, self.strategy._strength_snapshot["reason"])
++
++    def test_top_n_boundary_uses_strengths_and_never_admits_unranked_pair(self):
++        pairs = [f"COIN{i:02}/USDT:USDT" for i in range(10)]
++        self.strategy.dp.whitelist = pairs
++        self.strategy.dp.frames = {
++            pair: self.frame(strength=10 - i) for i, pair in enumerate(pairs)
++        }
++        for i, pair in enumerate(pairs):
++            with self.subTest(rank=i + 1):
++                self.assertIs(self.confirm(pair=pair), i < 8)
++        self.assertIs(self.confirm(pair="UNRANKED/USDT:USDT"), False)
++        with self.parameter_value(self.strategy.top_n, 3):
++            self.assertIs(self.confirm(pair=pairs[2]), True)
++            self.assertIs(self.confirm(pair=pairs[3]), False)
++
++    def test_equal_strength_ranking_is_stable_at_top_n_boundary(self):
++        pairs = [f"COIN{i:02}/USDT:USDT" for i in range(10)]
++        self.strategy.dp.whitelist = list(pairs)
++        self.strategy.dp.frames = {pair: self.frame() for pair in pairs}
++        first = [pair for pair in pairs if self.confirm(pair=pair)]
++        self.strategy.bot_loop_start(current_time=NOW)
++        self.strategy.dp.whitelist.reverse()
++        second = [pair for pair in pairs if self.confirm(pair=pair)]
++        self.assertEqual(first, pairs[:8])
++        self.assertEqual(second, first)
++
++    def test_fewer_candidates_only_admits_existing_ranked_pair(self):
++        self.assertIs(self.confirm(), True)
++        self.assertIs(self.confirm(pair=OTHER), False)
++
++    def test_side_must_match_snapshot_trend_direction(self):
++        for state, allowed_side, rejected_side in ((1, "long", "short"), (-1, "short", "long")):
++            with self.subTest(state=state):
++                self.strategy.bot_loop_start(current_time=NOW)
++                self.strategy.dp.frames[PAIR] = self.frame(state=state)
++                self.assertIs(self.confirm(side=allowed_side), True)
++                self.assertIs(self.confirm(side=rejected_side), False)
++                self.assertIs(self.confirm(side="unknown"), False)
++
++    def test_unexpected_ranking_error_cannot_trigger_freqtrade_default_true(self):
++        wrapped = strategy_safe_wrapper(
++            self.strategy.confirm_trade_entry, default_retval=True
++        )
++        for error in (ValueError("bad snapshot"), RuntimeError("provider exploded")):
++            with self.subTest(error=error):
++                with patch.object(self.strategy, "_current_strengths", side_effect=error):
++                    self.assertIs(wrapped(
++                        pair=PAIR, order_type="limit", amount=1.0, rate=100.0,
++                        time_in_force="GTC", current_time=NOW, entry_tag="trend_up", side="long"
++                    ), False)
++
++    def test_startup_guard_in_dry_run_and_live_before_and_at_deadline(self):
++        for mode in (RunMode.DRY_RUN, RunMode.LIVE):
++            with self.subTest(mode=mode):
++                self.clock.return_value = 100.0
++                strategy = self.make_strategy(mode=mode)
++                self.clock.return_value = 129.999
++                self.assertIs(self.confirm(strategy=strategy), False)
++                self.clock.return_value = 130.0
++                self.assertIs(self.confirm(strategy=strategy), True)
++
++    def test_warmup_elapsed_does_not_bypass_unready_data(self):
++        self.clock.return_value = 10000.0
++        self.strategy.dp.frames[PAIR] = None
++        self.assertIs(self.confirm(), False)
++
++    def test_backtest_and_hyperopt_do_not_wait_or_require_live_pool_synchrony(self):
++        for mode in (RunMode.BACKTEST, RunMode.HYPEROPT):
++            with self.subTest(mode=mode):
++                self.clock.return_value = 100.0
++                strategy = self.make_strategy(
++                    mode=mode,
++                    frames={PAIR: self.frame(date=CANDLE - timedelta(days=20)), OTHER: None},
++                )
++                # Historical DP supplies a time-sliced subset, unlike a live startup.
++                self.assertIs(self.confirm(strategy=strategy), True)
++
++    def test_invalid_first_pair_does_not_discard_valid_historical_slice(self):
++        for mode in (RunMode.BACKTEST, RunMode.HYPEROPT, RunMode.DRY_RUN, RunMode.LIVE):
++            for column in ("date", "trend_state", "break_strength"):
++                for value in (None, "bad"):
++                    with self.subTest(mode=mode, column=column, value=value):
++                        changed = self.frame()
++                        changed[column] = [value]
++                        self.clock.return_value = 100.0
++                        strategy = self.make_strategy(
++                            mode=mode,
++                            frames={PAIR: changed, OTHER: self.frame(strength=0.25)},
++                        )
++                        self.clock.return_value = 130.0
++                        historical = mode in (RunMode.BACKTEST, RunMode.HYPEROPT)
++                        self.assertIs(self.confirm(pair=OTHER, strategy=strategy), historical)
++                        self.assertIn(PAIR, strategy._strength_snapshot["missing"])
++                        self.assertIs(strategy._strength_snapshot["ready"], historical)
++
++    def test_ranking_and_decision_logs_show_strength_rank_and_utc_candle(self):
++        with self.assertLogs(LOGGER, level="INFO") as logs:
++            self.assertIs(self.confirm(), True)
++            self.assertIs(self.confirm(pair=OTHER), False)
++        output = "\n".join(logs.output)
++        for value in (PAIR, OTHER, "2026-10-08", "0.5", "rank=1", "top_n=8"):
++            self.assertIn(value, output)
++        self.assertIn("allowed=True", output)
++        self.assertIn("allowed=False", output)
++        self.assertIn("reason=", output)
++
++    def test_empty_ranking_is_logged_with_data_readiness(self):
++        self.strategy.dp.frames[PAIR] = None
++        with self.assertLogs(LOGGER, level="INFO") as logs:
++            self.assertIs(self.confirm(), False)
++        output = "\n".join(logs.output)
++        self.assertIn(PAIR, output)
++        self.assertIn("ready=False", output)
++        self.assertIn("strengths=[]", output)
++        self.assertIn("count=0", output)
++        self.assertIn("allowed=False", output)
++
++    def test_default_strategy_parameters_remain_unchanged(self):
++        self.assertEqual(self.strategy.enter_period.value, 20)
++        self.assertEqual(self.strategy.exit_period.value, 20)
++        self.assertEqual(self.strategy.top_n.value, 8)
++        self.assertEqual(self.strategy.target_exposure.value, 0.30)
++
++
++if __name__ == "__main__":
++    unittest.main()

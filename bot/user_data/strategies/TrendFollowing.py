@@ -47,11 +47,19 @@ v2  本版本 —— 走查验证后的两项改进
     target_exposure  0.30   组合目标敞口（总仓位占资金比例）
 """
 
+from datetime import datetime, timezone
+from time import monotonic
+
 import numpy as np
 import pandas as pd
 from pandas import DataFrame
 
+from freqtrade.enums import RunMode
+from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
+from freqtrade.loggers import logger as freqtrade_logger
 from freqtrade.strategy import DecimalParameter, IntParameter, IStrategy
+
+logger = freqtrade_logger.getChild("TrendFollowing")
 
 
 class TrendFollowing(IStrategy):
@@ -78,6 +86,33 @@ class TrendFollowing(IStrategy):
     top_n = IntParameter(3, 15, default=8, space="buy", optimize=True)
     target_exposure = DecimalParameter(0.10, 0.60, default=0.30, decimals=2,
                                        space="buy", optimize=True)
+
+    # 运行门控，不参与策略参数优化；历史回测不等待真实时间。
+    _startup_entry_delay_seconds = 30.0
+
+    def _is_live_mode(self) -> bool:
+        mode = self.config.get("runmode")
+        if mode is None and getattr(self, "dp", None) is not None:
+            mode = self.dp.runmode
+        return mode in (RunMode.LIVE, RunMode.DRY_RUN)
+
+    def bot_start(self, **kwargs) -> None:
+        self._strength_cache_key = None
+        self._strength_cache = {}
+        self._strength_snapshot = {}
+        self._entry_not_before = (
+            monotonic() + self._startup_entry_delay_seconds if self._is_live_mode() else None
+        )
+        logger.info(
+            "TrendFollowing startup entry_delay_seconds=%s live_mode=%s",
+            self._startup_entry_delay_seconds if self._is_live_mode() else 0,
+            self._is_live_mode(),
+        )
+
+    def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
+        # 此钩子在 analyze() 之前调用。只使上一轮快照失效，不能在这里宣告数据 ready。
+        self._strength_cache_key = None
+        self._strength_reference_time = current_time
 
     # ══════════════════ 指标 ══════════════════
 
@@ -169,42 +204,138 @@ class TrendFollowing(IStrategy):
 
     def _current_strengths(self) -> dict:
         """
-        取所有白名单币在【最后一根 K 线】上的突破强度。只用已收盘数据，无前视。
+        读取可审计的排名快照。live/dry 必须全池同一根已收盘 K 线就绪。
 
-        ⚡ 缓存：confirm_trade_entry 对每个入场信号调用一次，
-        每次都遍历全部白名单是 O(信号数 × 币数)。实测 100 币时最坏 1.5 秒。
-        这里按「最后一根 K 线的时间戳」缓存 —— 同一根 K 线内只算一次，
-        复杂度降到 O(币数)。
+        完整快照按真实 date、白名单及参数缓存，每轮分析前失效；
+        不完整快照不缓存，数据恢复后即使 date 不变也会重算。
+        历史模式沿用 DataProvider 的逐币历史切片，不套用 live 全池同步门控。
         """
-        # 先取一个币的时间戳作为缓存键（同一次分析周期内所有币一致）
-        key = None
+        live = self._is_live_mode()
+        expected_candle = None
+        snapshot = {
+            "ready": False, "reason": "incomplete_data", "strengths": {},
+            "states": {}, "candle_dates": {}, "missing": {},
+        }
+        frames = {}
         try:
-            wl = self.dp.current_whitelist()
+            wl = list(self.dp.current_whitelist())
+            if live:
+                reference = pd.Timestamp(getattr(
+                    self, "_strength_reference_time", datetime.now(timezone.utc)
+                ))
+                reference = (reference.tz_localize("UTC") if reference.tzinfo is None
+                             else reference.tz_convert("UTC"))
+                expected_candle = pd.Timestamp(timeframe_to_prev_date(
+                    self.timeframe, reference.to_pydatetime()
+                )) - pd.Timedelta(minutes=timeframe_to_minutes(self.timeframe))
+            key = None
             if wl:
                 df0, _ = self.dp.get_analyzed_dataframe(wl[0], self.timeframe)
-                if df0 is not None and not df0.empty:
-                    key = str(df0.index[-1])
-        except Exception:
-            key = None
-        if key is not None and getattr(self, "_strength_cache_key", None) == key:
-            return self._strength_cache
+                frames[wl[0]] = df0
+                required = {"date", "trend_state", "break_strength"}
+                if df0 is not None and not df0.empty and required.issubset(df0.columns):
+                    try:
+                        first_row = df0.iloc[-1]
+                        first_date = pd.Timestamp(first_row["date"])
+                        first_state = float(first_row["trend_state"])
+                        first_strength = (float(first_row["break_strength"])
+                                          if first_state != 0 else None)
+                        valid_first_row = (
+                            not pd.isna(first_date) and np.isfinite(first_state)
+                            and first_state in (-1.0, 0.0, 1.0)
+                            and (first_strength is None or np.isfinite(first_strength))
+                        )
+                        if valid_first_row:
+                            first_date = (first_date.tz_localize("UTC") if first_date.tzinfo is None
+                                          else first_date.tz_convert("UTC"))
+                            # 同轮首币字段失效或指标改变，也不能命中旧的 ready 快照。
+                            key = (first_date.isoformat(), tuple(wl), self.enter_period.value,
+                                   self.exit_period.value,
+                                   expected_candle.isoformat() if live else None,
+                                   first_state, first_strength)
+                    except (TypeError, ValueError, OverflowError):
+                        # 只禁用缓存，交给完整扫描按 pair 记原因并区分 live/历史模式。
+                        key = None
+            if key is not None and getattr(self, "_strength_cache_key", None) == key:
+                return self._strength_cache
+        except Exception as exc:
+            # 包括 dp 未安装、白名单不可读；绝不向入口返回部分排名。
+            snapshot["missing"]["whitelist"] = type(exc).__name__
+            self._strength_cache_key = None
+            self._strength_snapshot = snapshot
+            logger.warning(
+                "TrendFollowing ranking ready=False count=0 strengths={} "
+                "entry_blocked_all_live=%s missing=%s", live, snapshot["missing"],
+            )
+            return {}
 
+        snapshot["expected_candle"] = expected_candle.isoformat() if live else None
         out = {}
-        for pair in self.dp.current_whitelist():
+        for pair in wl:
             try:
-                df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-            except Exception:
-                continue
-            if df is None or df.empty or "break_strength" not in df.columns:
-                continue
-            if df["trend_state"].iloc[-1] == 0:
-                continue                      # 无趋势 → 不参与排名
-            v = df["break_strength"].iloc[-1]
-            if pd.notna(v) and np.isfinite(v):
+                if pair in frames:
+                    df = frames[pair]
+                else:
+                    df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+                if df is None or df.empty:
+                    snapshot["missing"][pair] = "empty_dataframe"
+                    continue
+                required = {"date", "trend_state", "break_strength"}
+                if not required.issubset(df.columns):
+                    snapshot["missing"][pair] = "missing_columns:" + ",".join(
+                        sorted(required.difference(df.columns))
+                    )
+                    continue
+                row = df.iloc[-1]
+                candle = pd.Timestamp(row["date"])
+                if pd.isna(candle):
+                    snapshot["missing"][pair] = "invalid_candle_date"
+                    continue
+                candle = (candle.tz_localize("UTC") if candle.tzinfo is None
+                          else candle.tz_convert("UTC"))
+                snapshot["candle_dates"][pair] = candle.isoformat()
+                if live and candle != expected_candle:
+                    snapshot["missing"][pair] = "candle_not_current_closed"
+                    continue
+                state = float(row["trend_state"])
+                if not np.isfinite(state) or state not in (-1.0, 0.0, 1.0):
+                    snapshot["missing"][pair] = "invalid_trend_state"
+                    continue
+                snapshot["states"][pair] = state
+                if state == 0:
+                    continue
+                v = float(row["break_strength"])
+                if not np.isfinite(v):
+                    snapshot["missing"][pair] = "invalid_break_strength"
+                    continue
                 out[pair] = float(v)
+            except Exception as exc:
+                snapshot["missing"][pair] = type(exc).__name__
 
-        self._strength_cache_key = key
+        if not wl:
+            snapshot["missing"]["whitelist"] = "empty_whitelist"
+        # 历史 DP 逐币推进，保留原有可见切片聚合；live 不容许拿局部池冒充完整排名。
+        complete = bool(wl) and not snapshot["missing"]
+        snapshot["ready"] = complete if live else bool(wl)
+        if live and not complete:
+            out = {}
+        snapshot["strengths"] = out
+        if snapshot["ready"]:
+            snapshot["reason"] = "ready" if out else "no_candidates"
+        self._strength_snapshot = snapshot
+        self._strength_cache_key = key if complete else None
         self._strength_cache = out
+        logger.log(
+            20 if snapshot["ready"] else 30,
+            "TrendFollowing ranking ready=%s reason=%s count=%s whitelist_count=%s "
+            "strengths=%s candle_dates_utc=%s expected_candle_utc=%s "
+            "entry_blocked_all_live=%s missing=%s",
+            snapshot["ready"], snapshot["reason"], len(out), len(wl),
+            sorted(out.items(), key=lambda kv: (-kv[1], kv[0])),
+            snapshot["candle_dates"], snapshot["expected_candle"],
+            live and not snapshot["ready"], snapshot["missing"],
+        )
+
         return out
 
     def confirm_trade_entry(self, pair: str, order_type: str, amount: float,
@@ -214,23 +345,51 @@ class TrendFollowing(IStrategy):
         只在突破强度排名前 top_n 的币上开仓。
         这是 v2 的核心改进：把「谁都能做」改成「只做最果断的突破」。
         """
-        strengths = self._current_strengths()
-        n = self.top_n.value
-
-        # ⚠️ 原实现的 bug：pair 不在 strengths 里时 return True（放行），
-        #    导致「取不到强度」或「无趋势」的币绕过排名直接开仓 ——
-        #    实测把强度最低的 UNI/ZEC 放了进来，而 SOL/BTC 被拒。
-        #    正确逻辑：只有进入前 N 名的才放行，其余一律拒绝。
-        if len(strengths) <= n:
-            return pair in strengths or len(strengths) == 0  # 候选不足时按有无强度判断
-
-        ranked = sorted(strengths.items(), key=lambda kv: -kv[1])
-        top = {p for p, _ in ranked[:n]}
-        allowed = pair in top
-        if not allowed:
-            self._last_denied = getattr(self, "_last_denied", {})
-            self._last_denied[pair] = strengths.get(pair)
-        return allowed
+        # Freqtrade 外层 wrapper 的异常默认值为 True，因此整个入口必须自行拒绝异常。
+        try:
+            self._strength_reference_time = current_time
+            live = self._is_live_mode()
+            if live and getattr(self, "_entry_not_before", None) is None:
+                # 防御未执行 bot_start 的调用路径，同样不能绕过首次等待。
+                self._entry_not_before = monotonic() + self._startup_entry_delay_seconds
+            remaining = max(0.0, self._entry_not_before - monotonic()) if live else 0.0
+            strengths = self._current_strengths()
+            n = self.top_n.value
+            ranked = sorted(strengths, key=lambda p: (-strengths[p], p))
+            rank = ranked.index(pair) + 1 if pair in strengths else None
+            snapshot = getattr(self, "_strength_snapshot", {})
+            allowed = rank is not None and rank <= n
+            reason = "top_n" if allowed else ("outside_top_n" if rank else "no_candidate")
+            if not strengths:
+                allowed = False
+                reason = snapshot.get("reason", "no_candidates")
+            if live and not snapshot.get("ready", False):
+                allowed, reason = False, "incomplete_data"
+            if allowed:
+                state = snapshot.get("states", {}).get(pair)
+                if state is None or (side == "long" and state <= 0) or (
+                    side == "short" and state >= 0
+                ) or side not in ("long", "short"):
+                    allowed, reason = False, "side_mismatch"
+            if remaining > 0:
+                allowed, reason = False, "startup_warmup"
+            logger.info(
+                "TrendFollowing entry pair=%s side=%s rank=%s count=%s top_n=%s "
+                "allowed=%s reason=%s candle_dates_utc=%s current_time=%s "
+                "startup_remaining_seconds=%.3f",
+                pair, side, rank, len(strengths), n, allowed, reason,
+                snapshot.get("candle_dates", {}), current_time, remaining,
+            )
+            if not allowed:
+                self._last_denied = getattr(self, "_last_denied", {})
+                self._last_denied[pair] = strengths.get(pair)
+            return allowed
+        except Exception:
+            logger.exception(
+                "TrendFollowing entry pair=%s side=%s rank=None allowed=False "
+                "reason=callback_error current_time=%s", pair, side, current_time,
+            )
+            return False
 
     # ══════════════════ 仓位 ══════════════════
 

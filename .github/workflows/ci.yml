@@ -60,10 +60,13 @@ jobs:
         run: >-
           uv run --frozen --group dev python -m compileall -q
           auth_service.py serve_web.py runtime_config.py manage.py
-          data_store.py data_sync.py market_stream.py tests
+          data_store.py data_sync.py market_stream.py market_live.py candle_archive.py tests
 
       - name: 检查新增后端代码质量
-        run: uv run --frozen --group dev ruff check
+        run: >-
+          uv run --frozen --group dev ruff check
+          auth_service.py manage.py runtime_config.py data_store.py data_sync.py
+          market_stream.py market_live.py candle_archive.py tests
 
       - name: 执行单元与数据库集成测试
         run: |

@@ -42,6 +42,8 @@ uv run python manage.py start
 
 默认前端端口 8888，认证代理 8890，Freqtrade 8889，研究服务 8891。公网部署前应自行配置认证、网络隔离与交易所权限。
 
+行情图表通过 `market-live`（默认 8892）共享 WebSocket 订阅当前选币及周期，首次加载历史后增量更新当前 K 线，策略信号独立刷新；断线重连后补取历史。实时显示不等待 PostgreSQL 归档。连接、数据新鲜度与事件延迟在图表中显示，配置见 [运维说明](docs/OPERATIONS.md)。
+
 ## 许可证与上游
 
 根目录保留项目现有 GNU GPL v3 许可证；Vue Vben Admin 保留其 MIT 许可证。上游来源及版本记录见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

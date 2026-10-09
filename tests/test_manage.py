@@ -56,7 +56,7 @@ class ProcessIdentityTests(unittest.TestCase):
             for spec in self.specs.values():
                 self.assertFalse(manage.matches_process(spec, command, self.root))
                 self.assertFalse(manage.matches_process(spec, command, self.root / "bot"))
-        self.assertEqual(set(self.specs), {"auth", "web", "api", "webserver", "sync", "market"})
+        self.assertEqual(set(self.specs), {"auth", "web", "api", "webserver", "sync", "market", "market-live"})
 
     def test_start_reuses_existing_service(self):
         with patch("manage.find_processes", return_value=[42]), \

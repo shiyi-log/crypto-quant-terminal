@@ -62,6 +62,10 @@ def services(root: Path = ROOT) -> dict[str, Service]:
                 root, root / "data_sync.py"),
         Service("market", "逐笔与盘口采集", (python, "-u", str(root / "market_stream.py")),
                 root, root / "market_stream.py"),
+        Service("market-live", "实时 K 线推送", (python, "-u", str(root / "market_live.py"),
+                "--port", os.getenv("QUANT_LIVE_PORT", "8892")), root,
+                root / "market_live.py", port=int(os.getenv("QUANT_LIVE_PORT", "8892")),
+                health_path="/health"),
     ]
     return {spec.name: spec for spec in specs}
 
@@ -502,7 +506,7 @@ def deploy_frontend(root: Path = ROOT, api_url: str | None = None) -> Path | Non
 def audit(root: Path = ROOT, skip_frontend: bool = False) -> int:
     # 只检查运维与业务数据层，避免审计命令调用模型研究或训练入口。
     names = ("manage.py", "runtime_config.py", "auth_service.py", "serve_web.py", "shot.py",
-             "data_store.py", "data_sync.py", "market_stream.py")
+             "data_store.py", "data_sync.py", "market_stream.py", "market_live.py", "candle_archive.py")
     for name in names:
         file = root / name
         if file.is_file():

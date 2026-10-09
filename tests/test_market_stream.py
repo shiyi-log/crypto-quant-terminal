@@ -210,6 +210,27 @@ class CollectorTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.temporary.cleanup()
 
+    async def test_connection_recovery_clears_only_recovered_error(self):
+        status = self.collector.status
+        status["connection_errors"] = {"trades": "成交断开", "orderbooks": "盘口断开"}
+        self.collector.record_error("盘口断开")
+        self.collector.connection_recovered("orderbooks")
+        self.assertEqual(status["last_error"], "成交断开")
+        self.assertEqual(status["state"], "reconnecting")
+        self.collector.connection_recovered("trades")
+        self.assertIsNone(status["last_error"])
+        self.assertIsNone(status["last_error_at"])
+        self.assertEqual(status["state"], "running")
+
+    async def test_connection_recovery_preserves_other_errors(self):
+        status = self.collector.status
+        status["connection_errors"]["orderbooks"] = "盘口断开"
+        status["state"] = "storage_error"
+        self.collector.record_error("暂存层故障")
+        self.collector.connection_recovered("orderbooks")
+        self.assertEqual(status["last_error"], "暂存层故障")
+        self.assertEqual(status["state"], "storage_error")
+
     async def test_database_failure_preserves_batch_and_replays_on_recovery(self):
         events = [normalize_message(trade(), self.config, 100)]
         await self.collector.persist_batch(events)

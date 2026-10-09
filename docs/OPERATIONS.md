@@ -36,9 +36,9 @@ uv run python manage.py restart
 可在命令后指定一个或多个服务，避免重启整个系统：
 
 ```text
-uv run python manage.py start sync market
+uv run python manage.py start sync market market-live
 uv run python manage.py restart auth
-uv run python manage.py status auth web api webserver sync market
+uv run python manage.py status auth web api webserver sync market market-live
 ```
 
 | 服务名 | 作用 | 地址或配置 |
@@ -49,10 +49,13 @@ uv run python manage.py status auth web api webserver sync market
 | `webserver` | Freqtrade 回测与下载 API | `127.0.0.1:8891`，`bot/user_data/config_trend_webserver.json` |
 | `sync` | 文件与旧数据库增量接入 PostgreSQL | `data_sync.py --daemon` |
 | `market` | 逐笔成交与盘口持续采集 | `market_stream.py` |
+| `market-live` | 按页面选币及周期推送实时 K 线 | `127.0.0.1:8892`，`market_live.py` |
 
 `start` 复用已运行的本项目服务。`stop` 在发信号前核验进程入口和实际工作目录，使用 `SIGTERM` 等待正常退出；如果进程超时，命令报告失败并保留进程。端口属于其他进程时，命令会中止，不会按端口强制终止服务。管理 PID 保存在 `logs/manage-*.pid`，日志为 `logs/{服务名}.log`。
 
 前端的一键登录入口继续保留。`QUANT_STREAM_ENABLED=false` 会使启动命令跳过逐笔与盘口采集。采集交易对通过 `QUANT_STREAM_PAIRS` 指定，默认 BTC 与 ETH；通过 `QUANT_STREAM_MARKET` 选择 `futures` 或 `spot`。
+
+行情图表实时连接独立于逐笔/盘口归档。`market-live` 根据所有打开图表的交易对及周期共享订阅交易所 K 线，不受 `QUANT_STREAM_PAIRS` 的 BTC/ETH 范围限制；没有页面订阅时关闭上游连接。`QUANT_LIVE_PORT` 可更改服务端口。`/api/locals/market-stream-info` 需登录，返回浏览器连接地址；本机默认 `ws://127.0.0.1:8892/ws/market`。外部 HTTPS 部署时配置 `QUANT_LIVE_WS_URL=wss://你的域名/行情路径`，由反向代理将该路径转发到本机 8892，并支持 WebSocket Upgrade。登录令牌在连接后的首条认证消息中发送，不放入 URL。
 
 ## 构建与发布前端
 

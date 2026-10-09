@@ -10,6 +10,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from data_store import DataStore, _number, _timestamp
+from runtime_config import load_environment
+
+
+load_environment()
 
 
 class DataStoreValidationTests(unittest.TestCase):
@@ -34,6 +38,18 @@ class DataStoreValidationTests(unittest.TestCase):
 class DataStoreIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        from psycopg.conninfo import conninfo_to_dict
+        test_config = conninfo_to_dict(os.environ["QUANT_TEST_DATABASE_URL"])
+        production_dsn = os.environ.get("QUANT_DATABASE_URL")
+        production_config = conninfo_to_dict(production_dsn) if production_dsn else {}
+        # 即使隔离 schema，也拒绝误连生产数据库。比较位置时不输出连接凭据。
+        def location(config):
+            return tuple(config.get(name, "") for name in ("host", "port", "dbname"))
+        database_name = test_config.get("dbname", "").lower()
+        if not ("test" in database_name or database_name == "quant_ci") or (
+            production_config and location(test_config) == location(production_config)
+        ):
+            raise RuntimeError("QUANT_TEST_DATABASE_URL 必须指向独立测试数据库")
         cls.schema = "quant_test_" + uuid.uuid4().hex
         cls.store = DataStore(dsn=os.environ["QUANT_TEST_DATABASE_URL"], schema=cls.schema)
         # 环境已配置时连接失败必须成为测试失败，不能转成 skip。
@@ -53,6 +69,61 @@ class DataStoreIntegrationTests(unittest.TestCase):
     def candle(self, timestamp, close=100.0):
         return {"timestamp": timestamp, "open": 99.0, "high": 102.0,
                 "low": 98.0, "close": close, "volume": 10.0, "extras": {"trades": 4}}
+
+    def summary(self, pair):
+        with self.store._connection() as conn:
+            row = conn.execute("""SELECT rows,first_timestamp,last_timestamp FROM candle_datasets
+                WHERE exchange='binance' AND market='futures' AND pair=%s
+                AND timeframe='1m' AND candle_type='futures'""", (pair,)).fetchone()
+        return row
+
+    def test_candle_summary_is_incremental_idempotent_and_handles_out_of_order(self):
+        pair = self.key("summary")
+        self.store.upsert_candles("binance", "futures", pair, "1m", "futures",
+            [self.candle(2000), self.candle(3000)])
+        self.assertEqual(self.summary(pair), {"rows": 2, "first_timestamp": 2000, "last_timestamp": 3000})
+        self.store.upsert_candles("binance", "futures", pair, "1m", "futures",
+            [self.candle(1000), self.candle(2000, 110), self.candle(4000), self.candle(4000, 120)])
+        expected = {"rows": 4, "first_timestamp": 1000, "last_timestamp": 4000}
+        self.assertEqual(self.summary(pair), expected)
+        self.store.upsert_candles("binance", "futures", pair, "1m", "futures",
+            [self.candle(1000), self.candle(2000), self.candle(4000)])
+        self.assertEqual(self.summary(pair), expected)
+        self.assertEqual(self.store.upsert_candles("binance", "futures", pair, "1m", "futures", []), 0)
+        self.assertEqual(self.summary(pair), expected)
+
+    def test_missing_candle_summary_recovers_all_existing_history(self):
+        pair = self.key("recover-summary")
+        self.store.upsert_candles("binance", "futures", pair, "1m", "futures",
+            [self.candle(1000), self.candle(2000), self.candle(3000)])
+        with self.store._connection() as conn:
+            conn.execute("DELETE FROM candle_datasets WHERE pair=%s", (pair,))
+        self.store.upsert_candles("binance", "futures", pair, "1m", "futures", [self.candle(2000)])
+        self.assertEqual(self.summary(pair), {"rows": 3, "first_timestamp": 1000, "last_timestamp": 3000})
+
+    def test_live_candle_versions_guard_late_snapshots_and_accept_new_reconciliation(self):
+        pair = self.key("versions")
+        def row(price, event=None, snapshot=None, closed=False):
+            candle = self.candle(1000, price)
+            candle["extras"]["closed"] = closed
+            if event is not None:
+                candle["extras"]["live_event_timestamp"] = event
+            if snapshot is not None:
+                candle["extras"]["live_snapshot_timestamp"] = snapshot
+            return candle
+        def write(rows):
+            return self.store.upsert_candles("binance", "futures", pair, "1m", "futures", rows)
+        def latest_price():
+            return self.store.get_candles("binance", "futures", pair, "1m")[0]["close"]
+        write([row(120, event=2000), row(110, event=1900), row(100)])
+        self.assertEqual(latest_price(), 120)
+        self.assertEqual(write([row(10), row(20, snapshot=1950)]), 0)
+        self.assertEqual(latest_price(), 120)
+        write([row(130, snapshot=2100, closed=True)])
+        self.assertEqual(latest_price(), 130)
+        self.assertEqual(write([row(125, event=2100)]), 0)
+        self.assertEqual(latest_price(), 130)
+        self.assertEqual(self.summary(pair), {"rows": 1, "first_timestamp": 1000, "last_timestamp": 1000})
 
     def test_multitable_snapshot_rolls_back_and_removes_deleted_tables(self):
         source = self.key("snapshot")
@@ -107,6 +178,7 @@ class DataStoreIntegrationTests(unittest.TestCase):
         rows = self.store.get_candles("binance", "futures", pair, "1m")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["close"], 100)
+        self.assertEqual(self.summary(pair), {"rows": 1, "first_timestamp": 1000, "last_timestamp": 1000})
         # 异常 COPY 后连接仍可复用。
         self.store.put_document(self.key("connection-alive"), {"ok": True})
 

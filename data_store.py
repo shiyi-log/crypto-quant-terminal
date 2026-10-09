@@ -212,7 +212,7 @@ class DataStore:
         return count
 
     def _copy_upsert(self, conn, table, columns, keys, rows, updated_column="updated_at"):
-        """COPY 批量暂存，保留同批次最后一个重复键，再统一 UPSERT。"""
+        """COPY 批量暂存，每键保留最新行（K 线按版本排序），再统一 UPSERT。"""
         sql = self._sql
         stage_name = "_quant_batch_" + table
         table_id, stage_id = sql.Identifier(table), sql.Identifier(stage_name)
@@ -238,14 +238,31 @@ class DataStore:
                     updates.append(sql.SQL("{}=EXCLUDED.{}").format(sql.Identifier(column), sql.Identifier(column)))
         if updated_column:
             updates.append(sql.SQL("{}=CURRENT_TIMESTAMP").format(sql.Identifier(updated_column)))
+        # REST 历史快照可能晚于同根 WS 更新才归档，不能把新行情退回旧快照。
+        # 实时采集使用规范整数毫秒字段；其他表保持原有覆盖行为。
+        update_guard = sql.SQL("")
+        batch_order = sql.SQL("{keys},_ordinal DESC").format(keys=key_cols)
+        if table == "candles":
+            update_guard = sql.SQL("""WHERE
+                (GREATEST(COALESCE((EXCLUDED.extras->>'live_event_timestamp')::NUMERIC,-1),
+                    COALESCE((EXCLUDED.extras->>'live_snapshot_timestamp')::NUMERIC,-1)),
+                    COALESCE(EXCLUDED.extras->'closed'='true'::JSONB,false))
+                >= (GREATEST(COALESCE((candles.extras->>'live_event_timestamp')::NUMERIC,-1),
+                    COALESCE((candles.extras->>'live_snapshot_timestamp')::NUMERIC,-1)),
+                    COALESCE(candles.extras->'closed'='true'::JSONB,false))""")
+            batch_order = sql.SQL("""{keys},
+                GREATEST(COALESCE((extras->>'live_event_timestamp')::NUMERIC,-1),
+                    COALESCE((extras->>'live_snapshot_timestamp')::NUMERIC,-1)) DESC,
+                COALESCE(extras->'closed'='true'::JSONB,false) DESC,_ordinal DESC""").format(keys=key_cols)
         query = sql.SQL("""WITH changed AS (
             INSERT INTO {table} ({cols})
             SELECT {cols} FROM (SELECT DISTINCT ON ({keys}) {cols} FROM {stage}
-                ORDER BY {keys},_ordinal DESC) AS latest
-            ON CONFLICT ({keys}) DO UPDATE SET {updates}
+                ORDER BY {batch_order}) AS latest
+            ON CONFLICT ({keys}) DO UPDATE SET {updates} {update_guard}
             RETURNING xmax=0 AS inserted
         ) SELECT COUNT(*) AS written,COUNT(*) FILTER (WHERE inserted) AS inserted FROM changed""").format(
-            table=table_id, cols=cols, keys=key_cols, stage=stage_id, updates=sql.SQL(",").join(updates))
+            table=table_id, cols=cols, keys=key_cols, stage=stage_id,
+            updates=sql.SQL(",").join(updates), update_guard=update_guard, batch_order=batch_order)
         return conn.execute(query).fetchone()
 
     def upsert_candles(self, exchange, market, pair, timeframe, candle_type, rows, source_key=None):
@@ -253,17 +270,36 @@ class DataStore:
         with self._connection() as conn:
             # 同一数据集写入串行化，摘要计数与行情事务保持一致。
             conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("candles:" + _json_text(identity),))
+            bounds = [None, None]
             def values():
                 for row in rows:
-                    yield (*identity, _timestamp(row["timestamp"]),
+                    timestamp = _timestamp(row["timestamp"])
+                    bounds[0] = timestamp if bounds[0] is None else min(bounds[0], timestamp)
+                    bounds[1] = timestamp if bounds[1] is None else max(bounds[1], timestamp)
+                    extras = row.get("extras") or {}
+                    if any(name in extras for name in ("live_event_timestamp", "live_snapshot_timestamp")):
+                        extras = dict(extras)
+                        for name in ("live_event_timestamp", "live_snapshot_timestamp"):
+                            if name in extras:
+                                extras[name] = _timestamp(extras[name])
+                    yield (*identity, timestamp,
                            *(_number(row[name], name) for name in ("open", "high", "low", "close", "volume")),
-                           self._json(row.get("extras") or {}), source_key)
+                           self._json(extras), source_key)
             result = self._copy_upsert(conn, "candles",
                 ["exchange", "market", "pair", "timeframe", "candle_type", "timestamp",
                  "open", "high", "low", "close", "volume", "extras", "source_key"],
                 ["exchange", "market", "pair", "timeframe", "candle_type", "timestamp"], values())
-            if result["written"]:
-                conn.execute("""INSERT INTO candle_datasets
+            if bounds[0] is not None:
+                # 时间戳属于主键，不会被 UPDATE 移动；用新增行数与批次边界
+                # 增量更新摘要，实时归档不再对整段历史 COUNT/MIN/MAX。
+                summary = conn.execute("""UPDATE candle_datasets SET rows=rows+%s,
+                    first_timestamp=LEAST(first_timestamp,%s),
+                    last_timestamp=GREATEST(last_timestamp,%s),updated_at=CURRENT_TIMESTAMP
+                    WHERE exchange=%s AND market=%s AND pair=%s AND timeframe=%s AND candle_type=%s
+                    RETURNING rows""", (result["inserted"], *bounds, *identity)).fetchone()
+                if summary is None:
+                    # 首次创建或摘要缺失时恢复一次完整计数，同一事务锁下安全。
+                    conn.execute("""INSERT INTO candle_datasets
                     (exchange,market,pair,timeframe,candle_type,rows,first_timestamp,last_timestamp)
                     SELECT %s,%s,%s,%s,%s,COUNT(*),MIN(timestamp),MAX(timestamp) FROM candles
                     WHERE exchange=%s AND market=%s AND pair=%s AND timeframe=%s AND candle_type=%s

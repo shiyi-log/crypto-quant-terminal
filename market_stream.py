@@ -274,7 +274,8 @@ class MarketCollector:
             "started_at": int(time.time() * 1000), "received": 0, "persisted": 0,
             "replayed": 0, "overflow_spooled": 0, "invalid_messages": 0,
             "dropped": 0, "inflight": 0, "buffer_length": 0, "database_failures": 0, "reconnects": 0,
-            "connections": {}, "last_message": None, "last_flush": None,
+            "connections": {name: "connecting" for name, _ in config.connections()},
+            "connection_errors": {}, "last_message": None, "last_flush": None,
             "last_error": None, "last_error_at": None, "database_error": None,
             "quarantined_batches": 0, "corrupt_batches": 0, "storage_warning": None,
         }
@@ -286,6 +287,19 @@ class MarketCollector:
         self.status["last_error"] = str(error)
         self.status["last_error_at"] = int(time.time() * 1000)
         LOG.warning("%s", error)
+
+    def connection_recovered(self, name: str) -> None:
+        self.status["connections"][name] = "connected"
+        recovered_error = self.status["connection_errors"].pop(name, None)
+        if recovered_error and self.status["last_error"] == recovered_error:
+            self.status["last_error"] = next(reversed(self.status["connection_errors"].values()), None)
+            if self.status["last_error"] is None:
+                self.status["last_error_at"] = None
+        if self.status["state"] != "storage_error":
+            self.status["state"] = (
+                "running" if all(value == "connected" for value in self.status["connections"].values())
+                else "reconnecting"
+            )
 
     async def receive(self, message: dict[str, Any]) -> None:
         received_ms = int(time.time() * 1000)
@@ -472,8 +486,7 @@ class MarketCollector:
             self.status["connections"][name] = "connecting"
             try:
                 async with session.ws_connect(url, heartbeat=30, receive_timeout=90, max_msg_size=2 ** 20) as socket:
-                    self.status["connections"][name] = "connected"
-                    self.status["state"] = "running"
+                    self.connection_recovered(name)
                     async for message in socket:
                         if self.stop.is_set():
                             break
@@ -493,7 +506,9 @@ class MarketCollector:
                 self.status["connections"][name] = "disconnected"
                 self.status["reconnects"] += 1
                 self.status["state"] = "reconnecting"
-                self.record_error(f"{name} 连接失败：{exc}")
+                error = f"{name} 连接失败：{exc}"
+                self.status["connection_errors"][name] = error
+                self.record_error(error)
                 # 重连间隙无法恢复历史盘口，状态明确记录，不伪造行情。
                 self.status["data_gap_possible"] = True
                 try:

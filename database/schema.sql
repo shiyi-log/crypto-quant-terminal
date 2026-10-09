@@ -97,6 +97,24 @@ CREATE TABLE IF NOT EXISTS stream_stats (
     PRIMARY KEY (kind, exchange, market, pair)
 );
 
+-- 研究与实盘证据账：事件只追加，修订以新事件表达，不覆盖旧事实。
+CREATE TABLE IF NOT EXISTS research_ledger_events (
+    sequence_id BIGSERIAL UNIQUE,
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    source_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+ALTER TABLE research_ledger_events ADD COLUMN IF NOT EXISTS sequence_id BIGSERIAL;
+CREATE INDEX IF NOT EXISTS research_ledger_events_type ON research_ledger_events (event_type, created_at);
+CREATE TABLE IF NOT EXISTS research_ledger_sync (
+    source_id TEXT PRIMARY KEY,
+    source_mtime_ns BIGINT,
+    source_fingerprint TEXT NOT NULL,
+    last_synced_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 INSERT INTO store_metadata (key, payload) VALUES ('schema_version', '1')
 ON CONFLICT (key) DO NOTHING;
 

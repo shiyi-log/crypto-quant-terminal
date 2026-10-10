@@ -87,6 +87,27 @@ function metricsText(v: any) {
   return '—';
 }
 
+function gateInvalidated(v: any) {
+  return (
+    v?.metrics_validity === 'invalidated' ||
+    v?.gate?.status === 'invalidated'
+  );
+}
+
+function gatePassed(v: any) {
+  return !gateInvalidated(v) && v?.gate?.passed === true;
+}
+
+function gateLabel(v: any) {
+  if (gateInvalidated(v)) return '口径已作废';
+  return gatePassed(v) ? '通过' : '未通过';
+}
+
+function gateColor(v: any) {
+  if (gateInvalidated(v)) return 'default';
+  return gatePassed(v) ? 'green' : 'orange';
+}
+
 /* ══════════ 结论全部由数据推导 ══════════
  * 这一页原来是写死最多的地方：结论文案、轮次、IC 显著性、风险收益区间
  * 都是手抄进模板的，数据一变就与事实不符。这里统一改为计算属性。
@@ -282,7 +303,7 @@ async function doPromote() {
     await promoteModelVersion(
       target.value.id,
       promoteNote.value.trim(),
-      !target.value?.gate?.passed,
+      !gatePassed(target.value),
     );
     message.success(`已登记为优选版本：${target.value.id}`);
     promoteOpen.value = false;
@@ -347,7 +368,9 @@ onUnmounted(() => {
                 class="h-full rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 dark:border-emerald-900 dark:bg-emerald-950/20"
               >
                 <div class="flex flex-wrap items-center gap-2">
-                  <Tag color="green">优选登记</Tag>
+                  <Tag :color="gateInvalidated(l.champion) ? 'default' : 'green'">
+                    {{ gateInvalidated(l.champion) ? '口径已作废' : '优选登记' }}
+                  </Tag>
                   <span class="font-mono text-xs">{{
                     l.champion?.id || '（未设置）'
                   }}</span>
@@ -361,7 +384,7 @@ onUnmounted(() => {
                 </div>
                 <div class="mt-1 text-[11px] text-orange-500">
                   {{
-                    l.champion?.gate?.passed ? '登记判据通过' : '登记判据未通过'
+                    `登记判据${gateLabel(l.champion)}`
                   }}
                   · 注册表配置
                   {{
@@ -392,8 +415,8 @@ onUnmounted(() => {
                   class="mb-2 flex flex-wrap items-center gap-2 border-b border-dashed border-gray-100 pb-2 last:border-0 last:pb-0 dark:border-gray-800"
                 >
                   <span class="font-mono text-xs">{{ c.id }}</span>
-                  <Tag :color="c.gate?.passed ? 'green' : 'orange'">
-                    登记判据{{ c.gate?.passed ? '通过' : '未通过' }}
+                  <Tag :color="gateColor(c)">
+                    登记判据{{ gateLabel(c) }}
                   </Tag>
                   <span v-if="c.round" class="text-[11px] text-blue-500">
                     第 {{ c.round }} 轮
@@ -405,6 +428,7 @@ onUnmounted(() => {
                     size="small"
                     type="primary"
                     ghost
+                    :disabled="gateInvalidated(c)"
                     @click="openPromote(c)"
                   >
                     设为优选登记
@@ -566,10 +590,10 @@ onUnmounted(() => {
             目标版本：<span class="font-mono">{{ target?.id }}</span>
           </div>
           <div
-            v-if="target && !target.gate?.passed"
+            v-if="target && !gatePassed(target)"
             class="mt-2 rounded bg-orange-50 p-2 text-orange-600 dark:bg-orange-950/20"
           >
-            ⚠ 该版本<b>未通过冻结判据</b>：
+            ⚠ 该版本<b>{{ gateInvalidated(target) ? '口径已作废' : '未通过冻结判据' }}</b>：
             {{ (target.gate?.reasons || []).join('；') }}
           </div>
           <div

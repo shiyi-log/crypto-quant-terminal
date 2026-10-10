@@ -37,6 +37,7 @@ import signal
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -49,6 +50,7 @@ from psycopg_pool import PoolTimeout
 from runtime_config import load_environment
 from data_store import DataStore
 from candle_archive import CandleArchiveWriter
+import trading_audit
 
 load_environment()
 
@@ -345,6 +347,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if getattr(self, "_audit_request_id", None):
+            self.send_header("X-Trading-Audit-Id", self._audit_request_id)
+            self.send_header("X-Trading-Audit-Status", getattr(self, "_audit_status", "unknown"))
+            self.send_header("Access-Control-Expose-Headers", "X-Trading-Audit-Id, X-Trading-Audit-Status")
         self._cors()
         self.end_headers()
         if body:
@@ -570,6 +576,7 @@ class Handler(BaseHTTPRequestHandler):
                 store, version_id=version_id, source_id=source_id,
                 registry_path=registry_path,
             )
+            payload["operation_audit"] = trading_audit.audit_payload(store)
             return self._send(200, payload)
         except (OSError, ValueError, RuntimeError, psycopg.Error, PoolTimeout) as exc:
             # 不把本地路径或源文件内容返回给浏览器；数据库异常由外层统一转 503。
@@ -1274,6 +1281,8 @@ class Handler(BaseHTTPRequestHandler):
         if not verify_token(self._bearer()):
             return self._send(401, {"detail": "未登录或登录已过期"})
         reg = get_store().get_document("model_versions.json", {"updated": None, "versions": [], "champions": {}})
+        mr = self._model_registry()
+        reg = mr.public_view(reg)
         out = {"updated": reg.get("updated"), "layers": {}}
         for layer in ("live_strategy", "ml_model"):
             vs = [v for v in reg["versions"] if v.get("layer") == layer]
@@ -1305,11 +1314,12 @@ class Handler(BaseHTTPRequestHandler):
         entry = mr.get(reg, vid)
         if entry is None:
             return self._send(404, {"detail": f"版本不存在: {vid}"})
-        passed = bool((entry.get("gate") or {}).get("passed"))
+        public_entry = mr.public_entry(entry)
+        passed = bool((public_entry.get("gate") or {}).get("passed"))
         if not passed and not body.get("confirm_unpassed"):
             return self._send(409, {
                 "detail": "该版本未通过冻结判据，需显式确认后才能设为正在使用",
-                "gate": entry.get("gate"),
+                "gate": public_entry.get("gate"),
             })
         mr.set_champion(reg, vid, f"{note}（操作人 {user}）")
         mr.save(reg)
@@ -1325,14 +1335,21 @@ class Handler(BaseHTTPRequestHandler):
         if not verify_token(self._bearer()):
             return self._send(401, {"detail": "未登录或登录已过期"})
         store = get_store()
-        data = store.get_document("auto_iterate_status.json")
-        if data is None:
-            return self._send(404, {"detail": "数据库尚未同步巡检状态"})
-        data["history"] = [
+        archived = store.get_document("auto_iterate_status.json")
+        history = [
             {"t": r.get("t"), "all_ok": r.get("all_ok"), "failed": r.get("failed", [])}
             for r in store.read_events("iteration_history.jsonl", limit=20)
         ]
-        return self._send(200, data)
+        return self._send(200, {
+            "status": "legacy_disabled", "enabled": False,
+            "realtime": False, "validity": "invalidated",
+            "reason": "C1/C2/C3 口径已作废；巡检已停",
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "last_run_at": (archived or {}).get("t"),
+            "checks": {}, "all_ok": None, "failed": [],
+            "archive": {"status": "archive_only", "validity": "invalidated",
+                        "data": archived, "history": history},
+        })
 
     # ---------- 实时行情（Binance 公共接口，服务端代理） ----------
     def _local_market_stream_info(self):
@@ -1645,11 +1662,39 @@ class Handler(BaseHTTPRequestHandler):
         if not user:
             return self._send(401, {"detail": "未登录或登录已过期"})
 
+        path = self.path
+        payload = self._read_body() or None
+        audit_request = None
+        audit_store = None
+        if trading_audit.classify_action(self.command, path):
+            try:
+                audit_store = get_store()
+                audit_request = trading_audit.begin_operation(
+                    audit_store, actor=user, source_ip=self.client_address[0],
+                    method=self.command, path=path, payload=payload,
+                )
+                self._audit_request_id = audit_request.request_id
+                self._audit_status = "unknown"
+            except (trading_audit.AuditUnavailable, RuntimeError, psycopg.Error, PoolTimeout):
+                return self._send(503, {"detail": "操作审计暂时不可用，交易请求未发送"})
+
+        def finish_audit(**kwargs):
+            if audit_request is None:
+                return True
+            try:
+                trading_audit.finish_operation(audit_store, audit_request, **kwargs)
+                self._audit_status = "recorded"
+                return True
+            except trading_audit.AuditUnavailable:
+                self._audit_status = "result_pending"
+                print(f"[auth] 交易结果审计未完成 request_id={audit_request.request_id}", file=sys.stderr)
+                return False
+
         token = token_fn()
         if not token:
-            return self._send(502, {"detail": f"无法连接 {label}，请确认服务已启动"})
+            finish_audit(outcome="not_forwarded", error_code="credential_unavailable")
+            return self._send(502, {"detail": f"无法连接 {label}，交易请求未发送"})
 
-        path = self.path
         if strip_prefix and path.startswith(strip_prefix):
             rest = path[len(strip_prefix) :]
             if not rest.startswith("/"):
@@ -1657,8 +1702,6 @@ class Handler(BaseHTTPRequestHandler):
             url = base + "/api" + rest
         else:
             url = base + path
-        payload = self._read_body() or None
-
         def call(tok):
             headers = {"Authorization": f"Bearer {tok}"}
             ct = self.headers.get("Content-Type")
@@ -1679,17 +1722,32 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     raise
             with resp:
+                status = resp.status
                 data = resp.read()
                 ctype = resp.headers.get("Content-Type", "application/json; charset=utf-8")
-            return self._send(200, raw=data, ctype=ctype)
+            error_code = None
         except urllib.error.HTTPError as he:
             try:
                 data = he.read()
             except Exception:
                 data = json.dumps({"detail": str(he)}).encode()
-            return self._send(he.code, raw=data, ctype="application/json; charset=utf-8")
+            status, ctype, error_code = he.code, "application/json; charset=utf-8", "upstream_http_error"
         except Exception as exc:
-            return self._send(502, {"detail": f"代理请求失败: {exc}"})
+            transport_reason = getattr(exc, "reason", exc)
+            finish_audit(outcome="unknown", error_code=(
+                "timeout" if isinstance(transport_reason, TimeoutError) else "connection_error"
+            ))
+            return self._send(502, {
+                "detail": "代理连接中断，交易请求结果未知，请核对订单后再操作" if audit_request
+                          else "代理请求失败，请检查服务连接",
+                **({"request_id": audit_request.request_id} if audit_request else {}),
+            })
+        if not finish_audit(upstream_status=status, response_payload=data, error_code=error_code):
+            return self._send(502, {
+                "detail": "请求可能已执行，但结果审计未完成，请勿重复提交；请核对订单",
+                "request_id": audit_request.request_id,
+            })
+        return self._send(status, raw=data, ctype=ctype)
 
 
 def main():

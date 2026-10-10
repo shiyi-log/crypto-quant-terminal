@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from datetime import datetime, timezone
 from numbers import Real
@@ -416,11 +417,197 @@ def _is_open(value: Any) -> bool | None:
     return None
 
 
-def _trade_projection(row: dict[str, Any]) -> dict[str, Any]:
+def _trade_projection(row: dict[str, Any], *, external_tags: set[str] | None = None,
+                      external_order_count: int = 0, order_tag_audit_unknown: bool = True) -> dict[str, Any]:
     is_open = _is_open(row.get("is_open"))
     closed = is_open is False
-    value = row.get("close_profit_abs") if closed else None
-    return {"trade_id": row.get("id", row.get("trade_id")), "pair": row.get("pair"), "side": "short" if row.get("is_short") else "long", "leverage": row.get("leverage", 1.0), "stake_amount": row.get("stake_amount"), "open_date": row.get("open_date"), "close_date": row.get("close_date") if closed else None, "is_open": is_open, "realized_profit_abs": value, "model_id": None, "attribution_status": "unattributed"}
+    value = _profit_value(row.get("close_profit_abs")) if closed else None
+    exit_reason = row.get("exit_reason")
+    externally_intervened = bool(external_tags)
+    exit_category = "external_intervention" if externally_intervened else _exit_category(exit_reason, is_open)
+    if externally_intervened:
+        classification_basis = "filled_external_exit_order"
+    elif is_open is False:
+        classification_basis = "final_trade_exit_reason"
+    elif is_open is True:
+        classification_basis = "trade_not_closed"
+    else:
+        classification_basis = "trade_state_unknown"
+    return {
+        "trade_id": row.get("id", row.get("trade_id")),
+        "pair": row.get("pair"),
+        "side": "short" if row.get("is_short") else "long",
+        "leverage": row.get("leverage", 1.0),
+        "stake_amount": row.get("stake_amount"),
+        "open_date": row.get("open_date"),
+        "close_date": row.get("close_date") if closed else None,
+        "is_open": is_open,
+        "realized_profit_abs": value,
+        "exit_reason": exit_reason,
+        "exit_category": exit_category,
+        # Exit source and model attribution are different evidence. A known
+        # strategy exit does not establish which registered model was running.
+        "strategy_eligible": closed and exit_category in _STRATEGY_EXIT_CATEGORIES,
+        "externally_intervened": externally_intervened,
+        "external_exit_order_count": external_order_count,
+        "exit_classification_basis": classification_basis,
+        "order_tag_audit_unknown": order_tag_audit_unknown,
+        "model_id": None,
+        "attribution_status": "unattributed",
+    }
+
+
+_EXIT_CATEGORIES = {
+    "exit_signal": "strategy_signal",
+    "sell_signal": "strategy_signal",
+    "custom_exit": "strategy_signal",
+    "custom_sell": "strategy_signal",
+    "roi": "strategy_roi",
+    "stop_loss": "strategy_risk",
+    "stoploss_on_exchange": "strategy_risk",
+    "trailing_stop_loss": "strategy_risk",
+    "emergency_exit": "execution_emergency",
+    "emergency_sell": "execution_emergency",
+    "partial_exit": "strategy_adjustment",
+    # Liquidation is a strategy risk outcome and cannot be removed merely
+    # because it was not a discretionary exit signal.
+    "liquidation": "liquidation",
+    "force_exit": "external_intervention",
+    "force_sell": "external_intervention",
+    "sold_on_exchange": "external_exchange_execution",
+}
+_STRATEGY_EXIT_CATEGORIES = frozenset({
+    "strategy_signal", "strategy_roi", "strategy_risk", "execution_emergency",
+    "strategy_adjustment", "liquidation",
+})
+
+_EXTERNAL_ORDER_TAGS = frozenset({
+    "force_exit", "force_sell", "sold_on_exchange",
+})
+
+
+def _exit_category(exit_reason: Any, is_open: bool | None) -> str:
+    """Classify only established closed trades; unknown tags remain unknown.
+
+    Freqtrade lets strategies supply arbitrary exit tags, so an unfamiliar
+    reason cannot establish either a strategy exit or human intervention.
+    Likewise, close fields cannot establish closure when the state is missing.
+    """
+    if is_open is True:
+        return "not_closed"
+    if is_open is None or not isinstance(exit_reason, str):
+        return "unknown"
+    return _EXIT_CATEGORIES.get(exit_reason.strip().lower(), "unknown")
+
+
+def _order_trade_id(row: dict[str, Any]) -> Any:
+    return row.get("trade_id", row.get("ft_trade_id"))
+
+
+def _order_tag(row: dict[str, Any]) -> str | None:
+    value = row.get("ft_order_tag", row.get("order_tag"))
+    return value.strip().lower() if isinstance(value, str) and value.strip() else None
+
+
+def _order_filled(row: dict[str, Any]) -> bool:
+    """Require evidence of execution; an accepted/cancelled request is not enough."""
+    value = row.get("filled")
+    if isinstance(value, Real) and not isinstance(value, bool):
+        return math.isfinite(float(value)) and float(value) > 0
+    for field in ("order_filled_date", "order_filled_timestamp", "filled_at"):
+        if _timestamp_value(row.get(field)) is not None:
+            return True
+    return False
+
+
+def _order_is_exit(row: dict[str, Any], trade: dict[str, Any]) -> bool | None:
+    """Require an explicit entry flag or an order side aligned to trade direction."""
+    entry_flag = _is_open(row.get("ft_is_entry"))
+    side = row.get("ft_order_side") or row.get("side")
+    if side in {"stoploss", "stop_loss"}:
+        return entry_flag is not True
+    is_short = _is_open(trade.get("is_short"))
+    inferred = None
+    if is_short is not None and side in {"buy", "sell"}:
+        inferred = side == ("buy" if is_short else "sell")
+    if entry_flag is not None:
+        explicit = not entry_flag
+        return explicit if inferred is None or inferred == explicit else None
+    return inferred
+
+
+def _external_order_evidence(rows: list[dict[str, Any]],
+                             trades: list[dict[str, Any]]) -> tuple[dict[str, set[str]], dict[str, int], set[str]]:
+    """Return per-trade filled external tags, counts, and trades with tag audit gaps."""
+    tags_by_trade: dict[str, set[str]] = {}
+    count_by_trade: dict[str, int] = {}
+    trade_by_id = {str(row.get("id", row.get("trade_id"))): row for row in trades}
+    seen_trade_ids: set[str] = set()
+    unknown_ids: set[str] = set()
+    for row in rows:
+        raw_trade_id = _order_trade_id(row)
+        if raw_trade_id is None:
+            continue
+        trade_id = str(raw_trade_id)
+        seen_trade_ids.add(trade_id)
+        # A present null tag still means this order's tag field was inspected;
+        # a missing field means the API projection cannot establish coverage.
+        if "ft_order_tag" not in row and "order_tag" not in row:
+            unknown_ids.add(trade_id)
+        is_exit = _order_is_exit(row, trade_by_id.get(trade_id, {}))
+        if is_exit is None:
+            unknown_ids.add(trade_id)
+        tag = _order_tag(row)
+        if is_exit is True and tag in _EXTERNAL_ORDER_TAGS and _order_filled(row):
+            tags_by_trade.setdefault(trade_id, set()).add(tag)
+            count_by_trade[trade_id] = count_by_trade.get(trade_id, 0) + 1
+    return tags_by_trade, count_by_trade, unknown_ids | (set(trade_by_id) - seen_trade_ids)
+
+
+def _profit_value(value: Any) -> float | None:
+    """A realized amount must be a finite number, including an explicit zero."""
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _realized_summary(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    """A partial known sum is disclosed separately from the complete total."""
+    values = [row["realized_profit_abs"] for row in trades
+              if row["realized_profit_abs"] is not None]
+    missing = len(trades) - len(values)
+    known = sum(values) if values else None
+    return {
+        "realized_profit_abs": known if missing == 0 else None,
+        "realized_profit_known_abs": known,
+        "realized_profit_missing_count": missing,
+    }
+
+
+def _actual_trade_summary(trades: list[dict[str, Any]], *, order_tag_audit_unknown_count: int = 0) -> dict[str, Any]:
+    closed = [row for row in trades if row["is_open"] is False]
+    groups = {
+        "strategy": [row for row in closed if row["strategy_eligible"]],
+        "external": [row for row in closed if row["exit_category"] in {
+            "external_intervention", "external_exchange_execution",
+        }],
+        "unknown": [row for row in closed if row["exit_category"] == "unknown"],
+    }
+    summary = {
+        "closed_trade_count": len(closed),
+        **_realized_summary(closed),
+        "strategy_closed_trade_count": len(groups["strategy"]),
+        "external_exit_count": len(groups["external"]),
+        "unknown_exit_count": len(groups["unknown"]),
+        "unknown_trade_state_count": sum(row["is_open"] is None for row in trades),
+        "externally_intervened_trade_count": sum(row["externally_intervened"] for row in trades),
+        "partial_exit_audit_unknown_trade_count": order_tag_audit_unknown_count,
+    }
+    for group, rows in groups.items():
+        summary.update({f"{group}_{key}": value
+                        for key, value in _realized_summary(rows).items()})
+    return summary
 
 
 def _order_projection(row: dict[str, Any]) -> dict[str, Any]:
@@ -483,11 +670,22 @@ def ledger_payload(store, version_id: str | None = None, *, source_id: str = "bo
                       for key in sorted(set(before) | set(after)) if before.get(key) != after.get(key)]
     raw_trades = _trade_rows(store, source_id)
     raw_orders = _order_rows(store, source_id)
-    trades = [_trade_projection(row) for row in raw_trades]
-    orders = [_order_projection(row) for row in raw_orders]
-    closed = [row for row in trades if row["is_open"] is False]
-    realized = [row["realized_profit_abs"] for row in closed if isinstance(row["realized_profit_abs"], (int, float))]
-    total_realized = sum(realized) if realized else None
+    external_tags, external_order_counts, audit_unknown_ids = _external_order_evidence(raw_orders, raw_trades)
+    trades = []
+    for row in raw_trades:
+        trade_id = str(row.get("id", row.get("trade_id")))
+        trades.append(_trade_projection(
+            row,
+            external_tags=external_tags.get(trade_id),
+            external_order_count=external_order_counts.get(trade_id, 0),
+            order_tag_audit_unknown=trade_id in audit_unknown_ids,
+        ))
+    actual_summary = _actual_trade_summary(
+        trades,
+        order_tag_audit_unknown_count=sum(
+            row["order_tag_audit_unknown"] for row in trades if row["is_open"] is False
+        ),
+    )
     generated = _now()
     with store._connection() as conn:
         sync_row = conn.execute("SELECT last_synced_at FROM research_ledger_sync WHERE source_id=%s", (source_id,)).fetchone()
@@ -506,11 +704,19 @@ def ledger_payload(store, version_id: str | None = None, *, source_id: str = "bo
     # ordered detail list to the UI.  The source mirror may be sorted by an
     # opaque record key, so slicing ``rows[-200:]`` is not a latest-records
     # query.
-    latest_trades = [_trade_projection(row) for row in latest_trade_rows]
+    latest_trades = []
+    for row in latest_trade_rows:
+        trade_id = str(row.get("id", row.get("trade_id")))
+        latest_trades.append(_trade_projection(
+            row,
+            external_tags=external_tags.get(trade_id),
+            external_order_count=external_order_counts.get(trade_id, 0),
+            order_tag_audit_unknown=trade_id in audit_unknown_ids,
+        ))
     latest_orders = [_order_projection(row) for row in latest_order_rows]
     lessons = _evidence_projection(events, "research_lesson", _lessons())
     directions = _evidence_projection(events, "research_direction", _directions())
-    return {"generated_at": generated, "last_synced_at": synced, "summary": {"version_count": len(versions), "deployed_ml_count": sum(v["layer"] == "ml_model" and v["deployment_status"] == "verified" for v in versions), "actual_trade_count": len(trades), "actual_order_count": len(orders), "closed_trade_count": len(closed), "realized_profit_abs": total_realized, "unattributed_trade_count": len(trades)}, "versions": versions, "comparison": {"baseline_id": "auto-r9-e3c3df7c", "candidate_id": "auto-r20-e3c3df7c", "config_changes": config_changes, "note": "round is research sequence, not generation; same configuration does not imply same weights; historical IC evidence invalidated"}, "actual_trades": latest_trades, "actual_orders": latest_orders, "lessons": lessons, "directions": directions, "errors": [], "source_id": source_id, "source_freshness": {"source_id": source_id, "trade_rows": len(trades), "order_rows": len(orders), "last_synced_at": synced}}
+    return {"generated_at": generated, "last_synced_at": synced, "summary": {"version_count": len(versions), "deployed_ml_count": sum(v["layer"] == "ml_model" and v["deployment_status"] == "verified" for v in versions), "actual_trade_count": len(trades), "actual_order_count": len(raw_orders), **actual_summary, "unattributed_trade_count": len(trades)}, "versions": versions, "comparison": {"baseline_id": "auto-r9-e3c3df7c", "candidate_id": "auto-r20-e3c3df7c", "config_changes": config_changes, "note": "round is research sequence, not generation; same configuration does not imply same weights; historical IC evidence invalidated"}, "actual_trades": latest_trades, "actual_orders": latest_orders, "exit_classification_basis": "filled_external_exit_order or final_trade_exit_reason", "exit_classification_limitations": ["只有确认退出方向的已成交订单且带 force_exit/force_sell/sold_on_exchange 标签才会覆盖最终平仓原因；部分人工平仓后再由策略退出时，若订单标签缺失，无法从最终 trade.exit_reason 排除人工干预", "未知 exit_reason 不等于人工干预，且未成交强制请求不计入外部干预"], "lessons": lessons, "directions": directions, "errors": [], "source_id": source_id, "source_freshness": {"source_id": source_id, "trade_rows": len(trades), "order_rows": len(raw_orders), "last_synced_at": synced}}
 
 
 def _lessons() -> list[dict[str, Any]]:

@@ -505,8 +505,11 @@ def main(argv: list[str] | None = None) -> int:
                     return 1 if result["errors"] else 0
                 # 短等待允许信号及时结束；不会阻塞模型和其它服务进程。
                 deadline = started + max(1.0, args.interval)
-                while running and time.monotonic() < deadline:
-                    time.sleep(min(0.25, deadline - time.monotonic()))
+                while running:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(0.25, remaining))
     except Exception as exc:
         print(f"[sync] 无法启动: {type(exc).__name__}", flush=True)
         return 1

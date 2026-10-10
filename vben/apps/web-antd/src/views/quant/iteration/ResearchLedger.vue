@@ -29,7 +29,7 @@ const versionColumns = [
   { key: 'reported', title: '原报指标', width: 170 },
   { key: 'deployment', title: '部署状态', width: 130 },
   { key: 'evaluation', title: '评估有效性', width: 150 },
-  { key: 'effect', title: '实际订单 / 平仓', width: 150 },
+  { key: 'effect', title: '账户订单 / 平仓', width: 150 },
   { key: 'availability', title: '可用性依据' },
 ];
 const tradeColumns = [
@@ -39,7 +39,9 @@ const tradeColumns = [
   { dataIndex: 'leverage', title: '杠杆' },
   { dataIndex: 'open_date', title: '开仓' },
   { dataIndex: 'close_date', title: '平仓' },
-  { key: 'profit', title: '已实现收益' },
+  { key: 'profit', title: '账户已实现收益', width: 140 },
+  { key: 'exit', title: '离场原因 / 归类', width: 180 },
+  { key: 'strategy', title: '策略收益归因', width: 130 },
   { dataIndex: 'model_id', title: '模型归属' },
   { dataIndex: 'attribution_status', title: '归因状态' },
 ];
@@ -53,6 +55,15 @@ const orderColumns = [
   { key: 'price', title: '价格' },
   { dataIndex: 'order_date', title: '时间' },
   { dataIndex: 'model_id', title: '模型归属' },
+];
+const operationColumns = [
+  { dataIndex: 'requested_at_utc', title: '请求时间（UTC）', width: 190 },
+  { key: 'actor', title: '操作者 / 来源', width: 150 },
+  { key: 'action', title: '操作 / 请求', width: 230 },
+  { key: 'target', title: '目标', width: 180 },
+  { key: 'outcome', title: '请求结果', width: 150 },
+  { key: 'result', title: '响应证据', width: 230 },
+  { dataIndex: 'request_id', title: '请求编号', width: 180 },
 ];
 const forwardVariantColumns = [
   { dataIndex: 'variant_id', title: '变体', width: 170 },
@@ -125,6 +136,111 @@ function statusText(status: string) {
 function modelAttribution(modelId: string | null) {
   return modelId || '未知（未归因）';
 }
+function exitCategoryText(category?: string) {
+  const names: Record<string, string> = {
+    strategy_signal: '策略信号',
+    strategy_roi: '策略止盈',
+    strategy_risk: '策略风控',
+    strategy_adjustment: '策略减仓',
+    execution_emergency: '执行故障应急退出',
+    liquidation: '强平风险结果',
+    external_intervention: '外部干预',
+    external_exchange_execution: '交易所侧离场',
+    unknown: '原因未知',
+    not_closed: '尚未平仓',
+  };
+  return names[category || ''] || '归类未知';
+}
+function exitCategoryColor(category?: string) {
+  if (category === 'external_intervention' || category === 'external_exchange_execution') return 'orange';
+  if (category === 'execution_emergency') return 'red';
+  if (category === 'liquidation') return 'red';
+  if (category?.startsWith('strategy_')) return 'blue';
+  return 'default';
+}
+function strategyProfitText(trade: {
+  exit_category?: string;
+  is_open?: boolean | null;
+  strategy_eligible?: boolean;
+}) {
+  if (trade.is_open === true || trade.exit_category === 'not_closed') return '未成熟';
+  if (trade.strategy_eligible === true) return '计入策略';
+  if (trade.exit_category === 'external_intervention') return '排除：外部干预';
+  if (trade.exit_category === 'external_exchange_execution') return '排除：交易所侧离场';
+  return '归因未知';
+}
+function operationActionText(action: string) {
+  const names: Record<string, string> = {
+    forceexit: '强制平仓',
+    force_exit: '强制平仓',
+    forceenter: '强制开仓',
+    force_enter: '强制开仓',
+    delete_trade: '删除交易',
+    cancel_open_order: '取消挂单',
+    reload_trade: '重载交易',
+    blacklist_add: '加入黑名单',
+    blacklist_remove: '移出黑名单',
+    lock_add: '锁定交易对',
+    lock_remove: '解除交易对锁定',
+    other_write: '其他写操作',
+    reload_config: '重载配置',
+    start: '启动交易',
+    stop: '停止交易',
+    stopbuy: '停止开仓',
+    pause: '暂停交易',
+    pause_entries: '暂停开仓',
+  };
+  return names[action] || action || '操作未记录';
+}
+function operationOutcomeText(outcome: string) {
+  const names: Record<string, string> = {
+    accepted: 'API 已接受',
+    rejected: '请求被拒绝',
+    unknown: '结果未知',
+    not_forwarded: '未转发',
+  };
+  return names[outcome] || '结果未知';
+}
+function operationOutcomeColor(outcome: string) {
+  if (outcome === 'accepted') return 'blue';
+  if (outcome === 'rejected') return 'red';
+  return 'orange';
+}
+
+const realizedGroups = computed(() => {
+  const summary = ledger.value?.summary;
+  if (!summary) return [];
+  return [
+    {
+      label: '账户已实现',
+      count: summary.closed_trade_count,
+      profit: summary.realized_profit_abs,
+      known: summary.realized_profit_known_abs,
+      missing: summary.realized_profit_missing_count,
+    },
+    {
+      label: '策略归因已实现',
+      count: summary.strategy_closed_trade_count,
+      profit: summary.strategy_realized_profit_abs,
+      known: summary.strategy_realized_profit_known_abs,
+      missing: summary.strategy_realized_profit_missing_count,
+    },
+    {
+      label: '外部干预已实现',
+      count: summary.external_exit_count,
+      profit: summary.external_realized_profit_abs,
+      known: summary.external_realized_profit_known_abs,
+      missing: summary.external_realized_profit_missing_count,
+    },
+    {
+      label: '离场原因未知已实现',
+      count: summary.unknown_exit_count,
+      profit: summary.unknown_realized_profit_abs,
+      known: summary.unknown_realized_profit_known_abs,
+      missing: summary.unknown_realized_profit_missing_count,
+    },
+  ];
+});
 function join(items?: string[]) {
   return items?.length ? items.join('；') : '暂无记录';
 }
@@ -173,7 +289,7 @@ function versionRow(item: ResearchLedgerVersion) {
     effectText:
       item.effect?.actual_orders == null && item.effect?.closed_trades == null
         ? '未归因'
-        : `${value(item.effect?.actual_orders)} / ${value(item.effect?.closed_trades)} · 收益 ${value(item.effect?.realized_profit_abs)}`,
+        : `${value(item.effect?.actual_orders)} / ${value(item.effect?.closed_trades)} · 账户收益 ${value(item.effect?.realized_profit_abs)}`,
     availabilityText: `证据：${join(item.evidence)}；限制：${join(item.limitations)}`,
   };
 }
@@ -562,7 +678,7 @@ onMounted(load);
         {{ value(ledger.last_synced_at) }}
       </div>
 
-      <div class="grid grid-cols-2 gap-3 lg:grid-cols-7">
+      <div class="grid grid-cols-2 gap-3 lg:grid-cols-6">
         <div
           v-for="item in [
             ['登记版本', ledger.summary.version_count],
@@ -571,7 +687,6 @@ onMounted(load);
             ['已平仓', ledger.summary.closed_trade_count],
             ['已部署 ML', ledger.summary.deployed_ml_count],
             ['未归因交易', ledger.summary.unattributed_trade_count],
-            ['已实现收益', ledger.summary.realized_profit_abs],
           ]"
           :key="item[0]"
           class="rounded-lg border border-gray-100 p-3 dark:border-gray-800"
@@ -582,11 +697,50 @@ onMounted(load);
           </div>
         </div>
       </div>
+      <div class="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div
+          v-for="group in realizedGroups"
+          :key="group.label"
+          class="rounded-lg border border-gray-100 p-3 dark:border-gray-800"
+        >
+          <div class="text-xs text-muted-foreground">{{ group.label }}</div>
+          <div class="mt-1 font-mono text-base font-semibold">
+            {{ number(group.profit) }}
+          </div>
+          <div class="mt-1 text-xs text-muted-foreground">
+            已平仓 {{ value(group.count) }} 笔
+          </div>
+          <div v-if="group.missing && group.missing > 0" class="mt-1 text-xs text-orange-600">
+            收益缺失 {{ group.missing }} 笔；已知小计 {{ number(group.known) }}，非完整收益。
+          </div>
+        </div>
+      </div>
+      <div class="mt-2 text-xs text-muted-foreground">
+        账户收益包含全部已平仓交易。策略归因计入信号、止盈、风控、强平和执行故障结果；force_exit / force_sell 属于外部干预，单独记录，不计入策略表现。未平仓浮盈亏不计入已实现收益。原因未知不等于人工干预。
+      </div>
+      <div v-if="ledger.exit_classification_limitations?.length" class="mt-2 text-xs text-muted-foreground">
+        归因限制：{{ join(ledger.exit_classification_limitations) }}
+      </div>
+      <div v-if="ledger.summary.unknown_trade_state_count" class="mt-2 text-xs text-orange-600">
+        {{ ledger.summary.unknown_trade_state_count }} 笔交易的开闭仓状态未知，不作已平仓收益推断。
+      </div>
+      <div v-if="ledger.summary.externally_intervened_trade_count" class="mt-2 text-xs text-orange-600">
+        {{ ledger.summary.externally_intervened_trade_count }} 笔交易存在外部干预成交证据（包含尚未平仓的外部减仓）。有外部干预的已平仓交易整笔归外部，不拆分策略损益。
+      </div>
+      <div v-if="ledger.summary.partial_exit_audit_unknown_trade_count" class="mt-2 text-xs text-muted-foreground">
+        {{ ledger.summary.partial_exit_audit_unknown_trade_count }} 笔交易缺少完整的订单标签审计，不能仅凭最终离场原因排除外部部分平仓。
+      </div>
       <div
         v-if="ledger.summary.closed_trade_count === 0"
         class="mt-3 rounded-lg bg-orange-50 p-3 text-xs text-orange-700 dark:bg-orange-950/20"
       >
         暂无成熟收益：当前没有已平仓交易，收益、胜率和期望值不作推断。
+      </div>
+      <div
+        v-else-if="ledger.summary.strategy_closed_trade_count === 0"
+        class="mt-3 rounded-lg bg-orange-50 p-3 text-xs text-orange-700 dark:bg-orange-950/20"
+      >
+        暂无策略归因的成熟收益：账户已有平仓，但不能据此推断策略胜率或期望值。
       </div>
       <div
         v-if="ledger.summary.deployed_ml_count === 0"
@@ -663,6 +817,58 @@ onMounted(load);
         </div>
       </div>
 
+      <div class="mt-5 mb-2 text-sm font-medium">交易操作审计</div>
+      <Alert
+        class="mb-3"
+        type="info"
+        show-icon
+        message="API 请求记录与订单成交分开核验"
+        description="API 已接受仅表示接口接受请求，不代表成交成功。过去未记录的操作，以及绕过认证代理直连机器人的请求，无法据此追溯调用者；不会猜测历史 force_exit 的操作者。"
+      />
+      <div v-if="ledger.operation_audit?.limitations?.length" class="mb-2 text-xs text-muted-foreground">
+        覆盖限制：{{ join(ledger.operation_audit.limitations) }}
+      </div>
+      <Table
+        v-if="ledger.operation_audit?.items?.length"
+        :columns="operationColumns"
+        :data-source="ledger.operation_audit.items"
+        row-key="request_id"
+        :pagination="{ pageSize: 6, hideOnSinglePage: true }"
+        :scroll="{ x: 1300 }"
+        size="small"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'actor'">
+            <div class="text-xs">{{ value(record.actor) }}</div>
+            <div class="text-xs text-muted-foreground">{{ value(record.source_ip) }}</div>
+          </template>
+          <template v-else-if="column.key === 'action'">
+            <div class="text-xs">{{ operationActionText(record.action) }}</div>
+            <div class="font-mono text-xs text-muted-foreground">{{ record.method }} {{ record.path }}</div>
+          </template>
+          <template v-else-if="column.key === 'target'">
+            <span class="break-all font-mono text-xs">{{ config(record.target) }}</span>
+          </template>
+          <template v-else-if="column.key === 'outcome'">
+            <Tag :color="operationOutcomeColor(record.outcome)">{{ operationOutcomeText(record.outcome) }}</Tag>
+            <div v-if="record.upstream_status != null" class="text-xs">HTTP {{ record.upstream_status }}</div>
+          </template>
+          <template v-else-if="column.key === 'result'">
+            <div class="text-xs">{{ record.result_event_id ? `响应时间 ${value(record.finished_at_utc)}` : '没有响应记录，结果未知' }}</div>
+            <div v-if="record.error_code" class="font-mono text-xs text-orange-600">{{ record.error_code }}</div>
+            <div v-if="record.result_event_id" class="break-all font-mono text-xs text-muted-foreground">{{ record.result_event_id }}</div>
+          </template>
+          <template v-else-if="column.dataIndex === 'request_id'">
+            <span class="break-all font-mono text-xs">{{ record.request_id }}</span>
+          </template>
+        </template>
+      </Table>
+      <Empty
+        v-else
+        :image="Empty.PRESENTED_IMAGE_SIMPLE"
+        :description="ledger.operation_audit ? '暂无已记录的操作请求，不表示历史上无人干预' : '操作审计记录暂不可用'"
+      />
+
       <div class="mt-5 grid gap-4 lg:grid-cols-2">
         <div>
           <div class="mb-2 text-sm font-medium">实际交易（与订单分开）</div>
@@ -670,7 +876,7 @@ onMounted(load);
             :columns="tradeColumns"
             :data-source="ledger.actual_trades"
             :pagination="{ pageSize: 6, hideOnSinglePage: true }"
-            :scroll="{ x: 1000 }"
+            :scroll="{ x: 1400 }"
             size="small"
           >
             <template #bodyCell="{ column, record }">
@@ -694,6 +900,26 @@ onMounted(load);
                   value(record.attribution_status)
                 }}</Tag></template
               >
+              <template v-else-if="column.key === 'exit'">
+                <div class="text-xs">
+                  <div class="font-mono">{{ value(record.exit_reason) }}</div>
+                  <Tag :color="exitCategoryColor(record.exit_category)">
+                    {{ exitCategoryText(record.exit_category) }}
+                  </Tag>
+                  <Tag v-if="record.externally_intervened" color="orange">外部干预成交</Tag>
+                  <div v-if="record.exit_classification_basis === 'filled_external_exit_order'" class="text-muted-foreground">
+                    依据：已成交外部退出订单 {{ value(record.external_exit_order_count) }} 笔
+                  </div>
+                  <div v-if="record.order_tag_audit_unknown !== false" class="text-muted-foreground">
+                    部分退出审计不完整
+                  </div>
+                </div>
+              </template>
+              <template v-else-if="column.key === 'strategy'">
+                <span class="text-xs" :class="record.exit_category === 'external_intervention' ? 'text-orange-600' : ''">
+                  {{ strategyProfitText(record) }}
+                </span>
+              </template>
             </template>
           </Table>
         </div>

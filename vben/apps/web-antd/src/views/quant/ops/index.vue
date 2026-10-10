@@ -21,15 +21,13 @@ import { Tabs, TabPane } from 'ant-design-vue';
 
 // 合并进来：实盘统计（原为独立菜单，2026-10-09 合并）
 import LivePage from '#/views/quant/live/index.vue';
+import LegacyInspectionCard from './LegacyInspectionCard.vue';
 /** 合并后的分页（2026-10-09）：运维 / 实盘统计 */
 const tab = ref('ops');
 
 const ops = ref<any>(null);
 const ai = ref<any>(null);
 const loading = ref(false);
-
-/** C2 巡检项：当前参数、走查窗口都由后端给，不在模板里写死 */
-const c2 = computed<any>(() => ai.value?.checks?.['C2 参数稳定性'] ?? null);
 
 /** 「弱信号」用结构化标志判断，不依赖 status 的中文文案 */
 const isWeakFactor = (f: any) => f.weak ?? /弱信号/.test(String(f.status ?? ''));
@@ -51,7 +49,7 @@ async function load() {
 let timer: any = null;
 onMounted(() => {
   load();
-  // 运维快照每 30 分钟刷新、巡检每几小时一轮，页面必须自动跟上
+  // 运维快照每 30 分钟刷新；旧巡检只读取明确作废态与留档记录。
   timer = setInterval(load, 60_000);
 });
 onUnmounted(() => clearInterval(timer));
@@ -62,82 +60,12 @@ onUnmounted(() => clearInterval(timer));
     <Tabs v-model:activeKey="tab" size="small">
       <TabPane key="ops" tab="运维">
     <Spin :spinning="loading">
+      <LegacyInspectionCard :inspection="ai" />
       <div v-if="!ops" class="py-16 text-center text-muted-foreground">
         暂无运维快照 —— 确认 monitor.py 常驻运行
         （<code class="mx-1">./start.sh status</code> 查看）
       </div>
       <template v-else>
-        <!-- 自动迭代巡检 -->
-        <Card v-if="ai" :bordered="false" class="shadow-sm" title="🔄 自动迭代巡检">
-          <template #extra>
-            <span class="text-xs text-muted-foreground">
-              {{ ai.t }}<template v-if="ai.interval_hours"> · 每 {{ ai.interval_hours }} 小时一轮</template>
-            </span>
-          </template>
-
-          <div class="mb-3 flex flex-wrap items-center gap-2">
-            <Tag :color="ai.all_ok ? 'green' : 'orange'" class="!px-3 !py-1">
-              {{ ai.all_ok ? '✅ 全部通过' : '⚠ 需关注' }}
-            </Tag>
-            <span v-if="!ai.all_ok" class="text-xs text-orange-500">
-              {{ ai.failed.join(' · ') }}
-            </span>
-            <span class="ml-auto text-[11px] text-muted-foreground">
-              只诊断报警，不自动改策略 —— 避免自动套用参数导致过拟合
-            </span>
-          </div>
-
-          <div class="grid gap-2">
-            <div
-              v-for="(v, k) in ai.checks"
-              :key="k"
-              class="flex items-start gap-3 rounded-lg border p-2.5"
-              :class="v.ok
-                ? 'border-gray-100 dark:border-gray-800'
-                : 'border-orange-200 bg-orange-50/50 dark:border-orange-900 dark:bg-orange-950/20'"
-            >
-              <span class="mt-0.5">{{ v.ok ? '✅' : '❌' }}</span>
-              <div class="min-w-0 flex-1">
-                <div class="text-xs font-medium">{{ k }}</div>
-                <div class="break-words text-[11px] text-muted-foreground">
-                  {{ v.detail || v.error }}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="c2?.ranking" class="mt-3">
-            <div class="mb-1 text-xs font-medium">
-              近 {{ ((c2.window_days ?? 365) / 30).toFixed(0) }} 个月滚动走查
-              <template v-if="c2.current_params">（当前 {{ c2.current_params }} 标绿）</template>
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <Tag
-                v-for="r in c2.ranking"
-                :key="r.params"
-                :color="r.params === c2.current_params ? 'green' : 'default'"
-              >
-                {{ r.params }} · Calmar {{ Number(r.calmar).toFixed(2) }}
-              </Tag>
-            </div>
-          </div>
-
-          <div v-if="ai.history?.length" class="mt-3">
-            <div class="mb-1 text-xs font-medium">
-              巡检历史（最近 {{ ai.history.length }} 轮）
-            </div>
-            <div class="flex flex-wrap gap-1">
-              <span
-                v-for="(h, i) in ai.history"
-                :key="i"
-                class="inline-block h-4 w-4 rounded-sm"
-                :class="h.all_ok ? 'bg-emerald-400' : 'bg-orange-400'"
-                :title="`${h.t} ${h.all_ok ? '通过' : h.failed.join('/')}`"
-              ></span>
-            </div>
-          </div>
-        </Card>
-
         <Card v-if="ops" :bordered="false" class="mt-4 shadow-sm" title="🔧 实盘运维">
           <template #extra>
             <span class="text-xs text-muted-foreground">

@@ -49,7 +49,8 @@ def services(root: Path = ROOT) -> dict[str, Service]:
     python = sys.executable
     specs = [
         Service("api", "交易 API", (trading_python, "-m", "freqtrade", "trade", "--config",
-                "user_data/config_trend_live.json", "--strategy", "TrendFollowing"), bot,
+                "user_data/config_trend_live.json", "--config", "config_api_access_log.json",
+                "--strategy", "TrendFollowing"), bot,
                 mode="trade", port=8889, health_path="/api/v1/ping"),
         Service("webserver", "回测 API", (trading_python, "-m", "freqtrade", "webserver",
                 "--config", "user_data/config_trend_webserver.json"), bot,

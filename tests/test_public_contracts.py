@@ -116,16 +116,19 @@ class AutoLoginContractTests(unittest.TestCase):
         self.handler._bearer = Mock(return_value="test-only-token")
         expected = {"summary": {"version_count": 1}, "versions": []}
         store = Mock()
+        operation_audit = {"summary": {"count": 0}, "operations": []}
         with patch.object(self.auth, "verify_token", return_value="admin"), \
              patch.object(self.auth, "get_store", return_value=store), \
-             patch("research_ledger.ledger_payload", return_value=expected) as payload_fn:
+             patch("research_ledger.ledger_payload", return_value=expected) as payload_fn, \
+             patch.object(self.auth.trading_audit, "audit_payload", return_value=operation_audit) as audit_fn:
             code, payload = self.handler.do_GET()
         self.assertEqual(code, 200)
-        self.assertEqual(payload, expected)
+        self.assertEqual(payload, {**expected, "operation_audit": operation_audit})
         payload_fn.assert_called_once_with(
             store, version_id="demo", source_id="bot/tradesv3.dryrun.sqlite",
             registry_path=self.auth.os.path.join(self.auth.ROOT, "bot", "user_data", "model_versions.json"),
         )
+        audit_fn.assert_called_once_with(store)
         store.get_document.assert_not_called()
         store.read_events.assert_not_called()
 

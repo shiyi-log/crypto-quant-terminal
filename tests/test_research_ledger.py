@@ -343,6 +343,135 @@ class ResearchLedgerTests(unittest.TestCase):
         self.assertIsNone(projected["close_date"])
         self.assertIsNone(projected["realized_profit_abs"])
 
+    def test_exit_categories_keep_account_totals_but_exclude_force_exit_from_strategy(self):
+        store = FakeStore(
+            trades=[
+                {"id": 1, "is_open": 0, "is_short": False,
+                 "exit_reason": "force_exit", "close_profit_abs": 15.63},
+                {"id": 2, "is_open": 0, "is_short": False,
+                 "exit_reason": "exit_signal", "close_profit_abs": -2.0},
+                {"id": 3, "is_open": 0, "is_short": False,
+                 "exit_reason": "liquidation", "close_profit_abs": -5.0},
+            ],
+            orders=[
+                {"id": 11, "ft_trade_id": 1, "ft_order_side": "sell", "ft_is_entry": False,
+                 "ft_order_tag": "force_exit", "filled": 1.0},
+                {"id": 12, "ft_trade_id": 2, "ft_order_side": "sell", "ft_is_entry": False,
+                 "ft_order_tag": "exit_signal", "filled": 1.0},
+                {"id": 13, "ft_trade_id": 3, "ft_order_side": "sell", "ft_is_entry": False,
+                 "ft_order_tag": "liquidation", "filled": 1.0},
+            ],
+        )
+
+        payload = ledger.ledger_payload(store)
+        by_id = {row["trade_id"]: row for row in payload["actual_trades"]}
+        summary = payload["summary"]
+
+        self.assertEqual(summary["closed_trade_count"], 3)
+        self.assertAlmostEqual(summary["realized_profit_abs"], 8.63, places=6)
+        self.assertEqual(summary["strategy_closed_trade_count"], 2)
+        self.assertAlmostEqual(summary["strategy_realized_profit_abs"], -7.0, places=6)
+        self.assertEqual(summary["external_exit_count"], 1)
+        self.assertAlmostEqual(summary["external_realized_profit_abs"], 15.63, places=6)
+        self.assertEqual(summary["unknown_exit_count"], 0)
+        self.assertEqual(by_id[1]["exit_category"], "external_intervention")
+        self.assertFalse(by_id[1]["strategy_eligible"])
+        self.assertEqual(by_id[2]["exit_category"], "strategy_signal")
+        self.assertTrue(by_id[2]["strategy_eligible"])
+        self.assertEqual(by_id[3]["exit_category"], "liquidation")
+        self.assertTrue(by_id[3]["strategy_eligible"])
+
+    def test_filled_partial_force_exit_overrides_final_strategy_reason(self):
+        store = FakeStore(
+            trades=[{"id": 10, "is_open": 0, "is_short": False,
+                     "exit_reason": "exit_signal", "close_profit_abs": 4.0}],
+            orders=[
+                {"id": 101, "ft_trade_id": 10, "ft_order_side": "buy", "ft_is_entry": True,
+                 "ft_order_tag": "enter_long", "filled": 1.0},
+                {"id": 102, "ft_trade_id": 10, "ft_order_side": "sell", "ft_is_entry": False,
+                 "ft_order_tag": "force_exit", "filled": 0.5},
+                {"id": 103, "ft_trade_id": 10, "ft_order_side": "sell", "ft_is_entry": False,
+                 "ft_order_tag": "exit_signal", "filled": 0.5},
+            ],
+        )
+
+        row = ledger.ledger_payload(store)["actual_trades"][0]
+        self.assertTrue(row["externally_intervened"])
+        self.assertEqual(row["external_exit_order_count"], 1)
+        self.assertEqual(row["exit_classification_basis"], "filled_external_exit_order")
+        self.assertEqual(row["exit_reason"], "exit_signal")
+        self.assertEqual(row["exit_category"], "external_intervention")
+        self.assertFalse(row["strategy_eligible"])
+
+    def test_unfilled_force_exit_and_entry_tag_do_not_mark_external_intervention(self):
+        store = FakeStore(
+            trades=[{"id": 20, "is_open": 0, "is_short": False,
+                     "exit_reason": "exit_signal", "close_profit_abs": 2.0}],
+            orders=[
+                # A malicious/custom entry tag is still an entry order.
+                {"id": 201, "ft_trade_id": 20, "ft_order_side": "buy", "ft_is_entry": True,
+                 "ft_order_tag": "force_exit", "filled": 1.0},
+                # A cancelled request with no fill is not evidence of intervention.
+                {"id": 202, "ft_trade_id": 20, "ft_order_side": "sell", "ft_is_entry": False,
+                 "ft_order_tag": "force_sell", "filled": 0.0, "status": "canceled"},
+                {"id": 203, "ft_trade_id": 20, "ft_order_side": "sell", "ft_is_entry": False,
+                 "ft_order_tag": "exit_signal", "filled": 1.0},
+            ],
+        )
+
+        row = ledger.ledger_payload(store)["actual_trades"][0]
+        self.assertFalse(row["externally_intervened"])
+        self.assertEqual(row["external_exit_order_count"], 0)
+        self.assertEqual(row["exit_category"], "strategy_signal")
+        self.assertTrue(row["strategy_eligible"])
+
+    def test_missing_order_tag_is_audit_gap_and_short_exit_side_is_verified(self):
+        store = FakeStore(
+            trades=[
+                {"id": 30, "is_open": 0, "is_short": False,
+                 "exit_reason": "exit_signal", "close_profit_abs": 1.0},
+                {"id": 31, "is_open": 0, "is_short": True,
+                 "exit_reason": "exit_signal", "close_profit_abs": 2.0},
+            ],
+            orders=[
+                {"id": 301, "ft_trade_id": 30, "ft_order_side": "buy", "ft_is_entry": True,
+                 "ft_order_tag": "enter_long", "filled": 1.0},
+                # Missing tag on an exit order makes the tag audit incomplete.
+                {"id": 302, "ft_trade_id": 30, "ft_order_side": "sell", "ft_is_entry": False,
+                 "filled": 1.0},
+                {"id": 311, "ft_trade_id": 31, "ft_order_side": "sell", "ft_is_entry": True,
+                 "ft_order_tag": "enter_short", "filled": 1.0},
+                # A short exits with a buy. This external tag is valid only if
+                # the implementation checks the direction and exit marker.
+                {"id": 312, "ft_trade_id": 31, "ft_order_side": "buy", "ft_is_entry": False,
+                 "ft_order_tag": "force_exit", "filled": 1.0},
+            ],
+        )
+
+        payload = ledger.ledger_payload(store)
+        by_id = {row["trade_id"]: row for row in payload["actual_trades"]}
+        self.assertTrue(by_id[30]["order_tag_audit_unknown"])
+        self.assertEqual(by_id[30]["exit_category"], "strategy_signal")
+        self.assertTrue(by_id[31]["externally_intervened"])
+        self.assertEqual(by_id[31]["exit_category"], "external_intervention")
+        self.assertEqual(payload["summary"]["partial_exit_audit_unknown_trade_count"], 1)
+
+    def test_unknown_nonfinite_profit_is_not_reported_as_zero(self):
+        store = FakeStore(trades=[
+            {"id": 40, "is_open": 0, "exit_reason": "operator_unknown",
+             "close_profit_abs": float("nan")},
+        ])
+
+        payload = ledger.ledger_payload(store)
+        summary = payload["summary"]
+        self.assertEqual(summary["closed_trade_count"], 1)
+        self.assertEqual(summary["unknown_exit_count"], 1)
+        self.assertIsNone(summary["realized_profit_abs"])
+        self.assertIsNone(summary["realized_profit_known_abs"])
+        self.assertEqual(summary["realized_profit_missing_count"], 1)
+        self.assertIsNone(summary["unknown_realized_profit_abs"])
+        self.assertEqual(summary["unknown_realized_profit_missing_count"], 1)
+
     def test_order_projection_uses_freqtrade_foreign_key_columns(self):
         store = FakeStore(orders=[{
             "id": 7,

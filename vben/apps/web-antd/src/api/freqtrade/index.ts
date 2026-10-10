@@ -963,6 +963,28 @@ export interface ResearchLedgerVersion {
   limitations?: string[];
 }
 
+export interface ResearchOperationAudit {
+  items: Array<{
+    request_id: string;
+    requested_at_utc: string;
+    finished_at_utc: string | null;
+    actor: string | null;
+    source_ip: string | null;
+    method: string;
+    path: string;
+    action: string;
+    target: Record<string, unknown>;
+    payload_state: string;
+    upstream_status: number | null;
+    outcome: 'accepted' | 'not_forwarded' | 'rejected' | 'unknown';
+    error_code: string | null;
+    request_event_id: string;
+    result_event_id: string | null;
+  }>;
+  coverage: string;
+  limitations: string[];
+}
+
 export interface ResearchLedger {
   generated_at?: string | null;
   last_synced_at?: string | null;
@@ -974,6 +996,23 @@ export interface ResearchLedger {
     actual_order_count: number;
     closed_trade_count: number;
     realized_profit_abs: number | null;
+    realized_profit_known_abs?: number | null;
+    realized_profit_missing_count?: number;
+    strategy_closed_trade_count?: number;
+    strategy_realized_profit_abs?: number | null;
+    strategy_realized_profit_known_abs?: number | null;
+    strategy_realized_profit_missing_count?: number;
+    external_exit_count?: number;
+    external_realized_profit_abs?: number | null;
+    external_realized_profit_known_abs?: number | null;
+    external_realized_profit_missing_count?: number;
+    unknown_exit_count?: number;
+    unknown_realized_profit_abs?: number | null;
+    unknown_realized_profit_known_abs?: number | null;
+    unknown_realized_profit_missing_count?: number;
+    unknown_trade_state_count?: number;
+    externally_intervened_trade_count?: number;
+    partial_exit_audit_unknown_trade_count?: number;
     unattributed_trade_count: number;
   };
   versions: ResearchLedgerVersion[];
@@ -1000,6 +1039,27 @@ export interface ResearchLedger {
     close_date?: string | null;
     is_open?: boolean | null;
     realized_profit_abs: number | null;
+    exit_reason?: string | null;
+    exit_category?:
+      | 'external_intervention'
+      | 'external_exchange_execution'
+      | 'execution_emergency'
+      | 'liquidation'
+      | 'not_closed'
+      | 'strategy_risk'
+      | 'strategy_roi'
+      | 'strategy_signal'
+      | 'strategy_adjustment'
+      | 'unknown';
+    strategy_eligible?: boolean;
+    externally_intervened?: boolean;
+    exit_classification_basis?:
+      | 'filled_external_exit_order'
+      | 'final_trade_exit_reason'
+      | 'trade_not_closed'
+      | 'trade_state_unknown';
+    order_tag_audit_unknown?: boolean;
+    external_exit_order_count?: number;
     model_id: string | null;
     attribution_status: string;
   }>;
@@ -1031,6 +1091,9 @@ export interface ResearchLedger {
     next_check: string;
   }>;
   errors: string[];
+  operation_audit?: ResearchOperationAudit;
+  exit_classification_basis?: string;
+  exit_classification_limitations?: string[];
 }
 
 export async function getResearchLedger(): Promise<ResearchLedger> {

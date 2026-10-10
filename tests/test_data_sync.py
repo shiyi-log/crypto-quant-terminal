@@ -5,16 +5,22 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import signal
 import sqlite3
 import uuid
 import zipfile
+from contextlib import nullcontext, redirect_stdout
+from io import StringIO
 
 import numpy as np
 import pandas as pd
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from data_sync import DataSynchronizer, candle_identity, exclusive_sync, sqlite_snapshot, timestamp_ms
+from data_sync import (
+    DataSynchronizer, candle_identity, exclusive_sync, main, sqlite_snapshot, timestamp_ms,
+)
 
 
 class MemoryStore:
@@ -103,6 +109,44 @@ class DataSyncTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.project = Path(temporary.name)
         (self.project / "bot/user_data").mkdir(parents=True)
+
+    def test_daemon_clock_crossing_deadline_never_sleeps_negative(self):
+        handlers = {}
+        sleeps = []
+        rounds = 0
+
+        def sleep(seconds):
+            # The old loop checks 100.99, then samples 101.01 to compute sleep.
+            # This reproduces its production ValueError without actually waiting.
+            if seconds < 0:
+                raise ValueError("sleep length must be non-negative")
+            sleeps.append(seconds)
+
+        def run(**_kwargs):
+            nonlocal rounds
+            rounds += 1
+            if rounds == 2:
+                handlers[signal.SIGTERM](signal.SIGTERM, None)
+            return {"errors": 0}
+
+        with patch("data_sync.exclusive_sync", return_value=nullcontext()), \
+             patch("data_store.DataStore") as store, \
+             patch("data_sync.DataSynchronizer") as synchronizer, \
+             patch("data_sync.signal.signal", side_effect=lambda number, handler:
+                   handlers.update({number: handler})), \
+             patch("data_sync.time.monotonic", side_effect=[100., 100.99, 101.01, 102.]), \
+             patch("data_sync.time.sleep", side_effect=sleep), \
+             redirect_stdout(StringIO()):
+            synchronizer.return_value.run.side_effect = run
+            result = main(["--daemon", "--fast", "--interval", "1",
+                           "--root", str(self.project)])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(rounds, 2)
+        self.assertEqual(len(sleeps), 1)
+        self.assertGreater(sleeps[0], 0)
+        self.assertLessEqual(sleeps[0], .25)
+        store.return_value.initialize.assert_called_once()
 
     def test_identity_keeps_markets_separate(self):
         for filename, expected in IDENTITY_CASES:

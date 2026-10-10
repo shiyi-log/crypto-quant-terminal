@@ -26,6 +26,7 @@
 """
 
 import argparse
+from copy import deepcopy
 import json
 import os
 import sys
@@ -40,6 +41,11 @@ LAYERS = {
     "ml_model": "研究模型",
 }
 STATUS = ("champion", "challenger", "archived")
+LEGACY_LIVE_VERSION = "live-trend-20-20"
+LEGACY_METRIC_REASON = (
+    "旧研究回测口径已作废；注册表中的实盘年化、夏普与实现偏差没有"
+    "实际已平仓交易证据，不能作为测量结果或通过判据。"
+)
 
 
 def now() -> str:
@@ -111,6 +117,36 @@ def challengers(reg: dict, layer: str = None):
     return out
 
 
+def public_entry(entry: dict) -> dict:
+    """返回可展示/判断的视图，保留已作废的原始证据，不改写注册表。"""
+    view = deepcopy(entry)
+    if view.get("id") != LEGACY_LIVE_VERSION:
+        return view
+    metrics = view.get("metrics") or {}
+    # 使用独立留档字段使投影幂等，也让旧文件/数据库再次同步时不会恢复有效性。
+    view.setdefault("legacy_metrics", deepcopy(metrics))
+    view.setdefault("legacy_gate", deepcopy(view.get("gate")))
+    view["metrics"] = deepcopy(metrics)
+    for key in ("research_annual", "live_annual", "impl_gap_pct", "calmar_live", "sharpe_live"):
+        view["metrics"][key] = None
+    view["metrics_validity"] = "invalidated"
+    view["metrics_reason"] = LEGACY_METRIC_REASON
+    view["gate"] = {
+        "criteria": "已作废的 C1 实现一致性判据",
+        "passed": False,
+        "status": "invalidated",
+        "reasons": [LEGACY_METRIC_REASON],
+    }
+    return view
+
+
+def public_view(reg: dict) -> dict:
+    """原始历史仍由 load/save 管理；API 和 CLI 使用这一非变更有效视图。"""
+    view = deepcopy(reg)
+    view["versions"] = [public_entry(entry) for entry in view.get("versions", [])]
+    return view
+
+
 # ══════════════════ 状态变更（人工） ══════════════════
 
 def set_champion(reg: dict, vid: str, note: str) -> dict:
@@ -166,16 +202,19 @@ def seed(reg: dict) -> dict:
                 "max_open_trades": 10,
             },
             "metrics": {
-                "research_annual": 0.147,
-                "live_annual": 0.156,
-                "impl_gap_pct": 0.06,
+                "research_annual": None,
+                "live_annual": None,
+                "impl_gap_pct": None,
                 "calmar_live": None,
-                "sharpe_live": 0.75,
+                "sharpe_live": None,
             },
+            "metrics_validity": "invalidated",
+            "metrics_reason": LEGACY_METRIC_REASON,
             "gate": {
-                "criteria": "C1 实现一致性：研究 vs 实盘年化偏差 < 30%",
-                "passed": True,
-                "reasons": ["年化偏差 6%（14.7% vs 15.6%）", "交易数 467 vs 490（5%）"],
+                "criteria": "已作废的 C1 实现一致性判据",
+                "passed": False,
+                "status": "invalidated",
+                "reasons": [LEGACY_METRIC_REASON],
             },
             "deployed": {
                 "mode": "dry_run",
@@ -271,16 +310,21 @@ def seed(reg: dict) -> dict:
 # ══════════════════ 展示 ══════════════════
 
 def fmt_metrics(v: dict) -> str:
+    v = public_entry(v)
     m = v.get("metrics") or {}
+    if v.get("metrics_validity") == "invalidated":
+        return "研究口径已作废 · 实际年化 未知（旧值仅留档）"
     if m.get("ic_period") is not None:
         return (f"IC {m['ic_period']:+.4f} · t={m.get('t_period')} · "
                 f"正窗口 {m.get('pos_windows')}/{m.get('n_windows')}")
     if m.get("research_annual") is not None:
-        return f"研究年化 {m['research_annual']:.1%} · 实盘 {m['live_annual']:.1%}"
+        live = "未知" if m.get("live_annual") is None else f"{m['live_annual']:.1%}"
+        return f"研究年化 {m['research_annual']:.1%} · 实际年化 {live}"
     return "—"
 
 
 def cmd_list(reg: dict, args) -> None:
+    reg = public_view(reg)
     print(f"\n  模型版本注册表 · 更新于 {reg.get('updated') or '—'}")
     print("  " + "═" * 92)
     for layer, cname in LAYERS.items():
@@ -293,12 +337,14 @@ def cmd_list(reg: dict, args) -> None:
             if not args.all and v["status"] == "archived" and not args.archived:
                 continue
             icon = {"champion": "🏆", "challenger": "🧪", "archived": "·"}[v["status"]]
-            gate = "✅达标" if (v.get("gate") or {}).get("passed") else "❌未达标"
+            gate_data = v.get("gate") or {}
+            gate = ("口径作废" if gate_data.get("status") == "invalidated" else
+                    "✅达标" if gate_data.get("passed") else "❌未达标")
             dep = "已部署" if v.get("deployed") else "未部署"
             print(f"    {icon} {v['id']:<28} {v['status']:<10} {gate:<8} {dep:<6} "
                   f"{fmt_metrics(v)}")
     print("\n  " + "═" * 92)
-    print("  🏆 champion＝正在使用的版本   🧪 challenger＝最新迭代候选   "
+    print("  🏆 champion＝优选登记（不代表已部署）   🧪 challenger＝最新迭代候选   "
           "· archived＝历史版本")
     print("  上线命令：python model_registry.py promote <id> --note \"人工确认理由\"\n")
 
@@ -307,7 +353,7 @@ def cmd_show(reg: dict, args) -> None:
     v = get(reg, args.id)
     if v is None:
         raise SystemExit(f"❌ 版本不存在: {args.id}")
-    print(json.dumps(v, ensure_ascii=False, indent=2))
+    print(json.dumps(public_entry(v), ensure_ascii=False, indent=2))
 
 
 def cmd_champion(reg: dict, args) -> None:

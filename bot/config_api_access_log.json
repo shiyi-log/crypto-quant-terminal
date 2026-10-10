@@ -1,0 +1,38 @@
+{
+  "api_server": {
+    "verbosity": "info"
+  },
+  "log_config": {
+    "version": 1,
+    "disable_existing_loggers": false,
+    "formatters": {
+      "basic": {"format": "%(message)s"},
+      "standard": {"format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"},
+      "access_json": {"()": "api_access_logging.AccessJsonFormatter"}
+    },
+    "filters": {
+      "access_fields": {"()": "api_access_logging.AccessFieldsFilter"},
+      "uvicorn_redaction": {"()": "api_access_logging.UvicornRedactionFilter"}
+    },
+    "handlers": {
+      "console": {
+        "class": "freqtrade.loggers.ft_rich_handler.FtRichHandler",
+        "formatter": "basic"
+      },
+      "api_access": {
+        "class": "logging.handlers.RotatingFileHandler",
+        "formatter": "access_json",
+        "filters": ["access_fields"],
+        "filename": "logs/api-access.log",
+        "maxBytes": 10485760,
+        "backupCount": 10,
+        "encoding": "utf-8"
+      }
+    },
+    "loggers": {
+      "uvicorn.access": {"level": "INFO", "handlers": ["api_access"], "propagate": false},
+      "uvicorn.error": {"level": "INFO", "filters": ["uvicorn_redaction"], "propagate": true}
+    },
+    "root": {"level": "INFO", "handlers": ["console"]}
+  }
+}

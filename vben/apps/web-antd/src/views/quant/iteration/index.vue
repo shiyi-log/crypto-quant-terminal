@@ -71,11 +71,18 @@ function layerName(k: string) {
 }
 function metricsText(v: any) {
   const m = v?.metrics || {};
+  if (v?.metrics_validity === 'invalidated' || v?.id === 'live-trend-20-20') {
+    return '研究口径已作废 · 实际年化未知（旧值仅留档）';
+  }
   if (m.ic_period !== null && m.ic_period !== undefined) {
     return `IC ${Number(m.ic_period).toFixed(4)} · t=${Number(m.t_period).toFixed(2)} · 正窗口 ${m.pos_windows}/${m.n_windows}`;
   }
-  if (m.research_annual !== undefined) {
-    return `研究年化 ${(m.research_annual * 100).toFixed(1)}% · 实盘 ${(m.live_annual * 100).toFixed(1)}%`;
+  if ('research_annual' in m || 'live_annual' in m) {
+    const percent = (value: unknown) =>
+      typeof value === 'number' && Number.isFinite(value)
+        ? `${(value * 100).toFixed(1)}%`
+        : '未知';
+    return `研究年化 ${percent(m.research_annual)} · 实际年化 ${percent(m.live_annual)}`;
   }
   return '—';
 }

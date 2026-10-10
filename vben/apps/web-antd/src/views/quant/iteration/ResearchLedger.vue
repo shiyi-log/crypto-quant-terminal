@@ -1,10 +1,13 @@
 <script lang="ts" setup>
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 
-import { Alert, Button, Card, Empty, Table, Tag } from 'ant-design-vue';
+import { Alert, Button, Card, Empty, Select, Table, Tag } from 'ant-design-vue';
 
 import {
+  getForwardPaper,
   getResearchLedger,
+  type ForwardPaperEvent,
+  type ForwardPaperResponse,
   type ResearchLedger,
   type ResearchLedgerVersion,
 } from '#/api/freqtrade';
@@ -12,6 +15,10 @@ import {
 const ledger = ref<ResearchLedger | null>(null);
 const loading = ref(false);
 const error = ref('');
+const forwardPaper = ref<ForwardPaperResponse | null>(null);
+const forwardLoading = ref(false);
+const forwardError = ref('');
+const selectedForwardVariant = ref('all');
 
 const versionColumns = [
   { dataIndex: 'id', title: '版本 / 轮次', width: 190 },
@@ -44,6 +51,41 @@ const orderColumns = [
   { key: 'price', title: '价格' },
   { dataIndex: 'order_date', title: '时间' },
   { dataIndex: 'model_id', title: '模型归属' },
+];
+const forwardVariantColumns = [
+  { dataIndex: 'variant_id', title: '变体', width: 170 },
+  { key: 'rule_hash', title: '规则哈希', width: 150 },
+  { key: 'current_status', title: '当前数据状态', width: 130 },
+  { key: 'replay_status', title: '最近回放状态', width: 140 },
+  { dataIndex: 'closed_trade_count', title: '已平仓', width: 90 },
+  { key: 'realized', title: '已实现收益', width: 130 },
+  { key: 'floating', title: '浮盈亏', width: 120 },
+  { key: 'equity', title: '期末估值', width: 120 },
+  { dataIndex: 'open_position_count', title: '未平仓', width: 90 },
+];
+const forwardDecisionColumns = [
+  { dataIndex: 'variant_id', title: '变体', width: 150 },
+  { dataIndex: 'candle_utc', title: '信号 K 线', width: 175 },
+  { dataIndex: 'event_time', title: '执行时点', width: 175 },
+  { dataIndex: 'coin', title: '币种 / pair', width: 120 },
+  { dataIndex: 'action_side', title: '决策 / 方向', width: 145 },
+  { dataIndex: 'price', title: '价格', width: 100 },
+  { dataIndex: 'quantity', title: '数量', width: 100 },
+  { dataIndex: 'fee', title: '预期手续费', width: 110 },
+  { dataIndex: 'profit_abs', title: 'profit_abs', width: 110 },
+  { dataIndex: 'reason', title: '原因', width: 210 },
+];
+const forwardFillColumns = [
+  { dataIndex: 'variant_id', title: '变体', width: 150 },
+  { dataIndex: 'candle_utc', title: '信号 K 线', width: 175 },
+  { dataIndex: 'event_time', title: '成交时间', width: 175 },
+  { dataIndex: 'coin', title: '币种 / pair', width: 120 },
+  { dataIndex: 'action_side', title: '动作 / 方向', width: 145 },
+  { dataIndex: 'price', title: '价格', width: 100 },
+  { dataIndex: 'quantity', title: '数量', width: 100 },
+  { dataIndex: 'fee', title: '手续费', width: 100 },
+  { dataIndex: 'profit_abs', title: 'profit_abs', width: 110 },
+  { dataIndex: 'reason', title: '原因', width: 210 },
 ];
 
 function value(value: unknown, suffix = '') {
@@ -133,16 +175,217 @@ function versionRow(item: ResearchLedgerVersion) {
   };
 }
 
+function eventText(value: unknown, fallback = '—') {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'number') return Number.isFinite(value) ? value.toFixed(6) : fallback;
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function eventRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function eventList(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.map(eventRecord) : [];
+}
+
+function matchesSelectedVariant(variantId: unknown) {
+  return selectedForwardVariant.value === 'all' ||
+    variantId === selectedForwardVariant.value;
+}
+
+const forwardVariantOptions = computed(() => [
+  { label: '全部变体', value: 'all' },
+  ...(forwardPaper.value?.manifest.variants || []).map((variant) => ({
+    label: variant.variant_id,
+    value: variant.variant_id,
+  })),
+]);
+
+const forwardCurrentReady = computed(() => {
+  const response = forwardPaper.value;
+  if (!response) return false;
+  return response.latest_snapshot?.data_ready ?? response.summary.data_ready;
+});
+
+type ForwardDatabaseLedger = {
+  enabled?: boolean;
+  synced_event_count?: number;
+  sync_error?: string | null;
+};
+
+const forwardDatabaseLedger = computed<ForwardDatabaseLedger>(() =>
+  forwardPaper.value?.summary.database_ledger ||
+  forwardPaper.value?.checkpoint?.database_ledger ||
+  { enabled: false, sync_error: null },
+);
+
+const forwardVariantRows = computed(() => {
+  const response = forwardPaper.value;
+  if (!response) return [];
+  const summaries = response.variants || response.checkpoint?.variant_summaries || {};
+  const replaySummaries = response.last_successful_replay?.variants ||
+    response.checkpoint?.variant_summaries || {};
+  const currentReady = forwardCurrentReady.value;
+  return (response.manifest.variants || []).map((variant) => {
+    const summary = summaries[variant.variant_id] || {};
+    const replaySummary = replaySummaries[variant.variant_id] || {};
+    return {
+      ...summary,
+      key: variant.variant_id,
+      variant_id: variant.variant_id,
+      rule_hash: variant.rule_hash,
+      hypothesis: variant.hypothesis,
+      current_status: currentReady ? '数据就绪' : '当前未就绪',
+      replay_status: replaySummary.strategy_usable,
+    };
+  });
+});
+
+const forwardDecisionRows = computed(() => {
+  const events = forwardPaper.value?.decisions || [];
+  return events
+    .filter((event) => matchesSelectedVariant(event.variant_id))
+    .flatMap((event, eventIndex) => {
+      const candidates = eventList(event.candidates);
+      const exits = eventList(event.exits);
+      const baseKey = event.event_id || `${event.variant_id}-${event.candle_utc}-${eventIndex}`;
+      const makeRow = (
+        detail: Record<string, unknown>,
+        detailIndex: number,
+        kind: 'candidate' | 'exit',
+      ) => ({
+        key: `${baseKey}-${kind}-${detailIndex}`,
+        variant_id: event.variant_id,
+        candle_utc: eventText(event.candle_utc),
+        event_time: eventText(event.execution_at_utc),
+        coin: eventText(detail.pair ?? detail.coin),
+        action_side: [
+          eventText(detail.decision ?? detail.status ?? (kind === 'exit' ? '退出' : '候选')),
+          eventText(detail.side, ''),
+        ].filter(Boolean).join(' / '),
+        price: eventText(eventRecord(detail.actual_fill).price),
+        quantity: '—',
+        fee: eventText(detail.expected_fee),
+        profit_abs: '—',
+        reason: eventText(detail.reason ?? event.decision_reason),
+      });
+      const rows = [
+        ...candidates.map((candidate, index) => makeRow(candidate, index, 'candidate')),
+        ...exits.map((exit, index) => makeRow(exit, candidates.length + index, 'exit')),
+      ];
+      if (rows.length) return rows;
+      return [{
+        key: `${baseKey}-summary`,
+        variant_id: event.variant_id,
+        candle_utc: eventText(event.candle_utc),
+        event_time: eventText(event.execution_at_utc),
+        coin: '—',
+        action_side: '决策事件',
+        price: '—',
+        quantity: '—',
+        fee: '—',
+        profit_abs: '—',
+        reason: eventText(event.decision_reason),
+      }];
+    })
+    .reverse();
+});
+
+function decisionReasonForFill(fill: ForwardPaperEvent) {
+  const decision = (forwardPaper.value?.decisions || []).find((event) =>
+    event.variant_id === fill.variant_id &&
+    event.candle_utc === fill.candle_utc,
+  );
+  if (!decision) return '成交事件未保存原因';
+  const details = fill.action === 'entry'
+    ? eventList(decision.candidates)
+    : eventList(decision.exits);
+  const match = details.find((detail) => detail.coin === fill.coin);
+  return eventText(match?.reason ?? decision.decision_reason, '成交事件未保存原因');
+}
+
+const forwardFillRows = computed(() =>
+  (forwardPaper.value?.fills || [])
+    .filter((event) => matchesSelectedVariant(event.variant_id))
+    .slice(-30)
+    .reverse()
+    .map((event, index) => ({
+      key: event.event_id || `${event.variant_id}-${event.filled_at_utc}-${index}`,
+      variant_id: event.variant_id,
+      candle_utc: eventText(event.candle_utc),
+      event_time: eventText(event.filled_at_utc),
+      coin: eventText(event.coin),
+      action_side: [eventText(event.action), eventText(event.side, '')].filter(Boolean).join(' / '),
+      price: eventText(event.price),
+      quantity: eventText(event.quantity),
+      fee: eventText(event.fee),
+      profit_abs: eventText(event.profit_abs),
+      reason: eventText(event.reason, decisionReasonForFill(event)),
+    })),
+);
+
+const forwardCloseRows = computed(() =>
+  (forwardPaper.value?.closes || [])
+    .filter((event) => matchesSelectedVariant(event.variant_id))
+    .slice(-30)
+    .reverse()
+    .map((event, index) => ({
+      key: event.event_id || `${event.variant_id}-${event.filled_at_utc}-${index}`,
+      variant_id: event.variant_id,
+      candle_utc: eventText(event.candle_utc),
+      event_time: eventText(event.filled_at_utc ?? event.close_date),
+      coin: eventText(event.coin ?? event.pair),
+      action_side: ['平仓', eventText(event.side, '')].filter(Boolean).join(' / '),
+      price: eventText(event.price ?? event.close_rate),
+      quantity: eventText(event.quantity),
+      fee: eventText(event.fee),
+      profit_abs: eventText(event.profit_abs ?? event.pnl),
+      reason: eventText(event.reason ?? event.exit_reason, decisionReasonForFill(event)),
+    })),
+);
+
+function forwardNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toFixed(4)
+    : '未知';
+}
+
+function replayStatus(value: unknown) {
+  if (value === true) return '可用';
+  if (value === false) return '不可用';
+  return '未知';
+}
+
 async function load() {
   loading.value = true;
   error.value = '';
+  forwardLoading.value = true;
+  forwardError.value = '';
   try {
-    ledger.value = await getResearchLedger();
-  } catch (cause: any) {
-    ledger.value = null;
-    error.value = cause?.message || '证据账读取失败';
+    const [ledgerResult, forwardResult] = await Promise.allSettled([
+      getResearchLedger(),
+      getForwardPaper(undefined, 30),
+    ]);
+    if (ledgerResult.status === 'fulfilled') {
+      ledger.value = ledgerResult.value;
+    } else {
+      ledger.value = null;
+      error.value = ledgerResult.reason?.message || '证据账读取失败';
+    }
+    if (forwardResult.status === 'fulfilled') {
+      forwardPaper.value = forwardResult.value;
+    } else {
+      forwardPaper.value = null;
+      forwardError.value =
+        forwardResult.reason?.message || '前向纸面运行读取失败';
+    }
   } finally {
     loading.value = false;
+    forwardLoading.value = false;
   }
 }
 
@@ -405,6 +648,175 @@ onMounted(load);
         message="账本存在数据错误"
         :description="ledger.errors.join('；')"
       />
+    </template>
+  </Card>
+
+  <Card :bordered="false" class="mb-4 shadow-sm" title="前向纸面运行">
+    <template #extra>
+      <Button :loading="forwardLoading" size="small" @click="load">
+        刷新
+      </Button>
+    </template>
+
+    <div v-if="forwardLoading" class="text-xs text-muted-foreground">
+      正在读取前向纸面记录…
+    </div>
+    <Alert
+      v-else-if="forwardError"
+      class="mb-3"
+      type="warning"
+      show-icon
+      message="前向纸面记录暂不可用"
+      :description="forwardError"
+    />
+    <Empty
+      v-else-if="!forwardPaper"
+      description="暂无前向纸面运行记录"
+    />
+    <template v-else>
+      <div class="mb-3 text-xs text-muted-foreground">
+        运行 {{ forwardPaper.run_id }} · 最近 K 线
+        {{ value(forwardPaper.summary.candle_through_utc) }} · 数据指纹
+        <span class="font-mono">{{ value(forwardPaper.summary.data_fingerprint) }}</span>
+      </div>
+      <Alert
+        class="mb-3"
+        :type="forwardDatabaseLedger.sync_error ? 'warning' : 'info'"
+        show-icon
+        :message="forwardDatabaseLedger.enabled
+          ? (forwardDatabaseLedger.sync_error ? '数据库账本同步待重试' : '数据库账本已接通')
+          : '数据库账本未接通，当前使用本地 JSONL outbox'"
+        :description="forwardDatabaseLedger.sync_error || '纸面回放不会因数据库暂时不可用而中断；后续更新或重启会重试同步。'"
+      />
+      <div class="grid grid-cols-2 gap-3 lg:grid-cols-7">
+        <div
+          v-for="item in [
+            ['数据状态', forwardPaper.summary.data_ready ? '就绪' : '未就绪'],
+            ['决策', forwardPaper.summary.decision_count],
+            ['成交', forwardPaper.summary.fill_count],
+            ['变体数', forwardVariantRows.length],
+            ['数据库同步事件', forwardDatabaseLedger.synced_event_count ?? '未知'],
+          ]"
+          :key="item[0]"
+          class="rounded-lg border border-gray-100 p-3 dark:border-gray-800"
+        >
+          <div class="text-xs text-muted-foreground">{{ item[0] }}</div>
+          <div class="mt-1 font-mono text-base font-semibold">
+            {{ value(item[1]) }}
+          </div>
+        </div>
+      </div>
+      <Alert
+        class="mt-3"
+        type="info"
+        show-icon
+        message="收益口径"
+        description="手续费已由纸面引擎建模；滑点和资金费仍未知，净收益不会被伪装成完整结果。"
+      />
+      <div class="mt-5 mb-2 text-sm font-medium">并行变体效果</div>
+      <div class="mb-2 text-xs text-muted-foreground">
+        当前数据状态与最近一次成功回放状态分开展示；最近回放指标按变体独立，不跨变体合计。
+      </div>
+      <Table
+        :columns="forwardVariantColumns"
+        :data-source="forwardVariantRows"
+        :pagination="{ pageSize: 10, hideOnSinglePage: true }"
+        :scroll="{ x: 850 }"
+        size="small"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'rule_hash'">
+            <span class="font-mono text-xs">{{ value(record.rule_hash) }}</span>
+          </template>
+          <template v-else-if="column.key === 'current_status'">
+            <Tag :color="forwardPaper.summary.data_ready ? 'green' : 'red'">
+              {{ forwardPaper.summary.data_ready ? '就绪' : '当前未就绪' }}
+            </Tag>
+          </template>
+          <template v-else-if="column.key === 'replay_status'">
+            <Tag :color="record.replay_status === true ? 'green' : record.replay_status === false ? 'red' : 'default'">
+              {{ replayStatus(record.replay_status) }}
+            </Tag>
+          </template>
+          <template v-else-if="column.key === 'realized'">
+            <span class="font-mono text-xs">{{
+              forwardNumber(record.realized_profit_after_fee_before_unknown_costs)
+            }}</span>
+          </template>
+          <template v-else-if="column.key === 'floating'">
+            <span class="font-mono text-xs">{{
+              forwardNumber(record.unrealized_pnl_before_unknown_costs)
+            }}</span>
+          </template>
+          <template v-else-if="column.key === 'equity'">
+            <span class="font-mono text-xs">{{
+              forwardNumber(record.ending_equity_marked)
+            }}</span>
+          </template>
+        </template>
+      </Table>
+      <div class="mt-2 text-xs text-muted-foreground">
+        变体只在纸面运行。已平仓收益、浮盈亏和未平仓数量按变体分别记录。
+      </div>
+
+      <div class="mt-5 flex flex-wrap items-center justify-between gap-2">
+        <div class="text-sm font-medium">最近事件记录</div>
+        <Select
+          v-model:value="selectedForwardVariant"
+          :options="forwardVariantOptions"
+          class="!w-56"
+          aria-label="按变体筛选前向纸面记录"
+        />
+      </div>
+      <div class="mt-1 mb-3 text-xs text-muted-foreground">
+        接口按事件返回最近记录；决策候选按币种展开。时间均为 UTC，信号 K 线时间与执行 / 成交时间分开显示。滑点和资金费未知。
+      </div>
+
+      <div class="mb-4">
+        <div class="mb-2 text-sm font-medium">最近决策</div>
+        <Table
+          :columns="forwardDecisionColumns"
+          :data-source="forwardDecisionRows"
+          :pagination="{ pageSize: 10, hideOnSinglePage: true }"
+          :scroll="{ x: 1200 }"
+          size="small"
+        />
+        <Empty
+          v-if="!forwardDecisionRows.length"
+          :image="Empty.PRESENTED_IMAGE_SIMPLE"
+          description="暂无匹配的决策记录"
+        />
+      </div>
+      <div class="mb-4">
+        <div class="mb-2 text-sm font-medium">最近纸面成交</div>
+        <Table
+          :columns="forwardFillColumns"
+          :data-source="forwardFillRows"
+          :pagination="{ pageSize: 10, hideOnSinglePage: true }"
+          :scroll="{ x: 1200 }"
+          size="small"
+        />
+        <Empty
+          v-if="!forwardFillRows.length"
+          :image="Empty.PRESENTED_IMAGE_SIMPLE"
+          description="暂无匹配的成交记录"
+        />
+      </div>
+      <div>
+        <div class="mb-2 text-sm font-medium">最近平仓明细</div>
+        <Table
+          :columns="forwardFillColumns"
+          :data-source="forwardCloseRows"
+          :pagination="{ pageSize: 10, hideOnSinglePage: true }"
+          :scroll="{ x: 1200 }"
+          size="small"
+        />
+        <Empty
+          v-if="!forwardCloseRows.length"
+          :image="Empty.PRESENTED_IMAGE_SIMPLE"
+          description="暂无匹配的平仓记录"
+        />
+      </div>
     </template>
   </Card>
 </template>

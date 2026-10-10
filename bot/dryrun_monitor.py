@@ -149,7 +149,14 @@ def snapshot():
         s["problems"].append(f"找不到交易库 {DB}")
         return s
 
-    s["db_mtime_age_min"] = round((time.time() - os.path.getmtime(DB)) / 60, 1)
+    # ⚠ SQLite WAL 模式下，写入落在 -wal 文件，【主库 mtime 不会更新】。
+    #   我原先只看主库 mtime，导致"库明明新增了 2 笔却报 980 分钟未更新"。
+    #   改为取【主库 / -wal / -shm 三者最新 mtime】。
+    _cands = [DB, DB + "-wal", DB + "-shm"]
+    _mt = max(os.path.getmtime(f) for f in _cands if os.path.exists(f))
+    s["db_mtime_age_min"] = round((time.time() - _mt) / 60, 1)
+    s["db_wal_age_min"] = (round((time.time() - os.path.getmtime(DB + "-wal")) / 60, 1)
+                           if os.path.exists(DB + "-wal") else None)
     if s["db_mtime_age_min"] > STALE_HOURS * 60:
         s["problems"].append(f"交易库 {s['db_mtime_age_min']/60:.0f} 小时未更新（>={STALE_HOURS}h）")
 
@@ -255,7 +262,8 @@ def show(s, prev=None):
     print(f"    进程   trade {'✅ '+s['pid_trade'] if s.get('pid_trade') else '❌'} · "
           f"webserver {'✅ '+s['pid_ws'] if s.get('pid_ws') else '❌'}")
     print(f"    交易库 {s.get('n_total','?')} 笔 · 持仓 {s.get('n_open','?')} · "
-          f"平仓 {s.get('n_closed','?')} · {s.get('db_mtime_age_min','?')} 分钟前")
+          f"平仓 {s.get('n_closed','?')} · 最后写入 {s.get('db_mtime_age_min','?')} 分钟前"
+          + (f"（含 WAL）" if s.get('db_wal_age_min') is not None else ""))
     if s.get("n_open"):
         print(f"    持仓   多 {s['long']} / 空 {s['short']} · 敞口 {s['exposure_pct']}% "
               f"({s['stake_sum']} / 9000)")

@@ -29,6 +29,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -40,6 +41,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import psycopg
 from psycopg_pool import PoolTimeout
@@ -92,6 +94,15 @@ LOCAL_ADDRS = {"127.0.0.1", "::1"}
 DEFAULT_USER = "admin"
 # 新环境可显式设置初始密码；未设置时生成随机密码，已有用户不受影响。
 DEFAULT_PASS = os.environ.get("QUANT_BOOTSTRAP_PASSWORD")
+
+# Forward paper runs are immutable, append-only artifacts.  Keep this root
+# configurable for the local runner and expose only files below it through the
+# authenticated API; request parameters never become filesystem paths.
+FORWARD_PAPER_ROOT = os.environ.get(
+    "QUANT_FORWARD_PAPER_ROOT", os.path.join(ROOT, "artifacts", "forward_paper")
+)
+FORWARD_PAPER_LIMIT = 100
+_FORWARD_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 # ── 深度学习迭代的「方法论」文案 ──
 # 这些是口径说明（框架定义、迭代纪律），不随数据变化，因此放在常量里而不是
@@ -418,6 +429,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._local_research_progress()
         if self.path.startswith("/api/locals/research_status"):
             return self._local_research_status()
+        if urllib.parse.urlsplit(self.path).path == "/api/locals/forward-paper":
+            return self._local_forward_paper()
         if urllib.parse.urlsplit(self.path).path == "/api/locals/research-ledger":
             return self._local_research_ledger()
         if self.path.startswith("/api/locals/research"):
@@ -562,6 +575,414 @@ class Handler(BaseHTTPRequestHandler):
             # 不把本地路径或源文件内容返回给浏览器；数据库异常由外层统一转 503。
             print(f"[auth] 研究证据账同步失败: {type(exc).__name__}", file=sys.stderr)
             return self._send(503, {"detail": "研究证据账暂时不可用，请检查同步源"})
+
+    def _local_forward_paper(self):
+        """Read a forward-paper run from the fixed artifact root.
+
+        The request may select a run by opaque ID and bound the number of
+        returned rows, but it can never choose a path or filename.  The runner
+        owns the append-only JSONL format; this endpoint only validates and
+        projects it for the authenticated UI.
+        """
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+
+        query = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(self.path).query, keep_blank_values=True
+        )
+        run_values = query.get("run_id", [])
+        if len(run_values) > 1:
+            return self._send(400, {"detail": "run_id 只能指定一次"})
+        run_id = run_values[0].strip() if run_values else None
+        if run_id is not None and (
+            not _FORWARD_RUN_ID.fullmatch(run_id)
+            or run_id in {".", ".."}
+            or ".." in run_id
+        ):
+            return self._send(400, {"detail": "run_id 非法"})
+
+        limit_values = query.get("limit", ["50"])
+        if len(limit_values) != 1:
+            return self._send(400, {"detail": "limit 只能指定一次"})
+        try:
+            limit = int(limit_values[0])
+        except (TypeError, ValueError):
+            return self._send(400, {"detail": "limit 必须是 1 到 100 之间的整数"})
+        if not 1 <= limit <= FORWARD_PAPER_LIMIT:
+            return self._send(400, {"detail": "limit 必须是 1 到 100 之间的整数"})
+
+        def contained(path: Path, parent: Path) -> bool:
+            try:
+                path.resolve(strict=True).relative_to(parent.resolve(strict=True))
+                return True
+            except (OSError, ValueError):
+                return False
+
+        def read_jsonl(path: Path) -> list[dict]:
+            rows = []
+            try:
+                with path.open("r", encoding="utf-8") as stream:
+                    for number, line in enumerate(stream, 1):
+                        if not line.strip():
+                            continue
+                        try:
+                            value = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            raise ValueError(f"{path.name} 第 {number} 行 JSON 损坏") from exc
+                        if not isinstance(value, dict):
+                            raise ValueError(f"{path.name} 第 {number} 行必须是对象")
+                        rows.append(value)
+            except OSError as exc:
+                raise ValueError(f"无法读取 {path.name}") from exc
+            return rows
+
+        try:
+            root = Path(FORWARD_PAPER_ROOT).expanduser().resolve(strict=True)
+            if not root.is_dir():
+                return self._send(404, {"detail": "前向纸面运行目录不存在"})
+
+            candidates = []
+            # The runner accepts an arbitrary output directory and commonly
+            # writes its manifest directly at FORWARD_PAPER_ROOT.  Keep that
+            # layout valid alongside the older root/<run_id>/ layout.
+            root_manifest_exists = (root / "manifest.json").is_file() or (
+                root / "manifest.jsonl"
+            ).is_file()
+            if run_id is not None:
+                candidates = [root / run_id]
+                if root_manifest_exists:
+                    candidates.append(root)
+            else:
+                try:
+                    candidates = [item for item in root.iterdir()
+                                  if _FORWARD_RUN_ID.fullmatch(item.name)
+                                  and ".." not in item.name]
+                    if root_manifest_exists:
+                        candidates.append(root)
+                except OSError as exc:
+                    raise ValueError("无法扫描前向纸面运行目录") from exc
+
+            valid = []
+            for candidate in candidates:
+                # Do not follow a run-directory symlink, even if it currently
+                # points back inside the root.  Run IDs are direct children.
+                if candidate.is_symlink():
+                    if run_id is not None:
+                        return self._send(400, {"detail": "run 目录不是安全的直接子目录"})
+                    continue
+                if not candidate.is_dir():
+                    continue
+                is_root_run = candidate == root
+                if (not contained(candidate, root)
+                        or (not is_root_run and candidate.resolve(strict=True).parent != root)):
+                    if run_id is not None:
+                        return self._send(400, {"detail": "run 目录超出允许范围"})
+                    continue
+                manifest_path = candidate / "manifest.json"
+                manifest_format = "json"
+                if not manifest_path.exists():
+                    manifest_path = candidate / "manifest.jsonl"
+                    manifest_format = "jsonl"
+                if manifest_path.is_symlink() or not manifest_path.is_file() \
+                        or not contained(manifest_path, candidate):
+                    continue
+                try:
+                    if manifest_format == "json":
+                        try:
+                            header = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        except (OSError, json.JSONDecodeError) as exc:
+                            raise ValueError("manifest.json 损坏") from exc
+                        if not isinstance(header, dict):
+                            raise ValueError("manifest.json 必须是对象")
+                        manifest_rows = [header]
+                    else:
+                        manifest_rows = read_jsonl(manifest_path)
+                        if not manifest_rows:
+                            raise ValueError("manifest.jsonl 为空")
+                        header = manifest_rows[0]
+                    # The canonical single-file manifest predates the JSONL
+                    # envelope and therefore may omit event_type.  JSONL
+                    # manifests remain strict because their first row is an
+                    # explicit ledger event.
+                    if manifest_format == "json" and "event_type" not in header:
+                        header["event_type"] = "manifest"
+                        manifest_rows[0] = header
+                    if header.get("event_type") != "manifest":
+                        if run_id is not None:
+                            raise ValueError("manifest 类型不正确")
+                        continue
+                    manifest_run_id = header.get("run_id")
+                    if (not isinstance(manifest_run_id, str)
+                            or not _FORWARD_RUN_ID.fullmatch(manifest_run_id)):
+                        if run_id is not None:
+                            raise ValueError("manifest 中 run_id 非法")
+                        continue
+                    if run_id is not None and manifest_run_id != run_id:
+                        if run_id is not None and candidate != root:
+                            return self._send(404, {"detail": "未找到指定的前向纸面运行"})
+                        continue
+                    if not is_root_run and manifest_run_id != candidate.name:
+                        if run_id is not None:
+                            raise ValueError("manifest 中 run_id 与目录不一致")
+                        continue
+                except (ValueError, IndexError):
+                    if run_id is not None:
+                        raise
+                    continue
+                valid.append((manifest_path.stat().st_mtime_ns, candidate, manifest_rows,
+                              manifest_format))
+
+            if not valid:
+                return self._send(404, {"detail": "没有找到有效的前向纸面运行"})
+            _, run_dir, manifest_rows, manifest_format = max(
+                valid, key=lambda item: (item[0], item[1].name)
+            )
+            header = manifest_rows[0]
+            selected_id = header.get("run_id")
+            if not isinstance(selected_id, str) or not _FORWARD_RUN_ID.fullmatch(selected_id):
+                raise ValueError("manifest 中 run_id 非法")
+            for row in manifest_rows:
+                if row.get("run_id") != selected_id:
+                    raise ValueError("manifest 中 run_id 不一致")
+
+            def safe_file(name: str, *, required: bool) -> Path | None:
+                path = run_dir / name
+                if not path.exists():
+                    if required:
+                        raise FileNotFoundError(name)
+                    return None
+                if path.is_symlink() or not path.is_file() or not contained(path, run_dir):
+                    raise ValueError(f"{name} 不是安全的 run 文件")
+                return path
+
+            # The runner currently writes split ledgers.  The public contract
+            # also accepts the canonical single-ledger form so producers can
+            # evolve without making the UI know about storage details.
+            events_path = safe_file("events.jsonl", required=False)
+            decisions_path = safe_file("decisions.jsonl", required=events_path is None)
+            fills_path = safe_file("fills.jsonl", required=events_path is None)
+            state_path = safe_file("state.json", required=False)
+            checkpoint_path = safe_file("checkpoint.json", required=False)
+
+            if events_path is not None:
+                events = read_jsonl(events_path)
+                decisions = [event for event in events
+                             if event.get("event_type") == "decision"]
+                fills = [event for event in events
+                         if event.get("event_type") == "fill"]
+                closes = [event for event in events
+                          if event.get("event_type") == "close"]
+                if not closes:
+                    closes = [event for event in fills
+                              if event.get("action") in {"exit", "close"}]
+            else:
+                decisions = read_jsonl(decisions_path)
+                fills = read_jsonl(fills_path)
+                closes = [event for event in fills
+                          if event.get("action") in {"exit", "close"}]
+
+            all_events = decisions + fills + closes
+            for event in all_events:
+                if event.get("run_id") != selected_id:
+                    raise ValueError("事件中的 run_id 与 manifest 不一致")
+
+            state = None
+            if state_path is not None:
+                try:
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ValueError("state.json 损坏") from exc
+                if not isinstance(state, dict) or state.get("run_id") != selected_id:
+                    raise ValueError("state 中 run_id 与 manifest 不一致")
+            checkpoint = None
+            if state is None and checkpoint_path is not None:
+                try:
+                    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ValueError("checkpoint.json 损坏") from exc
+                if not isinstance(checkpoint, dict) or checkpoint.get("run_id") != selected_id:
+                    raise ValueError("checkpoint 中 run_id 与 manifest 不一致")
+            if state is not None:
+                checkpoint = state
+
+            latest_snapshot = next(
+                (row for row in reversed(manifest_rows)
+                 if row.get("event_type") == "snapshot"), None
+            )
+            if latest_snapshot is None:
+                candidate_snapshot = header.get("latest_snapshot")
+                if isinstance(candidate_snapshot, dict):
+                    latest_snapshot = candidate_snapshot
+            state_or_checkpoint = state or checkpoint or {}
+            # v2 snapshots always carry an explicit replay marker.  Older
+            # canonical files predate that field, so retain their historical
+            # data_ready implication without letting it weaken the v2
+            # contract.
+            schema_version = str(header.get("schema_version", ""))
+            legacy_replay_inference = schema_version in {"", "forward-paper-v1"}
+
+            entries = [event for event in fills if event.get("action") == "entry"]
+
+            def numeric_pnl(event: dict) -> float | None:
+                # Some canonical producers call the realized field ``pnl``;
+                # never infer unknown costs as zero.
+                value = event.get("profit_abs", event.get("pnl", event.get("closed_pnl")))
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    try:
+                        number = float(value)
+                    except (TypeError, ValueError):
+                        return None
+                    if math.isfinite(number):
+                        return number
+                return None
+
+            # Variants are independent counterfactual portfolios.  Keep their
+            # close counts/P&L separate; a cross-variant sum is only exposed as
+            # an explicitly named diagnostic and must not look like one result.
+            variant_ids = [item.get("variant_id") for item in header.get("variants", [])
+                           if isinstance(item, dict) and item.get("variant_id")]
+            variant_events = {variant_id: [] for variant_id in variant_ids}
+            for event in closes:
+                variant_id = event.get("variant_id")
+                if variant_id is not None:
+                    variant_events.setdefault(variant_id, []).append(event)
+            checkpoint_variants = state_or_checkpoint.get("variant_summaries", {}) \
+                if isinstance(state_or_checkpoint, dict) else {}
+            if latest_snapshot is not None:
+                # A current observation supersedes the checkpoint for both
+                # readiness and replay status.  In particular, a partial
+                # observation must not inherit a previous successful replay.
+                current_ready = bool(latest_snapshot.get("data_ready", False))
+                current_replay_completed = (
+                    latest_snapshot.get("replay_completed") is True
+                    if "replay_completed" in latest_snapshot
+                    else bool(current_ready and legacy_replay_inference)
+                )
+            else:
+                current_ready = bool(state_or_checkpoint.get("data_ready", False))
+                if "replay_completed" in state_or_checkpoint:
+                    current_replay_completed = (
+                        state_or_checkpoint.get("replay_completed") is True
+                    )
+                else:
+                    current_replay_completed = bool(
+                        current_ready and legacy_replay_inference
+                    )
+
+            def replay_succeeded(snapshot: dict | None) -> bool:
+                """Separate a ready data observation from a completed replay.
+
+                New runners write ``replay_completed`` explicitly.  Legacy
+                snapshots have no such field, so retain their historical
+                data_ready semantics for compatibility.
+                """
+                if not isinstance(snapshot, dict) or not snapshot.get("data_ready"):
+                    return False
+                if "replay_completed" in snapshot:
+                    return snapshot.get("replay_completed") is True
+                return legacy_replay_inference
+
+            successful_snapshot = next(
+                (row for row in reversed(manifest_rows)
+                 if row.get("event_type") == "snapshot" and replay_succeeded(row)),
+                None,
+            )
+            if successful_snapshot is None and replay_succeeded(latest_snapshot):
+                # Canonical manifest.json stores the current snapshot in a
+                # nested field rather than as a separate ledger row.
+                successful_snapshot = latest_snapshot
+            variants = {}
+            for variant_id in dict.fromkeys([*variant_ids, *variant_events,
+                                              *checkpoint_variants]):
+                events_for_variant = variant_events.get(variant_id, [])
+                pnl_values = [numeric_pnl(event) for event in events_for_variant]
+                pnl_complete = all(value is not None for value in pnl_values)
+                saved = checkpoint_variants.get(variant_id, {})
+                if not isinstance(saved, dict):
+                    saved = {}
+                item = dict(saved)
+                item.update({
+                    "closed_trade_count": len(events_for_variant),
+                    "realized_profit_after_fee_before_unknown_costs": (
+                        float(sum(pnl_values)) if events_for_variant and pnl_complete
+                        else (None if events_for_variant else
+                              item.get("realized_profit_after_fee_before_unknown_costs"))
+                    ),
+                    "strategy_usable": bool(current_ready and current_replay_completed
+                                             and saved.get("strategy_usable", False)),
+                })
+                variants[variant_id] = item
+            close_pnl_values = [numeric_pnl(event) for event in closes]
+            close_pnl_complete = all(value is not None for value in close_pnl_values)
+            cross_variant_closed_pnl = (
+                float(sum(close_pnl_values)) if closes and close_pnl_complete
+                else (None if closes else 0.0)
+            )
+            variant_count = len([key for key in variants if key])
+            single_variant = variant_count <= 1
+            single_variant_id = next(iter(variants), None) if single_variant else None
+            closed_pnl = (cross_variant_closed_pnl if single_variant else None)
+            closed_trade_count = len(closes) if single_variant else None
+            single_variant_summary = variants.get(single_variant_id, {}) \
+                if single_variant_id is not None else {}
+            summary = {
+                "data_ready": current_ready,
+                "replay_completed": current_replay_completed,
+                "strategy_usable": bool(current_ready and current_replay_completed),
+                "data_fingerprint": (latest_snapshot or {}).get(
+                    "data_fingerprint", state_or_checkpoint.get("data_fingerprint")
+                ),
+                "candle_through_utc": (latest_snapshot or {}).get(
+                    "candle_through_utc", state_or_checkpoint.get("candle_through_utc")
+                ),
+                "decision_count": len(decisions), "fill_count": len(fills),
+                "entry_count": len(entries), "close_count": len(closes),
+                "closed_trade_count": closed_trade_count, "closed_pnl": closed_pnl,
+                "cross_variant_closed_trade_count": len(closes),
+                "cross_variant_closed_pnl": cross_variant_closed_pnl,
+                "unrealized_pnl": (
+                    state_or_checkpoint.get("unrealized_pnl")
+                    if single_variant and state_or_checkpoint.get("unrealized_pnl") is not None
+                    else single_variant_summary.get("unrealized_pnl_before_unknown_costs")
+                    if single_variant else None
+                ), "slippage": "unknown",
+                "funding": "unknown", "net_pnl": None,
+                "cost_completeness": header.get("cost_completeness", {}),
+                "database_ledger": {
+                    "enabled": False, "synced_event_count": 0, "sync_error": None,
+                    **dict(state_or_checkpoint.get("database_ledger", {})),
+                },
+            }
+            return self._send(200, {
+                "run_id": selected_id, "manifest": header,
+                "latest_snapshot": latest_snapshot, "checkpoint": checkpoint,
+                "summary": summary, "variants": variants,
+                "last_successful_replay": {
+                    "data_ready": successful_snapshot is not None,
+                    "replay_completed": successful_snapshot is not None,
+                    "candle_through_utc": (
+                        (successful_snapshot or {}).get("candle_through_utc")
+                        or state_or_checkpoint.get("candle_through_utc")
+                    ),
+                    "data_fingerprint": (
+                        (successful_snapshot or {}).get("data_fingerprint")
+                        or state_or_checkpoint.get("data_fingerprint")
+                    ),
+                    "variants": checkpoint_variants,
+                },
+                "counts": {"decisions": len(decisions), "fills": len(fills),
+                           "closes": len(closes)},
+                "decisions": decisions[-limit:], "fills": fills[-limit:],
+                "closes": closes[-limit:], "limit": limit,
+            })
+        except FileNotFoundError as exc:
+            return self._send(404, {"detail": f"前向纸面运行缺少文件: {exc}"})
+        except ValueError as exc:
+            print(f"[auth] 前向纸面数据无效: {type(exc).__name__}", file=sys.stderr)
+            return self._send(500, {"detail": "前向纸面运行数据损坏或身份不一致"})
+        except OSError as exc:
+            print(f"[auth] 前向纸面读取失败: {type(exc).__name__}", file=sys.stderr)
+            return self._send(503, {"detail": "前向纸面数据暂时不可读取"})
 
     # ---------- 实盘运维状态（策略信号 / 波动率中枢 / 因子健康度） ----------
     def _local_ops(self):

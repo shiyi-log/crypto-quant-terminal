@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
+import urllib.parse
 import unittest
 from unittest.mock import Mock, patch
 
@@ -175,6 +177,448 @@ class AutoLoginContractTests(unittest.TestCase):
         self.assertEqual(payload["data"][0][4], 102)
         self.assertEqual(payload["storage"], "queued")
         archive.offer.assert_called_once()
+
+
+class ForwardPaperPublicContractTests(unittest.TestCase):
+    """Keep the forward-paper UI contract read-only and format-compatible."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp_dir = tempfile.TemporaryDirectory(prefix="quant_forward_contract_")
+        cls.addClassCleanup(cls.temp_dir.cleanup)
+        spec = importlib.util.spec_from_file_location(
+            "quant_auth_forward_contract_test", ROOT / "auth_service.py"
+        )
+        assert spec is not None and spec.loader is not None
+        cls.auth = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {"QUANT_AUTH_DIR": cls.temp_dir.name}):
+            spec.loader.exec_module(cls.auth)
+
+    def setUp(self):
+        self.root = Path(self.temp_dir.name) / "runs"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.root_patch = self.enterContext(
+            patch.object(self.auth, "FORWARD_PAPER_ROOT", str(self.root))
+        )
+
+    def _handler(self, path):
+        handler = object.__new__(self.auth.Handler)
+        handler.path = path
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.headers = {}
+        handler._read_body = Mock(return_value=b"")
+        handler._bearer = Mock(return_value="test-only-token")
+        handler._send = Mock(side_effect=lambda code, payload: (code, payload))
+        return handler
+
+    def _get(self, path, *, authenticated=True):
+        handler = self._handler(path)
+        with patch.object(self.auth, "verify_token", return_value=("admin" if authenticated else None)):
+            result = handler.do_GET()
+        return result
+
+    def _runner_run(self, run_id="run-current"):
+        run_dir = self.root / run_id
+        run_dir.mkdir(exist_ok=True)
+        manifest = {
+            "event_type": "manifest", "run_id": run_id,
+            "schema_version": "forward-paper-v1",
+            "cost_completeness": {"fee": "modeled", "slippage": "unknown", "funding": "unknown"},
+        }
+        snapshot = {
+            "event_type": "snapshot", "run_id": run_id,
+            "data_ready": True, "replay_completed": True,
+            "data_fingerprint": "fp-1",
+            "candle_through_utc": "2026-10-10T00:00:00+00:00",
+        }
+        manifest["schema_version"] = "forward-paper-v2"
+        (run_dir / "manifest.jsonl").write_text(
+            "\n".join(json.dumps(row) for row in (manifest, snapshot)) + "\n",
+            encoding="utf-8",
+        )
+        decisions = [
+            {"event_type": "decision", "run_id": run_id, "event_id": f"d{i}", "variant_id": "v1"}
+            for i in range(3)
+        ]
+        fills = [
+            {"event_type": "fill", "run_id": run_id, "event_id": "f-entry", "action": "entry"},
+            {"event_type": "fill", "run_id": run_id, "event_id": "f-exit", "action": "exit", "profit_abs": 2.5},
+        ]
+        for name, rows in (("decisions.jsonl", decisions), ("fills.jsonl", fills)):
+            (run_dir / name).write_text(
+                "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+            )
+        (run_dir / "checkpoint.json").write_text(
+            json.dumps({"run_id": run_id, "unrealized_pnl": 1.25,
+                        "database_ledger": {
+                            "enabled": True, "synced_event_count": 7,
+                            "sync_error": None,
+                        }}), encoding="utf-8"
+        )
+        return run_dir
+
+    def _multi_variant_run(self, run_id="run-multi", *, data_ready=True,
+                           checkpoint_ready=True, replay_completed=True):
+        """Build a runner-shaped run with deliberately non-additive variants."""
+        run_dir = self.root / run_id
+        run_dir.mkdir(exist_ok=True)
+        variants = [
+            {"variant_id": "base", "rule_hash": "hash-base", "hypothesis": "reference"},
+            {"variant_id": "tight-sl", "rule_hash": "hash-tight", "hypothesis": "risk"},
+        ]
+        manifest = {
+            "event_type": "manifest", "run_id": run_id,
+            "schema_version": "forward-paper-v2", "variants": variants,
+            "cost_completeness": {"fee": "modeled", "slippage": "unknown", "funding": "unknown"},
+        }
+        snapshot = {
+            "event_type": "snapshot", "run_id": run_id,
+            "data_ready": data_ready, "data_fingerprint": "fp-multi",
+            "candle_through_utc": "2026-10-10T00:00:00+00:00",
+        }
+        if replay_completed is not None:
+            snapshot["replay_completed"] = replay_completed
+        else:
+            snapshot.pop("replay_completed", None)
+        (run_dir / "manifest.jsonl").write_text(
+            "\n".join(json.dumps(row) for row in (manifest, snapshot)) + "\n",
+            encoding="utf-8",
+        )
+        decisions = [
+            {"event_type": "decision", "run_id": run_id, "event_id": "d-base",
+             "variant_id": "base", "rule_hash": "hash-base"},
+            {"event_type": "decision", "run_id": run_id, "event_id": "d-tight",
+             "variant_id": "tight-sl", "rule_hash": "hash-tight"},
+        ]
+        fills = [
+            {"event_type": "fill", "run_id": run_id, "event_id": "f-base-entry",
+             "variant_id": "base", "action": "entry", "coin": "BTC"},
+            {"event_type": "fill", "run_id": run_id, "event_id": "f-base-exit",
+             "variant_id": "base", "action": "exit", "coin": "BTC", "profit_abs": 10.0},
+            {"event_type": "fill", "run_id": run_id, "event_id": "f-tight-entry",
+             "variant_id": "tight-sl", "action": "entry", "coin": "ETH"},
+            {"event_type": "fill", "run_id": run_id, "event_id": "f-tight-exit",
+             "variant_id": "tight-sl", "action": "exit", "coin": "ETH", "profit_abs": -4.0},
+        ]
+        for name, rows in (("decisions.jsonl", decisions), ("fills.jsonl", fills)):
+            (run_dir / name).write_text(
+                "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+            )
+        checkpoint = {
+            "run_id": run_id, "data_ready": checkpoint_ready,
+            "unrealized_pnl": 999.0,
+            "database_ledger": {
+                "enabled": True, "synced_event_count": 7, "sync_error": None,
+            },
+            "variant_summaries": {
+                "base": {
+                    "closed_trade_count": 1,
+                    "realized_profit_after_fee_before_unknown_costs": 10.0,
+                    "unrealized_pnl_before_unknown_costs": 1.5,
+                    "strategy_usable": True,
+                },
+                "tight-sl": {
+                    "closed_trade_count": 1,
+                    "realized_profit_after_fee_before_unknown_costs": -4.0,
+                    "unrealized_pnl_before_unknown_costs": -2.5,
+                    "strategy_usable": True,
+                },
+            },
+        }
+        (run_dir / "checkpoint.json").write_text(
+            json.dumps(checkpoint), encoding="utf-8"
+        )
+        return run_dir
+
+    def _canonical_run(self, run_id="run-canonical"):
+        run_dir = self.root / run_id
+        run_dir.mkdir(exist_ok=True)
+        (run_dir / "manifest.json").write_text(json.dumps({
+            "event_type": "manifest", "run_id": run_id,
+            "schema_version": "forward-paper-v1",
+            "cost_completeness": {"fee": "modeled"},
+        }), encoding="utf-8")
+        events = [
+            {"event_type": "decision", "run_id": run_id, "event_id": "d1"},
+            {"event_type": "fill", "run_id": run_id, "event_id": "f1", "action": "entry"},
+            {"event_type": "close", "run_id": run_id, "event_id": "c1", "pnl": 3.75},
+        ]
+        (run_dir / "events.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in events), encoding="utf-8"
+        )
+        (run_dir / "state.json").write_text(json.dumps({
+            "run_id": run_id, "data_ready": True,
+            "data_fingerprint": "canonical-fp", "unrealized_pnl": 4.0,
+        }), encoding="utf-8")
+        return run_dir
+
+    def test_requires_login_before_reading_root(self):
+        handler = self._handler("/api/locals/forward-paper")
+        with patch.object(self.auth, "verify_token", return_value=None), \
+             patch.object(self.auth.Path, "resolve", side_effect=AssertionError("must not read files")):
+            code, payload = handler.do_GET()
+        self.assertEqual(code, 401)
+        self.assertEqual(payload, {"detail": "未登录或登录已过期"})
+
+    def test_reads_current_runner_format_and_calculates_summary(self):
+        self._runner_run()
+        code, payload = self._get("/api/locals/forward-paper?run_id=run-current&limit=2")
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["run_id"], "run-current")
+        self.assertEqual(payload["summary"]["closed_pnl"], 2.5)
+        self.assertEqual(payload["summary"]["unrealized_pnl"], 1.25)
+        self.assertEqual(payload["counts"], {"decisions": 3, "fills": 2, "closes": 1})
+        self.assertEqual(len(payload["decisions"]), 2)
+        self.assertTrue(payload["summary"]["data_ready"])
+        self.assertEqual(payload["summary"]["database_ledger"]["synced_event_count"], 7)
+
+    def test_returns_variant_scoped_results_without_combining_mutually_exclusive_pnl(self):
+        self._multi_variant_run()
+        code, payload = self._get("/api/locals/forward-paper?run_id=run-multi")
+        self.assertEqual(code, 200)
+        self.assertIn("variants", payload)
+        self.assertEqual(
+            payload["variants"]["base"]["realized_profit_after_fee_before_unknown_costs"],
+            10.0,
+        )
+        self.assertEqual(
+            payload["variants"]["tight-sl"]["realized_profit_after_fee_before_unknown_costs"],
+            -4.0,
+        )
+        self.assertEqual(
+            payload["variants"]["base"]["unrealized_pnl_before_unknown_costs"], 1.5
+        )
+        self.assertEqual(
+            payload["variants"]["tight-sl"]["unrealized_pnl_before_unknown_costs"], -2.5
+        )
+        # These variants are alternative paper rules, not one portfolio.  A
+        # scalar top-level P&L would invite the UI to report a fictitious sum.
+        self.assertNotEqual(payload.get("summary", {}).get("closed_pnl"), 6.0)
+        self.assertIsNone(payload["summary"]["unrealized_pnl"])
+
+    def test_latest_not_ready_snapshot_overrides_stale_checkpoint_usability(self):
+        self._multi_variant_run(data_ready=False, checkpoint_ready=True)
+        code, payload = self._get("/api/locals/forward-paper?run_id=run-multi")
+        self.assertEqual(code, 200)
+        self.assertFalse(payload["summary"]["data_ready"])
+        self.assertFalse(payload["summary"]["strategy_usable"])
+        self.assertFalse(payload["variants"]["base"]["strategy_usable"])
+        self.assertFalse(payload["variants"]["tight-sl"]["strategy_usable"])
+        self.assertFalse(payload["latest_snapshot"]["data_ready"])
+
+    def test_ready_data_without_completed_replay_is_not_strategy_usable(self):
+        self._multi_variant_run(
+            data_ready=True, checkpoint_ready=True, replay_completed=False
+        )
+        code, payload = self._get("/api/locals/forward-paper?run_id=run-multi")
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["summary"]["data_ready"])
+        self.assertFalse(payload["summary"]["replay_completed"])
+        self.assertFalse(payload["summary"]["strategy_usable"])
+        self.assertFalse(payload["variants"]["base"]["strategy_usable"])
+        self.assertFalse(payload["variants"]["tight-sl"]["strategy_usable"])
+
+    def test_v2_ready_snapshot_without_replay_marker_is_not_successful(self):
+        self._multi_variant_run(
+            data_ready=True, checkpoint_ready=True, replay_completed=None
+        )
+        code, payload = self._get("/api/locals/forward-paper?run_id=run-multi")
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["summary"]["data_ready"])
+        self.assertFalse(payload["summary"]["replay_completed"])
+        self.assertFalse(payload["summary"]["strategy_usable"])
+        self.assertFalse(payload["last_successful_replay"]["replay_completed"])
+
+    def test_reads_canonical_manifest_events_and_state(self):
+        self._canonical_run()
+        code, payload = self._get("/api/locals/forward-paper?run_id=run-canonical")
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["manifest"]["schema_version"], "forward-paper-v1")
+        self.assertEqual(payload["counts"], {"decisions": 1, "fills": 1, "closes": 1})
+        self.assertEqual(payload["summary"]["closed_pnl"], 3.75)
+        self.assertEqual(payload["summary"]["unrealized_pnl"], 4.0)
+        self.assertEqual(payload["summary"]["data_fingerprint"], "canonical-fp")
+
+    def test_manifest_nested_snapshot_controls_successful_replay(self):
+        run_dir = self._canonical_run("run-nested-snapshot")
+        manifest_path = run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["latest_snapshot"] = {
+            "data_ready": True,
+            "replay_completed": True,
+            "candle_through_utc": "2026-10-10T00:00:00+00:00",
+            "data_fingerprint": "nested-fp",
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        code, payload = self._get(
+            "/api/locals/forward-paper?run_id=run-nested-snapshot"
+        )
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["last_successful_replay"]["replay_completed"])
+        self.assertEqual(
+            payload["last_successful_replay"]["data_fingerprint"], "nested-fp"
+        )
+
+        manifest["latest_snapshot"]["replay_completed"] = False
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        code, payload = self._get(
+            "/api/locals/forward-paper?run_id=run-nested-snapshot"
+        )
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["latest_snapshot"]["data_ready"])
+        self.assertFalse(payload["last_successful_replay"]["replay_completed"])
+
+    def test_unknown_close_pnl_is_not_reported_as_zero(self):
+        run_dir = self._canonical_run("run-unknown-pnl")
+        events = [
+            {"event_type": "close", "run_id": "run-unknown-pnl",
+             "event_id": "close-unknown"},
+        ]
+        (run_dir / "events.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in events), encoding="utf-8"
+        )
+        code, payload = self._get(
+            "/api/locals/forward-paper?run_id=run-unknown-pnl"
+        )
+        self.assertEqual(code, 200)
+        self.assertIsNone(payload["summary"]["closed_pnl"])
+        self.assertIsNone(
+            payload["variants"].get("base", {}).get(
+                "realized_profit_after_fee_before_unknown_costs"
+            )
+        )
+
+    def test_reads_runner_output_written_directly_at_configured_root(self):
+        run_id = "run-root-output"
+        manifest = {
+            "event_type": "manifest", "run_id": run_id,
+            "schema_version": "forward-paper-v1",
+        }
+        snapshot = {
+            "event_type": "snapshot", "run_id": run_id,
+            "data_ready": True, "data_fingerprint": "root-fp",
+        }
+        (self.root / "manifest.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in (manifest, snapshot)),
+            encoding="utf-8",
+        )
+        (self.root / "decisions.jsonl").write_text("", encoding="utf-8")
+        (self.root / "fills.jsonl").write_text("", encoding="utf-8")
+        (self.root / "checkpoint.json").write_text(json.dumps({
+            "run_id": run_id, "data_ready": True,
+        }), encoding="utf-8")
+        code, payload = self._get(
+            "/api/locals/forward-paper?run_id=" + run_id
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["run_id"], run_id)
+        self.assertEqual(payload["summary"]["data_fingerprint"], "root-fp")
+        self.assertTrue(payload["summary"]["replay_completed"])
+        self.assertTrue(payload["last_successful_replay"]["replay_completed"])
+
+    def test_keeps_counterfactual_variant_pnl_separate(self):
+        run_id = "run-multi-variant"
+        run_dir = self.root / run_id
+        run_dir.mkdir(exist_ok=True)
+        (run_dir / "manifest.json").write_text(json.dumps({
+            "event_type": "manifest", "run_id": run_id,
+            "schema_version": "forward-paper-v2",
+            "variants": [{"variant_id": "base"}, {"variant_id": "tight"}],
+            "latest_snapshot": {"data_ready": True, "replay_completed": True},
+        }), encoding="utf-8")
+        events = [
+            {"event_type": "close", "run_id": run_id, "variant_id": "base",
+             "event_id": "c-base", "pnl": 2.0},
+            {"event_type": "close", "run_id": run_id, "variant_id": "tight",
+             "event_id": "c-tight", "pnl": -1.0},
+        ]
+        (run_dir / "events.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in events), encoding="utf-8"
+        )
+        (run_dir / "state.json").write_text(json.dumps({
+            "run_id": run_id, "data_ready": True, "replay_completed": True,
+            "variant_summaries": {
+                "base": {"unrealized_pnl_before_unknown_costs": 0.5,
+                         "strategy_usable": True},
+                "tight": {"unrealized_pnl_before_unknown_costs": -0.25,
+                          "strategy_usable": True},
+            },
+        }), encoding="utf-8")
+        code, payload = self._get(
+            "/api/locals/forward-paper?run_id=" + run_id
+        )
+        self.assertEqual(code, 200)
+        self.assertIsNone(payload["summary"]["closed_pnl"])
+        self.assertEqual(payload["summary"]["cross_variant_closed_pnl"], 1.0)
+        self.assertEqual(payload["variants"]["base"]["closed_trade_count"], 1)
+        self.assertEqual(
+            payload["variants"]["base"]["realized_profit_after_fee_before_unknown_costs"],
+            2.0,
+        )
+        self.assertTrue(payload["variants"]["base"]["strategy_usable"])
+        self.assertTrue(payload["last_successful_replay"]["replay_completed"])
+        self.assertIsNone(payload["summary"]["unrealized_pnl"])
+        self.assertEqual(payload["last_successful_replay"]["variants"]["base"]["strategy_usable"], True)
+
+    def test_reads_legacy_canonical_manifest_without_event_type(self):
+        run_dir = self._canonical_run("run-legacy-manifest")
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest.pop("event_type")
+        (run_dir / "manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        code, payload = self._get(
+            "/api/locals/forward-paper?run_id=run-legacy-manifest"
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["run_id"], "run-legacy-manifest")
+
+    def test_rejects_path_traversal_and_absolute_run_ids(self):
+        for run_id in ("../outside", "/tmp/outside", "..\\outside"):
+            code, _payload = self._get(
+                "/api/locals/forward-paper?run_id=" + urllib.parse.quote(run_id, safe="")
+            )
+            self.assertEqual(code, 400)
+
+    def test_rejects_run_directory_symlink(self):
+        outside = Path(self.temp_dir.name) / "outside"
+        outside.mkdir()
+        os.symlink(outside, self.root / "run-link")
+        code, _payload = self._get("/api/locals/forward-paper?run_id=run-link")
+        self.assertEqual(code, 400)
+
+    def test_limit_is_validated_and_truncates_rows(self):
+        self._runner_run()
+        code, _payload = self._get("/api/locals/forward-paper?run_id=run-current&limit=0")
+        self.assertEqual(code, 400)
+        code, _payload = self._get("/api/locals/forward-paper?run_id=run-current&limit=101")
+        self.assertEqual(code, 400)
+        code, payload = self._get("/api/locals/forward-paper?run_id=run-current&limit=1")
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["limit"], 1)
+        self.assertEqual(len(payload["decisions"]), 1)
+        self.assertEqual(len(payload["fills"]), 1)
+        self.assertEqual(len(payload["closes"]), 1)
+
+    def test_missing_split_ledger_is_not_silently_accepted(self):
+        run_dir = self._runner_run()
+        (run_dir / "fills.jsonl").unlink()
+        code, _payload = self._get("/api/locals/forward-paper?run_id=run-current")
+        self.assertEqual(code, 404)
+
+    def test_corrupt_events_and_mismatched_identity_are_server_errors(self):
+        run_dir = self._canonical_run("run-bad-json")
+        (run_dir / "events.jsonl").write_text("{broken\n", encoding="utf-8")
+        code, _payload = self._get("/api/locals/forward-paper?run_id=run-bad-json")
+        self.assertEqual(code, 500)
+
+        run_dir = self._canonical_run("run-bad-identity")
+        (run_dir / "events.jsonl").write_text(
+            json.dumps({"event_type": "decision", "run_id": "other"}) + "\n",
+            encoding="utf-8",
+        )
+        code, _payload = self._get("/api/locals/forward-paper?run_id=run-bad-identity")
+        self.assertEqual(code, 500)
 
 
 if __name__ == "__main__":

@@ -29,6 +29,22 @@ class FakeConnection:
         if "WHERE event_id=%s" in query:
             row = self.store.events.get(params[0])
             return FakeResult(row)
+        if "FROM research_ledger_events WHERE source_id=%s" in query:
+            source_id = params[0]
+            rows = [row for row in self.store.events.values() if row["source_id"] == source_id]
+            if "event_type = ANY(%s)" in query:
+                event_types = params[1]
+                rows = [row for row in rows if row["event_type"] in event_types]
+            rows.sort(key=lambda row: row["sequence_id"])
+            if " LIMIT %s" in query:
+                rows = rows[:params[-1]]
+            return FakeResult(rows)
+        if "FROM research_ledger_events" in query and "source_id LIKE %s" in query:
+            event_type, source_pattern = params
+            prefix = source_pattern.removesuffix("%")
+            rows = [row for row in self.store.events.values()
+                    if row["event_type"] == event_type and row["source_id"].startswith(prefix)]
+            return FakeResult(sorted(rows, key=lambda row: row["sequence_id"]))
         if "FROM research_ledger_events ORDER BY" in query:
             rows = list(self.store.events.values())
             order = "sequence_id" if "ORDER BY sequence_id" in query else "event_id"
@@ -58,7 +74,9 @@ class FakeResult:
 class FakeStore:
     def __init__(self, trades=(), orders=(), registry=None, trials=()):
         self.events = {}
-        self.event_lock = threading.Lock()
+        # RLock lets the transaction snapshot and FakeConnection's individual
+        # statements share the same lock without deadlocking the test double.
+        self.event_lock = threading.RLock()
         self.sequence = 0
         self.syncs = {}
         self.external = {"trades": list(trades), "orders": list(orders)}
@@ -67,7 +85,18 @@ class FakeStore:
 
     @contextmanager
     def _connection(self):
-        yield FakeConnection(self)
+        # Mirror DataStore._connection(): one append batch is atomic.  The
+        # snapshot is intentionally small and test-only, but it catches code
+        # that relies on rollback after a conflict in the middle of a batch.
+        with self.event_lock:
+            events_before = dict(self.events)
+            sequence_before = self.sequence
+            try:
+                yield FakeConnection(self)
+            except Exception:
+                self.events = events_before
+                self.sequence = sequence_before
+                raise
 
     @staticmethod
     def _json(value):
@@ -85,6 +114,129 @@ class FakeStore:
 
 
 class ResearchLedgerTests(unittest.TestCase):
+    @staticmethod
+    def _forward_event(run_id, event_type, event_id, **fields):
+        return {"event_type": event_type, "run_id": run_id,
+                "event_id": event_id, **fields}
+
+    def test_forward_paper_retries_use_stable_ids_and_preserve_source_id(self):
+        store = FakeStore()
+        event = self._forward_event("run-1", "decision", "decision-1", pair="BTC/USDT")
+
+        first = ledger.append_forward_paper_events(store, "run-1", [event])
+        retry = ledger.append_forward_paper_events(store, "run-1", [event])
+
+        self.assertEqual(first, retry)
+        self.assertEqual(len(store.events), 1)
+        row = next(iter(store.events.values()))
+        self.assertEqual(row["event_type"], "forward_paper_decision")
+        self.assertEqual(row["source_id"], "forward-paper/run-1")
+        self.assertEqual(row["payload"]["event_id"], "decision-1")
+
+    def test_forward_paper_reused_stable_id_with_changed_content_is_rejected(self):
+        store = FakeStore()
+        original = self._forward_event("run-1", "fill", "fill-1", price=100)
+        ledger.append_forward_paper_events(store, "run-1", [original])
+
+        changed = self._forward_event("run-1", "fill", "fill-1", price=101)
+        with self.assertRaisesRegex(ValueError, "immutable forward-paper event conflict"):
+            ledger.append_forward_paper_events(store, "run-1", [changed])
+        self.assertEqual(len(store.events), 1)
+
+    def test_forward_paper_batch_conflict_rolls_back_prior_inserts(self):
+        store = FakeStore()
+        existing = self._forward_event("run-1", "decision", "existing", decision="allow")
+        ledger.append_forward_paper_events(store, "run-1", [existing])
+
+        changed = self._forward_event("run-1", "decision", "existing", decision="deny")
+        new_event = self._forward_event("run-1", "fill", "new-fill", action="entry")
+
+        with self.assertRaisesRegex(ValueError, "immutable forward-paper event conflict"):
+            ledger.append_forward_paper_events(store, "run-1", [new_event, changed])
+
+        # The transaction must leave the outbox unchanged: a retry can safely
+        # replay the entire batch after the conflicting producer event is fixed.
+        self.assertEqual(len(store.events), 1)
+        self.assertEqual(next(iter(store.events.values()))["payload"]["event_id"], "existing")
+
+    def test_forward_paper_identity_is_isolated_by_run_and_event_type(self):
+        store = FakeStore()
+        events = [
+            self._forward_event("run-1", "decision", "shared-id", decision="allow"),
+            self._forward_event("run-2", "decision", "shared-id", decision="allow"),
+            self._forward_event("run-1", "fill", "shared-id", action="entry"),
+        ]
+
+        ids = [ledger.append_forward_paper_events(store, event["run_id"], [event])[0]
+               for event in events]
+
+        self.assertEqual(len(set(ids)), 3)
+        self.assertEqual(len(store.events), 3)
+
+    def test_forward_paper_reads_filter_by_run_type_and_append_order(self):
+        store = FakeStore()
+        ledger.append_forward_paper_events(store, "run-1", [
+            self._forward_event("run-1", "manifest", "m1"),
+            self._forward_event("run-1", "decision", "d1"),
+            self._forward_event("run-1", "fill", "f1"),
+            self._forward_event("run-1", "decision", "d2"),
+        ])
+        ledger.append_forward_paper_events(store, "run-2", [
+            self._forward_event("run-2", "decision", "other-run"),
+        ])
+
+        rows = ledger.read_forward_paper_events(store, "run-1", event_types=["decision"], limit=1)
+
+        self.assertEqual([row["payload"]["event_id"] for row in rows], ["d1"])
+        self.assertEqual(rows[0]["event_type"], "forward_paper_decision")
+        all_rows = ledger.read_forward_paper_events(store, "run-1")
+        self.assertEqual([row["payload"]["event_id"] for row in all_rows], ["m1", "d1", "f1", "d2"])
+        self.assertEqual(ledger.read_forward_paper_events(store, "run-1", event_types=[]), [])
+        self.assertEqual(ledger.read_forward_paper_events(store, "run-1", limit=0), [])
+
+    def test_forward_paper_run_list_uses_latest_manifest_backed_runs(self):
+        store = FakeStore()
+        ledger.append_forward_paper_events(store, "run-old", [
+            self._forward_event("run-old", "manifest", "m-old", schema_version="v1"),
+            self._forward_event("run-old", "decision", "orphan-like"),
+        ])
+        ledger.append_forward_paper_events(store, "run-new", [
+            self._forward_event("run-new", "manifest", "m-new", schema_version="v2"),
+        ])
+        ledger.append_forward_paper_events(store, "run-new", [
+            self._forward_event("run-new", "manifest", "m-new-revision", schema_version="v3"),
+        ])
+        ledger.append_forward_paper_events(store, "run-without-manifest", [
+            self._forward_event("run-without-manifest", "decision", "orphan"),
+        ])
+
+        runs = ledger.list_forward_paper_runs(store)
+
+        self.assertEqual([run["run_id"] for run in runs], ["run-new", "run-old"])
+        self.assertEqual(runs[0]["manifest"]["schema_version"], "v2")
+        self.assertEqual(runs[0]["manifest_sequence_id"], 3)
+        self.assertEqual(ledger.list_forward_paper_runs(store, limit=1), runs[:1])
+        self.assertEqual(ledger.list_forward_paper_runs(store, limit=0), [])
+        with self.assertRaisesRegex(ValueError, "limit"):
+            ledger.list_forward_paper_runs(store, limit=True)
+
+    def test_forward_paper_rejects_malformed_events_and_filters(self):
+        store = FakeStore()
+        with self.assertRaisesRegex(ValueError, "run_id mismatch"):
+            ledger.append_forward_paper_events(store, "run-1", [
+                self._forward_event("run-2", "decision", "d1")
+            ])
+        with self.assertRaisesRegex(ValueError, "unsupported forward-paper event type"):
+            ledger.append_forward_paper_events(store, "run-1", [
+                self._forward_event("run-1", [], "d1")
+            ])
+        with self.assertRaisesRegex(ValueError, "event_id"):
+            ledger.append_forward_paper_events(store, "run-1", [
+                self._forward_event("run-1", "decision", "")
+            ])
+        with self.assertRaisesRegex(ValueError, "event type filter"):
+            ledger.read_forward_paper_events(store, "run-1", event_types=[{}])
+
     def test_events_are_idempotent_and_conflicts_are_rejected(self):
         store = FakeStore()
         payload = {"id": "v1", "config": {"seq_len": 30}}

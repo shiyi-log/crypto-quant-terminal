@@ -336,7 +336,8 @@ if __name__ == "__main__":
 # ══════════════════════════════════════════════════════════════════════
 def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
            start=None, wallet=10_000.0, chan_entry=20, chan_exit=20,
-           ml_mask=None, allow_stale_entry=False, event_sink=None):
+           ml_mask=None, allow_stale_entry=False, event_sink=None,
+           initial_cash=None, initial_positions=None):
     """时序正确的版本（第 2 版 —— 修掉 Codex 复核指出的三处 bug）。
 
     返回 (trades, equity, ret, diag)。
@@ -404,8 +405,43 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
         if not deltas.empty:
             cadence = deltas.median()
 
-    cash = wallet
+    cash = wallet if initial_cash is None else float(initial_cash)
     positions = {}
+    for pair, position in (initial_positions or {}).items():
+        if pair not in cols:
+            raise ValueError(f"initial position symbol is not in data: {pair}")
+        k = cols.index(pair)
+        side = position.get("side")
+        if side not in {"long", "short"}:
+            raise ValueError(f"initial position has invalid side: {pair}")
+        entry_px = float(position["entry_px"])
+        stake = float(position["stake"])
+        quantity = abs(float(position["quantity"]))
+        fee_in = float(position.get("fee_in", 0.0))
+        if not all(np.isfinite(value) for value in (entry_px, stake, quantity, fee_in)):
+            raise ValueError(f"initial position has non-finite values: {pair}")
+        if entry_px <= 0 or stake < 0 or quantity <= 0 or fee_in < 0:
+            raise ValueError(f"initial position has invalid values: {pair}")
+        if position.get("entry_date") is None:
+            raise ValueError(f"initial position is missing entry_date: {pair}")
+        entry_date = pd.Timestamp(position["entry_date"])
+        if entry_date.tzinfo is not None:
+            entry_date = entry_date.tz_convert("UTC").tz_localize(None)
+        positions[k] = {
+            "pair": pair, "stake": stake,
+            "qty_signed": quantity * (1 if side == "long" else -1),
+            # The segment may start after this entry. -1 marks an entry that
+            # predates the local replay window; entry_date remains authoritative.
+            "entry_px": entry_px, "entry_i": -1, "entry_date": entry_date,
+            "fee_in": fee_in, "pending_exit": bool(position.get("pending_exit", False)),
+        }
+
+    def position_open_date(position):
+        entry_date = position.get("entry_date")
+        if entry_date is not None:
+            return entry_date
+        entry_i = position.get("entry_i")
+        return dates[int(entry_i)] if entry_i is not None else dates[0]
     trades = []
     eq_curve = np.full(T, np.nan)
     last_px = np.full(K, np.nan)      # 每币【最后已知有效价】
@@ -447,7 +483,7 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
              "side": "short" if positions[k]["qty_signed"] < 0 else "long",
              "open_rate": float(positions[k]["entry_px"]),
              "stake": float(positions[k]["stake"]),
-             "open_candle_utc": utc_iso(dates[positions[k]["entry_i"]])}
+             "open_candle_utc": utc_iso(position_open_date(positions[k]))}
             for k in sorted(positions, key=lambda key: cols[key])
         ] if event_sink is not None else None
         # Entry decisions are made from the previous candle's close.  Readiness
@@ -482,7 +518,17 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
                     last_px[k] = c_prev
 
         if i == 0:
-            eq_curve[i] = cash
+            # A recovery segment may start with positions opened before the
+            # local replay window.  Include their mark at the first known
+            # opening price in the initial equity snapshot; reporting cash
+            # alone would create an artificial one-candle loss.
+            held_val = 0.0
+            for k in positions:
+                mark = opx[0, k]
+                if not (np.isfinite(mark) and mark > 0):
+                    mark = positions[k]["entry_px"]
+                held_val += pos_value(k, mark)
+            eq_curve[i] = cash + held_val
             if candle_event is not None:
                 candle_event["held_after"] = []
                 event_sink.append(candle_event)
@@ -518,7 +564,7 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
             pnl = value - p["stake"] - p["fee_in"] - fee
             trades.append({
                 "pair": p["pair"].split("/")[0], "open_i": p["entry_i"], "close_i": i,
-                "open_date": dates[p["entry_i"]], "close_date": dates[i],
+                "open_date": position_open_date(p), "close_date": dates[i],
                 "is_short": p["qty_signed"] < 0,
                 "open_rate": p["entry_px"], "close_rate": exit_px,
                 "profit_abs": pnl,
@@ -628,7 +674,7 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
                 positions[k] = {
                     "pair": cols[k], "stake": stake,
                     "qty_signed": stake / ep * np.sign(prev_state[k]),
-                    "entry_px": ep, "entry_i": i, "fee_in": fee_one,
+                    "entry_px": ep, "entry_i": i, "entry_date": dates[i], "fee_in": fee_one,
                     "pending_exit": False,
                 }
                 if row is not None:
@@ -672,7 +718,7 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
                  "side": "short" if positions[k]["qty_signed"] < 0 else "long",
                  "open_rate": float(positions[k]["entry_px"]),
                  "stake": float(positions[k]["stake"]),
-                 "open_candle_utc": utc_iso(dates[positions[k]["entry_i"]])}
+                 "open_candle_utc": utc_iso(position_open_date(positions[k]))}
                 for k in sorted(positions, key=lambda key: cols[key])
             ]
             event_sink.append(candle_event)
@@ -688,7 +734,7 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
     diag["open_positions"] = [
         {"pair": positions[k]["pair"].split("/")[0],
          "entry_i": int(positions[k]["entry_i"]),
-         "open_date": dates[positions[k]["entry_i"]].strftime("%Y-%m-%d"),
+         "open_date": pd.Timestamp(position_open_date(positions[k])).strftime("%Y-%m-%d"),
          "open_rate": float(positions[k]["entry_px"]),
          "stake": float(positions[k]["stake"]),
          "is_short": bool(positions[k]["qty_signed"] < 0),

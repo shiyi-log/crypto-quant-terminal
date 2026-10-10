@@ -1036,3 +1036,123 @@ export interface ResearchLedger {
 export async function getResearchLedger(): Promise<ResearchLedger> {
   return unwrap<ResearchLedger>(await ftClient.get('/locals/research-ledger'));
 }
+
+export interface ForwardPaperVariantSummary {
+  closed_trade_count?: number;
+  realized_profit_after_fee_before_unknown_costs?: number | null;
+  unrealized_pnl_before_unknown_costs?: number | null;
+  ending_equity_marked?: number | null;
+  open_position_count?: number;
+  strategy_usable?: boolean;
+  database_ledger?: {
+    enabled?: boolean;
+    synced_event_count?: number;
+    sync_error?: string | null;
+  };
+  slippage?: 'unknown' | string;
+  funding?: 'unknown' | string;
+  net_profit?: number | null;
+  diagnostics?: Record<string, unknown>;
+  summary_scope_start_utc?: string | null;
+  last_successful_replay?: boolean;
+  [key: string]: unknown;
+}
+
+export interface ForwardPaperEvent {
+  action?: string;
+  candle_utc?: string | null;
+  candidates?: Array<Record<string, unknown>>;
+  coin?: string;
+  decided_at_utc?: string | null;
+  decision_reason?: string | null;
+  event_id?: string;
+  event_type?: string;
+  execution_at_utc?: string | null;
+  exits?: Array<Record<string, unknown>>;
+  fee?: number | null;
+  filled_at_utc?: string | null;
+  price?: number | null;
+  profit_abs?: number | null;
+  quantity?: number | null;
+  reason?: string | null;
+  rule_hash?: string;
+  side?: string;
+  variant_id?: string;
+  [key: string]: unknown;
+}
+
+export interface ForwardPaperResponse {
+  run_id: string;
+  manifest: {
+    variants?: Array<{
+      variant_id: string;
+      rule_hash?: string;
+      hypothesis?: string;
+      chan_entry?: number;
+      chan_exit?: number;
+      [key: string]: unknown;
+    }>;
+    [key: string]: any;
+  };
+  latest_snapshot?: {
+    data_ready?: boolean;
+    data_fingerprint?: string | null;
+    candle_through_utc?: string | null;
+    missing?: string[];
+    [key: string]: unknown;
+  } | null;
+  checkpoint?: {
+    candle_through_utc?: string | null;
+    data_fingerprint?: string | null;
+    variant_summaries?: Record<string, ForwardPaperVariantSummary>;
+    [key: string]: unknown;
+  } | null;
+  variants?: Record<string, ForwardPaperVariantSummary>;
+  last_successful_replay?: {
+    data_ready?: boolean;
+    replay_completed?: boolean;
+    candle_through_utc?: string | null;
+    data_fingerprint?: string | null;
+    variants?: Record<string, ForwardPaperVariantSummary>;
+  } | null;
+  summary: {
+    data_ready: boolean;
+    data_fingerprint?: string | null;
+    candle_through_utc?: string | null;
+    decision_count: number;
+    fill_count: number;
+    entry_count: number;
+    close_count: number;
+    closed_trade_count: number | null;
+    closed_pnl: number | null;
+    cross_variant_closed_trade_count?: number;
+    cross_variant_closed_pnl?: number;
+    unrealized_pnl?: number | null;
+    slippage: string;
+    funding: string;
+    net_pnl?: number | null;
+    database_ledger?: {
+      enabled?: boolean;
+      synced_event_count?: number;
+      sync_error?: string | null;
+    };
+    cost_completeness?: Record<string, string>;
+  };
+  counts: { decisions: number; fills: number; closes: number };
+  decisions: ForwardPaperEvent[];
+  fills: ForwardPaperEvent[];
+  closes: ForwardPaperEvent[];
+  limit: number;
+}
+
+/** 当前认证用户可读的前向纸面运行摘要（默认取最近一次运行）。 */
+export async function getForwardPaper(
+  runId?: string,
+  limit = 30,
+): Promise<ForwardPaperResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (runId) params.set('run_id', runId);
+  return unwrap<ForwardPaperResponse>(
+    await ftClient.get(`/locals/forward-paper?${params.toString()}`),
+  );
+}

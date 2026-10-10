@@ -86,6 +86,157 @@ def _record_event(store, event_type: str, payload: dict[str, Any], source_id: st
     return event_id
 
 
+_FORWARD_PAPER_TYPES = frozenset({"manifest", "snapshot", "decision", "fill", "checkpoint"})
+
+
+def _forward_paper_db_event_id(run_id: str, event_type: str, stable_event_id: str) -> str:
+    """Namespace a producer's stable ID without replacing it in the payload."""
+    identity = {"namespace": "forward-paper", "run_id": run_id,
+                "event_type": event_type, "stable_event_id": stable_event_id}
+    return "forward-paper:" + hashlib.sha256(_json(identity).encode("utf-8")).hexdigest()
+
+
+def append_forward_paper_events(store, run_id: str,
+                                events: list[dict[str, Any]]) -> list[str]:
+    """Append immutable forward-paper events using producer-supplied IDs.
+
+    The generic research ledger derives IDs from payload content. Forward-paper
+    events already have stable identities, so their database keys must retain
+    that identity across retries while remaining isolated by run and event type.
+    The whole batch is one transaction; a reused ID with changed content fails.
+    """
+    if not isinstance(run_id, str) or not run_id or any(ord(char) < 32 for char in run_id):
+        raise ValueError("run_id must be a non-empty string without control characters")
+    if not isinstance(events, list):
+        raise ValueError("events must be a list")
+
+    source_id = f"forward-paper/{run_id}"
+    prepared = []
+    for event in events:
+        if not isinstance(event, dict):
+            raise ValueError("forward-paper events must be objects")
+        event_type = event.get("event_type")
+        stable_id = event.get("event_id")
+        if not isinstance(event_type, str) or event_type not in _FORWARD_PAPER_TYPES:
+            raise ValueError(f"unsupported forward-paper event type: {event_type}")
+        if event.get("run_id") != run_id:
+            raise ValueError("forward-paper event run_id mismatch")
+        if not isinstance(stable_id, str) or not stable_id or any(ord(char) < 32 for char in stable_id):
+            raise ValueError("forward-paper event_id must be a non-empty stable string")
+        database_id = _forward_paper_db_event_id(run_id, event_type, stable_id)
+        prepared.append((database_id, f"forward_paper_{event_type}", event, source_id))
+
+    inserted_ids = []
+    with store._connection() as conn:
+        for database_id, event_type, payload, event_source in prepared:
+            inserted = conn.execute(
+                """INSERT INTO research_ledger_events (event_id,event_type,payload,source_id)
+                   VALUES (%s,%s,%s,%s) ON CONFLICT (event_id) DO NOTHING RETURNING event_id""",
+                (database_id, event_type, store._json(payload), event_source),
+            ).fetchone()
+            if inserted is None:
+                existing = conn.execute(
+                    """SELECT event_type,payload,source_id FROM research_ledger_events
+                       WHERE event_id=%s""", (database_id,),
+                ).fetchone()
+                if existing is None:
+                    raise RuntimeError(f"forward-paper event disappeared after conflict: {database_id}")
+                old_type = existing["event_type"] if isinstance(existing, dict) else existing[0]
+                old_payload = existing["payload"] if isinstance(existing, dict) else existing[1]
+                old_source = existing["source_id"] if isinstance(existing, dict) else existing[2]
+                if (old_type != event_type or old_source != event_source
+                        or _json(old_payload) != _json(payload)):
+                    raise ValueError(f"immutable forward-paper event conflict: {database_id}")
+            inserted_ids.append(database_id)
+    return inserted_ids
+
+
+def read_forward_paper_events(store, run_id: str, *,
+                              event_types: list[str] | tuple[str, ...] | None = None,
+                              limit: int | None = None) -> list[dict[str, Any]]:
+    """Read one run's evidence in append order, optionally filtered by type."""
+    if not isinstance(run_id, str) or not run_id or any(ord(char) < 32 for char in run_id):
+        raise ValueError("run_id must be a non-empty string without control characters")
+    if event_types is not None:
+        if not isinstance(event_types, (list, tuple)):
+            raise ValueError("event_types must be a list or tuple")
+        requested_types = list(event_types)
+        if any(not isinstance(item, str) or item not in _FORWARD_PAPER_TYPES
+               for item in requested_types):
+            raise ValueError("unsupported forward-paper event type filter")
+        if not requested_types:
+            return []
+    else:
+        requested_types = None
+    if limit is not None and (isinstance(limit, bool) or int(limit) != limit or limit < 0):
+        raise ValueError("limit must be a non-negative integer")
+    if limit == 0:
+        return []
+
+    query = """SELECT sequence_id,event_id,event_type,payload,source_id,created_at
+        FROM research_ledger_events WHERE source_id=%s"""
+    params: list[Any] = [f"forward-paper/{run_id}"]
+    if requested_types is not None:
+        db_types = [f"forward_paper_{item}" for item in dict.fromkeys(requested_types)]
+        query += " AND event_type = ANY(%s)"
+        params.append(db_types)
+    query += " ORDER BY sequence_id"
+    if limit is not None:
+        query += " LIMIT %s"
+        params.append(int(limit))
+    with store._connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) if isinstance(row, dict) else {
+        "sequence_id": row[0], "event_id": row[1], "event_type": row[2],
+        "payload": row[3], "source_id": row[4], "created_at": row[5],
+    } for row in rows]
+
+
+def list_forward_paper_runs(store, *, limit: int | None = 100) -> list[dict[str, Any]]:
+    """List newest manifest-backed runs; orphan activity is not a run."""
+    if limit is not None and (
+        isinstance(limit, bool) or not isinstance(limit, int) or limit < 0
+    ):
+        raise ValueError("limit must be a non-negative integer")
+    if limit == 0:
+        return []
+
+    with store._connection() as conn:
+        rows = conn.execute(
+            """SELECT source_id,sequence_id,payload,created_at
+               FROM research_ledger_events
+               WHERE event_type=%s AND source_id LIKE %s
+               ORDER BY sequence_id""",
+            ("forward_paper_manifest", "forward-paper/%"),
+        ).fetchall()
+
+    # The first manifest is the immutable run identity. Retries are already
+    # idempotent, but this also handles older databases with duplicate manifests.
+    by_source: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item = dict(row) if isinstance(row, dict) else {
+            "source_id": row[0], "sequence_id": row[1],
+            "payload": row[2], "created_at": row[3],
+        }
+        source_id = item["source_id"]
+        if not isinstance(source_id, str) or not source_id.startswith("forward-paper/"):
+            continue
+        run_id = source_id[len("forward-paper/"):]
+        payload = item["payload"]
+        if not run_id or not isinstance(payload, dict) or payload.get("run_id") != run_id:
+            continue
+        if source_id not in by_source:
+            by_source[source_id] = {
+                "run_id": run_id,
+                "manifest": payload,
+                "manifest_sequence_id": item["sequence_id"],
+                "created_at": item["created_at"],
+            }
+
+    runs = sorted(by_source.values(), key=lambda item: item["manifest_sequence_id"], reverse=True)
+    return runs[:limit] if limit is not None else runs
+
+
 def _all_events(store) -> list[dict[str, Any]]:
     with store._connection() as conn:
         rows = conn.execute("""SELECT event_id,event_type,payload,source_id,created_at

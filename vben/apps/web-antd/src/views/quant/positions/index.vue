@@ -28,11 +28,20 @@ import {
 } from '#/api/freqtrade';
 import { onFtWsMessage, useFtWs } from '#/views/quant/utils/useFtWs';
 
+import TradeDetailDrawer from './TradeDetailDrawer.vue';
+
 const open = ref<any[]>([]);
 const trades = ref<any[]>([]);
 const total = ref(0);
 const bal = ref<any>({});
 const loading = ref(false);
+const detailOpen = ref(false);
+const detailRecord = ref<any>(null);
+
+function viewTradeDetail(record: any) {
+  detailRecord.value = { ...record };
+  detailOpen.value = true;
+}
 
 /** 持仓时长：只用真实已平仓成交算，不再写死「约 33 天」 */
 const holdStats = computed(() => {
@@ -55,7 +64,11 @@ const holdStats = computed(() => {
 
 const localTime = (v?: string) => {
   if (!v) return '—';
-  const d = new Date(v);
+  // Freqtrade 的无时区字符串为 UTC，与详情里的毫秒时间戳统一转本地时间。
+  const raw = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(v)
+    ? `${v.replace(' ', 'T')}Z`
+    : v;
+  const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return String(v);
   const p = (n: number) => String(n).padStart(2, '0');
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
@@ -109,7 +122,7 @@ const tradeCols = [
   { key: 'abs', title: '盈亏', align: 'right' as const, width: 90 },
   { dataIndex: 'open_date', key: 'open_date', title: '开仓', width: 110 },
   { key: 'close', title: '平仓', width: 160 },
-  { key: 'action', title: '操作', width: 90, fixed: 'right' as const },
+  { key: 'action', title: '操作', width: 160, fixed: 'right' as const },
 ];
 
 const balCols = [
@@ -338,6 +351,10 @@ function onAction(key: string, r: any) {
       removeTrade(r);
       break;
     }
+    case 'detail': {
+      viewTradeDetail(r);
+      break;
+    }
     case 'exit-limit': {
       openLimit(r);
       break;
@@ -513,6 +530,7 @@ onUnmounted(() => {
               <Button :loading="isBusy(record)" size="small">操作</Button>
               <template #overlay>
                 <Menu @click="onMenu(record, $event)">
+                  <MenuItem key="detail">订单详情</MenuItem>
                   <MenuItem key="exit-market">市价平仓</MenuItem>
                   <MenuItem key="exit-limit">限价平仓</MenuItem>
                   <MenuItem key="exit-partial">部分平仓</MenuItem>
@@ -591,7 +609,9 @@ onUnmounted(() => {
               </span>
             </template>
             <template v-else-if="column.key === 'action'">
-              <!-- 持仓中的行是 /v1/trades 里没有的虚拟行，只能回到「当前持仓」表操作 -->
+              <Button size="small" type="link" @click="viewTradeDetail(record)">
+                详情
+              </Button>
               <Button
                 v-if="!record.is_open"
                 :loading="isBusy(record)"
@@ -602,7 +622,6 @@ onUnmounted(() => {
               >
                 删除记录
               </Button>
-              <span v-else class="text-xs text-gray-400">—</span>
             </template>
             <template v-else>
               {{ fmt(record[column.dataIndex as string], 4) }}
@@ -616,6 +635,8 @@ onUnmounted(() => {
 
 
     </div>
+
+    <TradeDetailDrawer v-model:open="detailOpen" :record="detailRecord" />
 
     <!-- 限价平仓 / 部分平仓：同一弹窗按 mode 切换 -->
     <Modal

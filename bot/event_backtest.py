@@ -27,6 +27,7 @@
 """
 
 import argparse
+import copy
 import glob
 import json
 import os
@@ -35,6 +36,11 @@ import zipfile
 
 import numpy as np
 import pandas as pd
+
+try:
+    from . import paper_rules
+except ImportError:
+    import paper_rules
 
 PERP = "user_data/data/binance/futures"
 LIVE = "user_data/config_trend_live.json"
@@ -331,13 +337,14 @@ if __name__ == "__main__":
 #        (2) 结算【因 state[i-1]==0 而到期】的退出（费用 + 现金释放）
 #        (3) 冻结扣费后的组合权益快照 E = cash + Σ持仓价值(按 opx[i])
 #        (4) 用 E 为这一批新入场【统一定仓】，受现金与槽位约束后执行
-#    未实现/需报告的假设：同一开盘既释放退出资金又成交新单 —— 这是回测执行
-#    假设，真实部署能否立即再用资金取决于订单成交与资金可用状态。
+#    执行假设：退出成交释放资金，但刚释放的槽位要到下一开盘才可复用；
+#    该开盘原本已有的空余容量仍可成交新单。真实部署还取决于订单成交与资金可用状态。
 # ══════════════════════════════════════════════════════════════════════
 def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
            start=None, wallet=10_000.0, chan_entry=20, chan_exit=20,
            ml_mask=None, allow_stale_entry=False, event_sink=None,
-           initial_cash=None, initial_positions=None):
+           initial_cash=None, initial_positions=None, range_filter=None,
+           take_profit=None, stop_loss=None, execution=None):
     """时序正确的版本（第 2 版 —— 修掉 Codex 复核指出的三处 bug）。
 
     返回 (trades, equity, ret, diag)。
@@ -365,23 +372,42 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
       掩码缺少信号日/币列或值无效时 fail-closed（拒绝开仓）
     ══════════════════════════════════════════════════════════════════
     """
-    S, ST, P = {}, {}, {}
+    range_rule, tp_rule, sl_rule, execution_rule = paper_rules.engine_rules(
+        range_filter, take_profit, stop_loss, execution)
+    risk_active = tp_rule["kind"] != "none" or sl_rule["kind"] != "none"
+    atr_windows = {rule["atr_window"] for rule in (tp_rule, sl_rule)
+                   if rule["kind"] == "atr_multiple"}
+    S, ST, P, filters, atr_by_coin, valid_ohlc = {}, {}, {}, {}, {}, {}
     for s_, d in data.items():
         # ✅ 指标体系在完整序列上计算（不先按 start 截断），
         #    start 只用来限制【模拟窗口】—— 否则开头几十根没有通道值，会改变信号
         full = d
         S[s_] = signals(full["close"], entry=chan_entry, exit_=chan_exit)
         ST[s_] = strength(full["close"], entry=chan_entry)
-        P[s_] = full[["open", "close"]]
+        P[s_] = full.reindex(columns=["open", "high", "low", "close"])
+        filters[s_] = paper_rules.range_values(full, range_rule)
+        valid_ohlc[s_] = paper_rules.ohlc_valid(full)
+        atr_by_coin[s_] = {str(window): paper_rules.atr(full, window)
+                          for window in atr_windows}
 
     Sd = pd.DataFrame(S).sort_index().fillna(0.0)
     STd = pd.DataFrame(ST).sort_index()
     Od = pd.DataFrame({k: v["open"] for k, v in P.items()}).sort_index()
     Cd = pd.DataFrame({k: v["close"] for k, v in P.items()}).sort_index()
+    Hd = pd.DataFrame({k: v["high"] for k, v in P.items()}).sort_index()
+    Ld = pd.DataFrame({k: v["low"] for k, v in P.items()}).sort_index()
+    RVd = pd.DataFrame({k: v["raw_value"] for k, v in filters.items()}).reindex(Sd.index)
+    RFd = pd.DataFrame({k: v["ready"] for k, v in filters.items()}).reindex(Sd.index).fillna(False)
+    OHd = pd.DataFrame(valid_ohlc).reindex(Sd.index).fillna(False)
+    ATd = {str(window): pd.DataFrame({k: values[str(window)]
+                                     for k, values in atr_by_coin.items()}).reindex(Sd.index)
+           for window in atr_windows}
 
     if start is not None:
         keep = Sd.index >= pd.Timestamp(start)
         Sd, STd, Od, Cd = Sd[keep], STd[keep], Od[keep], Cd[keep]
+        Hd, Ld, RVd, RFd, OHd = Hd[keep], Ld[keep], RVd[keep], RFd[keep], OHd[keep]
+        ATd = {window: frame[keep] for window, frame in ATd.items()}
 
     dates = Sd.index
     T, K = Sd.shape
@@ -434,7 +460,20 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
             # predates the local replay window; entry_date remains authoritative.
             "entry_px": entry_px, "entry_i": -1, "entry_date": entry_date,
             "fee_in": fee_in, "pending_exit": bool(position.get("pending_exit", False)),
+            "pending_exit_reason": position.get("pending_exit_reason"),
+            "pending_trigger": copy.deepcopy(position.get("pending_trigger")),
         }
+        if risk_active:
+            # A restored ATR/trailing rule needs the original frozen state.
+            # Rebuilding it from the resumed window would change the rule.
+            saved_risk = position.get("risk_state")
+            if not isinstance(saved_risk, dict):
+                raise ValueError(f"initial position is missing frozen risk_state: {pair}")
+            expected = {"entry_atr", "take_profit_level", "stop_loss_level",
+                        "trailing_extreme", "trailing_level"}
+            if not expected.issubset(saved_risk):
+                raise ValueError(f"initial position has incomplete risk_state: {pair}")
+            positions[k]["risk_state"] = copy.deepcopy(saved_risk)
 
     def position_open_date(position):
         entry_date = position.get("entry_date")
@@ -448,7 +487,50 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
     diag = {"missing_open_fill_skips": 0, "stale_valuation": 0,
             "rejected_no_cash": 0, "frozen_equity_used": 0,
             "pending_exit_days": 0, "topn_slot_blocked_by_missing": 0,
-            "ml_mask_blocked": 0}
+            "ml_mask_blocked": 0, "range_filter_blocked": 0,
+            "range_filter_not_ready": 0, "risk_entry_not_ready": 0,
+            "risk_candle_not_ready": 0, "risk_exit_triggers": 0,
+            "dual_touch_stop_loss_first": 0,
+            "execution": dict(execution_rule)}
+
+    def risk_entry_evidence(k, signal_i):
+        frozen_atr = {window: float(frame.iloc[signal_i, k])
+                      for window, frame in ATd.items()}
+        ready = not risk_active or (bool(OHd.iloc[signal_i, k]) and
+                                    all(np.isfinite(value) and value > 0
+                                        for value in frozen_atr.values()))
+        return ready, frozen_atr
+
+    def observe_completed_risk_candle(i):
+        # This happens after the candle has completed. It cannot change this
+        # candle's opening decisions or fills, only a later opening fill.
+        if not risk_active:
+            return
+        for k, p in positions.items():
+            if p.get("pending_exit"):
+                continue
+            if not bool(OHd.iloc[i, k]):
+                diag["risk_candle_not_ready"] += 1
+                if event_sink is not None:
+                    event_sink.append({"event_type": "risk_unready", "coin": cols[k].split("/")[0],
+                                       "candle_utc": utc_iso(dates[i]),
+                                       "reason": "completed_ohlc_not_ready"})
+                continue
+            candle = {"open": opx[i, k], "high": Hd.iloc[i, k],
+                      "low": Ld.iloc[i, k], "close": px[i, k]}
+            trigger = paper_rules.risk_touch(p["risk_state"], np.sign(p["qty_signed"]),
+                                            candle, tp_rule, sl_rule, utc_iso(dates[i]))
+            if trigger is not None:
+                p["pending_exit"] = True
+                p["pending_exit_reason"] = trigger["reason"]
+                p["pending_trigger"] = trigger
+                diag["risk_exit_triggers"] += 1
+                diag["dual_touch_stop_loss_first"] += int(trigger["dual_touch"])
+                if event_sink is not None:
+                    event_sink.append({"event_type": "risk_trigger", "coin": cols[k].split("/")[0],
+                                       "side": "short" if p["qty_signed"] < 0 else "long",
+                                       "candle_utc": utc_iso(dates[i]), "trigger": copy.deepcopy(trigger),
+                                       "execution": dict(execution_rule)})
 
     def mask_decision(signal_date, coin):
         """Resolve one explicit mask cell; missing or ambiguous cells deny."""
@@ -517,46 +599,73 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
                 if np.isfinite(c_prev) and c_prev > 0:
                     last_px[k] = c_prev
 
-        if i == 0:
-            # A recovery segment may start with positions opened before the
-            # local replay window.  Include their mark at the first known
-            # opening price in the initial equity snapshot; reporting cash
-            # alone would create an artificial one-candle loss.
-            held_val = 0.0
-            for k in positions:
-                mark = opx[0, k]
-                if not (np.isfinite(mark) and mark > 0):
-                    mark = positions[k]["entry_px"]
-                held_val += pos_value(k, mark)
-            eq_curve[i] = cash + held_val
-            if candle_event is not None:
-                candle_event["held_after"] = []
-                event_sink.append(candle_event)
-            continue
+        # A recovery segment may start with positions opened before the local
+        # replay window.  Its first row is a mark-only boundary (see below);
+        # there is no previous signal candle and therefore no new entry.
+        prev_state = state[i - 1] if i > 0 else np.zeros(K)
+        slots_released_this_open = 0
+        exited_this_open = set()
 
-        prev_state = state[i - 1]
+        # A gap through a frozen TP/SL is observable at this execution open,
+        # even if the preceding candle lacked usable OHLC.  Mark it before the
+        # settlement pass so the fill uses this exact open price.
+        if i > 0 and risk_active:
+            for k, p in list(positions.items()):
+                if "risk_state" not in p:
+                    continue
+                gap = paper_rules.gap_touch(
+                    p["risk_state"], np.sign(p["qty_signed"]), opx[i, k],
+                    tp_rule, sl_rule, utc_iso(dates[i]))
+                if gap is not None:
+                    if p.get("pending_exit"):
+                        prior = copy.deepcopy(p.get("pending_trigger") or {})
+                        prior["execution_gap"] = gap
+                        p["pending_trigger"] = prior
+                    else:
+                        p["pending_exit"] = True
+                        p["pending_exit_reason"] = gap["reason"]
+                        p["pending_trigger"] = gap
+                        diag["risk_exit_triggers"] += 1
+                        diag["dual_touch_stop_loss_first"] += int(gap["dual_touch"])
+                        if event_sink is not None:
+                            event_sink.append({"event_type": "risk_trigger", "coin": cols[k].split("/")[0],
+                                               "side": "short" if p["qty_signed"] < 0 else "long",
+                                               "candle_utc": utc_iso(dates[i]),
+                                               "trigger": copy.deepcopy(gap),
+                                               "execution": dict(execution_rule)})
 
         # ── (1) 结算退出：pending_exit 优先，且退出信号【不可撤销】──
         for k in list(positions.keys()):
             p = positions[k]
-            want_exit = p.get("pending_exit", False) or (prev_state[k] == 0.0)
+            # A recovery segment's first row is already accounted for by the
+            # preceding runner checkpoint.  Do not replay its pending exit or
+            # completed-candle risk trigger a second time.
+            if i == 0:
+                continue
+            want_exit = p.get("pending_exit", False) or (i > 0 and prev_state[k] == 0.0)
             if not want_exit:
                 continue
+            exit_reason = p.get("pending_exit_reason") or "trend_end"
+            trigger = copy.deepcopy(p.get("pending_trigger"))
             exit_px = opx[i, k]
             if not np.isfinite(exit_px) or exit_px <= 0:
                 # ② 缺价 → 挂起，等第一个有效价；【不能】让后续信号把它取消
                 p["pending_exit"] = True
+                p["pending_exit_reason"] = exit_reason
                 diag["missing_open_fill_skips"] += 1
                 diag["pending_exit_days"] += 1
                 if candle_event is not None:
                     candle_event["exits"].append({
                         "coin": p["pair"].split("/")[0],
-                        "reason": "trend_end_pending_missing_open",
+                        "reason": exit_reason,
                         "status": "pending",
                         "actual_fill": None,
+                        "trigger": trigger,
                     })
                 continue
             positions.pop(k)
+            slots_released_this_open += 1
+            exited_this_open.add(k)
             value = p["stake"] + p["qty_signed"] * (exit_px - p["entry_px"])
             # ③ 正确的手续费：按成交名义额 |qty| × price × rate
             fee = abs(p["qty_signed"]) * exit_px * cost_one
@@ -570,8 +679,10 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
                 "profit_abs": pnl,
                 "profit_pct": pnl / p["stake"] * 100 if p["stake"] else 0,
                 "stake": p["stake"],            # 供外部核验手续费公式
-                "exit_reason": "trend_end",
+                "exit_reason": exit_reason,
                 "was_pending": bool(p.get("pending_exit", False)),
+                "trigger": trigger,
+                "risk_state": copy.deepcopy(p.get("risk_state")),
             })
             if event_sink is not None:
                 event_sink.append({
@@ -586,13 +697,17 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
                     "fee": float(fee),
                     "profit_abs": float(pnl),
                     "was_pending": bool(p.get("pending_exit", False)),
+                    "exit_reason": exit_reason,
+                    "trigger": trigger,
+                    "risk_state": copy.deepcopy(p.get("risk_state")),
                 })
             if candle_event is not None:
                 candle_event["exits"].append({
                     "coin": p["pair"].split("/")[0],
-                    "reason": "trend_end" if not p.get("pending_exit", False) else "pending_exit_filled",
+                    "reason": exit_reason,
                     "status": "filled",
                     "actual_fill": {"price": float(exit_px), "filled_at_utc": utc_iso(dates[i])},
+                    "trigger": trigger,
                 })
 
         # ── (2)(3) 用【已知价】重估持仓，冻结扣费后权益快照 E ──
@@ -640,6 +755,9 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
                         "reason": None,
                         "expected_fee": None,
                         "actual_fill": None,
+                        "range_filter": paper_rules.filter_evidence(
+                            range_rule, RVd.iloc[i - 1, k], RFd.iloc[i - 1, k]),
+                        "risk_ready": risk_entry_evidence(k, i - 1)[0],
                     }
             stake = E * exposure / max(top_n, 1)
             fee_one = stake * cost_one
@@ -653,9 +771,28 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
                     if row is not None:
                         row.update(decision="deny", reason="already_held")
                     continue
-                if len(positions) >= max_open:
+                if k in exited_this_open:
                     if row is not None:
-                        row.update(decision="deny", reason="max_open")
+                        row.update(decision="deny", reason="exited_this_open")
+                    continue
+                if len(positions) + slots_released_this_open >= max_open:
+                    if row is not None:
+                        row.update(decision="deny", reason="slot_release_after_open")
+                    continue
+                filter_state = paper_rules.filter_evidence(
+                    range_rule, RVd.iloc[i - 1, k], RFd.iloc[i - 1, k])
+                if not filter_state["passed"]:
+                    diag["range_filter_blocked"] += 1
+                    diag["range_filter_not_ready"] += int(not filter_state["ready"])
+                    if row is not None:
+                        row.update(decision="deny", reason="range_filter_not_ready"
+                                   if not filter_state["ready"] else "range_filter_rejected")
+                    continue
+                risk_ready, frozen_atr = risk_entry_evidence(k, i - 1)
+                if not risk_ready:
+                    diag["risk_entry_not_ready"] += 1
+                    if row is not None:
+                        row.update(decision="deny", reason="risk_indicators_not_ready")
                     continue
                 ep = opx[i, k]
                 if not np.isfinite(ep) or ep <= 0:
@@ -677,6 +814,9 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
                     "entry_px": ep, "entry_i": i, "entry_date": dates[i], "fee_in": fee_one,
                     "pending_exit": False,
                 }
+                if risk_active:
+                    positions[k]["risk_state"] = paper_rules.initial_risk(
+                        ep, np.sign(prev_state[k]), tp_rule, sl_rule, frozen_atr)
                 if row is not None:
                     row.update(decision="allow", reason="top_n_and_slot_available",
                                expected_fee=float(fee_one),
@@ -694,6 +834,7 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
                         "quantity": float(abs(positions[k]["qty_signed"])),
                         "stake": float(stake),
                         "fee": float(fee_one),
+                        "risk_state": copy.deepcopy(positions[k].get("risk_state")),
                     })
             if candle_event is not None:
                 candle_event["candidates"] = [candidate_rows[k] for k, _ in ranked]
@@ -722,23 +863,35 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
                 for k in sorted(positions, key=lambda key: cols[key])
             ]
             event_sink.append(candle_event)
+        if i > 0:
+            observe_completed_risk_candle(i)
 
     eq = pd.Series(eq_curve, index=dates)
     ret = eq.pct_change()
     diag["closed_trades"] = len(trades)
     diag["open_positions_at_end"] = len(positions)
+    diag["ending_cash"] = float(cash)
     # ✅ 期末未平仓【明细】—— Codex 要求保留的边界证据。
     #   若只给计数，外部就无法观察"这些仓位的进场事件"，
     #   会让扰动测试把"留到期末因而未进 trades"的进场误判为缺失
     #   （我第一版 T2 就栽在这里）。
     diag["open_positions"] = [
         {"pair": positions[k]["pair"].split("/")[0],
+         "full_pair": positions[k]["pair"],
          "entry_i": int(positions[k]["entry_i"]),
          "open_date": pd.Timestamp(position_open_date(positions[k])).strftime("%Y-%m-%d"),
          "open_rate": float(positions[k]["entry_px"]),
+         "entry_px": float(positions[k]["entry_px"]),
+         "entry_date": utc_iso(position_open_date(positions[k])),
+         "quantity": float(abs(positions[k]["qty_signed"])),
+         "fee_in": float(positions[k]["fee_in"]),
+         "side": "short" if positions[k]["qty_signed"] < 0 else "long",
          "stake": float(positions[k]["stake"]),
          "is_short": bool(positions[k]["qty_signed"] < 0),
-         "pending_exit": bool(positions[k].get("pending_exit", False))}
+         "pending_exit": bool(positions[k].get("pending_exit", False)),
+         "pending_exit_reason": positions[k].get("pending_exit_reason"),
+         "pending_trigger": copy.deepcopy(positions[k].get("pending_trigger")),
+         "risk_state": copy.deepcopy(positions[k].get("risk_state"))}
         for k in positions]
     return pd.DataFrame(trades), eq, ret, diag
 

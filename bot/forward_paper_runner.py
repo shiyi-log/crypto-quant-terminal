@@ -206,6 +206,45 @@ def _finite_ohlc_rows(data: dict[str, pd.DataFrame]) -> bool:
     )
 
 
+def _required_price_columns(variants: list[dict[str, Any]]) -> tuple[str, ...]:
+    """Require the prices actually read by the immutable executable rules."""
+    uses_intrabar = any(
+        item.get("range_filter", {}).get("kind", "none") == "adx"
+        or item.get("take_profit", {}).get("kind", "none") != "none"
+        or item.get("stop_loss", {}).get("kind", "none") != "none"
+        for item in variants
+    )
+    return ("open", "high", "low", "close") if uses_intrabar else ("open", "close")
+
+
+def _price_readiness_reasons(data: dict[str, pd.DataFrame],
+                            columns: tuple[str, ...]) -> list[str]:
+    reasons: list[str] = []
+    for symbol, frame in sorted(data.items()):
+        missing = [column for column in columns if column not in frame]
+        if missing:
+            reasons.append(f"missing_required_ohlc:{symbol}:{','.join(missing)}")
+            continue
+        prices = frame[list(columns)].to_numpy(dtype="float64")
+        if not np.isfinite(prices).all() or not (prices > 0).all():
+            reasons.append(f"invalid_required_prices:{symbol}")
+        if {"high", "low"}.issubset(columns):
+            if not ((frame["high"] >= frame[["open", "close"]].max(axis=1))
+                    & (frame["low"] <= frame[["open", "close"]].min(axis=1))
+                    & (frame["high"] >= frame["low"])).all():
+                reasons.append(f"invalid_ohlc_bounds:{symbol}")
+    return reasons
+
+
+def _risk_evidence(position: dict[str, Any]) -> dict[str, Any]:
+    """Carry executable position state without rebuilding it from new prices."""
+    return {
+        "risk_state": dict(position.get("risk_state") or {}),
+        "pending_exit_reason": position.get("pending_exit_reason"),
+        "pending_trigger": _plain(position.get("pending_trigger")),
+    }
+
+
 class ForwardPaperRunner:
     """One immutable rule set with append-only forward paper ledgers.
 
@@ -241,6 +280,7 @@ class ForwardPaperRunner:
         self._ledger_sync_count = 0
         self.variants = paper.freeze_variants(variants)
         self.variant_by_id = {item["variant_id"]: item for item in self.variants}
+        self.required_price_columns = _required_price_columns(self.variants)
         self.rules = {"top_n": top_n, "max_open": max_open,
                       "exposure": float(exposure), "cost_one": float(cost_one),
                       "wallet": float(wallet)}
@@ -290,7 +330,10 @@ class ForwardPaperRunner:
             expected = dict(identity)
             expected.pop("runtime", None)
             if existing != expected:
-                raise ValueError("immutable manifest conflict")
+                raise ValueError(
+                    "immutable manifest conflict: executable rules or engine changed; "
+                    "keep the existing ledger intact and choose a new output directory"
+                )
             for path in (self.decision_path, self.fill_path):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.touch(exist_ok=True)
@@ -360,7 +403,8 @@ class ForwardPaperRunner:
                     "entry_date": row.get("filled_at_utc"),
                     "side": side,
                     "coin": coin,
-                    "pending_exit": False,
+                    "pending_exit": bool(row.get("pending_exit", False)),
+                    **_risk_evidence(row),
                 }
             elif row.get("action") == "exit":
                 open_positions.pop(key, None)
@@ -382,6 +426,21 @@ class ForwardPaperRunner:
         coin_to_pair = {
             str(symbol).split("/")[0]: str(symbol) for symbol in data
         }
+        saved = self._checkpoint.get("engine_states", {}).get(variant_id, {})
+        saved_stamp = saved.get("through_utc")
+        state_through = pd.Timestamp(saved_stamp) if saved_stamp is not None else None
+        if state_through is not None and state_through.tzinfo is not None:
+            state_through = state_through.tz_convert("UTC")
+        # A normal growing snapshot replays from its original observation
+        # boundary. Never seed that replay with the latest (future) checkpoint.
+        # After a gap, carry only the last trusted state and leave its risk
+        # levels unchanged across the unobserved interval.
+        if (state_through is not None and boundary_stamp is not None
+                and state_through <= boundary_stamp):
+            cash = float(saved["cash"])
+            positions = _plain(saved.get("positions", {}))
+        else:
+            state_through = None
         rows = [row for row in self._fill_rows
                 if str(row.get("variant_id", "")) == str(variant_id)]
         rows.sort(key=lambda row: (str(row.get("filled_at_utc", "")),
@@ -392,6 +451,8 @@ class ForwardPaperRunner:
             if filled.tzinfo is not None:
                 filled = filled.tz_convert("UTC")
             if boundary_stamp is not None and filled > boundary_stamp:
+                continue
+            if state_through is not None and filled <= state_through:
                 continue
             coin = str(row.get("coin", ""))
             pair = coin_to_pair.get(coin)
@@ -410,7 +471,8 @@ class ForwardPaperRunner:
                     "fee_in": fee,
                     "entry_date": row.get("filled_at_utc"),
                     "side": side,
-                    "pending_exit": False,
+                    "pending_exit": bool(row.get("pending_exit", False)),
+                    **_risk_evidence(row),
                 }
             elif action == "exit":
                 position = positions.pop(pair, None)
@@ -429,7 +491,7 @@ class ForwardPaperRunner:
 
         # A missing execution price makes an exit pending.  The decision
         # ledger records that intent even though no fill exists yet.
-        pending: set[str] = set()
+        pending: dict[str, dict[str, Any]] = {}
         for row in sorted(self._decision_rows,
                           key=lambda item: (str(item.get("execution_at_utc", "")),
                                             str(item.get("event_id", "")))):
@@ -440,14 +502,22 @@ class ForwardPaperRunner:
                 execution = execution.tz_convert("UTC")
             if boundary_stamp is not None and execution > boundary_stamp:
                 continue
+            if state_through is not None and execution <= state_through:
+                continue
             for item in row.get("exits", []):
                 if item.get("status") != "pending":
                     continue
                 pair = coin_to_pair.get(str(item.get("coin", "")))
                 if pair in positions:
-                    pending.add(pair)
-        for pair in pending:
+                    entry_stamp = pd.Timestamp(positions[pair]["entry_date"])
+                    if entry_stamp.tzinfo is not None:
+                        entry_stamp = entry_stamp.tz_convert("UTC")
+                    if execution >= entry_stamp:
+                        pending[pair] = item
+        for pair, item in pending.items():
             positions[pair]["pending_exit"] = True
+            positions[pair]["pending_exit_reason"] = item.get("pending_exit_reason") or item.get("reason")
+            positions[pair]["pending_trigger"] = item.get("pending_trigger") or item.get("trigger")
         return cash, positions
 
     def _database_ledger_state(self) -> dict[str, Any]:
@@ -540,12 +610,20 @@ class ForwardPaperRunner:
             frame = data.get(symbol)
             if frame is None:
                 continue
-            through = pd.Timestamp(item["through_utc"])
-            if through.tzinfo is not None:
-                through = through.tz_convert("UTC").tz_localize(None)
-            actual = paper.data_fingerprint({symbol: frame.loc[frame.index <= through]})
-            if actual != item["fingerprint"]:
-                raise ValueError(f"immutable candle prefix conflict: {symbol}")
+            records = [item, *item.get("column_sets", {}).values()]
+            for record in records:
+                through = pd.Timestamp(record["through_utc"])
+                if through.tzinfo is not None:
+                    through = through.tz_convert("UTC").tz_localize(None)
+                columns = record.get("columns", list(frame.columns))
+                if not set(columns).issubset(frame.columns):
+                    # An incomplete observation cannot prove or rewrite a
+                    # previously frozen price column. Its available columns
+                    # remain protected by their separate observed prefix.
+                    continue
+                actual = paper.data_fingerprint({symbol: frame.loc[frame.index <= through, columns]})
+                if actual != record["fingerprint"]:
+                    raise ValueError(f"immutable candle prefix conflict: {symbol}")
 
         # Checkpoints written before frozen_prefixes used one shared boundary.
         previous_through = self._checkpoint.get("candle_through_utc")
@@ -559,32 +637,61 @@ class ForwardPaperRunner:
             frame = data.get(symbol)
             if frame is None:
                 continue  # partial snapshots are recorded as not ready
-            actual = paper.data_fingerprint({symbol: frame.loc[frame.index <= through]})
+            columns = self._checkpoint.get("prefix_columns", {}).get(symbol, list(frame.columns))
+            if not set(columns).issubset(frame.columns):
+                continue
+            actual = paper.data_fingerprint({symbol: frame.loc[frame.index <= through, columns]})
             if actual != expected:
                 raise ValueError(f"immutable candle prefix conflict: {symbol}")
 
     @staticmethod
     def _frozen_prefixes(data: dict[str, pd.DataFrame],
-                         previous: dict[str, dict[str, str]] | None = None
-                         ) -> dict[str, dict[str, str]]:
-        """Capture or extend the immutable observed prefix for each symbol."""
+                         previous: dict[str, dict[str, Any]] | None = None
+                         ) -> dict[str, dict[str, Any]]:
+        """Freeze each observed price-column set without losing fuller data.
+
+        A partial OHLC observation may extend open/close farther than the last
+        complete OHLC prefix. Keep both constraints so an outage cannot erase
+        previously observed highs/lows or permit later open/close backfills.
+        """
         result = dict(previous or {})
         for symbol, frame in data.items():
             if frame.empty:
                 continue
             through = frame.index.max()
             old = result.get(symbol)
+            column_sets = dict((old or {}).get("column_sets", {}))
             if old is not None:
-                old_through = pd.Timestamp(old["through_utc"])
-                if old_through.tzinfo is not None:
-                    old_through = old_through.tz_convert("UTC").tz_localize(None)
-                if through < old_through:
-                    continue
+                # Older checkpoints have only the primary record. Preserve
+                # that evidence when adding the per-column-set constraints.
+                old_record = {key: value for key, value in old.items()
+                              if key != "column_sets"}
+                old_columns = old.get("columns", list(frame.columns))
+                column_sets.setdefault(",".join(old_columns), old_record)
             prefix = frame.loc[frame.index <= through]
-            result[symbol] = {
-                "through_utc": _utc_iso(through),
-                "fingerprint": paper.data_fingerprint({symbol: prefix}),
-            }
+            available_sets = [("open", "close"), ("open", "high", "close"),
+                              ("open", "low", "close"), ("open", "high", "low", "close")]
+            for columns in available_sets:
+                if not set(columns).issubset(prefix.columns):
+                    continue
+                # Freeze usable subsets too. A later O/C-only observation
+                # must detect a changed close immediately, even though it
+                # cannot validate the previously observed highs/lows.
+                record = {
+                    "through_utc": _utc_iso(through),
+                    "fingerprint": paper.data_fingerprint({symbol: prefix[list(columns)]}),
+                    "columns": list(columns),
+                }
+                key = ",".join(columns)
+                earlier = column_sets.get(key)
+                if earlier is None or pd.Timestamp(record["through_utc"]) >= pd.Timestamp(earlier["through_utc"]):
+                    column_sets[key] = record
+            # Keep the fullest observed price set as the primary record for
+            # older readers; all sets participate in validation above.
+            primary = max(column_sets.values(), key=lambda item: (
+                len(item.get("columns", [])), item["through_utc"],
+            ))
+            result[symbol] = {**primary, "column_sets": column_sets}
         return result
 
     @staticmethod
@@ -624,13 +731,15 @@ class ForwardPaperRunner:
                         observed_at_utc: str | None = None,
                         replay_from_utc: str | None = None,
                         blocked_until_utc: str | None = None,
-                        replay_completed: bool = False) -> dict[str, Any]:
+                        replay_completed: bool = False,
+                        data_readiness_reasons: list[str] | None = None) -> dict[str, Any]:
         through_value = _utc_iso(through) if through is not None else None
         snapshot_id = sha256(canonical_json({"run_id": self.run_id,
                                              "data_fingerprint": data_fp,
                                              "candle_through_utc": through_value,
                                              "data_ready": data_ready,
                                              "missing": sorted(missing),
+                                             "data_readiness_reasons": data_readiness_reasons or [],
                                              "replay_completed": replay_completed,
                                              "observed_at_utc": observed_at_utc,
                                              "recovery_of": recovery_of}))
@@ -644,6 +753,8 @@ class ForwardPaperRunner:
             "candle_through_utc": through_value,
             "symbols": sorted(normalized),
             "missing": sorted(missing),
+            "data_readiness_reasons": data_readiness_reasons or [],
+            "required_price_columns": list(self.required_price_columns),
             "rows": {symbol: int(len(frame)) for symbol, frame in sorted(normalized.items())},
             "decided_at_utc": (_utc_iso(through + timedelta(minutes=5))
                                if through is not None else None),
@@ -760,7 +871,8 @@ class ForwardPaperRunner:
                         "entry_date": body.get("filled_at_utc"),
                         "side": body.get("side"),
                         "coin": body.get("coin"),
-                        "pending_exit": False,
+                        "pending_exit": bool(body.get("pending_exit", False)),
+                        **_risk_evidence(body),
                     }
                 else:
                     self._open_positions.pop(lifecycle_key, None)
@@ -868,8 +980,14 @@ class ForwardPaperRunner:
         missing.extend(symbol for symbol in empty_symbols if symbol not in missing)
         through = _latest_common_candle(normalized)
         latest_aligned = _same_timestamp_rows(normalized)
-        finite_prices = _finite_ohlc_rows(normalized)
-        data_ready = bool(normalized and not missing and latest_aligned and finite_prices)
+        readiness_reasons = _price_readiness_reasons(normalized, self.required_price_columns)
+        if not normalized:
+            readiness_reasons.append("no_candles_available")
+        if missing:
+            readiness_reasons.append("universe_incomplete:" + ",".join(missing))
+        if normalized and not latest_aligned:
+            readiness_reasons.append("candle_timeline_incomplete_or_unaligned")
+        data_ready = bool(normalized and not readiness_reasons)
         data_fp = paper.data_fingerprint(normalized) if normalized else None
         previous_fp = self._checkpoint.get("data_fingerprint")
         previous_through = self._checkpoint.get("candle_through_utc")
@@ -931,6 +1049,7 @@ class ForwardPaperRunner:
         new_decisions = new_fills = 0
         replay_completed = False
         summaries: dict[str, Any] = {}
+        engine_states = dict(self._checkpoint.get("engine_states", {}))
         if data_ready and replay_start is not None:
             for variant in self.variants:
                 raw_events: list[dict[str, Any]] = []
@@ -943,8 +1062,33 @@ class ForwardPaperRunner:
                     wallet=self.rules["wallet"], initial_cash=initial_cash,
                     initial_positions=initial_positions,
                     chan_entry=variant["chan_entry"], chan_exit=variant["chan_exit"],
-                    start=replay_start,
+                    range_filter=variant["range_filter"],
+                    take_profit=variant["take_profit"], stop_loss=variant["stop_loss"],
+                    execution=variant["execution"], start=replay_start,
                     event_sink=raw_events)
+                states = {}
+                for position in diag.get("open_positions", []):
+                    pair = position.get("full_pair") or next(
+                        (symbol for symbol in normalized
+                         if symbol.split("/")[0] == str(position.get("pair", "")).split("/")[0]),
+                        None,
+                    )
+                    if pair is None:
+                        raise ValueError("engine open position has no snapshot symbol")
+                    states[pair] = {
+                        "entry_px": position.get("entry_px", position.get("open_rate")),
+                        "quantity": position["quantity"], "stake": position["stake"],
+                        "fee_in": position["fee_in"], "entry_date": position["entry_date"],
+                        "side": position.get("side", "short" if position.get("is_short") else "long"),
+                        "pending_exit": bool(position.get("pending_exit", False)),
+                        **_risk_evidence(position),
+                    }
+                engine_states[variant["variant_id"]] = {
+                    "through_utc": _utc_iso(through), "cash": float(diag["ending_cash"]),
+                    "positions": _plain(states),
+                    "risk_continuity": ("unknown_gap" if missed_observation_gap
+                                        or self._checkpoint.get("blocked_until_utc") else "continuous"),
+                }
                 # The boundary candle is signal history, not a new actionable
                 # observation.  Only append decisions/fills strictly after it.
                 raw_events = [event for event in raw_events
@@ -997,6 +1141,7 @@ class ForwardPaperRunner:
                                         observed_at_utc=observed_at_value,
                                         replay_from_utc=replay_boundary,
                                         replay_completed=replay_completed,
+                                        data_readiness_reasons=readiness_reasons,
                                         blocked_until_utc=(replay_boundary if not data_ready
                                                            else self._checkpoint.get(
                                                                "blocked_until_utc")))
@@ -1010,6 +1155,10 @@ class ForwardPaperRunner:
                 "schema_version": SCHEMA_VERSION, "run_id": self.run_id,
                 "symbols": sorted(normalized), "data_fingerprint": data_fp,
                 "candle_through_utc": _utc_iso(through), "prefix_fingerprints": prefix,
+                "prefix_columns": {symbol: list(frame.columns) for symbol, frame in normalized.items()},
+                "data_readiness_reasons": readiness_reasons,
+                "required_price_columns": list(self.required_price_columns),
+                "engine_states": engine_states,
                 "data_ready": True,
                 "replay_completed": bool(replay_completed),
                 "last_observed_at_utc": observed_at_value,
@@ -1046,6 +1195,8 @@ class ForwardPaperRunner:
                 "symbols": sorted(expected_symbols),
                 "forward_from_utc": forward_from,
                 "data_ready": False,
+                "data_readiness_reasons": readiness_reasons,
+                "required_price_columns": list(self.required_price_columns),
                 "replay_completed": False,
                 "last_observed_at_utc": observed_at_value,
             })
@@ -1126,6 +1277,8 @@ class ForwardPaperRunner:
             "data_fingerprint": data_fingerprint if data_fingerprint is not None
             else resolved_fingerprint,
             "data_ready": bool(resolved_ready),
+            "data_readiness_reasons": (latest or {}).get("data_readiness_reasons", []),
+            "required_price_columns": list(self.required_price_columns),
             "replay_completed": bool(resolved_replay),
             "candle_through_utc": resolved_through,
             "decision_count": len(self._decision_rows), "fill_count": len(self._fill_rows),

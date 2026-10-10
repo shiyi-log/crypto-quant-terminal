@@ -18,6 +18,7 @@ import platform
 import re
 import sys
 from datetime import datetime
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -29,13 +30,46 @@ sys.path.insert(0, str(HERE))
 
 import event_backtest as engine  # noqa: E402
 
-SCHEMA_VERSION = "paper-dryrun-v1"
+SCHEMA_VERSION = "paper-dryrun-v2"
 ENGINE_NAME = "event_backtest.run_v2"
 COMPARISON_SCHEMA_VERSION = "paired-trades-v1"
+EXECUTION_DEFAULTS = {
+    "dual_touch": "stop_loss_first",
+    "gap_fill": "execution_open",
+    "exit_timing": "next_open",
+    # Capacity released by an exit becomes usable on the next opening cycle.
+    "slot_release": "after_exit_fill_next_open",
+}
+# These are frozen prospective hypotheses, not a historical parameter search.
+# Percent values are in percentage points: 0.5 means 0.5%, not 50%.
 DEFAULT_VARIANTS = [
     {"variant_id": "trend-20-20", "hypothesis": "reference Donchian 20/20", "chan_entry": 20, "chan_exit": 20},
-    {"variant_id": "trend-10-20", "hypothesis": "earlier entry with unchanged exit", "chan_entry": 10, "chan_exit": 20},
-    {"variant_id": "trend-30-20", "hypothesis": "later entry with unchanged exit", "chan_entry": 30, "chan_exit": 20},
+    {"variant_id": "trend-adx-25", "hypothesis": "require ADX above 25", "chan_entry": 20, "chan_exit": 20,
+     "range_filter": {"kind": "adx", "window": 14, "threshold": 25.0, "op": "gt", "warmup_bars": 28}},
+    {"variant_id": "trend-width-0.5", "hypothesis": "require channel width above 0.5%", "chan_entry": 20, "chan_exit": 20,
+     "range_filter": {"kind": "channel_width_pct", "window": 20, "threshold": 0.5, "op": "gt", "warmup_bars": 20}},
+    {"variant_id": "trend-rvol-0.3", "hypothesis": "require realized volatility above 0.3%", "chan_entry": 20, "chan_exit": 20,
+     "range_filter": {"kind": "realized_vol_pct", "window": 20, "threshold": 0.3, "op": "gt", "warmup_bars": 20}},
+    *[{"variant_id": f"trend-tp-{value:g}", "hypothesis": f"fixed take-profit at {value:g}%",
+       "chan_entry": 20, "chan_exit": 20, "take_profit": {"kind": "fixed_pct", "value": value}}
+      for value in (0.5, 1.0, 2.0)],
+    *[{"variant_id": f"trend-sl-{value:g}", "hypothesis": f"fixed stop-loss at {value:g}%",
+       "chan_entry": 20, "chan_exit": 20, "stop_loss": {"kind": "fixed_pct", "value": value}}
+      for value in (0.3, 0.5)],
+    {"variant_id": "trend-tp-1-sl-0.5", "hypothesis": "fixed 1% take-profit with 0.5% stop-loss",
+     "chan_entry": 20, "chan_exit": 20,
+     "take_profit": {"kind": "fixed_pct", "value": 1.0}, "stop_loss": {"kind": "fixed_pct", "value": 0.5}},
+    {"variant_id": "trend-tp-1-sl-0.5-adx", "hypothesis": "ADX-filtered fixed TP/SL",
+     "chan_entry": 20, "chan_exit": 20,
+     "range_filter": {"kind": "adx", "window": 14, "threshold": 25.0, "op": "gt", "warmup_bars": 28},
+     "take_profit": {"kind": "fixed_pct", "value": 1.0}, "stop_loss": {"kind": "fixed_pct", "value": 0.5}},
+    {"variant_id": "trend-atr-2-1", "hypothesis": "entry ATR(14) take-profit 2x and stop-loss 1x",
+     "chan_entry": 20, "chan_exit": 20,
+     "take_profit": {"kind": "atr_multiple", "value": 2.0, "atr_window": 14},
+     "stop_loss": {"kind": "atr_multiple", "value": 1.0, "atr_window": 14}},
+    {"variant_id": "trend-trailing-1-sl-0.5", "hypothesis": "1% trailing exit with 0.5% stop-loss (no profit activation)",
+     "chan_entry": 20, "chan_exit": 20,
+     "take_profit": {"kind": "trailing_pct", "value": 1.0}, "stop_loss": {"kind": "fixed_pct", "value": 0.5}},
 ]
 
 
@@ -87,7 +121,8 @@ def normalize_data(data: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         frame = frame.sort_index()
         if frame.index.has_duplicates:
             raise ValueError(f"{symbol}: duplicate candle timestamps")
-        frame = frame[["open", "close"]].apply(pd.to_numeric, errors="coerce")
+        columns = [column for column in ("open", "high", "low", "close") if column in frame]
+        frame = frame[columns].apply(pd.to_numeric, errors="coerce")
         normalized[str(symbol)] = frame.astype("float64")
     if not normalized:
         raise ValueError("no candle series supplied")
@@ -98,13 +133,13 @@ def data_fingerprint(data: dict[str, pd.DataFrame]) -> str:
     """Hash exact run_v2 inputs, including missing-value positions."""
     normalized = normalize_data(data)
     digest = hashlib.sha256()
-    digest.update(b"paper-dryrun-data-v1\0")
+    digest.update(b"paper-dryrun-data-v2\0")
     for symbol, frame in normalized.items():
         digest.update(symbol.encode("utf-8") + b"\0")
         stamps = frame.index.asi8.astype("<i8", copy=False)
         digest.update(np.asarray([len(frame)], dtype="<i8").tobytes())
         digest.update(stamps.tobytes())
-        for column in ("open", "close"):
+        for column in frame.columns:
             values = frame[column].to_numpy(dtype="<f8", copy=True)
             values[np.isnan(values)] = np.nan
             digest.update(column.encode("ascii") + b"\0")
@@ -113,7 +148,12 @@ def data_fingerprint(data: dict[str, pd.DataFrame]) -> str:
 
 
 def engine_fingerprint() -> str:
-    return sha256(Path(engine.__file__).read_bytes())
+    digest = hashlib.sha256()
+    for path in (Path(engine.__file__), HERE / "paper_rules.py"):
+        if path.is_file():
+            digest.update(path.name.encode("utf-8") + b"\0")
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def runtime_fingerprint() -> dict[str, str | None]:
@@ -129,35 +169,118 @@ def runtime_fingerprint() -> dict[str, str | None]:
     return versions
 
 
+def _integer(value: Any, name: str, minimum: int = 1) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{name} must be an integer >= {minimum}")
+    if value < minimum:
+        raise ValueError(f"{name} must be an integer >= {minimum}")
+    return int(value)
+
+
+def _number(value: Any, name: str, *, positive: bool = True) -> float:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite {'positive' if positive else 'non-negative'} number")
+    number = float(value)
+    if not math.isfinite(number) or (number <= 0 if positive else number < 0):
+        raise ValueError(f"{name} must be a finite {'positive' if positive else 'non-negative'} number")
+    return number
+
+
+def _rule_object(value: Any, name: str, allowed: set[str]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be an object")
+    unknown = set(value) - allowed
+    if unknown:
+        raise ValueError(f"unsupported {name} fields: {sorted(str(key) for key in unknown)}")
+    return value
+
+
+def _range_rule(raw: Any) -> dict[str, Any]:
+    raw = _rule_object(raw, "range_filter", {"kind", "window", "threshold", "op", "warmup_bars"})
+    kind = raw.get("kind", "none")
+    if kind not in ("none", "adx", "channel_width_pct", "realized_vol_pct"):
+        raise ValueError("unsupported range_filter.kind")
+    window = _integer(raw.get("window", 20), "range_filter.window", 2)
+    warmup = _integer(raw.get("warmup_bars", window), "range_filter.warmup_bars")
+    op = raw.get("op", "gt")
+    if op not in ("gt", "lt"):
+        raise ValueError("range_filter.op must be gt or lt")
+    if kind != "none" and "threshold" not in raw:
+        raise ValueError("active range_filter requires threshold")
+    threshold = _number(raw.get("threshold", 0.0), "range_filter.threshold", positive=kind != "none")
+    if kind == "none" and threshold != 0:
+        raise ValueError("range_filter.kind none requires threshold 0")
+    return {"kind": kind, "window": window, "threshold": threshold, "op": op, "warmup_bars": warmup}
+
+
+def _exit_rule(raw: Any, name: str) -> dict[str, Any]:
+    raw = _rule_object(raw, name, {"kind", "value", "atr_window"})
+    kind = raw.get("kind", "none")
+    allowed = ("none", "fixed_pct", "atr_multiple", "trailing_pct") if name == "take_profit" else ("none", "fixed_pct", "atr_multiple")
+    if kind not in allowed:
+        raise ValueError(f"unsupported {name}.kind")
+    if kind != "none" and "value" not in raw:
+        raise ValueError(f"active {name} requires value")
+    value = _number(raw.get("value", 0.0), f"{name}.value", positive=kind != "none")
+    if kind == "none" and value != 0:
+        raise ValueError(f"{name}.kind none requires value 0")
+    atr_window = raw.get("atr_window")
+    if kind == "atr_multiple":
+        atr_window = _integer(atr_window, f"{name}.atr_window", 2)
+    elif atr_window is not None:
+        raise ValueError(f"{name}.atr_window must be null unless kind is atr_multiple")
+    return {"kind": kind, "value": value, "atr_window": atr_window}
+
+
+def _execution_rule(raw: Any) -> dict[str, str]:
+    raw = _rule_object(raw, "execution", set(EXECUTION_DEFAULTS))
+    execution = {**EXECUTION_DEFAULTS, **raw}
+    for name, supported in EXECUTION_DEFAULTS.items():
+        if execution[name] != supported:
+            raise ValueError(f"execution.{name} currently supports only {supported}")
+    return execution
+
+
 def freeze_variants(variants: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not variants:
+    """Validate and freeze canonical v2 executable rules, including fill policy.
+
+    Legacy minimal variants receive explicit disabled rules. Existing hashes
+    must match the complete v2 payload; this prevents an old or edited frozen
+    variant from silently continuing under its former identity.
+    """
+    if not isinstance(variants, list) or not variants:
         raise ValueError("at least one variant is required")
     frozen = []
     seen = set()
+    fields = {"variant_id", "hypothesis", "chan_entry", "chan_exit", "range_filter", "take_profit", "stop_loss", "execution", "rule_hash"}
     for raw in variants:
-        unknown = set(raw) - {"variant_id", "hypothesis", "chan_entry", "chan_exit"}
-        if unknown:
-            raise ValueError(f"unsupported variant fields: {sorted(unknown)}")
-        variant = {
-            "variant_id": str(raw["variant_id"]),
-            "hypothesis": str(raw.get("hypothesis", "")),
-            "chan_entry": int(raw.get("chan_entry", 20)),
-            "chan_exit": int(raw.get("chan_exit", 20)),
-        }
-        if not variant["variant_id"] or variant["variant_id"] in {".", ".."}:
+        raw = _rule_object(raw, "variant", fields)
+        variant_id = raw.get("variant_id")
+        hypothesis = raw.get("hypothesis", "")
+        if not isinstance(variant_id, str) or not variant_id.strip() or variant_id in {".", ".."}:
             raise ValueError("variant_id must be a non-empty name")
-        if any(ord(char) < 32 for char in variant["variant_id"]):
+        if not isinstance(hypothesis, str):
+            raise ValueError("hypothesis must be a string")
+        if any(ord(char) < 32 for char in variant_id):
             raise ValueError("variant_id must not contain control characters")
-        if variant["variant_id"] in seen:
-            raise ValueError(f"duplicate variant_id: {variant['variant_id']}")
-        if variant["chan_entry"] < 2 or variant["chan_exit"] < 2:
-            raise ValueError("channel periods must be >= 2")
-        seen.add(variant["variant_id"])
-        executable_rules = {
-            "chan_entry": variant["chan_entry"],
-            "chan_exit": variant["chan_exit"],
+        if variant_id in seen:
+            raise ValueError(f"duplicate variant_id: {variant_id}")
+        variant = {
+            "variant_id": variant_id, "hypothesis": hypothesis,
+            "chan_entry": _integer(raw.get("chan_entry", 20), "channel periods chan_entry", 2),
+            "chan_exit": _integer(raw.get("chan_exit", 20), "channel periods chan_exit", 2),
+            "range_filter": _range_rule(raw.get("range_filter", {})),
+            "take_profit": _exit_rule(raw.get("take_profit", {}), "take_profit"),
+            "stop_loss": _exit_rule(raw.get("stop_loss", {}), "stop_loss"),
+            "execution": _execution_rule(raw.get("execution", {})),
         }
+        seen.add(variant_id)
+        executable_rules = {key: value for key, value in variant.items() if key not in {"variant_id", "hypothesis"}}
+        executable_rules["schema_version"] = SCHEMA_VERSION
+        executable_rules["percentage_unit"] = "percentage_points"
         variant["rule_hash"] = sha256(canonical_json(executable_rules))
+        if "rule_hash" in raw and raw["rule_hash"] != variant["rule_hash"]:
+            raise ValueError("rule_hash does not match canonical v2 rules; use a new variant identity")
         frozen.append(variant)
     return sorted(frozen, key=lambda item: item["variant_id"])
 
@@ -310,8 +433,8 @@ def run_batch(data: dict[str, pd.DataFrame], variants: list[dict[str, Any]],
               top_n: int = 8, max_open: int = 10, exposure: float = 0.30,
               cost_one: float = 0.0005, wallet: float = 10_000.0) -> dict[str, Any]:
     """Replay variants serially on one immutable input snapshot and persist evidence."""
-    if not isinstance(top_n, int) or not isinstance(max_open, int) or top_n < 1 or max_open < 1:
-        raise ValueError("top_n and max_open must be positive")
+    top_n = _integer(top_n, "top_n")
+    max_open = _integer(max_open, "max_open")
     if not math.isfinite(exposure) or exposure <= 0 or exposure > 1:
         raise ValueError("exposure must be in (0, 1]")
     if not math.isfinite(cost_one) or cost_one < 0:
@@ -388,6 +511,8 @@ def run_batch(data: dict[str, pd.DataFrame], variants: list[dict[str, Any]],
             normalized, top_n=top_n, max_open=max_open, exposure=exposure,
             cost_one=cost_one, wallet=wallet, start=simulation_start,
             chan_entry=variant["chan_entry"], chan_exit=variant["chan_exit"],
+            range_filter=variant["range_filter"], take_profit=variant["take_profit"],
+            stop_loss=variant["stop_loss"], execution=variant["execution"],
             event_sink=raw_events,
         )
         trades_by_variant[variant["variant_id"]] = trades
@@ -479,7 +604,7 @@ def load_feather_1h(data_dir: str | os.PathLike[str], coins: list[str] | None = 
         if "date" not in frame:
             raise ValueError(f"{path}: date column missing")
         frame["date"] = pd.to_datetime(frame["date"], utc=True)
-        found[coin] = frame.set_index("date")[["open", "close"]]
+        found[coin] = frame.set_index("date")[[column for column in ("open", "high", "low", "close") if column in frame]]
     if allowed:
         missing = sorted(allowed - set(found))
         if missing:

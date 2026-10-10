@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -26,6 +27,156 @@ def known_loss_fixture():
 
 
 class PaperDryrunContractTests(unittest.TestCase):
+    def test_minimal_variants_receive_explicit_v2_rules_and_refreeze(self):
+        minimal = paper.freeze_variants([{"variant_id": "base"}])[0]
+        explicit = paper.freeze_variants([{"variant_id": "base", "chan_entry": 20, "chan_exit": 20,
+                                          "range_filter": {"kind": "none"},
+                                          "take_profit": {"kind": "none"},
+                                          "stop_loss": {"kind": "none"},
+                                          "execution": dict(paper.EXECUTION_DEFAULTS)}])[0]
+        self.assertEqual(paper.SCHEMA_VERSION, "paper-dryrun-v2")
+        self.assertEqual(minimal, explicit)
+        self.assertEqual(paper.freeze_variants([minimal]), [minimal])
+        self.assertEqual(minimal["range_filter"], {"kind": "none", "window": 20, "threshold": 0.0,
+                                                  "op": "gt", "warmup_bars": 20})
+        self.assertEqual(minimal["take_profit"], {"kind": "none", "value": 0.0, "atr_window": None})
+        self.assertEqual(minimal["stop_loss"], minimal["take_profit"])
+        self.assertEqual(minimal["execution"], paper.EXECUTION_DEFAULTS)
+        legacy_hash = paper.sha256(paper.canonical_json({"chan_entry": 20, "chan_exit": 20}))
+        with self.assertRaisesRegex(ValueError, "rule_hash"):
+            paper.freeze_variants([{**minimal, "rule_hash": legacy_hash}])
+        edited = {**minimal, "take_profit": {"kind": "fixed_pct", "value": 0.5}}
+        with self.assertRaisesRegex(ValueError, "rule_hash"):
+            paper.freeze_variants([edited])
+
+    def test_nested_executable_fields_and_execution_policy_are_hashed(self):
+        rule = {"variant_id": "base", "range_filter": {"kind": "channel_width_pct", "window": 20,
+                "threshold": 0.5, "op": "gt", "warmup_bars": 20},
+                "take_profit": {"kind": "atr_multiple", "value": 2, "atr_window": 14},
+                "stop_loss": {"kind": "fixed_pct", "value": 0.5}}
+        base = paper.freeze_variants([rule])[0]
+        for field, change in (("range_filter", {"kind": "realized_vol_pct"}),
+                              ("range_filter", {"window": 21}),
+                              ("range_filter", {"threshold": 0.6}),
+                              ("range_filter", {"op": "lt"}),
+                              ("range_filter", {"warmup_bars": 21}),
+                              ("take_profit", {"value": 3}),
+                              ("take_profit", {"atr_window": 15}),
+                              ("stop_loss", {"value": 0.6})):
+            with self.subTest(field=field, change=change):
+                changed = {**rule, field: {**rule[field], **change}}
+                self.assertNotEqual(base["rule_hash"], paper.freeze_variants([changed])[0]["rule_hash"])
+        equivalent = {**rule, "variant_id": "renamed", "hypothesis": "new wording",
+                      "take_profit": {"kind": "atr_multiple", "value": 2.0, "atr_window": 14}}
+        self.assertEqual(base["rule_hash"], paper.freeze_variants([equivalent])[0]["rule_hash"])
+        expected_payload = {key: value for key, value in base.items()
+                            if key not in {"variant_id", "hypothesis", "rule_hash"}}
+        expected_payload.update(schema_version="paper-dryrun-v2", percentage_unit="percentage_points")
+        self.assertEqual(base["rule_hash"], paper.sha256(paper.canonical_json(expected_payload)))
+        without_execution = {key: value for key, value in expected_payload.items() if key != "execution"}
+        self.assertNotEqual(base["rule_hash"], paper.sha256(paper.canonical_json(without_execution)))
+        self.assertEqual(base["stop_loss"]["value"], 0.5, "0.5 freezes as 0.5 percentage points")
+
+    def test_schema_rejects_unknown_nested_fields_and_policy_values(self):
+        for field in ("range_filter", "take_profit", "stop_loss", "execution"):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "unsupported"):
+                paper.freeze_variants([{"variant_id": "bad", field: {"typo": 1}}])
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            paper.freeze_variants([{"variant_id": "bad", "unknown": 1}])
+        for field in ("range_filter", "take_profit", "stop_loss", "execution"):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "object"):
+                paper.freeze_variants([{"variant_id": "bad", field: None}])
+        for field in paper.EXECUTION_DEFAULTS:
+            with self.subTest(policy=field), self.assertRaisesRegex(ValueError, "currently supports only"):
+                paper.freeze_variants([{"variant_id": "bad", "execution": {field: "unfrozen-policy"}}])
+
+    def test_schema_rejects_bool_fractional_and_string_integer_fields(self):
+        integer_paths = [("chan_entry", None), ("chan_exit", None),
+                         ("range_filter", "window"), ("range_filter", "warmup_bars"),
+                         ("take_profit", "atr_window"), ("stop_loss", "atr_window")]
+        for field, nested in integer_paths:
+            for value in (True, False, 20.9, 20.0, "20", float("nan"), float("inf")):
+                item = {"variant_id": "bad"}
+                if nested is None:
+                    item[field] = value
+                elif field == "range_filter":
+                    item[field] = {nested: value}
+                else:
+                    item[field] = {"kind": "atr_multiple", "value": 1.0, nested: value}
+                with self.subTest(field=field, nested=nested, value=value), self.assertRaises(ValueError):
+                    paper.freeze_variants([item])
+
+    def test_active_rules_require_finite_positive_values_and_valid_kind(self):
+        for field, kind, scalar in (("range_filter", "adx", "threshold"),
+                                    ("take_profit", "fixed_pct", "value"),
+                                    ("stop_loss", "fixed_pct", "value")):
+            for value in (True, False, "0.5", 0, -0.5, float("nan"), float("inf"), -float("inf")):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    paper.freeze_variants([{"variant_id": "bad", field: {"kind": kind, scalar: value}}])
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                paper.freeze_variants([{"variant_id": "bad", field: {"kind": kind}}])
+        invalid = [
+            {"range_filter": {"kind": "unknown"}},
+            {"range_filter": {"kind": "adx", "threshold": 25, "op": "gte"}},
+            {"range_filter": {"kind": "none", "threshold": 1}},
+            {"take_profit": {"kind": "fixed_pct", "value": 1, "atr_window": 14}},
+            {"take_profit": {"kind": "atr_multiple", "value": 2}},
+            {"stop_loss": {"kind": "trailing_pct", "value": 1}},
+            {"stop_loss": {"kind": "none", "value": 1}},
+            {"variant_id": 20}, {"variant_id": "  "}, {"hypothesis": 20},
+        ]
+        for raw in invalid:
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                paper.freeze_variants([{**{"variant_id": "bad"}, **raw}])
+
+    def test_default_variants_are_thirteen_fixed_prospective_rules(self):
+        variants = paper.freeze_variants(paper.DEFAULT_VARIANTS)
+        self.assertEqual(len(variants), 13)
+        self.assertTrue(all(item["chan_entry"] == item["chan_exit"] == 20 for item in variants))
+        kinds = {item["range_filter"]["kind"] for item in variants}
+        self.assertEqual(kinds, {"none", "adx", "channel_width_pct", "realized_vol_pct"})
+        self.assertTrue(any(item["take_profit"]["kind"] == "trailing_pct" for item in variants))
+        self.assertTrue(any(item["take_profit"]["kind"] == "atr_multiple" for item in variants))
+        self.assertEqual(len({item["rule_hash"] for item in variants}), 13)
+
+    def test_data_fingerprint_and_normalization_preserve_ohlc(self):
+        legacy = known_loss_fixture()
+        rich = {symbol: frame.assign(high=np.maximum(frame["open"], frame["close"]) + 1,
+                                     low=np.minimum(frame["open"], frame["close"]) - 1)
+                for symbol, frame in legacy.items()}
+        normalized = paper.normalize_data(rich)
+        self.assertEqual(list(normalized["LOSS/USDT:USDT"].columns), ["open", "high", "low", "close"])
+        self.assertNotEqual(paper.data_fingerprint(legacy), paper.data_fingerprint(rich))
+        for column in ("high", "low"):
+            changed = {symbol: frame.copy() for symbol, frame in rich.items()}
+            changed["LOSS/USDT:USDT"].loc[changed["LOSS/USDT:USDT"].index[30], column] += 0.01
+            with self.subTest(column=column):
+                self.assertNotEqual(paper.data_fingerprint(rich), paper.data_fingerprint(changed))
+        reordered = {symbol: frame[["close", "low", "open", "high"]] for symbol, frame in rich.items()}
+        self.assertEqual(paper.data_fingerprint(rich), paper.data_fingerprint(reordered))
+
+    def test_feather_loader_retains_ohlc(self):
+        frame = known_loss_fixture()["LOSS/USDT:USDT"].copy()
+        frame["high"] = frame[["open", "close"]].max(axis=1) + 1
+        frame["low"] = frame[["open", "close"]].min(axis=1) - 1
+        feather = frame.rename_axis("date").reset_index()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(paper.pd, "read_feather", return_value=feather):
+            (Path(tmp) / "LOSS_USDT_USDT-1h-futures.feather").touch()
+            loaded = paper.load_feather_1h(tmp, ["LOSS"])
+        self.assertEqual(list(loaded["LOSS"].columns), ["open", "high", "low", "close"])
+        self.assertEqual(loaded["LOSS"]["high"].iloc[25], feather["high"].iloc[25])
+
+    def test_engine_fingerprint_includes_executable_helper_module(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine_path = Path(tmp) / "event_backtest.py"
+            rules_path = Path(tmp) / "paper_rules.py"
+            engine_path.write_text("engine-v1\n")
+            rules_path.write_text("rules-v1\n")
+            with mock.patch.object(paper.engine, "__file__", str(engine_path)), mock.patch.object(paper, "HERE", Path(tmp)):
+                before = paper.engine_fingerprint()
+                rules_path.write_text("rules-v2\n")
+                self.assertNotEqual(before, paper.engine_fingerprint())
+
     def test_variant_hash_is_canonical_and_tracks_executable_rules(self):
         first = {"variant_id": "base", "hypothesis": "reference",
                  "chan_entry": 20, "chan_exit": 20}

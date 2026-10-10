@@ -258,7 +258,8 @@ class ForwardPaperPublicContractTests(unittest.TestCase):
         return run_dir
 
     def _multi_variant_run(self, run_id="run-multi", *, data_ready=True,
-                           checkpoint_ready=True, replay_completed=True):
+                           checkpoint_ready=True, replay_completed=True,
+                           schema_version="forward-paper-v2"):
         """Build a runner-shaped run with deliberately non-additive variants."""
         run_dir = self.root / run_id
         run_dir.mkdir(exist_ok=True)
@@ -268,7 +269,7 @@ class ForwardPaperPublicContractTests(unittest.TestCase):
         ]
         manifest = {
             "event_type": "manifest", "run_id": run_id,
-            "schema_version": "forward-paper-v2", "variants": variants,
+            "schema_version": schema_version, "variants": variants,
             "cost_completeness": {"fee": "modeled", "slippage": "unknown", "funding": "unknown"},
         }
         snapshot = {
@@ -428,6 +429,177 @@ class ForwardPaperPublicContractTests(unittest.TestCase):
         self.assertFalse(payload["summary"]["replay_completed"])
         self.assertFalse(payload["summary"]["strategy_usable"])
         self.assertFalse(payload["last_successful_replay"]["replay_completed"])
+
+    def test_v3_and_future_snapshots_require_explicit_success_over_stale_state(self):
+        """Readiness and a saved success must not upgrade a new observation."""
+        for schema in ("forward-paper-v3", "forward-paper-v99"):
+            for state_name in ("checkpoint.json", "state.json"):
+                for index, replay_marker in enumerate((None, False, 1, "true", True)):
+                    run_id = f"run-{schema}-{state_name.split('.')[0]}-{index}"
+                    with self.subTest(schema=schema, state=state_name,
+                                      marker=replay_marker):
+                        run_dir = self._multi_variant_run(
+                            run_id, schema_version=schema,
+                            replay_completed=replay_marker,
+                        )
+                        saved = json.loads((run_dir / "checkpoint.json").read_text(
+                            encoding="utf-8"
+                        ))
+                        saved["replay_completed"] = True
+                        saved["candle_through_utc"] = "2026-10-09T00:00:00+00:00"
+                        (run_dir / state_name).write_text(json.dumps(saved), encoding="utf-8")
+                        code, payload = self._get(
+                            "/api/locals/forward-paper?run_id=" + run_id
+                        )
+                        successful = replay_marker is True
+                        self.assertEqual(code, 200)
+                        self.assertTrue(payload["summary"]["data_ready"])
+                        self.assertIs(payload["summary"]["replay_completed"], successful)
+                        self.assertIs(payload["summary"]["strategy_usable"], successful)
+                        self.assertIs(payload["last_successful_replay"]["replay_completed"], successful)
+                        for result in payload["variants"].values():
+                            self.assertIs(result["strategy_usable"], successful)
+
+    def test_v3_and_future_nested_snapshots_cannot_inherit_saved_replay_success(self):
+        for schema in ("forward-paper-v3", "forward-paper-v99"):
+            for replay_marker in (None, False, True):
+                run_id = f"run-nested-{schema}-{replay_marker}"
+                with self.subTest(schema=schema, marker=replay_marker):
+                    run_dir = self._canonical_run(run_id)
+                    manifest_path = run_dir / "manifest.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest["schema_version"] = schema
+                    manifest["latest_snapshot"] = {
+                        "data_ready": True, "data_fingerprint": "new-observation",
+                    }
+                    if replay_marker is not None:
+                        manifest["latest_snapshot"]["replay_completed"] = replay_marker
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    state_path = run_dir / "state.json"
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    state["replay_completed"] = True
+                    state_path.write_text(json.dumps(state), encoding="utf-8")
+                    code, payload = self._get(
+                        "/api/locals/forward-paper?run_id=" + run_id
+                    )
+                    self.assertEqual(code, 200)
+                    successful = replay_marker is True
+                    self.assertIs(payload["summary"]["replay_completed"], successful)
+                    self.assertIs(payload["summary"]["strategy_usable"], successful)
+                    self.assertIs(payload["last_successful_replay"]["replay_completed"], successful)
+
+    def test_v3_and_future_state_only_runs_require_explicit_replay_marker(self):
+        for schema in ("forward-paper-v3", "forward-paper-v99"):
+            for state_name in ("state.json", "checkpoint.json"):
+                for replay_marker in (None, True):
+                    run_id = f"run-state-only-{schema}-{state_name.split('.')[0]}-{replay_marker}"
+                    with self.subTest(schema=schema, state=state_name,
+                                      marker=replay_marker):
+                        run_dir = self._canonical_run(run_id)
+                        manifest_path = run_dir / "manifest.json"
+                        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        manifest["schema_version"] = schema
+                        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                        state_path = run_dir / "state.json"
+                        state = json.loads(state_path.read_text(encoding="utf-8"))
+                        state_path.unlink()
+                        if replay_marker is not None:
+                            state["replay_completed"] = replay_marker
+                        (run_dir / state_name).write_text(json.dumps(state), encoding="utf-8")
+                        code, payload = self._get(
+                            "/api/locals/forward-paper?run_id=" + run_id
+                        )
+                        self.assertEqual(code, 200)
+                        self.assertTrue(payload["summary"]["data_ready"])
+                        self.assertIs(payload["summary"]["replay_completed"], replay_marker is True)
+                        self.assertIs(payload["summary"]["strategy_usable"], replay_marker is True)
+
+    def test_v3_rule_and_execution_evidence_survives_both_ledger_formats(self):
+        rules = {
+            "range_filter": {
+                "kind": "adx", "window": 14, "threshold": 25.0,
+                "op": "gt", "warmup_bars": 28,
+            },
+            "take_profit": {"kind": "fixed_pct", "value": 1.0, "atr_window": None},
+            "stop_loss": {"kind": "fixed_pct", "value": 0.5, "atr_window": None},
+            "execution": {
+                "dual_touch": "stop_loss_first", "gap_fill": "execution_open",
+                "exit_timing": "next_open", "slot_release": "after_exit_fill_next_open",
+            },
+        }
+        filter_evidence = {
+            **rules["range_filter"], "raw_value": None, "ready": False,
+            "passed": False, "reason": "indicator_not_ready",
+        }
+        trigger = {
+            "reason": "stop_loss", "candle_utc": "2026-10-10T00:00:00+00:00",
+            "trigger_level": 99.5, "observed_price": 99.2,
+            "observed_high": 101.5, "observed_low": 99.2,
+            "observed_open": 100.1, "observed_close": 100.0,
+            "take_profit_level": 101.0, "stop_loss_level": 99.5,
+            "dual_touch": True, "dual_touch_policy": "stop_loss_first",
+        }
+        risk_state = {
+            "entry_atr": None, "take_profit_level": 101.0, "stop_loss_level": 99.5,
+            "trailing_extreme": 102.0, "trailing_level": None,
+        }
+        for ledger_format in ("split", "canonical"):
+            run_id = f"run-v3-evidence-{ledger_format}"
+            with self.subTest(ledger_format=ledger_format):
+                run_dir = self._multi_variant_run(run_id, schema_version="forward-paper-v3")
+                manifest_path = run_dir / "manifest.jsonl"
+                manifest_rows = [json.loads(row) for row in manifest_path.read_text(
+                    encoding="utf-8"
+                ).splitlines()]
+                manifest_rows[0]["variants"][1].update(rules)
+                manifest_path.write_text(
+                    "".join(json.dumps(row) + "\n" for row in manifest_rows), encoding="utf-8"
+                )
+                decision = {
+                    "event_type": "decision", "run_id": run_id, "event_id": "d-risk",
+                    "variant_id": "tight-sl", "rule_hash": "hash-tight",
+                    "candidates": [{"coin": "ETH", "decision": "deny",
+                                    "range_filter": filter_evidence, "risk_ready": False}],
+                    "exits": [{"coin": "BTC", "trigger": trigger}],
+                }
+                fills = [
+                    {"event_type": "fill", "run_id": run_id, "event_id": "f-known",
+                     "variant_id": "base", "action": "exit", "profit_abs": 10.0},
+                    {"event_type": "fill", "run_id": run_id, "event_id": "f-risk",
+                     "variant_id": "tight-sl", "action": "exit", "profit_abs": None,
+                     "coin": "BTC", "side": "long", "price": 99.0,
+                     "filled_at_utc": "2026-10-10T01:00:00+00:00",
+                     "trigger": trigger, "risk_state": risk_state,
+                     "decision_event_id": "d-risk"},
+                ]
+                if ledger_format == "canonical":
+                    (run_dir / "events.jsonl").write_text(
+                        "".join(json.dumps(row) + "\n" for row in (decision, *fills)),
+                        encoding="utf-8",
+                    )
+                else:
+                    (run_dir / "decisions.jsonl").write_text(
+                        json.dumps(decision) + "\n", encoding="utf-8"
+                    )
+                    (run_dir / "fills.jsonl").write_text(
+                        "".join(json.dumps(row) + "\n" for row in fills), encoding="utf-8"
+                    )
+                code, payload = self._get("/api/locals/forward-paper?run_id=" + run_id)
+                self.assertEqual(code, 200)
+                self.assertEqual(payload["manifest"], manifest_rows[0])
+                self.assertEqual(payload["decisions"], [decision])
+                self.assertEqual(payload["fills"], fills)
+                self.assertEqual(payload["closes"], fills)
+                self.assertEqual(payload["variants"]["base"][
+                    "realized_profit_after_fee_before_unknown_costs"
+                ], 10.0)
+                self.assertIsNone(payload["variants"]["tight-sl"][
+                    "realized_profit_after_fee_before_unknown_costs"
+                ])
+                self.assertIsNone(payload["summary"]["closed_pnl"])
+                self.assertIsNone(payload["summary"]["cross_variant_closed_pnl"])
+                self.assertIsNone(payload["summary"]["unrealized_pnl"])
+                self.assertIsNone(payload["summary"]["net_pnl"])
 
     def test_reads_canonical_manifest_events_and_state(self):
         self._canonical_run()

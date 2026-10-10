@@ -1037,6 +1037,84 @@ export async function getResearchLedger(): Promise<ResearchLedger> {
   return unwrap<ResearchLedger>(await ftClient.get('/locals/research-ledger'));
 }
 
+export interface ForwardPaperRangeFilter {
+  kind: 'adx' | 'channel_width_pct' | 'none' | 'realized_vol_pct';
+  window: number;
+  threshold: number;
+  op: 'gt' | 'lt';
+  warmup_bars: number;
+}
+
+/** Percentage values are percentage points: value=0.5 means 0.5%. */
+export interface ForwardPaperExitRule {
+  kind: 'atr_multiple' | 'fixed_pct' | 'none' | 'trailing_pct';
+  value: number;
+  atr_window: number | null;
+}
+
+export interface ForwardPaperExecutionRule {
+  dual_touch: 'stop_loss_first';
+  gap_fill: 'execution_open';
+  exit_timing: 'next_open';
+  slot_release: 'after_exit_fill_next_open';
+}
+
+export interface ForwardPaperFilterEvidence extends ForwardPaperRangeFilter {
+  raw_value: number | null;
+  ready: boolean;
+  passed: boolean;
+  reason?: string | null;
+}
+
+export interface ForwardPaperRiskState {
+  entry_atr?: Record<string, number> | null;
+  take_profit_level?: number | null;
+  stop_loss_level?: number | null;
+  trailing_extreme?: number | null;
+  trailing_level?: number | null;
+}
+
+export interface ForwardPaperTrigger {
+  reason?: string | null;
+  candle_utc?: string | null;
+  trigger_level?: number | null;
+  observed_price?: number | null;
+  observed_high?: number | null;
+  observed_low?: number | null;
+  observed_open?: number | null;
+  observed_close?: number | null;
+  take_profit_level?: number | null;
+  stop_loss_level?: number | null;
+  dual_touch?: boolean;
+  dual_touch_policy?: 'stop_loss_first';
+}
+
+export interface ForwardPaperDecisionDetail {
+  coin?: string;
+  pair?: string;
+  side?: string;
+  decision?: string;
+  status?: string;
+  reason?: string | null;
+  range_filter?: ForwardPaperFilterEvidence;
+  risk_ready?: boolean;
+  trigger?: ForwardPaperTrigger | null;
+  [key: string]: unknown;
+}
+
+export interface ForwardPaperVariant {
+  variant_id: string;
+  rule_hash?: string;
+  hypothesis?: string;
+  chan_entry?: number;
+  chan_exit?: number;
+  range_filter?: ForwardPaperRangeFilter;
+  take_profit?: ForwardPaperExitRule;
+  stop_loss?: ForwardPaperExitRule;
+  execution?: ForwardPaperExecutionRule;
+  [key: string]: unknown;
+}
+
 export interface ForwardPaperVariantSummary {
   closed_trade_count?: number;
   realized_profit_after_fee_before_unknown_costs?: number | null;
@@ -1061,14 +1139,14 @@ export interface ForwardPaperVariantSummary {
 export interface ForwardPaperEvent {
   action?: string;
   candle_utc?: string | null;
-  candidates?: Array<Record<string, unknown>>;
+  candidates?: ForwardPaperDecisionDetail[];
   coin?: string;
   decided_at_utc?: string | null;
   decision_reason?: string | null;
   event_id?: string;
   event_type?: string;
   execution_at_utc?: string | null;
-  exits?: Array<Record<string, unknown>>;
+  exits?: ForwardPaperDecisionDetail[];
   fee?: number | null;
   filled_at_utc?: string | null;
   price?: number | null;
@@ -1076,6 +1154,8 @@ export interface ForwardPaperEvent {
   quantity?: number | null;
   reason?: string | null;
   rule_hash?: string;
+  risk_state?: ForwardPaperRiskState | null;
+  trigger?: ForwardPaperTrigger | null;
   side?: string;
   variant_id?: string;
   [key: string]: unknown;
@@ -1084,18 +1164,13 @@ export interface ForwardPaperEvent {
 export interface ForwardPaperResponse {
   run_id: string;
   manifest: {
-    variants?: Array<{
-      variant_id: string;
-      rule_hash?: string;
-      hypothesis?: string;
-      chan_entry?: number;
-      chan_exit?: number;
-      [key: string]: unknown;
-    }>;
+    variants?: ForwardPaperVariant[];
     [key: string]: any;
   };
   latest_snapshot?: {
     data_ready?: boolean;
+    replay_completed?: boolean;
+    data_readiness_reasons?: string[];
     data_fingerprint?: string | null;
     candle_through_utc?: string | null;
     missing?: string[];
@@ -1117,6 +1192,9 @@ export interface ForwardPaperResponse {
   } | null;
   summary: {
     data_ready: boolean;
+    replay_completed?: boolean;
+    strategy_usable?: boolean;
+    data_readiness_reasons?: string[];
     data_fingerprint?: string | null;
     candle_through_utc?: string | null;
     decision_count: number;

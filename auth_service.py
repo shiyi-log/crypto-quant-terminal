@@ -814,10 +814,9 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(candidate_snapshot, dict):
                     latest_snapshot = candidate_snapshot
             state_or_checkpoint = state or checkpoint or {}
-            # v2 snapshots always carry an explicit replay marker.  Older
-            # canonical files predate that field, so retain their historical
-            # data_ready implication without letting it weaken the v2
-            # contract.
+            # Non-legacy schemas (v2, v3, and future versions) require an
+            # explicit replay marker.  Only v1/unversioned canonical files
+            # retain their historical data_ready implication.
             schema_version = str(header.get("schema_version", ""))
             legacy_replay_inference = schema_version in {"", "forward-paper-v1"}
 

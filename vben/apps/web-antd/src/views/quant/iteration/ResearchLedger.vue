@@ -6,8 +6,10 @@ import { Alert, Button, Card, Empty, Select, Table, Tag } from 'ant-design-vue';
 import {
   getForwardPaper,
   getResearchLedger,
+  type ForwardPaperExitRule,
   type ForwardPaperEvent,
   type ForwardPaperResponse,
+  type ForwardPaperVariant,
   type ResearchLedger,
   type ResearchLedgerVersion,
 } from '#/api/freqtrade';
@@ -54,6 +56,7 @@ const orderColumns = [
 ];
 const forwardVariantColumns = [
   { dataIndex: 'variant_id', title: '变体', width: 170 },
+  { key: 'rules', title: '冻结规则', width: 300 },
   { key: 'rule_hash', title: '规则哈希', width: 150 },
   { key: 'current_status', title: '当前数据状态', width: 130 },
   { key: 'replay_status', title: '最近回放状态', width: 140 },
@@ -69,22 +72,22 @@ const forwardDecisionColumns = [
   { dataIndex: 'event_time', title: '执行时点', width: 175 },
   { dataIndex: 'coin', title: '币种 / pair', width: 120 },
   { dataIndex: 'action_side', title: '决策 / 方向', width: 145 },
-  { dataIndex: 'price', title: '价格', width: 100 },
-  { dataIndex: 'quantity', title: '数量', width: 100 },
+  { key: 'filter', title: '过滤指标 / 就绪状态', width: 220 },
+  { key: 'trigger', title: '退出触发证据', width: 260 },
   { dataIndex: 'fee', title: '预期手续费', width: 110 },
-  { dataIndex: 'profit_abs', title: 'profit_abs', width: 110 },
-  { dataIndex: 'reason', title: '原因', width: 210 },
+  { dataIndex: 'reason', title: '放行 / 拒绝原因', width: 210 },
 ];
 const forwardFillColumns = [
   { dataIndex: 'variant_id', title: '变体', width: 150 },
   { dataIndex: 'candle_utc', title: '信号 K 线', width: 175 },
-  { dataIndex: 'event_time', title: '成交时间', width: 175 },
+  { dataIndex: 'event_time', title: '纸面成交时间', width: 175 },
   { dataIndex: 'coin', title: '币种 / pair', width: 120 },
   { dataIndex: 'action_side', title: '动作 / 方向', width: 145 },
-  { dataIndex: 'price', title: '价格', width: 100 },
+  { dataIndex: 'price', title: '纸面开盘填价', width: 120 },
   { dataIndex: 'quantity', title: '数量', width: 100 },
   { dataIndex: 'fee', title: '手续费', width: 100 },
-  { dataIndex: 'profit_abs', title: 'profit_abs', width: 110 },
+  { dataIndex: 'profit_abs', title: '扣手续费收益', width: 130 },
+  { key: 'trigger', title: '触发 / 风险价位', width: 260 },
   { dataIndex: 'reason', title: '原因', width: 210 },
 ];
 
@@ -192,6 +195,142 @@ function eventList(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value) ? value.map(eventRecord) : [];
 }
 
+function ruleNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toFixed(6).replace(/\.?0+$/, '')
+    : '未知';
+}
+
+function filterKind(value: unknown) {
+  const names: Record<string, string> = {
+    adx: 'ADX',
+    channel_width_pct: '通道宽度',
+    realized_vol_pct: '实现波动率',
+    none: '无过滤',
+  };
+  return names[String(value)] || eventText(value, '未记录');
+}
+
+function filterComparison(filter: Record<string, unknown>) {
+  const op = filter.op === 'gt' ? '>' : filter.op === 'lt' ? '<' : '未知比较符';
+  const unit = ['channel_width_pct', 'realized_vol_pct'].includes(String(filter.kind))
+    ? '%'
+    : '';
+  return `${op} ${ruleNumber(filter.threshold)}${unit}`;
+}
+
+function exitRuleText(rule: ForwardPaperExitRule | undefined, label: string) {
+  if (!rule) return `${label}未记录`;
+  if (rule.kind === 'none') return `${label}无`;
+  if (rule.kind === 'atr_multiple') {
+    return `${label} ${ruleNumber(rule.value)} × ATR(${value(rule.atr_window)})`;
+  }
+  const mode = rule.kind === 'trailing_pct' ? '跟踪退出 ' : '';
+  return `${label} ${mode}${ruleNumber(rule.value)}%`;
+}
+
+function variantRuleText(variant: ForwardPaperVariant) {
+  const filter = variant.range_filter;
+  const filterText = !filter
+    ? '横盘过滤未记录'
+    : filter.kind === 'none'
+      ? '横盘过滤：无'
+      : `${filterKind(filter.kind)}(${filter.window}) ${filterComparison(eventRecord(filter))} · 预热 ${filter.warmup_bars} 根`;
+  const execution = variant.execution;
+  const executionText = !execution
+    ? '执行细则未记录'
+    : [
+        execution.dual_touch === 'stop_loss_first' ? '双触达止损优先' : '双触达规则未知',
+        execution.exit_timing === 'next_open' && execution.gap_fill === 'execution_open'
+          ? '次根开盘价退出（含跳空）'
+          : '退出成交规则未知',
+        execution.slot_release === 'after_exit_fill_next_open'
+          ? '退出释放的槽位下一开盘复用'
+          : '槽位规则未知',
+      ].join('；');
+  return {
+    channel: `入 / 退通道 ${value(variant.chan_entry)} / ${value(variant.chan_exit)}`,
+    filter: filterText,
+    exits: `${exitRuleText(variant.take_profit, '止盈')}；${exitRuleText(variant.stop_loss, '止损')}`,
+    execution: executionText,
+  };
+}
+
+function paperReason(value: unknown, fallback = '—') {
+  const names: Record<string, string> = {
+    allow: '放行',
+    deny: '拒绝',
+    entry: '开仓',
+    exit: '平仓',
+    close: '平仓',
+    long: '多',
+    short: '空',
+    outside_top_n: '排名不在前 N',
+    already_held: '已有持仓',
+    max_open: '持仓槽位已满',
+    missing_open_price: '缺开盘价，保留槽位',
+    insufficient_cash: '可用现金不足',
+    top_n_and_slot_available: '排名与槽位允许',
+    range_filter_failed: '横盘过滤未通过',
+    range_filter_rejected: '横盘过滤未通过',
+    range_filter_not_ready: '横盘过滤指标未就绪',
+    risk_indicators_not_ready: '风险指标未就绪',
+    stop_loss: '止损',
+    take_profit: '止盈',
+    trailing_take_profit: '跟踪退出',
+    trend_end: '趋势结束',
+    trend_end_pending_missing_open: '趋势结束，缺价等待成交',
+    pending_exit_filled: '等待退出已成交',
+    no_rankable_candidates: '无可排名候选',
+    no_signal_candidates: '无信号候选',
+    engine_warmup: '信号预热',
+  };
+  return names[String(value)] || eventText(value, fallback);
+}
+
+function filterEvidence(value: unknown) {
+  const filter = eventRecord(value);
+  if (!Object.keys(filter).length) return { text: '未记录', status: '', ready: null };
+  if (filter.kind === 'none') return { text: '无横盘过滤', status: '', ready: true };
+  const unit = ['channel_width_pct', 'realized_vol_pct'].includes(String(filter.kind)) ? '%' : '';
+  const status = filter.ready === false
+    ? '指标未就绪'
+    : filter.ready === true
+      ? filter.passed === true ? '就绪 · 通过' : filter.passed === false ? '就绪 · 未通过' : '就绪 · 结果未知'
+      : '就绪状态未记录';
+  return {
+    text: `${filterKind(filter.kind)}(${eventText(filter.window)}) ${ruleNumber(filter.raw_value)}${unit} ${filterComparison(filter)}`,
+    status,
+    ready: typeof filter.ready === 'boolean' ? filter.ready : null,
+  };
+}
+
+function triggerEvidence(value: unknown, riskValue?: unknown) {
+  const trigger = eventRecord(value);
+  const risk = eventRecord(riskValue);
+  if (Object.keys(trigger).length) {
+    const level = typeof trigger.trigger_level === 'number'
+      ? `触发线 ${ruleNumber(trigger.trigger_level)}`
+      : '';
+    const observed = typeof trigger.observed_price === 'number'
+      ? `观察价 ${ruleNumber(trigger.observed_price)}`
+      : '';
+    return {
+      time: eventText(trigger.candle_utc, ''),
+      text: [paperReason(trigger.reason), level, observed].filter(Boolean).join(' · '),
+      detail: trigger.dual_touch === true
+        ? trigger.dual_touch_policy === 'stop_loss_first' ? '同根双触达，按冻结规则止损优先' : '同根双触达，处理规则未记录'
+        : '',
+    };
+  }
+  const levels = [
+    typeof risk.take_profit_level === 'number' ? `止盈线 ${ruleNumber(risk.take_profit_level)}` : '',
+    typeof risk.stop_loss_level === 'number' ? `止损线 ${ruleNumber(risk.stop_loss_level)}` : '',
+    typeof risk.trailing_level === 'number' ? `跟踪线 ${ruleNumber(risk.trailing_level)}` : '',
+  ].filter(Boolean);
+  return { time: '', text: levels.join(' · ') || '—', detail: '' };
+}
+
 function matchesSelectedVariant(variantId: unknown) {
   return selectedForwardVariant.value === 'all' ||
     variantId === selectedForwardVariant.value;
@@ -239,6 +378,7 @@ const forwardVariantRows = computed(() => {
       variant_id: variant.variant_id,
       rule_hash: variant.rule_hash,
       hypothesis: variant.hypothesis,
+      rules: variantRuleText(variant),
       current_status: currentReady ? '数据就绪' : '当前未就绪',
       replay_status: replaySummary.strategy_usable,
     };
@@ -264,14 +404,13 @@ const forwardDecisionRows = computed(() => {
         event_time: eventText(event.execution_at_utc),
         coin: eventText(detail.pair ?? detail.coin),
         action_side: [
-          eventText(detail.decision ?? detail.status ?? (kind === 'exit' ? '退出' : '候选')),
+          paperReason(detail.decision ?? detail.status ?? (kind === 'exit' ? '退出' : '候选')),
           eventText(detail.side, ''),
         ].filter(Boolean).join(' / '),
-        price: eventText(eventRecord(detail.actual_fill).price),
-        quantity: '—',
+        filter: filterEvidence(detail.range_filter),
+        trigger: triggerEvidence(detail.trigger, detail.risk_state),
         fee: eventText(detail.expected_fee),
-        profit_abs: '—',
-        reason: eventText(detail.reason ?? event.decision_reason),
+        reason: paperReason(detail.reason ?? event.decision_reason),
       });
       const rows = [
         ...candidates.map((candidate, index) => makeRow(candidate, index, 'candidate')),
@@ -285,11 +424,10 @@ const forwardDecisionRows = computed(() => {
         event_time: eventText(event.execution_at_utc),
         coin: '—',
         action_side: '决策事件',
-        price: '—',
-        quantity: '—',
+        filter: { text: '—', status: '', ready: null },
+        trigger: { text: '—', detail: '', time: '' },
         fee: '—',
-        profit_abs: '—',
-        reason: eventText(event.decision_reason),
+        reason: paperReason(event.decision_reason),
       }];
     })
     .reverse();
@@ -324,7 +462,8 @@ const forwardFillRows = computed(() =>
       quantity: eventText(event.quantity),
       fee: eventText(event.fee),
       profit_abs: eventText(event.profit_abs),
-      reason: eventText(event.reason, decisionReasonForFill(event)),
+      reason: paperReason(event.reason ?? event.exit_reason ?? decisionReasonForFill(event)),
+      trigger: triggerEvidence(event.trigger, event.risk_state),
     })),
 );
 
@@ -344,7 +483,8 @@ const forwardCloseRows = computed(() =>
       quantity: eventText(event.quantity),
       fee: eventText(event.fee),
       profit_abs: eventText(event.profit_abs ?? event.pnl),
-      reason: eventText(event.reason ?? event.exit_reason, decisionReasonForFill(event)),
+      reason: paperReason(event.reason ?? event.exit_reason ?? decisionReasonForFill(event)),
+      trigger: triggerEvidence(event.trigger, event.risk_state),
     })),
 );
 
@@ -728,9 +868,16 @@ onMounted(load);
           <template v-if="column.key === 'rule_hash'">
             <span class="font-mono text-xs">{{ value(record.rule_hash) }}</span>
           </template>
+          <template v-else-if="column.key === 'rules'">
+            <div class="text-xs leading-5">
+              <div>{{ record.rules.channel }} · {{ record.rules.filter }}</div>
+              <div>{{ record.rules.exits }}</div>
+              <div class="text-muted-foreground">{{ record.rules.execution }}</div>
+            </div>
+          </template>
           <template v-else-if="column.key === 'current_status'">
-            <Tag :color="forwardPaper.summary.data_ready ? 'green' : 'red'">
-              {{ forwardPaper.summary.data_ready ? '就绪' : '当前未就绪' }}
+            <Tag :color="forwardCurrentReady ? 'green' : 'red'">
+              {{ forwardCurrentReady ? '就绪' : '当前未就绪' }}
             </Tag>
           </template>
           <template v-else-if="column.key === 'replay_status'">
@@ -769,7 +916,7 @@ onMounted(load);
         />
       </div>
       <div class="mt-1 mb-3 text-xs text-muted-foreground">
-        接口按事件返回最近记录；决策候选按币种展开。时间均为 UTC，信号 K 线时间与执行 / 成交时间分开显示。滑点和资金费未知。
+        接口按事件返回最近记录；决策候选按币种展开。时间均为 UTC，信号 K 线时间与执行 / 成交时间分开显示。纸面成交不代表实盘成交；滑点和资金费未知。
       </div>
 
       <div class="mb-4">
@@ -780,7 +927,28 @@ onMounted(load);
           :pagination="{ pageSize: 10, hideOnSinglePage: true }"
           :scroll="{ x: 1200 }"
           size="small"
-        />
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'filter'">
+              <div class="text-xs">
+                <div>{{ record.filter.text }}</div>
+                <Tag v-if="record.filter.status" :color="record.filter.ready === false ? 'orange' : record.filter.ready === true ? 'green' : 'default'">
+                  {{ record.filter.status }}
+                </Tag>
+              </div>
+            </template>
+            <template v-else-if="column.key === 'trigger'">
+              <div class="text-xs">
+                <div>{{ record.trigger.text }}</div>
+                <div v-if="record.trigger.time" class="text-muted-foreground">触发 K 线 {{ record.trigger.time }}</div>
+                <div v-if="record.trigger.detail" class="text-muted-foreground">{{ record.trigger.detail }}</div>
+              </div>
+            </template>
+            <template v-else-if="column.dataIndex === 'reason'">
+              <span class="text-xs">{{ record.reason }}</span>
+            </template>
+          </template>
+        </Table>
         <Empty
           v-if="!forwardDecisionRows.length"
           :image="Empty.PRESENTED_IMAGE_SIMPLE"
@@ -795,7 +963,20 @@ onMounted(load);
           :pagination="{ pageSize: 10, hideOnSinglePage: true }"
           :scroll="{ x: 1200 }"
           size="small"
-        />
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'trigger'">
+              <div class="text-xs">
+                <div>{{ record.trigger.text }}</div>
+                <div v-if="record.trigger.time" class="text-muted-foreground">触发 K 线 {{ record.trigger.time }}</div>
+                <div v-if="record.trigger.detail" class="text-muted-foreground">{{ record.trigger.detail }}</div>
+              </div>
+            </template>
+            <template v-else-if="column.dataIndex === 'reason'">
+              <span class="text-xs">{{ record.reason }}</span>
+            </template>
+          </template>
+        </Table>
         <Empty
           v-if="!forwardFillRows.length"
           :image="Empty.PRESENTED_IMAGE_SIMPLE"
@@ -810,7 +991,20 @@ onMounted(load);
           :pagination="{ pageSize: 10, hideOnSinglePage: true }"
           :scroll="{ x: 1200 }"
           size="small"
-        />
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'trigger'">
+              <div class="text-xs">
+                <div>{{ record.trigger.text }}</div>
+                <div v-if="record.trigger.time" class="text-muted-foreground">触发 K 线 {{ record.trigger.time }}</div>
+                <div v-if="record.trigger.detail" class="text-muted-foreground">{{ record.trigger.detail }}</div>
+              </div>
+            </template>
+            <template v-else-if="column.dataIndex === 'reason'">
+              <span class="text-xs">{{ record.reason }}</span>
+            </template>
+          </template>
+        </Table>
         <Empty
           v-if="!forwardCloseRows.length"
           :image="Empty.PRESENTED_IMAGE_SIMPLE"

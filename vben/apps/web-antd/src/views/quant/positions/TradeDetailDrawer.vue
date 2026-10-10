@@ -6,6 +6,11 @@ import { computed, onUnmounted, ref, watch } from 'vue';
 import { Alert, Button, Drawer, Table, Tag } from 'ant-design-vue';
 
 import { errText, getTrade } from '#/api/freqtrade';
+import {
+  fullOrderTime,
+  orderDisplayId,
+  tradeDisplayId,
+} from '../utils/orderDisplayId';
 
 const props = defineProps<{ open: boolean; record: FtTrade | null }>();
 const emit = defineEmits<{ 'update:open': [value: boolean] }>();
@@ -52,21 +57,6 @@ function signed(value: unknown, digits = 2, unit = '') {
     : `${parsed > 0 ? '+' : ''}${format(parsed, digits, unit)}`;
 }
 
-function fullTime(value: unknown) {
-  if (value === null || value === undefined || value === '') return '—';
-  if (typeof value !== 'number' && typeof value !== 'string') return '—';
-  // Freqtrade 的无时区日期字符串为 UTC；优先使用接口的毫秒时间戳。
-  const raw =
-    typeof value === 'string' &&
-    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
-      ? `${value.replace(' ', 'T')}Z`
-      : value;
-  const date = new Date(raw);
-  return Number.isNaN(date.getTime())
-    ? String(value)
-    : date.toLocaleString('zh-CN', { hour12: false });
-}
-
 const profitRatio = computed(() => {
   const t = trade.value;
   const ratio = number(t.profit_ratio ?? t.close_profit);
@@ -78,7 +68,8 @@ const profitAmount = computed(
 const summaryFields = computed(() => {
   const t = trade.value;
   return [
-    { label: '交易编号', value: t.trade_id ?? '—' },
+    { label: '开仓订单编号', value: tradeDisplayId(t) },
+    { label: '原始交易 ID', value: t.trade_id ?? '—' },
     { label: '策略', value: t.strategy ?? '—' },
     { label: '杠杆', value: format(t.leverage, 2, 'x') },
     { label: '开仓价', value: format(t.open_rate, 8, stakeCurrency.value) },
@@ -108,8 +99,11 @@ const summaryFields = computed(() => {
       value: profitRatio.value === null ? '—' : `${signed(profitRatio.value)}%`,
       profit: profitRatio.value,
     },
-    { label: '开仓时间', value: fullTime(t.open_timestamp ?? t.open_date) },
-    { label: '平仓时间', value: fullTime(t.close_timestamp ?? t.close_date) },
+    { label: '开仓时间', value: fullOrderTime(t.open_timestamp, t.open_date) },
+    {
+      label: '平仓时间',
+      value: fullOrderTime(t.close_timestamp, t.close_date),
+    },
     { label: '开仓标签', value: t.enter_tag || '—' },
     { label: '退出原因', value: t.exit_reason || '—' },
     {
@@ -168,7 +162,8 @@ const orders = computed(() =>
     : [],
 );
 const orderCols = [
-  { key: 'id', title: '订单编号', width: 200 },
+  { key: 'id', title: '订单编号', width: 340 },
+  { key: 'source_id', title: '交易所原始订单号', width: 220 },
   { key: 'side', title: '用途 / 买卖', width: 130 },
   { key: 'type', title: '类型', width: 100 },
   { key: 'status', title: '状态', width: 130 },
@@ -324,9 +319,8 @@ onUnmounted(() => {
             ? '交易详情快照，可手动刷新。'
             : '列表快照。'
       }}
-      时间均为本地时间（{{
-        Intl.DateTimeFormat().resolvedOptions().timeZone
-      }}）。
+      时间均为北京时间（UTC+8）。 订单编号为创建时间 + 币种 +
+      交易所原始订单号；原始号缺失时标为“原号未知”。
     </div>
     <div
       class="mb-6 grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
@@ -373,8 +367,15 @@ onUnmounted(() => {
     >
       <template #bodyCell="{ column, record: order }">
         <template v-if="column.key === 'id'">
+          <span
+            class="block max-w-[320px] truncate font-mono text-xs"
+            :title="orderDisplayId(order, trade)"
+            >{{ orderDisplayId(order, trade) }}</span
+          >
+        </template>
+        <template v-else-if="column.key === 'source_id'">
           <span class="break-all font-mono text-xs">{{
-            order.order_id ?? order.id ?? '—'
+            order.order_id ?? '—'
           }}</span>
         </template>
         <template v-else-if="column.key === 'side'">{{
@@ -418,11 +419,14 @@ onUnmounted(() => {
         }}</template>
         <template v-else-if="column.key === 'time'">
           <div class="whitespace-nowrap text-xs">
-            创建：{{ fullTime(order.order_timestamp ?? order.order_date) }}
+            创建：{{ fullOrderTime(order.order_timestamp, order.order_date) }}
           </div>
           <div class="whitespace-nowrap text-xs text-gray-400">
             成交：{{
-              fullTime(order.order_filled_timestamp ?? order.order_filled_date)
+              fullOrderTime(
+                order.order_filled_timestamp,
+                order.order_filled_date,
+              )
             }}
           </div>
         </template>

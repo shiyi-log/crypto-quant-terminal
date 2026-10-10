@@ -1,5 +1,6 @@
 <script lang="ts" setup>
 import { sortCoins } from '../utils/coinOrder';
+import { shortOrderTime, tradeDisplayId } from '../utils/orderDisplayId';
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 
 import {
@@ -62,17 +63,6 @@ const holdStats = computed(() => {
   };
 });
 
-const localTime = (v?: string) => {
-  if (!v) return '—';
-  // Freqtrade 的无时区字符串为 UTC，与详情里的毫秒时间戳统一转本地时间。
-  const raw = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(v)
-    ? `${v.replace(' ', 'T')}Z`
-    : v;
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return String(v);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-};
 const fmt = (v: any, n = 2) =>
   v === null || v === undefined || Number.isNaN(Number(v))
     ? '—'
@@ -101,6 +91,7 @@ const openProfit = computed(() => {
 });
 
 const openCols = [
+  { key: 'display_id', title: '开仓订单编号', width: 300 },
   { dataIndex: 'pair', key: 'pair', title: '币对' },
   { key: 'side', title: '方向', width: 80 },
   { dataIndex: 'open_rate', key: 'open_rate', title: '开仓价', align: 'right' as const },
@@ -114,6 +105,7 @@ const openCols = [
 ];
 
 const tradeCols = [
+  { key: 'display_id', title: '开仓订单编号', width: 300 },
   { dataIndex: 'pair', key: 'pair', title: '币对' },
   { key: 'side', title: '方向', width: 70 },
   { dataIndex: 'open_rate', key: 'open_rate', title: '开仓价', align: 'right' as const, width: 100 },
@@ -495,7 +487,12 @@ onUnmounted(() => {
         size="small"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'pair'">
+          <template v-if="column.key === 'display_id'">
+            <span class="block max-w-[280px] truncate font-mono text-xs" :title="tradeDisplayId(record)">
+              {{ tradeDisplayId(record) }}
+            </span>
+          </template>
+          <template v-else-if="column.key === 'pair'">
             <span class="font-medium">{{ record.pair }}</span>
           </template>
           <template v-else-if="column.key === 'side'">
@@ -520,7 +517,7 @@ onUnmounted(() => {
             </span>
           </template>
           <template v-else-if="column.key === 'open_date'">
-            <span class="text-xs text-gray-400">{{ localTime(record.open_date) }}</span>
+            <span class="text-xs text-gray-400">{{ shortOrderTime(record.open_timestamp, record.open_date) }}</span>
           </template>
           <template v-else-if="column.key === 'leverage'">
             {{ record.leverage ? `${fmt(record.leverage, 1)}x` : '—' }}
@@ -575,7 +572,12 @@ onUnmounted(() => {
           size="small"
         >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'pair'">
+            <template v-if="column.key === 'display_id'">
+              <span class="block max-w-[280px] truncate font-mono text-xs" :title="tradeDisplayId(record)">
+                {{ tradeDisplayId(record) }}
+              </span>
+            </template>
+            <template v-else-if="column.key === 'pair'">
               <span class="font-medium">{{ record.pair }}</span>
             </template>
             <template v-else-if="column.key === 'side'">
@@ -600,12 +602,12 @@ onUnmounted(() => {
               </span>
             </template>
             <template v-else-if="column.key === 'open_date'">
-              <span class="text-xs text-gray-400">{{ localTime(record.open_date) }}</span>
+              <span class="text-xs text-gray-400">{{ shortOrderTime(record.open_timestamp, record.open_date) }}</span>
             </template>
             <template v-else-if="column.key === 'close'">
               <Tag v-if="record.is_open" color="warning">持仓中</Tag>
               <span v-else class="text-xs text-gray-400">
-                {{ localTime(record.close_date) }}
+                {{ shortOrderTime(record.close_timestamp, record.close_date) }}
               </span>
             </template>
             <template v-else-if="column.key === 'action'">
@@ -631,6 +633,9 @@ onUnmounted(() => {
             <div class="py-8 text-sm text-gray-400">暂无持仓与成交记录</div>
           </template>
         </Table>
+        <div class="mt-2 text-xs text-gray-400">
+          编号格式：时间戳 + 币种 + 交易所原始订单号，时间为北京时间（UTC+8）。列表缺少订单数据时以开仓时间展示，原始号可在详情中查询。
+        </div>
       </Card>
 
 

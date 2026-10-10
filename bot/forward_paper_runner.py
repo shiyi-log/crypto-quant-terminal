@@ -1183,9 +1183,9 @@ def main(argv: list[str] | None = None) -> int:
 
     project_root = Path(__file__).resolve().parents[1]
     store = DataStore(root=project_root)
-    runner = ForwardPaperRunner(args.output, paper.DEFAULT_VARIANTS,
-                                ledger_store=store)
     try:
+        runner = ForwardPaperRunner(args.output, paper.DEFAULT_VARIANTS,
+                                    ledger_store=store)
         print(json.dumps(runner.update(data), ensure_ascii=False, indent=2,
                          allow_nan=False))
     finally:

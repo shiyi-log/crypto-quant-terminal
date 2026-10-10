@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pandas as pd
@@ -30,6 +30,19 @@ def fixture(periods=70):
 
 
 class ForwardPaperRunnerTests(unittest.TestCase):
+    def test_cli_closes_database_store_when_runner_construction_fails(self):
+        """A manifest/database error must not leak the CLI's connection pool."""
+        store = Mock()
+        with patch("forward_paper_runner.paper.load_feather_1h", return_value={}), \
+                patch("data_store.DataStore", return_value=store), \
+                patch("forward_paper_runner.ForwardPaperRunner",
+                      side_effect=ValueError("immutable manifest conflict")):
+            with self.assertRaisesRegex(ValueError, "immutable manifest conflict"):
+                from forward_paper_runner import main
+
+                main(["--data-dir", "/tmp/data", "--output", "/tmp/output"])
+        store.close.assert_called_once_with()
+
     def test_same_snapshot_after_observation_gap_records_continuity_loss(self):
         data = {key: frame.iloc[:10] for key, frame in fixture().items()}
         now = [datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc)]

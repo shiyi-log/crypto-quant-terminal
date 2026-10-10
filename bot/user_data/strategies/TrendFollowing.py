@@ -415,10 +415,21 @@ class TrendFollowing(IStrategy):
             return 0.0
 
         configured_slots = self.config.get("max_open_trades") if isinstance(self.config, dict) else None
-        if (not isinstance(configured_slots, (int, float))
-                or not np.isfinite(configured_slots) or configured_slots <= 0):
-            configured_slots = max(self.top_n.value, 1)
-        remaining_slots = max(int(configured_slots) - open_count, 0)
+        unlimited_slots = (
+            isinstance(configured_slots, (int, float))
+            and not isinstance(configured_slots, bool)
+            and (configured_slots == -1 or np.isinf(configured_slots))
+        )
+        if unlimited_slots:
+            # Freqtrade's -1 means no slot cap. Keep top_n only as the
+            # allocation denominator while the aggregate budget remains hard.
+            remaining_slots = max(int(self.top_n.value), 1)
+        else:
+            if (not isinstance(configured_slots, (int, float))
+                    or isinstance(configured_slots, bool)
+                    or not np.isfinite(configured_slots) or configured_slots <= 0):
+                configured_slots = max(self.top_n.value, 1)
+            remaining_slots = max(int(configured_slots) - open_count, 0)
         remaining_budget = max(target_budget - open_stake, 0.0)
         if remaining_slots == 0 or remaining_budget <= 0:
             logger.info(

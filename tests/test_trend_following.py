@@ -442,6 +442,32 @@ class TrendFollowingEntryTests(unittest.TestCase):
             )
         self.assertEqual(stake, 0.0)
 
+    def test_unlimited_slots_allow_ninth_entry_but_keep_budget_cap(self):
+        self.strategy.wallets = SimpleNamespace(get_total_stake_amount=lambda: 9_000.0)
+        self.strategy.config["max_open_trades"] = -1
+        with patch("freqtrade.persistence.Trade.total_open_trades_stakes", return_value=800.0), \
+                patch("freqtrade.persistence.Trade.get_open_trade_count", return_value=8):
+            stake = self.strategy.custom_stake_amount(
+                PAIR, NOW, 100.0, 100.0, None, 10_000.0, 1.0, None, "long"
+            )
+
+        # -1 removes the slot ceiling; top_n remains the allocation denominator.
+        self.assertAlmostEqual(stake, 237.5)
+        self.assertLessEqual(800.0 + stake, 9_000.0 * 0.30)
+
+    def test_freqtrade_normalized_unlimited_slots_allow_entry(self):
+        self.strategy.wallets = SimpleNamespace(get_total_stake_amount=lambda: 9_000.0)
+        # Freqtrade normalizes max_open_trades=-1 to positive infinity at runtime.
+        self.strategy.config["max_open_trades"] = float("inf")
+        with patch("freqtrade.persistence.Trade.total_open_trades_stakes", return_value=800.0), \
+                patch("freqtrade.persistence.Trade.get_open_trade_count", return_value=8):
+            stake = self.strategy.custom_stake_amount(
+                PAIR, NOW, 100.0, 100.0, None, 10_000.0, 1.0, None, "long"
+            )
+
+        self.assertAlmostEqual(stake, 237.5)
+        self.assertLessEqual(800.0 + stake, 9_000.0 * 0.30)
+
 
 if __name__ == "__main__":
     unittest.main()

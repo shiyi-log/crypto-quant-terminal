@@ -154,6 +154,31 @@ class DataSyncTests(unittest.TestCase):
                 base = Path("/tmp/data")
                 self.assertEqual(candle_identity(base / filename, base), expected)
 
+    def test_identity_rejects_unknown_data_directory(self):
+        base = Path("/tmp/data")
+        with self.assertRaises(ValueError):
+            candle_identity(base / "research_1h/BTC_USDT-1h.feather", base)
+
+    def test_unknown_data_directories_are_skipped_and_reported(self):
+        project = self.project
+        directory = project / "bot/user_data/data/research_1h"
+        directory.mkdir(parents=True)
+        candle_frame().to_feather(directory / "BTC_USDT-1h.feather")
+        (directory / "notes.json").write_text('{"research": true}', encoding="utf-8")
+        (directory / "returns.csv").write_text("date,return\n2026-01-01,0.1\n", encoding="utf-8")
+
+        store = MemoryStore()
+        result = DataSynchronizer(store, project).run()
+
+        assert result["errors"] == 0
+        assert result["rows"] == 0
+        assert result["warnings"] == [
+            "忽略未授权行情目录: bot/user_data/data/research_1h"
+        ]
+        assert store.candles == {}
+        assert store.documents == {}
+        assert store.events == {}
+
     def test_utc_timestamp_and_nat(self):
         timestamps = timestamp_ms(["2026-01-01T08:00:00+08:00", "invalid"])
         assert timestamps.iloc[0] == 1767225600000

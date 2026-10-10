@@ -39,6 +39,7 @@ TRUSTED_PICKLES = {
     "dvol_eth.pkl": ("deribit", "dvol", "ETH"),
 }
 BATCH_SIZE = 5000
+ALLOWED_DATA_DIRS = frozenset(("binance", "merged", "okx", "orderflow"))
 
 
 def utc_now() -> str:
@@ -105,6 +106,9 @@ def exclusive_sync(root: Path) -> Iterator[None]:
 def candle_identity(path: Path, data_dir: Path) -> tuple[str, str, str, str, str]:
     """从现有文件名提取交易所、市场、交易对、周期和数据类型。"""
     rel = path.relative_to(data_dir)
+    if (len(rel.parts) < 2 or rel.parts[0] not in ALLOWED_DATA_DIRS
+            or (data_dir / rel.parts[0]).is_symlink()):
+        raise ValueError("不受信的行情数据目录")
     if rel.parts[0] == "orderflow":
         match = re.fullmatch(r"(.+)_([1-9]\d*[smhdwM])_(orderflow|oi)", path.stem)
         if not match:
@@ -201,6 +205,40 @@ class DataSynchronizer:
         self.batch_size = max(1, batch_size)
         self.summary: dict[str, Any] = {}
         self._last_fast_service = time.monotonic()
+
+    def _warn(self, message: str) -> None:
+        warnings = self.summary.setdefault("warnings", [])
+        if message not in warnings:
+            warnings.append(message)
+            print(f"[sync] warning: {message}", flush=True)
+
+    def _data_roots(self) -> tuple[Path, ...]:
+        """返回受信行情目录，并显式报告 data/ 下的未知入口。"""
+        data_dir = self.user_data / "data"
+        if not data_dir.exists():
+            return ()
+        if data_dir.is_symlink() or not data_dir.is_dir():
+            self._warn(f"忽略非目录行情根: {self._key(data_dir)}")
+            return ()
+        roots = []
+        for entry in sorted(data_dir.iterdir(), key=lambda item: item.name):
+            if entry.name not in ALLOWED_DATA_DIRS:
+                self._warn(f"忽略未授权行情目录: {self._key(entry)}")
+                continue
+            if entry.is_symlink() or not entry.is_dir():
+                self._warn(f"忽略无效行情目录: {self._key(entry)}")
+                continue
+            roots.append(entry)
+        return tuple(roots)
+
+    def _allowed_user_data_path(self, path: Path) -> bool:
+        """限制 data/ 下的文档和表格也只能来自受信目录。"""
+        relative = path.relative_to(self.user_data)
+        if not relative.parts or relative.parts[0] != "data":
+            return True
+        return (len(relative.parts) >= 3
+                and relative.parts[1] in ALLOWED_DATA_DIRS
+                and not (self.user_data / "data" / relative.parts[1]).is_symlink())
 
     def _key(self, path: Path) -> str:
         return path.relative_to(self.root).as_posix()
@@ -421,7 +459,9 @@ class DataSynchronizer:
 
     def _fast_sources(self, force: bool) -> None:
         for path in sorted(self.user_data.rglob("*")):
-            if path.suffix.lower() in {".json", ".jsonl"} and path.is_file() and public_source(path, self.user_data):
+            if (path.suffix.lower() in {".json", ".jsonl"} and path.is_file()
+                    and self._allowed_user_data_path(path)
+                    and public_source(path, self.user_data)):
                 self._run_source(path, "document", self._document, force)
         users = self.root / "auth" / "users.json"
         if users.is_file() and not users.is_symlink():
@@ -433,19 +473,23 @@ class DataSynchronizer:
     def run(self, fast: bool = False, force: bool = False) -> dict[str, Any]:
         self.summary = {"status": "running", "running": True, "mode": "fast" if fast else "full",
                         "started_at": utc_now(), "pid": os.getpid(), "files": 0,
-                        "rows": 0, "errors": 0, "skipped": 0, "rejected_rows": 0}
+                        "rows": 0, "errors": 0, "skipped": 0, "rejected_rows": 0,
+                        "warnings": []}
         self.store.set_sync_state(self.summary)
+        data_roots = self._data_roots()
         self._fast_sources(force)
         if not fast:
-            for path in sorted((self.user_data / "data").rglob("*.feather")):
-                if public_source(path, self.user_data):
-                    self._run_source(path, "feather", self._feather, force)
+            for root in data_roots:
+                for path in sorted(root.rglob("*.feather")):
+                    if public_source(path, self.user_data):
+                        self._run_source(path, "feather", self._feather, force)
             for name in TRUSTED_PICKLES:
                 path = self.user_data / "newsrc" / name
                 if path.is_file() and public_source(path, self.user_data):
                     self._run_source(path, "series", self._pickle, force)
             for path in sorted(self.user_data.rglob("*.csv")):
-                if path.is_file() and public_source(path, self.user_data):
+                if (path.is_file() and self._allowed_user_data_path(path)
+                        and public_source(path, self.user_data)):
                     self._run_source(path, "csv", self._csv, force)
             for folder in ("models", "freqaimodels", "cache", "backtest_results", "hyperopt_results"):
                 for path in sorted((self.user_data / folder).rglob("*")):

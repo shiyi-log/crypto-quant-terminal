@@ -33,6 +33,8 @@ uv run python data_sync.py --once --fast
 
 市场行情和辅助序列的时间统一为 UTC 毫秒。无时区的历史数据按其下载脚本约定解释为 UTC。非法时间、非有限 OHLCV、负成交量及重复时间戳不作为有效 K 线导入；资金费率允许为负。资金费率 Feather 支持 `date/funding_rate` 两列格式，也兼容旧 OHLCV 格式并取 `close` 数值。`newsrc` 的费率 PKL 保留原始八小时采样，使用独立指标 `funding_rate_archive` 防止覆盖行情目录中的费率数据。重复时间保留文件中最后一条，导入行数按清洗后的唯一主键计算。
 
+行情目录只接受 `data/binance`、`data/merged`、`data/okx` 和 `data/orderflow`。`data/` 下的其它目录（包括研究导出和临时目录）会记录告警并完全跳过，不会进入 `candles`、`documents` 或 `events`；受信目录必须是真实目录，不能通过符号链接绕过边界。
+
 配置、private/secrets 目录、smoke 测试产物及符号链接不参与同步。普通文档中的凭据字段递归剔除；日志及错误状态只记录异常类型。pickle 仅允许项目 `newsrc` 固定目录内四个已知文件，不读取任意外部 pickle。模型权重和训练缓存保留原文件，数据库保存可追溯索引，避免复制大型张量影响训练。结构化预测结果实存事件表，不作为市场行情混入 K 线。ZIP 在内存解析，拒绝绝对路径、目录穿越和超过 128 MiB 的单个 JSON 成员。
 
 ## 增量与恢复

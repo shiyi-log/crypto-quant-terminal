@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -423,6 +424,23 @@ class TrendFollowingEntryTests(unittest.TestCase):
         self.assertEqual(self.strategy.exit_period.value, 20)
         self.assertEqual(self.strategy.top_n.value, 8)
         self.assertEqual(self.strategy.target_exposure.value, 0.30)
+
+    def test_custom_stake_caps_aggregate_exposure_when_slots_are_raised(self):
+        self.strategy.wallets = SimpleNamespace(get_total_stake_amount=lambda: 9_000.0)
+        self.strategy.config["max_open_trades"] = 20
+        with patch("freqtrade.persistence.Trade.total_open_trades_stakes", return_value=0.0), \
+                patch("freqtrade.persistence.Trade.get_open_trade_count", return_value=0):
+            stake = self.strategy.custom_stake_amount(
+                PAIR, NOW, 100.0, 100.0, None, 10_000.0, 1.0, None, "long"
+            )
+        self.assertAlmostEqual(stake, 135.0)
+
+        with patch("freqtrade.persistence.Trade.total_open_trades_stakes", return_value=2_700.0), \
+                patch("freqtrade.persistence.Trade.get_open_trade_count", return_value=10):
+            stake = self.strategy.custom_stake_amount(
+                PAIR, NOW, 100.0, 100.0, None, 10_000.0, 1.0, None, "long"
+            )
+        self.assertEqual(stake, 0.0)
 
 
 if __name__ == "__main__":

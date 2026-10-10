@@ -72,6 +72,13 @@
 
 ## 2026-10-10 联动与研究证据收尾
 
+### 交易容量与敞口修正（2026-10-10 22:30）
+
+- 将本机 dry-run 的 `max_open_trades` 从 10 放宽到 20，以允许当前 20 个白名单交易对进入槽位；运行配置含本机凭据，未提交到 Git。
+- 发现旧的 `wallet × target_exposure / top_n` 定仓公式会在 20 个槽位下把 30% 目标放大到约 75%。已在 `TrendFollowing.custom_stake_amount` 增加组合预算硬约束：按 `wallet × target_exposure` 扣除已有 stake，再按剩余槽位分配；预算耗尽或低于交易所最小仓位时拒绝新开仓。
+- 重启交易 API 后验证：PID `51689`，`max_open_trades=20`、`dry_run=true`；10 笔旧仓合计 stake `3365.86734`，目标预算约 `2704.22119`，因此新开仓日志明确记录 `stake denied`，直到旧仓释放预算。该行为是风控收紧，不代表人工暂停。
+- 验证：`bot/.venv/bin/python -m unittest tests.test_trend_following`，34 项通过；策略编译、配置 JSON 和 `git diff --check` 通过。
+
 本会话按用户后续授权扩展到策略实现、研究方法评审、证据账与纸面工具；训练仍由 DeepSeek 负责。已使用超过 20 个子任务并行审查与实现，文件按职责分配，提交由主代理统一整理。
 
 - Codex/DeepSeek 当前会话直接双向投递已实测；修复空闲 steer 回退，未知错误与未确认投递不自动开新轮或重发。

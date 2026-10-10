@@ -397,15 +397,44 @@ class TrendFollowing(IStrategy):
                             proposed_stake: float, min_stake, max_stake,
                             leverage: float, entry_tag, side: str, **kwargs) -> float:
         """
-        固定分数仓位：
-            每笔 = 可用资金 × 目标敞口 / top_n
-        目标敞口 30% / 8 个仓位 → 每笔约 3.75% 资金。
-        比 ATR 动态定仓换手低得多（实测 Sharpe 更高）。
+        组合级预算仓位：
+            剩余预算 = 钱包总额 × 目标敞口 − 已持仓 stake
+            每笔 = 剩余预算 / 剩余开仓槽位
+        ``top_n`` 只用于候选排名，不能作为组合仓位上限。这样即使
+        ``max_open_trades`` 放宽，组合总 stake 仍不超过目标敞口。
         """
         wallet = self.wallets.get_total_stake_amount() if self.wallets else proposed_stake
-        stake = wallet * self.target_exposure.value / max(self.top_n.value, 1)
-        if min_stake:
-            stake = max(stake, min_stake)
+        target_budget = max(float(wallet) * float(self.target_exposure.value), 0.0)
+        try:
+            from freqtrade.persistence import Trade
+
+            open_stake = max(float(Trade.total_open_trades_stakes()), 0.0)
+            open_count = max(int(Trade.get_open_trade_count()), 0)
+        except Exception:
+            logger.exception("TrendFollowing stake sizing unavailable; deny entry")
+            return 0.0
+
+        configured_slots = self.config.get("max_open_trades") if isinstance(self.config, dict) else None
+        if (not isinstance(configured_slots, (int, float))
+                or not np.isfinite(configured_slots) or configured_slots <= 0):
+            configured_slots = max(self.top_n.value, 1)
+        remaining_slots = max(int(configured_slots) - open_count, 0)
+        remaining_budget = max(target_budget - open_stake, 0.0)
+        if remaining_slots == 0 or remaining_budget <= 0:
+            logger.info(
+                "TrendFollowing stake denied pair=%s open_count=%s open_stake=%.8f "
+                "target_budget=%.8f remaining_slots=%s",
+                pair, open_count, open_stake, target_budget, remaining_slots,
+            )
+            return 0.0
+
+        stake = remaining_budget / remaining_slots
+        if min_stake and stake < min_stake:
+            logger.info(
+                "TrendFollowing stake below exchange minimum pair=%s stake=%.8f min_stake=%.8f",
+                pair, stake, min_stake,
+            )
+            return 0.0
         if max_stake:
             stake = min(stake, max_stake)
         return stake

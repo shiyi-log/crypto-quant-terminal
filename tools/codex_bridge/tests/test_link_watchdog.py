@@ -28,13 +28,14 @@ class WatchdogProbeTests(unittest.TestCase):
             "session_id": "fixture-session", "running": True,
         }, "codex_thread_id": "aaaaaaaa-1111-2222-3333-444444444444"})
 
-    def check(self, probe):
+    def check(self, probe, uptime=None):
         with mock.patch.object(link_watchdog, "LEDGER", self.ledger), \
                 mock.patch.object(link_watchdog, "proc_running", return_value=(True, "123")), \
                 mock.patch.object(link_watchdog, "port_open", return_value=True), \
                 mock.patch.object(link_watchdog, "run_link", side_effect=[
                     (0, self.status, ""), probe,
                 ]) as link, \
+                mock.patch.object(link_watchdog, "codex_uptime_s", return_value=uptime), \
                 mock.patch.object(link_watchdog.subprocess, "run") as subprocess_run:
             result = link_watchdog.check()
         # The old implementation retries through subprocess.run on every
@@ -79,6 +80,12 @@ class WatchdogProbeTests(unittest.TestCase):
         result = self.check((1, '{"accepted":true}', "native failure"))
         self.assertFalse(result["send_probe_ok"])
         self.assertFalse(result["healthy"])
+
+    def test_failed_probe_during_restart_window_stays_unhealthy(self):
+        result = self.check((0, '{"accepted":false}', ""), uptime=42)
+        self.assertFalse(result["send_probe_ok"])
+        self.assertFalse(result["healthy"])
+        self.assertTrue(any("重启后的 IPC 注册窗口" in text for text in result["warnings"]))
 
 
 if __name__ == "__main__":

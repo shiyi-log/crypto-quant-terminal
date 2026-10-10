@@ -73,6 +73,20 @@ def proc_running(pattern):
         return False, None
 
 
+def codex_uptime_s():
+    """Return Codex process uptime in seconds when it can be read."""
+    try:
+        pids = subprocess.run(["pgrep", "-f", CODEX_APP], capture_output=True,
+                              text=True).stdout.split()
+        if not pids:
+            return None
+        elapsed = subprocess.run(["ps", "-o", "etimes=", "-p", pids[0]],
+                                 capture_output=True, text=True).stdout.strip()
+        return int(elapsed) if elapsed.isdigit() else None
+    except Exception:
+        return None
+
+
 def port_open(port):
     import socket
     s = socket.socket()
@@ -155,6 +169,18 @@ def check(stuck_min=15):
         detail = ((err_p or out_p).strip().replace("\n", " ")[:200]
                   or "缺少有效 accepted=true 回执；投递未确认")
         s["send_probe_error"] = detail
+        # ── 区分「应用刚重启的启动窗口」与「真的坏了」 ──
+        # 实测（2026-10-10 16:28）：Codex 应用 16:28:44 重启，同秒探针报
+        # no-client-found；16:31:15 重试成功。启动窗口约 2~3 分钟。
+        # 本函数【保持不重试】的既有策略（避免重复投递）。
+        # 应用刚重启时可附加提示，但探针未确认仍必须保持 unhealthy，
+        # 否则监控会把“实际不可发送”误报为健康。
+        uptime = codex_uptime_s()
+        s["codex_uptime_s"] = uptime
+        if uptime is not None and uptime < 300:
+            s["warnings"].append(
+                f"发送探针未获确认，但 Codex 应用仅运行 {uptime} 秒 —— "
+                f"很可能是重启后的 IPC 注册窗口（约需 2~3 分钟），稍后复验即可: {detail}")
         s["problems"].append(
             f"❌ 发送探针未获确认 —— 未重试，需核对实际是否收到: {detail}")
 
@@ -171,7 +197,8 @@ def check(stuck_min=15):
             stuck = []
             # 已知的测试/诊断残留与已被取代的消息 —— 不再重复告警
             # （不改 Codex 的流水库，只在本监控里标注）
-            IGNORE_PREFIXES = ("iso-", "bi-", "watchdog-probe-", "dsh-probe-")
+            IGNORE_PREFIXES = ("iso-", "bi-", "watchdog-probe-", "dsh-probe-",
+                               "probe-quant-link-", "probe-default-link-", "probe-retry-")
             SUPERSEDED = {
                 # 该条在通道中断期未送达，内容已换新 ID 重发并成功
                 "dsh-ablation-and-fixes-20261009": "dsh-channel-bug-and-ablation-20261010",

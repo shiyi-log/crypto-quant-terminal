@@ -38,11 +38,35 @@ python3 tools/codex_bridge/desktop_link.py bind \
   --dsh-session <DeepSeek会话ID>
 ```
 
+## 多项目命名 link
+
+`desktop.json` 是**唯一的默认绑定**，保持原语义不变（正在运行的应用、watchdog 与已加载的 MCP
+进程都还在用它）。要同时服务多个项目，用 `links.json` 登记命名 link：
+
+```bash
+python3 tools/codex_bridge/desktop_link.py bind --link wdhash \
+  --codex-thread <Codex会话UUID> --dsh-session <DeepSeek会话ID> --note '说明'
+python3 tools/codex_bridge/desktop_link.py links
+python3 tools/codex_bridge/desktop_link.py status --link wdhash
+python3 tools/codex_bridge/desktop_link.py send --to codex --link wdhash --text '...'
+```
+
+解析规则：显式 `--link` 优先；发往 Codex 且未指定 `--link` 时，按调用者自己的
+`DSH_SESSION_ID` 匹配 link，匹配不到才回落到默认绑定；发往 DeepSeek 时不自动匹配，
+存在多个命名 link 且未指定 `--link` 会直接拒绝，没有命名 link 歧义时才回落到默认绑定。
+
+Codex 侧**无法自动识别自己在哪个项目**——实测桥接 MCP 进程的环境变量除 PID 外完全相同，
+所以多项目并存时 `send_to_dsh` / `send_to_codex` 需要显式传 `link`。link 参数是
+2026-10-10 新增的，**已在运行的 MCP 进程仍是旧代码**，需要重连（或新开一个 Codex 对话）
+才会加载。link 允许是部分绑定（例如只有 `dsh_session_id`），未绑定方向的发送会明确报错，
+不会静默借用别的项目会话。
+
 ## 文件与状态
 
 | 文件 | 用途 |
 |---|---|
-| `desktop_link.py` | 当前桌面绑定、双向直接发送、投递流水 |
+| `desktop_link.py` | 默认绑定、命名 link 路由、双向直接发送、投递流水 |
+| `link_registry.py` | `links.json` 命名 link 注册表（多项目并存） |
 | `direct_codex.py` | 当前桌面 native IPC，仅直接 turn/steer 与 turn/start |
 | `dsh_send_fixed.py` | 原应急发送器的兼容入口，复用主通道与投递防重 |
 | `link_watchdog.py` | 单次发送探针与健康告警；未确认时不重试或改走旁路 |
@@ -56,7 +80,8 @@ python3 tools/codex_bridge/desktop_link.py bind \
 当前状态：
 
 ```text
-~/.dsh-codex-bridge/desktop.json    # 已绑定的双方会话，不存 Cookie
+~/.dsh-codex-bridge/desktop.json    # 默认绑定的双方会话，不存 Cookie
+~/.dsh-codex-bridge/links.json      # 命名 link（多项目并存），权限 600
 ~/.dsh-codex-bridge/desktop.sqlite  # 尝试与回执流水，不是消息队列
 ~/.codex/ipc/ipc.sock              # 已运行桌面的 IPC，不启动新服务
 ```

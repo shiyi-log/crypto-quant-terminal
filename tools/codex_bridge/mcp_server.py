@@ -83,9 +83,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "send_to_dsh",
         "description": (
-            "Send directly to the bound DeepSeek desktop conversation via native RPC. "
+            "Send directly to a DeepSeek desktop conversation via native RPC. "
             "Never enqueue or fall back to a queue. Returns native acceptance and message id. "
-            "直接投递给已绑定的 DeepSeek 会话；缺少绑定或投递失败时明确报错。"
+            "直接投递给 DeepSeek 会话；缺少绑定或投递失败时明确报错。"
+            "多项目并存时用 link 指定目标（如 link=\"wdhash\"）；存在多个命名 link 时省略会拒绝，"
+            "没有命名 link 歧义时才使用默认绑定。"
         ),
         "inputSchema": {
             "type": "object",
@@ -106,6 +108,13 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "可选被回复消息 ID。Optional id of the message being replied to.",
                 },
+                "link": {
+                    "type": "string",
+                    "description": (
+                        "可选命名 link（如 wdhash / quant）。当前 Codex 会话属于哪个项目就传哪个；"
+                        "存在多个命名 link 时必须传，否则请求会被拒绝；没有命名 link 歧义时才使用默认绑定。"
+                    ),
+                },
             },
             "required": ["text"],
         },
@@ -115,7 +124,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Send directly to the bound Codex desktop conversation via native RPC. "
             "Never enqueue or fall back to a queue. "
-            "直接投递给已绑定的 Codex 会话；缺少绑定或投递失败时明确报错。"
+            "直接投递给 Codex 会话；缺少绑定或投递失败时明确报错。"
         ),
         "inputSchema": {
             "type": "object",
@@ -124,6 +133,7 @@ TOOLS: list[dict[str, Any]] = [
                 "title": {"type": "string", "description": "可选标题，添加在消息正文前。"},
                 "message_id": {"type": "string", "description": "可选稳定消息 ID。"},
                 "reply_to": {"type": "string", "description": "可选被回复消息 ID。"},
+                "link": {"type": "string", "description": "可选命名 link；省略则用默认绑定。"},
             },
             "required": ["text"],
         },
@@ -236,15 +246,16 @@ def _send_direct(arguments: dict[str, Any], destination: str) -> dict[str, Any]:
         return _error_result(
             f"{tool_name} 失败：参数 text 必填，且必须是非空白字符串。"
         )
-    for key in ("title", "message_id", "reply_to"):
+    for key in ("title", "message_id", "reply_to", "link"):
         value = arguments.get(key)
         if value is not None and (not isinstance(value, str) or not value.strip()):
             return _error_result(f"{tool_name} 失败：参数 {key} 必须是非空白字符串。")
     raw_title = arguments.get("title")
     text = f"{raw_title}\n\n{raw_text}" if raw_title else raw_text
     try:
+        config = desktop_link.resolve_config(link=arguments.get("link"), destination=destination)
         delivery = desktop_link.send(
-            desktop_link.load_config(), destination, text,
+            config, destination, text,
             message_id=arguments.get("message_id"), reply_to=arguments.get("reply_to"),
         )
     except desktop_link.LinkError as exc:
@@ -309,6 +320,10 @@ def tool_bridge_status(arguments: dict[str, Any]) -> dict[str, Any]:
             "dsh_session_id": config["dsh_session_id"],
             "dsh_url": config["dsh_url"],
         }
+    try:
+        payload["links"] = desktop_link.link_registry.describe(desktop_link.load_links())
+    except desktop_link.LinkError as exc:
+        payload["links"] = {"error": str(exc)}
     if include_legacy:
         try:
             payload["legacy"] = {

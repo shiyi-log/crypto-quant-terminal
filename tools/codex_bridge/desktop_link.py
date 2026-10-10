@@ -21,6 +21,7 @@ import urllib.request
 import uuid
 from contextlib import closing
 
+import link_registry
 from direct_codex import DirectCodexError, deliver_codex, inspect_codex
 
 DEFAULT_URL = "http://127.0.0.1:19387"
@@ -180,6 +181,90 @@ def client(config):
     return HarnessClient(config["dsh_url"], config["cookie_db"])
 
 
+def links_path():
+    return state_home() / "links.json"
+
+
+def load_links():
+    """Named per-project links; missing file means "no named links yet"."""
+    try:
+        return link_registry.load(links_path())
+    except link_registry.RegistryError as exc:
+        raise LinkError(str(exc)) from exc
+
+
+def save_links(data):
+    try:
+        return link_registry.save(links_path(), data)
+    except (link_registry.RegistryError, OSError) as exc:
+        raise LinkError(str(exc)) from exc
+
+
+def entry_config(entry):
+    """Materialize a links.json entry into a config dict with defaults applied."""
+    return {
+        "codex_thread_id": entry.get("codex_thread_id"),
+        "dsh_session_id": entry.get("dsh_session_id"),
+        "dsh_url": entry.get("dsh_url") or DEFAULT_URL,
+        "cookie_db": entry.get("cookie_db") or str(DEFAULT_COOKIE_DB),
+    }
+
+
+def resolve_config(link=None, destination="codex", dsh_session=None):
+    """Pick the binding for one send.
+
+    Explicit `--link` wins; otherwise a send to Codex is matched against the
+    caller's own `DSH_SESSION_ID`. DeepSeek sends require an explicit link when
+    multiple named links exist; with no named-link ambiguity, the legacy
+    `desktop.json` binding remains available for existing callers.
+    """
+    if destination not in ("codex", "deepseek"):
+        raise LinkError("消息目标必须是 deepseek 或 codex")
+    links = load_links()
+    if link:
+        try:
+            name = link_registry.validate_name(link)
+            entry = link_registry.get(links, name)
+        except link_registry.RegistryError as exc:
+            # Callers such as the MCP tool layer only translate LinkError into a
+            # readable tool error; an unknown link must not escape as a crash.
+            raise LinkError(str(exc)) from exc
+    elif destination == "codex" and dsh_session:
+        found = link_registry.find_by_dsh_session(links, dsh_session)
+        if found is None:
+            return load_config()
+        name, entry = found
+    else:
+        # ── 防串台（2026-10-10 实测事故）──────────────────────────────
+        # 事故：wdhash 侧 Codex 调用 send_to_dsh 时【未传 link】，
+        #       消息落到"默认绑定"并投进了量化会话
+        #       （ledger 记录 target=session-0978bb79，应为 session-95427241）。
+        # 原则：多个命名 link 并存时，发往 DeepSeek 必须显式指定 link；
+        #       宁可报错让调用方补参数，也不能静默投错会话。
+        #       单 link / 无命名 link 时保持旧行为，不破坏既有调用方。
+        _entries = links.get("links") if isinstance(links, dict) else None
+        if _entries is None and isinstance(links, dict):
+            _entries = links
+        _entries = _entries or {}
+        if destination == "deepseek" and len(_entries) > 1:
+            names = sorted(_entries.keys())
+            raise LinkError(
+                "存在多个命名 link（" + ", ".join(names) + "），发往 DeepSeek 必须显式传 "
+                "link=…；省略会投给默认绑定并造成串台。"
+                "请在 Codex 侧 send_to_dsh 调用中补上 link 参数。"
+            )
+        return load_config()
+    config = entry_config(entry)
+    if destination == "deepseek" and not config["dsh_session_id"]:
+        raise LinkError(f"link `{name}` 没有 dsh_session_id；无法投递给 DeepSeek")
+    if destination == "codex" and not config["codex_thread_id"]:
+        raise LinkError(
+            f"link `{name}` 还没有 codex_thread_id；请在 Codex 桌面打开该项目会话后执行 "
+            f"bind --link {name} --codex-thread <UUID>"
+        )
+    return config
+
+
 def journal():
     path = state_home() / "desktop.sqlite"
     db = sqlite3.connect(path, timeout=15)
@@ -249,19 +334,105 @@ def session_summary(item):
             "agent_available": item.get("agentAvailable")}
 
 
+def _valid_thread(thread_id):
+    try:
+        uuid.UUID(thread_id)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise LinkError("Codex 会话 ID 必须是 UUID") from exc
+    return thread_id
+
+
+def _require_session(config, session_id):
+    item = next((s for s in client(config).sessions() if s.get("sessionId") == session_id), None)
+    if item is None or item.get("parentSessionId"):
+        raise LinkError("目标 Harness 根会话不存在")
+    return item
+
+
+def _require_owner(thread_id):
+    try:
+        inspect_codex(thread_id)
+    except DirectCodexError as exc:
+        raise LinkError(str(exc)) from exc
+
+
+def bind_command(args):
+    """Write either the legacy default binding or one named link."""
+    if not args.link:
+        if not args.codex_thread or not args.dsh_session:
+            raise LinkError("默认绑定必须同时提供 --codex-thread 与 --dsh-session")
+        _valid_thread(args.codex_thread)
+        config = {"codex_thread_id": args.codex_thread, "dsh_session_id": args.dsh_session,
+                  "dsh_url": args.dsh_url, "cookie_db": str(Path(args.cookie_db).expanduser()),
+                  "codex_binary": args.codex_binary}
+        item = _require_session(config, args.dsh_session)
+        _require_owner(args.codex_thread)
+        save_config(config)
+        return {"bound": True, "link": None, "codex_thread_id": args.codex_thread,
+                "deepseek": session_summary(item)}
+
+    links = load_links()
+    name = link_registry.validate_name(args.link)
+    entry = dict(links["links"].get(name, {}))
+    if args.dsh_session:
+        entry["dsh_session_id"] = args.dsh_session
+    if args.codex_thread:
+        entry["codex_thread_id"] = _valid_thread(args.codex_thread)
+    if args.note is not None:
+        entry["note"] = args.note
+    if args.dsh_url != DEFAULT_URL or "dsh_url" not in entry:
+        entry["dsh_url"] = args.dsh_url
+    if str(Path(args.cookie_db).expanduser()) != str(DEFAULT_COOKIE_DB) or "cookie_db" not in entry:
+        entry["cookie_db"] = str(Path(args.cookie_db).expanduser())
+    if not entry.get("dsh_session_id"):
+        raise LinkError("首次创建命名 link 必须提供 --dsh-session")
+    item = _require_session(entry_config(entry), entry["dsh_session_id"])
+    if entry.get("codex_thread_id"):
+        _require_owner(entry["codex_thread_id"])
+    links["links"][name] = entry
+    saved = save_links(links)
+    return {"bound": True, "link": name, "codex_thread_id": entry.get("codex_thread_id"),
+            "deepseek": session_summary(item), "entry": saved["links"][name]}
+
+
+def status_command(link=None):
+    if link:
+        entry = link_registry.get(load_links(), link)
+        config, name = entry_config(entry), link
+    else:
+        config, name = load_config(), None
+    item = next((s for s in client(config).sessions() if s.get("sessionId") == config["dsh_session_id"]), None)
+    if config.get("codex_thread_id"):
+        try:
+            codex = inspect_codex(config["codex_thread_id"])
+        except DirectCodexError as exc:
+            codex = {"ready": False, "error": str(exc)}
+    else:
+        codex = {"ready": False, "error": "未绑定 codex_thread_id"}
+    return {"codex_thread_id": config.get("codex_thread_id"), "link": name,
+            "deepseek": session_summary(item) if item else None, "codex": codex,
+            "delivery_mode": "direct", "ready": item is not None and codex["ready"],
+            "links": link_registry.describe(load_links(), os.environ.get("DSH_SESSION_ID"))}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    bind = commands.add_parser("bind", help="绑定现有双方桌面会话")
-    bind.add_argument("--codex-thread", required=True)
-    bind.add_argument("--dsh-session", required=True)
+    bind = commands.add_parser("bind", help="绑定现有双方桌面会话；--link 写入命名 link")
+    bind.add_argument("--codex-thread", help="Codex 会话 UUID；--link 首次创建部分绑定时可省略")
+    bind.add_argument("--dsh-session")
     bind.add_argument("--dsh-url", default=DEFAULT_URL)
     bind.add_argument("--cookie-db", default=str(DEFAULT_COOKIE_DB))
     bind.add_argument("--codex-binary", default=DEFAULT_CODEX, help="旧绑定兼容字段；直接投递不启动 CLI")
+    bind.add_argument("--link", help="写入命名 link（多项目并存），而不是覆盖默认绑定")
+    bind.add_argument("--note", help="link 备注，写入 links.json")
     sessions = commands.add_parser("sessions", help="查看 Harness 根会话")
     sessions.add_argument("--dsh-url", default=DEFAULT_URL)
     sessions.add_argument("--cookie-db", default=str(DEFAULT_COOKIE_DB))
-    commands.add_parser("status", help="核对绑定与当前 DeepSeek 会话")
+    links_cmd = commands.add_parser("links", help="查看命名 link（多项目并存）")
+    links_cmd.add_argument("--link", help="只看某一个 link")
+    status = commands.add_parser("status", help="核对绑定与当前 DeepSeek 会话")
+    status.add_argument("--link", help="核对某个命名 link，而不是默认绑定")
     send_cmd = commands.add_parser("send", help="向已绑定的桌面会话发消息")
     send_cmd.add_argument("--to", choices=("deepseek", "codex"), required=True)
     send_cmd.add_argument("--text", help="未指定时从 stdin 读取")
@@ -269,50 +440,36 @@ def main(argv=None):
     send_cmd.add_argument("--reply-to")
     send_cmd.add_argument("--mode", choices=("steer",), default="steer")
     send_cmd.add_argument("--retry", action="store_true", help="明确重试未确认的 Harness 消息")
+    send_cmd.add_argument("--link", help="用命名 link 发送；默认绑定或（发往 Codex 时）本会话匹配")
     history = commands.add_parser("history", help="查看投递流水；accepted 不等于已回复")
     history.add_argument("--limit", type=int, default=20)
     args = parser.parse_args(argv)
     try:
         if args.command == "bind":
-            try:
-                uuid.UUID(args.codex_thread)
-            except ValueError as exc:
-                raise LinkError("Codex 会话 ID 必须是 UUID") from exc
-            config = {"codex_thread_id": args.codex_thread, "dsh_session_id": args.dsh_session,
-                      "dsh_url": args.dsh_url, "cookie_db": str(Path(args.cookie_db).expanduser()),
-                      "codex_binary": args.codex_binary}
-            items = client(config).sessions()
-            item = next((s for s in items if s.get("sessionId") == args.dsh_session), None)
-            if item is None or item.get("parentSessionId"):
-                raise LinkError("目标 Harness 根会话不存在")
-            try:
-                inspect_codex(args.codex_thread)
-            except DirectCodexError as exc:
-                raise LinkError(str(exc)) from exc
-            save_config(config)
-            result = {"bound": True, "codex_thread_id": args.codex_thread, "deepseek": session_summary(item)}
+            result = bind_command(args)
+        elif args.command == "links":
+            data = load_links()
+            if args.link:
+                result = {"name": args.link, **link_registry.get(data, args.link)}
+            else:
+                result = link_registry.describe(data, os.environ.get("DSH_SESSION_ID"))
         elif args.command == "sessions":
             result = [session_summary(s) for s in HarnessClient(args.dsh_url, args.cookie_db).sessions()
                       if not s.get("parentSessionId")]
         elif args.command == "status":
-            config = load_config()
-            item = next((s for s in client(config).sessions() if s.get("sessionId") == config["dsh_session_id"]), None)
-            try:
-                codex = inspect_codex(config["codex_thread_id"])
-            except DirectCodexError as exc:
-                codex = {"ready": False, "error": str(exc)}
-            result = {"codex_thread_id": config["codex_thread_id"], "deepseek": session_summary(item) if item else None,
-                      "codex": codex, "delivery_mode": "direct", "ready": item is not None and codex["ready"]}
+            result = status_command(args.link)
         elif args.command == "send":
             text = args.text if args.text is not None else sys.stdin.read()
-            result = send(load_config(), args.to, text, args.message_id, args.reply_to, args.mode, args.retry)
+            config = resolve_config(link=args.link, destination=args.to,
+                                    dsh_session=os.environ.get("DSH_SESSION_ID"))
+            result = send(config, args.to, text, args.message_id, args.reply_to, args.mode, args.retry)
         else:
             with closing(journal()) as db:
                 result = [dict(r) for r in db.execute("SELECT * FROM messages ORDER BY created_at DESC LIMIT ?",
                                                     (max(1, min(args.limit, 200)),))]
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    except (LinkError, OSError, sqlite3.Error) as exc:
+    except (LinkError, link_registry.RegistryError, OSError, sqlite3.Error) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
 

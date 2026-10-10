@@ -47,6 +47,22 @@ python3 tools/codex_bridge/desktop_link.py bind \
 
 绑定保存在 `~/.dsh-codex-bridge/desktop.json`，投递流水保存在同目录 `desktop.sqlite`，权限均为 `600`。流水只记录尝试和回执，不是待处理队列。配置不保存 Cookie；每次请求只读复用 DeepSeek 桌面的本机登录态，只发给匹配端口的 `127.0.0.1` Harness，不经过代理或 HTTP 重定向。Codex IPC 必须是当前用户的本机 Unix socket。
 
+## 多项目命名 link
+
+`desktop.json` 仍是唯一的默认绑定，语义不变：正在运行的应用、watchdog 和已加载的 MCP 进程都继续用它。需要多项目并存时，把额外的配对写进同目录 `links.json`：
+
+```bash
+python3 tools/codex_bridge/desktop_link.py bind --link wdhash \
+  --codex-thread <Codex会话UUID> --dsh-session <DeepSeek会话ID> --note '说明'
+python3 tools/codex_bridge/desktop_link.py links
+python3 tools/codex_bridge/desktop_link.py status --link wdhash
+python3 tools/codex_bridge/desktop_link.py send --to codex --link wdhash --text '...'
+```
+
+解析顺序：显式 `--link` → （仅发往 Codex 时）调用者自己的 `DSH_SESSION_ID` 匹配 → 默认绑定。发往 DeepSeek 时不自动匹配会话；存在多个命名 link 且省略 `--link` 会拒绝，只有没有命名 link 歧义时才回落到默认绑定。
+
+Codex 侧无法自动识别来源项目：实测桥接 MCP 进程的环境变量除 PID 外完全相同（2026-10-10），因此多项目并存时 `send_to_dsh` / `send_to_codex` 由调用方显式传 `link`；存在多个命名 link 时省略会拒绝，没有命名 link 歧义时才使用默认绑定。`link` 参数为 2026-10-10 新增，**已运行的 MCP 进程需要重连或新开一个 Codex 对话**才会加载。link 允许部分绑定（例如只有 `dsh_session_id`），未绑定方向的发送明确报错，不静默借用其他项目会话。
+
 ## 去重与未确认状态
 
 用 `--id` 为一次逻辑消息指定稳定 ID。同一 ID 成功发送后重复调用只返回本地回执；改变目标、正文或回复关联会被拒绝。Harness 原生支持 ID 去重，未确认消息可查看 `history` 后加 `--retry` 明确重试。

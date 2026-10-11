@@ -199,17 +199,22 @@ def load_spec_candles(store: Any, spec: Mapping[str, Any], *, limit: int = 750,
     for pair in pairs:
         end = None if as_of_ms is None else max(0, int(as_of_ms) - 1)
         direct = store.get_candles(exchange, market, pair, timeframe, candle_type,
-                                   limit=limit, end=end)
+                                   limit=limit + 1, end=end)
         rows = closed_candles(direct, timeframe)
         if as_of_ms is not None:
             rows = [row for row in rows if row["timestamp"] + target_ms <= as_of_ms]
         direct_is_stale = bool(
             as_of_ms is not None and rows and
-            rows[-1]["timestamp"] + target_ms < int(as_of_ms) - timeframe_milliseconds(source_timeframe)
+            rows[-1]["timestamp"] < (int(as_of_ms) // target_ms - 1) * target_ms
         )
         if (len(rows) < limit or direct_is_stale) and timeframe != source_timeframe:
             source_ms = timeframe_milliseconds(source_timeframe)
             source_limit = max(limit * (target_ms // source_ms) + 2, limit + 2)
+            if len(rows) >= limit and as_of_ms is not None:
+                # With complete native history only its newer tail is needed.
+                # Daily inputs must not reread 216,000 five-minute rows per poll.
+                tail_bars = (int(as_of_ms) - rows[-1]["timestamp"] + source_ms - 1) // source_ms
+                source_limit = min(source_limit, max(target_ms // source_ms + 2, tail_bars + 2))
             raw = store.get_candles(exchange, market, pair, source_timeframe,
                                     candle_type, limit=source_limit, end=end)
             resampled = resample_closed_candles(raw, source_timeframe, timeframe,

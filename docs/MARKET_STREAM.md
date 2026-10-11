@@ -49,6 +49,22 @@ uv run python manage.py status
 uv run python manage.py stop market
 ```
 
+TRX 合约使用独立采集侧车，加入第三币时可以保留现有 BTC/ETH 采集进程与内存基线：
+
+```text
+uv run python manage.py start market-trx
+uv run python manage.py status market market-trx
+uv run python manage.py stop market-trx
+```
+
+`market-trx` 固定订阅 `TRX/USDT:USDT`，使用
+`database/runtime/trx/market_spool` 暂存、`database/runtime/trx/.market_stream.lock`
+实例锁和 `database/runtime/trx/market_stream_status.json` 本地状态。其数据库状态文档为
+`market_stream_trx_status.json`，与原采集器的 `market_stream_status.json` 分开。
+管理器按入口脚本、工作目录和暂存目录识别两组进程；TRX 侧车还要求匹配独立币池与状态文档。
+不指定服务名的 `start`、`stop`、`restart`、`status` 会包括两个采集器；单独管理
+`market-trx` 不会停止或复用原 `market` 进程。`QUANT_STREAM_ENABLED` 对两者均生效。
+
 调试时可直接运行，默认保持采集直到收到 SIGINT 或 SIGTERM：
 
 ```text

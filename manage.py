@@ -39,6 +39,9 @@ class Service:
     mode: str | None = None
     port: int | None = None
     health_path: str = "/"
+    stream_spool_dir: Path | None = None
+    stream_pairs: tuple[str, ...] | None = None
+    stream_status_document: str | None = None
 
 
 def services(root: Path = ROOT) -> dict[str, Service]:
@@ -62,7 +65,17 @@ def services(root: Path = ROOT) -> dict[str, Service]:
         Service("sync", "文件同步入库", (python, "-u", str(root / "data_sync.py"), "--daemon"),
                 root, root / "data_sync.py"),
         Service("market", "逐笔与盘口采集", (python, "-u", str(root / "market_stream.py")),
-                root, root / "market_stream.py"),
+                root, root / "market_stream.py",
+                stream_spool_dir=Path(os.getenv("QUANT_STREAM_SPOOL_DIR",
+                                               str(root / "database/runtime/market_spool"))),
+                stream_status_document="market_stream_status.json"),
+        Service("market-trx", "TRX 逐笔与盘口采集", (python, "-u", str(root / "market_stream.py"),
+                "--market", "futures", "--pairs", "TRX/USDT", "--spool-dir",
+                str(root / "database/runtime/trx/market_spool"),
+                "--status-document-key", "market_stream_trx_status.json"),
+                root, root / "market_stream.py",
+                stream_spool_dir=root / "database/runtime/trx/market_spool",
+                stream_pairs=("TRXUSDT",), stream_status_document="market_stream_trx_status.json"),
         Service("market-live", "实时 K 线推送", (python, "-u", str(root / "market_live.py"),
                 "--port", os.getenv("QUANT_LIVE_PORT", "8892")), root,
                 root / "market_live.py", port=int(os.getenv("QUANT_LIVE_PORT", "8892")),
@@ -110,7 +123,11 @@ def matches_process(spec: Service, command: str, cwd: Path | None) -> bool:
             return False
         script = Path(remaining[0])
         script = script if script.is_absolute() else cwd / script
-        return script.resolve() == spec.script.resolve()
+        if script.resolve() != spec.script.resolve():
+            return False
+        if spec.stream_spool_dir is not None:
+            return matches_stream_arguments(spec, remaining[1:], cwd)
+        return True
     # 兼容 python -m freqtrade 和旧 venv 的 freqtrade console script。
     entry = tokens[1:]
     if entry[:2] == ["-m", "freqtrade"]:
@@ -128,6 +145,53 @@ def matches_process(spec: Service, command: str, cwd: Path | None) -> bool:
     config = config if config.is_absolute() else cwd / config
     expected = spec.command[spec.command.index("--config") + 1]
     return config.resolve() == (spec.cwd / expected).resolve()
+
+
+def matches_stream_arguments(spec: Service, arguments: list[str], cwd: Path) -> bool:
+    """同一采集脚本按暂存目录区分实例，TRX 侧车还必须带独立状态与币池。"""
+    names = {"--spool-dir", "--pairs", "--market", "--status-document-key"}
+    options: dict[str, str] = {}
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        name, separator, value = argument.partition("=")
+        if name in names:
+            if name in options:
+                return False
+            if not separator:
+                index += 1
+                if index >= len(arguments) or arguments[index].startswith("--"):
+                    return False
+                value = arguments[index]
+            if not value:
+                return False
+            options[name] = value
+        index += 1
+    spool = options.get("--spool-dir")
+    if spool is not None:
+        actual = Path(spool)
+        actual = actual if actual.is_absolute() else cwd / actual
+        expected = spec.stream_spool_dir
+        assert expected is not None
+        expected = expected if expected.is_absolute() else cwd / expected
+        if actual.resolve() != expected.resolve():
+            return False
+    elif spec.stream_pairs is not None:
+        # The legacy primary collector has no CLI spool argument; never claim it
+        # as the isolated sidecar merely because both run market_stream.py.
+        return False
+    document = options.get("--status-document-key")
+    if document is not None and document != spec.stream_status_document:
+        return False
+    if spec.stream_pairs is not None:
+        pairs = options.get("--pairs")
+        if pairs is None or document != spec.stream_status_document:
+            return False
+        actual_pairs = {pair.strip().upper().split(":", 1)[0].replace("/", "")
+                        for pair in pairs.split(",") if pair.strip()}
+        return (actual_pairs == set(spec.stream_pairs)
+                and options.get("--market", "futures") == "futures")
+    return True
 
 
 def process_commands() -> dict[int, str]:
@@ -179,10 +243,10 @@ def start_service(spec: Service, root: Path = ROOT) -> bool:
     if existing:
         print(f"{spec.label}：复用 PID {','.join(map(str, existing))}，{health(spec)}")
         return True
-    if spec.name == "market" and os.getenv("QUANT_STREAM_ENABLED", "true").lower() in {
+    if spec.stream_spool_dir is not None and os.getenv("QUANT_STREAM_ENABLED", "true").lower() in {
         "false", "0", "no", "off",
     }:
-        print("逐笔与盘口采集：QUANT_STREAM_ENABLED 已关闭，跳过启动")
+        print(f"{spec.label}：QUANT_STREAM_ENABLED 已关闭，跳过启动")
         return True
     if spec.port and port_busy(spec.port):
         raise RuntimeError(f"端口 {spec.port} 已被其他进程占用；请查看端口所属服务")

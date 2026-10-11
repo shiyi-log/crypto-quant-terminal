@@ -34,6 +34,34 @@ def fingerprint(value):
                                      allow_nan=False).encode()).hexdigest()
 
 
+def normalize_account_spec(spec):
+    if spec.get("factorial_design_version"):
+        from strategy_factorial_signals import normalize_factorial_spec
+        return normalize_factorial_spec(spec)
+    from strategy_signals import normalize_spec
+    return normalize_spec(spec)
+
+
+def research_pause_reason(spec):
+    from strategy_data import strategy_pairs
+    allowed = {"BTC/USDT:USDT", "ETH/USDT:USDT", "TRX/USDT:USDT"}
+    pairs = spec.get("data_universe") if spec.get("factorial_design_version") else strategy_pairs(spec)
+    return "paused_research_context_required" if any(pair not in allowed for pair in pairs) else None
+
+
+def evaluate_account(spec, candles, positions=None, as_of_utc=None):
+    if spec.get("execution_enabled") is False:
+        return blocked_evaluation(spec, spec.get("blocked_execution_reason", "execution_disabled"))
+    reason = research_pause_reason(spec)
+    if reason:
+        return blocked_evaluation(spec, reason)
+    if spec.get("factorial_design_version"):
+        from strategy_factorial_signals import evaluate_factorial
+        return evaluate_factorial(spec, candles, positions=positions, as_of_utc=as_of_utc)
+    from strategy_signals import evaluate
+    return evaluate(spec, candles, positions=positions, as_of_utc=as_of_utc)
+
+
 def load_specs(path=None):
     from strategy_signals import DEFAULTS, normalize_spec
     data = json.loads(Path(path or ROOT / "research_multi_strategy/strategy_specs.json")
@@ -91,7 +119,7 @@ def load_specs(path=None):
                     params=item["params_frozen"], initial_capital=10000.0,
                     fee_rate_per_side=0.0002, position_budget=budget,
                     execution_universe=trade_universe,
-                    research_universe=native_universe,
+                    research_universe=list(item.get("research_universe_context", native_universe)),
                     research_timeframe=item.get("timeframe", "5m"),
                     label=f"{item.get('name', base_id)} · 100× · maker 0.02%/边",
                     variant_of=base_id, variant_label="100× 杠杆新口径", arm_id=arm_id)
@@ -122,7 +150,6 @@ def resume_frozen_specs(store, requested_specs):
     Research edits apply to a new identity. They must never overwrite an
     existing account or prevent that account from resuming its frozen rules.
     """
-    from strategy_signals import normalize_spec
     from strategy_simulation import execution_identity
 
     ids = [spec["strategy_id"] for spec in requested_specs]
@@ -139,7 +166,7 @@ def resume_frozen_specs(store, requested_specs):
         definition = copy.deepcopy(row["definition"])
         if definition.get("strategy_id") != row["strategy_id"]:
             raise ValueError("persisted frozen strategy identity mismatch")
-        normalized = normalize_spec(definition)
+        normalized = normalize_account_spec(definition)
         identity = execution_identity(definition)
         if (normalized["rule_hash"] != row["rule_hash"]
                 or identity["execution_hash"] != row["execution_hash"]):
@@ -245,14 +272,14 @@ def blocked_evaluation(spec, reason="awaiting_native_timeframe_adapter"):
     by_pair = {pair: {"ready": False, "valid_bars": 0,
                       "required_bars": int(spec.get("min_warmup_bars", 0)),
                       "reason": reason}
-               for pair in PAIRS}
+               for pair in spec.get("execution_universe", PAIRS)}
     return {"strategy_id": strategy_id, "rule_hash": rule_hash, "ready": False,
             "warmup": {"ready": False, "valid_bars": 0,
                        "required_bars": int(spec.get("min_warmup_bars", 0)),
                        "reason": reason, "by_pair": by_pair},
             "signals": {pair: {"candle_utc": None, "target_side": None,
                                 "reason": reason, "warmup": by_pair[pair]}
-                        for pair in PAIRS}}
+                        for pair in by_pair}}
 
 
 class StrategyLabService:
@@ -285,10 +312,15 @@ class StrategyLabService:
         self.live_refs = {p: {} for p in PAIRS}
         self.last_processed = None
         self.native_last_processed = {}
+        self.native_account_last_processed = {}
         self.native_warmup_refresh = {}
         self.native_warmup_diagnostics = {}
+        self.input_cache = {}
         self.status = {"running": True, "status": "starting", "pid": os.getpid(),
                        "session_boundary_ms": self.boundary, "account_count": len(specs),
+                       "factorial_account_count": sum(bool(s.get("factorial_design_version")) for s in specs),
+                       "factorial_execution_enabled_count": sum(bool(s.get("factorial_design_version"))
+                                                                  and s.get("execution_enabled") is not False for s in specs),
                        "session_boundaries_ms": dict(self.boundaries),
                        "last_cycle_at": None, "last_error": None,
                        "warmup_source": "official_rest_indicator_only"}
@@ -302,9 +334,20 @@ class StrategyLabService:
         into that legacy window.
         """
         from strategy_data import load_spec_candles
+        from strategy_data import strategy_pairs
 
         observed_at = int(time.time() * 1000) if now_ms is None else int(now_ms)
-        loaded = load_spec_candles(self.store, spec, limit=limit, as_of_ms=observed_at)
+        if spec.get("execution_enabled") is False or research_pause_reason(spec):
+            self.strategy_history[str(spec.get("strategy_id", ""))] = {}
+            return {}
+        input_spec = spec
+        if spec.get("factorial_design_version"):
+            input_spec = dict(spec, universe=spec["data_universe"])
+        key = (self._timeframe(input_spec), strategy_pairs(input_spec), limit, observed_at)
+        if key not in self.input_cache:
+            self.input_cache[key] = load_spec_candles(
+                self.store, input_spec, limit=limit, as_of_ms=observed_at)
+        loaded = self.input_cache[key]
         strategy_id = str(spec.get("strategy_id", ""))
         self.strategy_history[strategy_id] = loaded
         return loaded
@@ -322,6 +365,8 @@ class StrategyLabService:
 
     @staticmethod
     def _canonical_id(spec):
+        if spec.get("factorial_design_version"):
+            return spec["canonical_strategy_id"]
         value = str(spec.get("strategy_id", ""))
         for suffix in ("_B15m_100x_maker", "_Cgen2_100x_maker",
                        "_Dgen3_100x_maker", "_100x_maker", "_100x", "_v2"):
@@ -340,6 +385,8 @@ class StrategyLabService:
         entries to its frozen pair list; passing that list to the signal layer
         keeps the data contract explicit without changing the execution hash.
         """
+        if spec.get("factorial_design_version"):
+            return spec
         if self._canonical_id(spec) in {"s13_daily_trend_multi_horizon",
                                         "s19_multi_coin_breadth",
                                         "s24_cross_sectional_lowvol"}:
@@ -375,23 +422,23 @@ class StrategyLabService:
 
     def _native_bootstrap(self, evaluations):
         """Load native histories and produce their initial warmup evaluations."""
-        from strategy_signals import evaluate
-
         for spec in self._native_specs():
+            if spec.get("execution_enabled") is False or research_pause_reason(spec):
+                evaluations[spec["strategy_id"]] = evaluate_account(spec, {})
+                continue
             timeframe = self._timeframe(spec)
             boundary = self.boundaries.get(timeframe, self.boundary)
             loaded = self.load_strategy_inputs(spec, now_ms=boundary)
             evaluated = self._evaluation_spec(spec, loaded)
-            if self._canonical_id(spec) in {"s13_daily_trend_multi_horizon",
+            if not spec.get("factorial_design_version") and self._canonical_id(spec) in {"s13_daily_trend_multi_horizon",
                                             "s19_multi_coin_breadth",
                                             "s24_cross_sectional_lowvol"}:
                 evaluated = dict(evaluated, execution_universe=list(loaded))
-            evaluations[spec["strategy_id"]] = evaluate(
+            evaluations[spec["strategy_id"]] = evaluate_account(
                 evaluated, loaded, positions={}, as_of_utc=boundary)
 
     def _refresh_native_warmup(self, spec, loaded, *, now, interval):
         """Persist current indicator diagnostics without replaying any close."""
-        from strategy_signals import evaluate
 
         strategy_id = spec["strategy_id"]
         latest = tuple(sorted((pair, rows[-1]["timestamp"] if rows else None)
@@ -405,7 +452,7 @@ class StrategyLabService:
         # still checks the real observation time and its strict 90s deadline.
         closes = [stamp + interval for _pair, stamp in latest if stamp is not None]
         as_of = min(now, max(closes)) if closes else now
-        diagnostic = evaluate(self._evaluation_spec(spec, loaded), loaded,
+        diagnostic = evaluate_account(self._evaluation_spec(spec, loaded), loaded,
                               positions={}, as_of_utc=as_of)
         warmup = diagnostic["warmup"]
         if self.native_warmup_diagnostics.get(strategy_id) != warmup:
@@ -425,7 +472,6 @@ class StrategyLabService:
         native = self._native_specs()
         if not native:
             return False
-        from strategy_signals import evaluate
 
         by_timeframe = {}
         native_status = {}
@@ -439,23 +485,35 @@ class StrategyLabService:
             loaded_by_id = {}
             latest_by_id = {}
             for spec in specs:
+                if spec.get("execution_enabled") is False or research_pause_reason(spec):
+                    self._refresh_native_warmup(spec, {}, now=now, interval=interval)
+                    loaded_by_id[spec["strategy_id"]] = {}
+                    latest_by_id[spec["strategy_id"]] = None
+                    continue
                 loaded = self.load_strategy_inputs(spec, now_ms=now)
                 loaded_by_id[spec["strategy_id"]] = loaded
                 self._refresh_native_warmup(spec, loaded, now=now, interval=interval)
                 trade = self._native_trade_candles(spec, loaded)
-                stamps = [rows[-1]["timestamp"] for rows in trade.values() if rows]
+                expected_pairs = spec.get("execution_universe", PAIRS)
+                complete = set(trade) == set(expected_pairs) and all(trade.values())
+                stamps = [rows[-1]["timestamp"] for rows in trade.values()] if complete else []
                 latest_by_id[spec["strategy_id"]] = min(stamps) if stamps else None
 
             latest_values = [value for value in latest_by_id.values() if value is not None]
             boundary = self.boundaries.get(timeframe, self.boundary)
-            latest = min(latest_values) if latest_values else None
+            factorial = any(spec.get("factorial_design_version") for spec in specs)
+            # A delayed third asset must not hold back the timely BTC/ETH arm.
+            latest = (max(latest_values) if factorial else min(latest_values)) if latest_values else None
             native_status[timeframe] = {"latest_closed_at": latest,
                                         "session_boundary_ms": boundary,
                                         "strategy_count": len(specs)}
             if latest is None or latest < boundary:
                 native_status[timeframe]["status"] = "waiting_new_closed_candle"
                 continue
-            if self.native_last_processed.get(timeframe) == latest:
+            due_ids = [spec["strategy_id"] for spec in specs
+                       if latest_by_id.get(spec["strategy_id"]) == latest
+                       and (not factorial or self.native_account_last_processed.get(spec["strategy_id"]) != latest)]
+            if (not due_ids if factorial else self.native_last_processed.get(timeframe) == latest):
                 # An accepted native close stays current until its successor
                 # is due. As in the 5m path, the strict 90s deadline applies
                 # only to an unprocessed close, never to a repeated status poll.
@@ -469,21 +527,21 @@ class StrategyLabService:
 
             # Preview pending next-open fills once for this timeframe. The
             # simulation adapter filters accounts by native timeframe.
-            representative = None
+            representative = {}
             for spec in specs:
                 loaded = loaded_by_id[spec["strategy_id"]]
                 trade = self._native_trade_candles(spec, loaded)
                 if trade and all(rows and rows[-1]["timestamp"] == latest
                                  for rows in trade.values()):
-                    representative = trade
-                    break
-            if representative is None:
+                    representative.update(trade)
+            if not representative:
                 native_status[timeframe]["status"] = "waiting_aligned_data"
                 continue
             try:
                 positions = self.simulation.preview_positions(
                     representative, observed_at_ms=now,
-                    session_boundary_ms=boundary, timeframe=timeframe)
+                    session_boundary_ms=boundary, timeframe=timeframe,
+                    strategy_ids=due_ids)
             except TypeError:
                 # Keep compatibility with older test doubles and services while
                 # the optional timeframe argument rolls through deployments.
@@ -493,14 +551,14 @@ class StrategyLabService:
             processed = False
             for spec in specs:
                 strategy_id = spec["strategy_id"]
-                if latest_by_id.get(strategy_id) != latest:
+                if strategy_id not in due_ids:
                     continue
                 loaded = loaded_by_id[strategy_id]
                 evaluated = self._evaluation_spec(spec, loaded)
                 context = self._context_candles(loaded)
                 if not context:
                     continue
-                evaluation = evaluate(
+                evaluation = evaluate_account(
                     evaluated, context,
                     positions=positions.get(strategy_id, {}), as_of_utc=now)
                 if not evaluation.get("ready"):
@@ -516,6 +574,7 @@ class StrategyLabService:
                 self.simulation.process_batch(
                     trade, {strategy_id: evaluation}, observed_at_ms=now,
                     session_boundary_ms=boundary, timeframe=timeframe)
+                self.native_account_last_processed[strategy_id] = latest
                 processed = True
             if processed:
                 self.native_last_processed[timeframe] = latest
@@ -527,7 +586,7 @@ class StrategyLabService:
         return True
 
     def bootstrap(self):
-        from strategy_signals import evaluate
+        self.input_cache.clear()
         self._ensure_accounts_by_timeframe()
         evaluations = {}
         if any(self._timeframe(spec) == "5m" for spec in self.specs):
@@ -547,7 +606,7 @@ class StrategyLabService:
             if stamps[0] != stamps[1]:
                 raise ValueError("warmup legs not aligned")
             evaluations.update({
-                s["strategy_id"]: evaluate(s, self.history, positions={},
+                s["strategy_id"]: evaluate_account(s, self.history, positions={},
                                              as_of_utc=self.boundary)
                 for s in self.specs if self._timeframe(s) == "5m"
             })
@@ -567,6 +626,7 @@ class StrategyLabService:
 
     def cycle(self, now_ms=None):
         from strategy_signals import evaluate
+        self.input_cache.clear()
         now = int(time.time() * 1000) if now_ms is None else int(now_ms)
         self._cycle_native(now)
         if not any(self._timeframe(spec) == "5m" for spec in self.specs):
@@ -661,6 +721,8 @@ class StrategyLabService:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--interval", type=float, default=15.0)
+    parser.add_argument("--factorial", action=argparse.BooleanOptionalAction, default=True,
+                        help="启用独立 ATR 风险因子账户，保留旧冻结账户")
     args = parser.parse_args()
     if not 1 <= args.interval <= 60:
         parser.error("interval must be between 1 and 60 seconds")
@@ -680,7 +742,11 @@ def main():
     store = DataStore(root=ROOT)
     service = None
     try:
-        specs, deferred = resume_frozen_specs(store, load_specs())
+        requested = load_specs()
+        if args.factorial:
+            from strategy_factorial import load_factorial_specs
+            requested += load_factorial_specs(normalizer=normalize_account_spec)
+        specs, deferred = resume_frozen_specs(store, requested)
         service = StrategyLabService(store, StrategySimulation(store), specs)
         service.publish(identity_changes_deferred=deferred)
         service.bootstrap()

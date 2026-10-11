@@ -64,6 +64,24 @@ ACTIVE_VARIANT_SUFFIX = "_100x_maker"
 # The earlier 100x run used this suffix and a different fee contract.  It is
 # retained for audit, but must never enter the current preview/position loop.
 ARCHIVED_VARIANT_SUFFIX = "_100x"
+SAMPLE_QUALITY_CUTOFF_MS = 1791734400000  # 2026-10-12 00:00 Asia/Shanghai
+
+
+def sample_annotation(spec: dict, payload: dict) -> dict:
+    # Event envelopes keep trade entry time inside their payload. Classify
+    # the same trade consistently in both trade and event API projections.
+    nested = payload.get("payload")
+    if isinstance(nested, dict):
+        payload = {**payload, **nested}
+    stamp = payload.get("opened_candle_ms", payload.get("candle_ms"))
+    if stamp is None:
+        return {"sample_quality": "unknown", "eligible_for_factorial_evaluation": False}
+    if int(stamp) < SAMPLE_QUALITY_CUTOFF_MS:
+        return {"sample_quality": "stop_definition_defect_period",
+                "eligible_for_factorial_evaluation": False}
+    factorial = bool(spec.get("factorial_design_version"))
+    return {"sample_quality": "factorial_forward" if factorial else "legacy_frozen_control",
+            "eligible_for_factorial_evaluation": factorial}
 
 
 def _is_archived_taker_account(strategy_id: str) -> bool:
@@ -98,9 +116,99 @@ def _ms(value: Any, name: str = "timestamp") -> int:
 def _rule_hash(spec: dict) -> str:
     # The signal implementation owns the economic-rule identity. Execution
     # assumptions have an additional independent immutable hash below.
+    from strategy_factorial import parse_factorial_identity
+
+    if parse_factorial_identity(spec.get("strategy_id")) is not None:
+        from strategy_factorial_signals import factorial_rule_hash
+
+        return factorial_rule_hash(spec)
     from strategy_signals import strategy_rule_hash
 
     return strategy_rule_hash(spec)
+
+
+def _atr_execution_risk(spec: dict, fee: float) -> dict | None:
+    """Opt in without changing any frozen legacy execution assumptions."""
+    params = spec.get("params", spec.get("params_frozen", {}))
+    mode = spec.get("risk_sizing_mode")
+    enabled = isinstance(params, dict) and "risk_stop_atr_mult" in params
+    if mode not in (None, "entry_atr"):
+        raise ValueError("unsupported risk_sizing_mode")
+    if mode == "entry_atr" and not enabled:
+        raise ValueError("entry_atr sizing requires explicit risk_stop_atr_mult")
+    if not enabled:
+        if "max_loss_per_trade_usdt" in spec:
+            raise ValueError("configurable risk budget requires entry_atr sizing")
+        return None
+    multiplier = _number(params["risk_stop_atr_mult"], "risk_stop_atr_mult", positive=True)
+    maximum = _number(spec.get("max_loss_per_trade_usdt", 50),
+                      "max_loss_per_trade_usdt", positive=True)
+    return {
+        "version": "independent-paper-next-close-open-100x-entry-atr-v3",
+        "risk_sizing_mode": "entry_atr",
+        "risk_stop_atr_mult": multiplier,
+        "max_loss_per_trade_usdt": maximum,
+        "risk_round_trip_fee": 2 * fee,
+        "risk_sizing": "notional * (risk_stop_atr_mult * entry_atr / entry_price + round_trip_fee) <= max_loss_per_trade_usdt",
+        "entry_atr_policy": "freeze_signal_evidence_atr_at_next_open_fill",
+        "stop_policy": "fixed_entry_atr_close_confirmed_next_open",
+        "open_bankruptcy_breach_policy": "bankruptcy_settlement_before_pending_exits_and_entries;cancel_superseded_exits;intrabar_check_after_next_open_fills",
+        "liquidation": {**EXECUTION_MODEL["liquidation"],
+                        "trigger": "next_open_then_closed_candle_low_high",
+                        "order_precedence": "open_bankruptcy_breach_before_pending_orders"},
+        "risk_budget_limit": "planned_stop_and_fee_only; gaps, close_confirmation, liquidation and unknown costs may exceed it",
+        "atomic_atr_stop_policy": "unsupported_until_pair_stop_is_implemented",
+    }
+
+
+def _entry_atr(evidence: Any) -> float | None:
+    if not isinstance(evidence, dict):
+        return None
+    try:
+        return _number(evidence.get("atr"), "entry_atr", positive=True)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _audit_atr_evidence(evidence: Any) -> Any:
+    """Keep rejected non-finite ATR evidence serializable in the audit log."""
+    result = copy.deepcopy(evidence)
+    if isinstance(result, dict) and "atr" in result:
+        value = result["atr"]
+        try:
+            _json(value)
+        except (TypeError, ValueError):
+            result["atr"] = {"invalid_value": repr(value), "invalid_type": type(value).__name__}
+    try:
+        _json(result)
+    except (TypeError, ValueError):
+        result = {"invalid_evidence": repr(result), "invalid_type": type(result).__name__}
+    return result
+
+
+def _entry_atr_plan(order: dict, price: float, model: dict) -> dict | None:
+    atr = _entry_atr(order.get("evidence"))
+    if atr is None:
+        return None
+    multiplier = model["risk_stop_atr_mult"]
+    distance = multiplier * atr
+    stop = price - order["direction"] * distance
+    distance_pct = distance / price
+    denominator = distance_pct + model["risk_round_trip_fee"]
+    if not math.isfinite(denominator) or denominator <= 0:
+        return None
+    notional = model["max_loss_per_trade_usdt"] / denominator
+    if (not all(math.isfinite(value) for value in (distance, stop, distance_pct, notional))
+            or min(stop, distance_pct, notional) <= 0):
+        return None
+    return {"mode": "entry_atr", "entry_atr": atr, "entry_price": price,
+            "risk_stop_atr_mult": multiplier, "stop_level": stop,
+            "stop_distance_pct": distance_pct,
+            "max_loss_per_trade_usdt": model["max_loss_per_trade_usdt"],
+            "round_trip_fee": model["risk_round_trip_fee"],
+            "risk_cap_notional": notional,
+            "atr_signal_candle_ms": order["signal_candle_ms"],
+            "limit_basis": "planned_stop_and_fee_only"}
 
 
 def execution_pairs(spec: dict) -> tuple[str, ...]:
@@ -144,6 +252,19 @@ def execution_identity(spec: dict) -> dict:
                  research_timeframe=str(spec.get("research_timeframe", timeframe)),
                  research_universe=list(spec.get("research_universe",
                                                 spec.get("universe", pairs))))
+    atr_risk = _atr_execution_risk(spec, fee)
+    if atr_risk is not None:
+        model.update(atr_risk)
+        model.pop("risk_stop_pct")
+    if "execution_enabled" in spec:
+        if not isinstance(spec["execution_enabled"], bool):
+            raise ValueError("execution_enabled must be boolean")
+        model["execution_enabled"] = spec["execution_enabled"]
+        if not spec["execution_enabled"]:
+            reason = spec.get("blocked_execution_reason")
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError("disabled execution requires blocked_execution_reason")
+            model["blocked_execution_reason"] = reason
     return {"rule_hash": _rule_hash(spec), "execution_hash": _hash(model), "execution": model}
 
 
@@ -265,6 +386,8 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
     strategy_id = state["strategy_id"]
 
     def event(kind: str, payload: dict) -> None:
+        if identity["execution"].get("risk_sizing_mode") == "entry_atr" and "evidence" in payload:
+            payload = dict(payload, evidence=_audit_atr_evidence(payload["evidence"]))
         ordinal = len(events)
         event_id = _hash([strategy_id, timestamp, kind, ordinal, payload])
         events.append({"event_id": event_id, "strategy_id": strategy_id,
@@ -272,9 +395,9 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                        "observed_at_ms": observed_at_ms, "rule_hash": state["rule_hash"],
                        "data_fingerprint": fingerprint, "payload": dict(payload, strategy_id=strategy_id)})
 
-    def cancel(order: dict, reason: str) -> None:
+    def cancel(order: dict, reason: str, **evidence) -> None:
         event("order_cancelled", dict(order, status="cancelled", reason=reason,
-                                       observed_at_ms=observed_at_ms))
+                                       observed_at_ms=observed_at_ms, **evidence))
 
     def close_position(order: dict, price: float, *, liquidation: bool = False) -> None:
         pair = order["pair"]
@@ -302,9 +425,13 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         filled = dict(order, status="filled", fill_price=price, quantity=position["quantity"],
                       fee=fee, observed_at_ms=observed_at_ms, fill_candle_ms=timestamp,
                       liquidation=liquidation,
-                      fill_model=("intrabar_liquidation_price" if liquidation
+                      fill_model=(order.get("fill_model", "intrabar_liquidation_price") if liquidation
                                   else EXECUTION_MODEL["fill_model"]),
                       simulation_fill_model=True)
+        if "risk_sizing" in position:
+            filled.update(entry_atr=position["entry_atr"], stop_level=position["stop_level"],
+                          risk_stop_atr_mult=position["risk_stop_atr_mult"],
+                          risk_sizing=copy.deepcopy(position["risk_sizing"]))
         event("order_filled", filled)
         trade = {"trade_id": position["trade_id"], "strategy_id": strategy_id,
                  "pair": pair, "side": position["side"], "quantity": position["quantity"],
@@ -320,16 +447,64 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                  "exchange_order_id": None, "exit_reason": order["reason"],
                  "funding": "unknown", "slippage": "unknown", "liquidation": liquidation,
                  "rule_hash": state["rule_hash"]}
+        if "risk_sizing" in position:
+            trade.update(entry_atr=position["entry_atr"], stop_level=position["stop_level"],
+                         risk_stop_atr_mult=position["risk_stop_atr_mult"],
+                         risk_sizing=copy.deepcopy(position["risk_sizing"]))
         event("trade_closed", trade)
+
+    def liquidate(pair: str, position: dict, trigger_price: float, *, phase: str) -> None:
+        liquidation_price = position["liquidation_price"]
+        liquidation_order_id = _hash([strategy_id, timestamp, pair, "liquidation",
+                                      position["trade_id"]])
+        model = "open_bankruptcy_price" if phase == "next_open_bankruptcy" else "intrabar_liquidation_price"
+        liquidation_order = {
+            "order_id": liquidation_order_id,
+            "paper_order_id": f"{timestamp}-{pair.split('/')[0]}-{strategy_id}-liq-{liquidation_order_id[:12]}",
+            "exchange_order_id": None, "strategy_id": strategy_id, "pair": pair,
+            "side": "sell" if position["direction"] == 1 else "buy",
+            "direction": -position["direction"], "kind": "exit", "reason": "liquidation",
+            "status": "forced", "signal_candle_ms": timestamp,
+            "expected_fill_candle_ms": timestamp, "observed_at_ms": observed_at_ms,
+            "fill_model": model, "data_fingerprint": fingerprint,
+        }
+        payload = {"pair": pair, "trade_id": position["trade_id"],
+                   "side": position["side"], "quantity": position["quantity"],
+                   "margin": position["margin"], "leverage": position["leverage"],
+                   "liquidation_price": liquidation_price, "trigger_price": trigger_price,
+                   "reason": "liquidation"}
+        if identity["execution"].get("risk_sizing_mode") == "entry_atr":
+            liquidation_order["liquidation_phase"] = phase
+            payload["liquidation_phase"] = phase
+        event("liquidation", payload)
+        close_position(liquidation_order, liquidation_price, liquidation=True)
 
     fee_rate = identity["execution"]["fee_rate_per_side"]
     open_prices = {pair: candle["open"] for pair, candle in candles.items()}
+    liquidated_at_open = {}
+    if identity["execution"].get("risk_sizing_mode") == "entry_atr":
+        # Bankruptcy is forced before a queued close can fill at a worse open.
+        # A latest received open is current evidence even after a data gap;
+        # pending discretionary orders still require continuity and freshness.
+        for pair, position in list(state["positions"].items()):
+            price = open_prices.get(pair)
+            if price is None:
+                continue
+            bankrupt = ((position["direction"] == 1 and price <= position["liquidation_price"])
+                        or (position["direction"] == -1 and price >= position["liquidation_price"]))
+            if bankrupt:
+                liquidated_at_open[pair] = position["trade_id"]
+                liquidate(pair, position, price, phase="next_open_bankruptcy")
     # Mark every leg to the same next-open prices before calculating capital.
     _mark(state, open_prices)
     pending = state["pending_orders"]
     state["pending_orders"] = []
     grouped: dict[str, list[dict]] = {}
     for order in pending:
+        if order["kind"] == "exit" and order["pair"] in liquidated_at_open:
+            cancel(order, "superseded_by_open_liquidation", superseded_exit_reason=order["reason"],
+                   liquidated_trade_id=liquidated_at_open[order["pair"]])
+            continue
         grouped.setdefault(order.get("group_id") or order["order_id"], []).append(order)
     fresh = observed_at_ms - (timestamp + bar_ms) <= identity["execution"]["max_decision_lag_ms"]
     eligible_groups = []
@@ -360,6 +535,30 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         entries = [order for order in orders if order["kind"] == "entry"]
         if not entries:
             continue
+        atr_sizing = identity["execution"].get("risk_sizing_mode") == "entry_atr"
+        blocked = ("execution_disabled" if identity["execution"].get("execution_enabled") is False
+                   else "atomic_atr_stop_policy_unsupported" if atr_sizing and orders[0].get("atomic")
+                   else None)
+        if blocked:
+            for order in entries:
+                event("order_rejected", dict(order, status="rejected", reason=blocked,
+                      blocked_execution_reason=identity["execution"].get("blocked_execution_reason")))
+            continue
+        plans = []
+        if atr_sizing:
+            valid_entries = []
+            for order in entries:
+                plan = _entry_atr_plan(order, open_prices[order["pair"]], identity["execution"])
+                if plan is None:
+                    rejected = dict(order, evidence=_audit_atr_evidence(order.get("evidence")),
+                                    status="rejected", reason="entry_atr_unavailable_or_invalid")
+                    event("order_rejected", rejected)
+                else:
+                    valid_entries.append(order)
+                    plans.append(plan)
+            entries = valid_entries
+            if not entries:
+                continue
         valuation = _mark(state, open_prices)
         budget = identity["execution"]["target_exposure"] * valuation["equity"]
         # Convention A: target exposure is posted margin. Leverage expands
@@ -380,20 +579,23 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         if orders[0].get("atomic"):
             weights = [min(weights)] * len(weights)
         leveraged_fee_rate = leverage * fee_rate
-        # The 50 USDT per-trade cap is applied to modeled stop loss plus the
-        # maker round-trip fee.  This intentionally leaves the 30% portfolio
-        # budget as an upper bound; risk sizing is the tighter constraint.
-        risk_cap_margin = identity["execution"]["max_loss_per_trade_usdt"] / (
-            leverage * (identity["execution"]["risk_stop_pct"]
-                        + identity["execution"]["risk_round_trip_fee"]))
-        unit = min(remaining / slots, risk_cap_margin,
-                   state["cash"] / ((1 + leveraged_fee_rate) * max(1, sum(weights))))
-        amounts = [unit * weight for weight in weights]
+        # The configured risk budget limits the planned stop plus modeled
+        # round-trip fee. Exposure, slots and cash remain additional caps.
+        cash_unit = state["cash"] / ((1 + leveraged_fee_rate) * max(1, sum(weights)))
+        if atr_sizing:
+            amounts = [min(remaining / slots, plan["risk_cap_notional"] / leverage, cash_unit) * weight
+                       for plan, weight in zip(plans, weights, strict=True)]
+        else:
+            risk_cap_margin = identity["execution"]["max_loss_per_trade_usdt"] / (
+                leverage * (identity["execution"]["risk_stop_pct"]
+                            + identity["execution"]["risk_round_trip_fee"]))
+            unit = min(remaining / slots, risk_cap_margin, cash_unit)
+            amounts = [unit * weight for weight in weights]
         if any(amount <= 0 for amount in amounts):
             for order in entries:
                 event("order_rejected", dict(order, status="rejected", reason="zero_sizing"))
             continue
-        for order, margin in zip(entries, amounts, strict=True):
+        for index, (order, margin) in enumerate(zip(entries, amounts, strict=True)):
             pair, direction, price = order["pair"], order["direction"], open_prices[order["pair"]]
             if pair in state["positions"]:
                 raise ValueError("pending entry would overwrite an existing position")
@@ -414,12 +616,20 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                         "group_id": order.get("group_id"),
                         "paper_order_id": order["paper_order_id"], "exchange_order_id": None,
                         "trade_id": "trade-" + order["order_id"], "unrealized_pnl": 0.0}
+            risk_payload = {}
+            if atr_sizing:
+                plan = dict(plans[index], actual_notional=notional,
+                            planned_loss_usdt=notional * (plans[index]["stop_distance_pct"]
+                                                         + plans[index]["round_trip_fee"]))
+                risk_payload = {"entry_atr": plan["entry_atr"], "stop_level": plan["stop_level"],
+                                "risk_stop_atr_mult": plan["risk_stop_atr_mult"], "risk_sizing": plan}
+                position.update(copy.deepcopy(risk_payload))
             state["positions"][pair] = position
             event("order_filled", dict(order, status="filled", fill_price=price, quantity=quantity,
                   margin=margin, leverage=leverage, notional=notional,
                   liquidation_price=liquidation_price, fee=fee, observed_at_ms=observed_at_ms,
                   fill_candle_ms=timestamp,
-                  fill_model=EXECUTION_MODEL["fill_model"], simulation_fill_model=True))
+                  fill_model=EXECUTION_MODEL["fill_model"], simulation_fill_model=True, **risk_payload))
             event("position_opened", position)
 
     # A liquidation is an exchange-forced exit and is the only execution path
@@ -435,30 +645,15 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                      or (position["direction"] == -1 and candle["high"] >= liquidation_price))
         if not triggered:
             continue
-        liquidation_order_id = _hash([strategy_id, timestamp, pair, "liquidation",
-                                      position["trade_id"]])
-        liquidation_order = {
-            "order_id": liquidation_order_id,
-            "paper_order_id": f"{timestamp}-{pair.split('/')[0]}-{strategy_id}-liq-{liquidation_order_id[:12]}",
-            "exchange_order_id": None, "strategy_id": strategy_id, "pair": pair,
-            "side": "sell" if position["direction"] == 1 else "buy",
-            "direction": -position["direction"], "kind": "exit", "reason": "liquidation",
-            "status": "forced", "signal_candle_ms": timestamp,
-            "expected_fill_candle_ms": timestamp, "observed_at_ms": observed_at_ms,
-            "fill_model": "intrabar_liquidation_price", "data_fingerprint": fingerprint,
-        }
-        event("liquidation", {"pair": pair, "trade_id": position["trade_id"],
-                               "side": position["side"], "quantity": position["quantity"],
-                               "margin": position["margin"], "leverage": position["leverage"],
-                               "liquidation_price": liquidation_price,
-                               "trigger_price": candle["low"] if position["direction"] == 1 else candle["high"],
-                               "reason": "liquidation"})
-        close_position(liquidation_order, liquidation_price, liquidation=True)
+        liquidate(pair, position,
+                  candle["low"] if position["direction"] == 1 else candle["high"],
+                  phase="intrabar_after_next_open_fills")
 
     close_prices = {pair: candle["close"] for pair, candle in candles.items()}
     valuation = _mark(state, close_prices)
     state["warmup"] = _warmup(signal, state["warmup"], allowed_pairs)
-    state["status"] = "running" if signal.get("ready") else "warming_up"
+    state["status"] = ("execution_blocked" if identity["execution"].get("execution_enabled") is False
+                       else "running" if signal.get("ready") else "warming_up")
     group = signal.get("group") or {}
     atomic = bool(group.get("atomic"))
     group_legs = group.get("legs", list(signal.get("signals", {})))
@@ -480,8 +675,10 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         multiplier = _number(info.get("size_multiplier", 1), "size_multiplier")
         if not 0 <= multiplier <= 1:
             raise ValueError("size_multiplier must be in [0,1]")
+        evidence = info.get("evidence", {})
         decisions.append({"pair": pair, "target_side": target, "reason": info.get("reason", "signal"),
-                          "evidence": copy.deepcopy(info.get("evidence", {})),
+                          "evidence": (_audit_atr_evidence(evidence) if identity["execution"].get("risk_sizing_mode") == "entry_atr"
+                                       else copy.deepcopy(evidence)),
                           "size_multiplier": multiplier})
     if atomic:
         sides = [decision["target_side"] for decision in decisions]
@@ -489,9 +686,15 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
             raise ValueError("atomic pair targets must hold/close both legs or take opposite directions")
         if len(state["positions"]) not in (0, 2) and sides != [0, 0]:
             raise ValueError("atomic pair account has an incomplete hedge; refusing single-leg decisions")
+    fingerprint_signal = signal
+    if identity["execution"].get("risk_sizing_mode") == "entry_atr":
+        fingerprint_signal = copy.deepcopy(signal)
+        for info in fingerprint_signal.get("signals", {}).values():
+            if "evidence" in info:
+                info["evidence"] = _audit_atr_evidence(info["evidence"])
     event("decision", {"ready": bool(signal.get("ready")), "warmup": state["warmup"],
                        "signals": decisions, "group": group or None,
-                       "signal_fingerprint": _hash(signal)})
+                       "signal_fingerprint": _hash(fingerprint_signal)})
     entry_allowed = bool(signal.get("ready")) and set(candles) == set(allowed_pairs) and fresh
     group_id = _hash([strategy_id, timestamp, "atomic"]) if atomic else None
     for decision in decisions:
@@ -506,7 +709,18 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         if existing:
             intents.append(("exit", old_direction))
         if target:
-            if entry_allowed:
+            denied = None
+            if identity["execution"].get("execution_enabled") is False:
+                denied = "execution_disabled"
+            elif identity["execution"].get("risk_sizing_mode") == "entry_atr":
+                if atomic:
+                    denied = "atomic_atr_stop_policy_unsupported"
+                elif _entry_atr(decision["evidence"]) is None:
+                    denied = "entry_atr_unavailable_or_invalid"
+            if denied:
+                event("entry_denied", dict(decision, reason=denied,
+                      blocked_execution_reason=identity["execution"].get("blocked_execution_reason")))
+            elif entry_allowed:
                 intents.append(("entry", target))
             else:
                 event("entry_denied", dict(decision, reason="warmup_or_stale_or_missing_data"))
@@ -663,7 +877,8 @@ class StrategySimulation:
         return {"accounts": processed, "observed_at_ms": observed_at_ms}
 
     def preview_positions(self, candles_by_pair: dict, observed_at_ms: int,
-                          session_boundary_ms: int, *, timeframe: str = "5m") -> dict:
+                          session_boundary_ms: int, *, timeframe: str = "5m",
+                          strategy_ids: list[str] | tuple[str, ...] | None = None) -> dict:
         """Read-only projection of next-open fills before evaluating close exits.
 
         Preview and commit share apply_closed_batch, so prices, fees, sizing and
@@ -673,6 +888,10 @@ class StrategySimulation:
         default remains 5m for callers that predate native multi-timeframe arms;
         callers processing 15m/1h/1d must select that timeframe explicitly so a
         candle batch cannot accidentally be applied to another arm.
+
+        Explicit ``strategy_ids`` restricts the projection to service-selected
+        accounts and selects each account's trade legs from a shared candle
+        batch. Omitted IDs preserve the earlier whole-arm preview contract.
         """
         timeframe = str(timeframe)
         if timeframe not in TIMEFRAME_MS:
@@ -688,18 +907,26 @@ class StrategySimulation:
                 ORDER BY strategy_id""",
                                 (EXECUTION_MODEL["leverage"], timeframe)).fetchall()
         rows = [row for row in rows if not _is_archived_taker_account(row["strategy_id"])]
+        if strategy_ids is not None:
+            selected = set(strategy_ids)
+            rows = [row for row in rows if row["strategy_id"] in selected]
         result = {}
         for row in rows:
             strategy_id = row["strategy_id"]
+            preview_identity = execution_identity(row["definition"])
+            allowed_pairs = tuple(preview_identity["execution"].get("execution_universe", PAIRS))
+            account_candles = candles_by_pair
+            if strategy_ids is not None:
+                account_candles = {pair: candles_by_pair[pair] for pair in allowed_pairs
+                                   if pair in candles_by_pair}
             neutral = {"strategy_id": strategy_id, "rule_hash": row["rule_hash"],
                        "ready": True, "warmup": row["state"]["warmup"], "signals": {}}
-            state, _ = apply_closed_batch(row["state"], row["definition"], candles_by_pair,
+            state, _ = apply_closed_batch(row["state"], row["definition"], account_candles,
                                           neutral, observed_at_ms, session_boundary_ms)
-            preview_identity = execution_identity(row["definition"])
             normalized_candles, _ = _validate_candles(
-                candles_by_pair, observed_at_ms,
+                account_candles, observed_at_ms,
                 bar_ms=preview_identity["execution"]["bar_ms"],
-                allowed_pairs=tuple(preview_identity["execution"].get("execution_universe", PAIRS)))
+                allowed_pairs=allowed_pairs)
             self._preview_states[strategy_id] = {"state_hash": _hash(row["state"]),
                 "candle_hash": _hash(normalized_candles), "observed_at_ms": observed_at_ms,
                 "session_boundary_ms": session_boundary_ms}
@@ -741,6 +968,11 @@ class StrategySimulation:
                 "arm_id": spec.get("arm_id"), "variant_of": spec.get("variant_of"),
                 "variant_label": spec.get("variant_label"),
                 "data_status": spec.get("data_status"),
+                "sample_population": spec.get("sample_population", "legacy_frozen_control"),
+                "sample_quality_policy": {"cutoff_ms": SAMPLE_QUALITY_CUTOFF_MS,
+                                          "timezone": "Asia/Shanghai",
+                                          "pre_cutoff": "stop_definition_defect_period",
+                                          "pre_cutoff_eligible": False},
                 "initial_capital": capital, "currency": "USDT", "cash": state["cash"],
                 **valuation, "realized_pnl": state["realized_pnl"], "fees_paid": state["fees_paid"],
                 "total_return_ratio": valuation["equity"] / capital - 1,
@@ -792,7 +1024,9 @@ class StrategySimulation:
                 ORDER BY payload->>'order_id',sequence_id DESC""", (strategy_id,)).fetchall()
         orders.sort(key=lambda item: item["sequence_id"], reverse=True)
         return {"account": self._account(row), "orders": [item["payload"] for item in orders[:limit]],
-                "trades": [item["payload"] for item in trade_rows],
+                "trades": [dict(item["payload"], **sample_annotation(row["definition"], item["payload"]))
+                           for item in trade_rows],
                 "equity_curve": [item["payload"] for item in reversed(equity_rows)],
-                "events": [dict(item, strategy_id=strategy_id) for item in events],
+                "events": [dict(item, strategy_id=strategy_id,
+                                **sample_annotation(row["definition"], item)) for item in events],
                 "limitations": list(LIMITATIONS)}

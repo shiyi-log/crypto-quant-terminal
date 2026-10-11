@@ -1005,8 +1005,16 @@ class Handler(BaseHTTPRequestHandler):
         strategy_id = (qs.get("strategy_id") or [None])[0]
         # Account IDs retain the frozen B/C/D arm suffix; preserve their
         # case when querying the ledger rather than rejecting generated IDs.
-        if strategy_id is not None and not re.fullmatch(r"[A-Za-z0-9_]{1,80}", strategy_id):
-            return self._send(400, {"detail": "strategy_id 非法"})
+        if strategy_id is not None:
+            valid_id = re.fullmatch(r"[A-Za-z0-9_]{1,80}", strategy_id) is not None
+            if not valid_id and len(strategy_id) <= 80:
+                from strategy_factorial import parse_factorial_identity
+                try:
+                    valid_id = parse_factorial_identity(strategy_id) is not None
+                except ValueError:
+                    valid_id = False
+            if not valid_id:
+                return self._send(400, {"detail": "strategy_id 非法"})
         try:
             limit = int((qs.get("limit") or ["100"])[0])
             if not 1 <= limit <= 500:

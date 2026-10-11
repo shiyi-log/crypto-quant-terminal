@@ -4259,6 +4259,27 @@
         "以『未证实(t 不显著)』为由归档 —— 那只是样本不足",
         "以『机制族相似』这一条推断就归档 —— 必须证明【机制核心相同】，不是族名相同"
       ]
+    },
+    "revision_20261012_s07": {
+      "date": "2026-10-12",
+      "trigger": "我提议归档 s07（理由: imbalance 核心与已证伪的订单流方向族相同）",
+      "outcome": "Codex 反对；我撤回。裁定 KEEP，账户与全部数据保留。",
+      "codex_argument": "方向核心相同不代表【条件期望】相同 —— 旧研究是 5m 下一根收益+秒级持有；s07 冻结版是 15m·I=0.3·前20根量中位过滤·H=4·失衡穿零离场",
+      "my_error": "第36处: 归档门槛写成「机制核心相同」太松；应为「完整条件规则一致」",
+      "strengthened_gate": [
+        "同一信号构造",
+        "同一时间周期",
+        "同一持有期/退出规则",
+        "同一成本口径",
+        "同一过滤条件"
+      ],
+      "evidence_quality_issues_found_by_codex": [
+        "research_summary 的 IC≤0.05 vs 双边成本 0.10% 存在量纲错误；且为静态文案无样本",
+        "胜率<50% 不能单独证明负期望（需完整持有期+净收益+置信区间）",
+        "旧 5m/taker 与新 15m/maker 样本不能合并（身份与成本不同）"
+      ],
+      "effective": "不允许单方自动归档；达样本门槛也只启动共同复核",
+      "evidence_file": "docs/S07_REVIEW_20261012.md"
     }
   },
   "universe_policy_20261012": {
@@ -4715,5 +4736,25 @@
       "reason": "s16 只取末两根 close 差 + 当前 UTC hour 判断 entry_hours，不累计当天/session range",
       "precondition": "evaluate 的连续后缀保证末两根相邻（DSH 核过 _history 实现，成立）"
     }
+  },
+  "verification_log_20261012_stops": {
+    "artifact": "strategy_signals.py",
+    "sha256": "9215c7b589257ef0f54ea163403da7c8a1f0cdb1746603b107a14834bd2827ef",
+    "verified_by": "DSH（独立，未采信备用3号的断言）",
+    "checks": {
+      "sha_alignment": "✅ 与备用3号报告的 SHA 一致",
+      "s23_required": "✅ 66（原 65）",
+      "s25_required": "✅ 82（原 81）",
+      "s17_guard_functional": "✅ 完整→no_overnight_boundary（无回归）· 截断→overnight_range_not_ready",
+      "s20_guard_functional": "✅ 完整→no_intraday_extreme（无回归）· 截断→intraday_range_not_ready",
+      "tests_72": "✅ 我独立运行 Ran 72 tests OK（.venv python -B -m unittest discover）"
+    },
+    "caveat": "⚠️ 午夜 guard 只在「不完整窗口已长到满足 warmup」时可达 → guard 是第二道防线，warmup 是第一道；两层都必要",
+    "open_items_owned_by_main": [
+      "重跑 data_sync 导入（closed 标记）",
+      "rule_hash 迁移/重建（新门控会让旧 definition 抛错）",
+      "名义反解 + R 档接线",
+      "git 基线提交（核心 .py/测试/文档仍未版本化）"
+    ]
   }
 }

@@ -105,6 +105,7 @@ class StreamConfig:
     shutdown_timeout: float = 10.0
     status_interval: float = 2.0
     spool_dir: Path = ROOT / "database/runtime/market_spool"
+    status_document_key: str = "market_stream_status.json"
     enabled: bool = True
     disk_warning_pct: float = 15.0
     disk_critical_pct: float = 5.0
@@ -124,6 +125,8 @@ class StreamConfig:
             raise ValueError("磁盘剩余字节阈值不能为负数")
         if self.disk_critical_bytes and self.disk_warning_bytes and self.disk_critical_bytes > self.disk_warning_bytes:
             raise ValueError("磁盘临界剩余字节阈值不能高于告警阈值")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+\.json", self.status_document_key):
+            raise ValueError("状态文档键必须是独立 JSON 文件名")
 
     def connections(self) -> list[tuple[str, str]]:
         # 当前币安合约文档将成交和盘口分置于 market/public 分区。
@@ -825,7 +828,7 @@ class MarketCollector:
         await asyncio.to_thread(write_status)
         self.status.update(disk_capacity)
         try:
-            await asyncio.to_thread(self.store.put_document, "market_stream_status.json", snapshot)
+            await asyncio.to_thread(self.store.put_document, self.config.status_document_key, snapshot)
         except Exception as exc:
             # 数据库断开时，本地运行状态仍可供运维读取。
             LOG.debug("状态暂存在本地，数据库未同步：%s", exc)
@@ -954,6 +957,7 @@ def parse_config(argv: list[str] | None = None) -> StreamConfig:
     parser.add_argument("--market", choices=("futures", "spot"), default=os.getenv("QUANT_STREAM_MARKET", "futures"))
     parser.add_argument("--pairs", default=os.getenv("QUANT_STREAM_PAIRS", "BTC/USDT,ETH/USDT"), help="逗号分隔交易对")
     parser.add_argument("--spool-dir", type=Path, default=Path(os.getenv("QUANT_STREAM_SPOOL_DIR", str(ROOT / "database/runtime/market_spool"))))
+    parser.add_argument("--status-document-key", default="market_stream_status.json")
     parser.add_argument("--disk-warning-pct", type=float, default=float(os.getenv("QUANT_STREAM_DISK_WARNING_PCT", "15")),
                         help="磁盘剩余百分比低于此值时告警")
     parser.add_argument("--disk-critical-pct", type=float, default=float(os.getenv("QUANT_STREAM_DISK_CRITICAL_PCT", "5")),
@@ -965,6 +969,7 @@ def parse_config(argv: list[str] | None = None) -> StreamConfig:
     arguments = parser.parse_args(argv)
     pairs = tuple(dict.fromkeys(normalize_pair(pair, arguments.market) for pair in arguments.pairs.split(",") if pair.strip()))
     return StreamConfig(pairs=pairs, market=arguments.market, spool_dir=arguments.spool_dir,
+                        status_document_key=arguments.status_document_key,
                         enabled=os.getenv("QUANT_STREAM_ENABLED", "true").lower() not in {"false", "0", "no"},
                         disk_warning_pct=arguments.disk_warning_pct,
                         disk_critical_pct=arguments.disk_critical_pct,

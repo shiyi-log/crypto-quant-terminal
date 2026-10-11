@@ -26,7 +26,8 @@ class StrategyLabApiTests(unittest.TestCase):
 
     def test_invalid_parameters_rejected_before_database(self):
         for query in ("?strategy_id=../x", "?limit=0", "?limit=501", "?limit=oops",
-                      "?strategy_id=x&strategy_id=y", "?other=x"):
+                      "?strategy_id=x&strategy_id=y", "?other=x",
+                      "?strategy_id=s01.arbitrary", "?strategy_id=s01_orb_breakout_B15m_R50_k9.0_100x_maker"):
             with self.subTest(query=query), \
                     patch.object(auth_service, "verify_token", return_value="admin"), \
                     patch.object(auth_service, "get_store") as store:
@@ -112,6 +113,22 @@ class StrategyLabApiTests(unittest.TestCase):
                         patch.object(auth_service, "get_store", return_value=Mock()), \
                         patch("strategy_simulation.StrategySimulation", return_value=engine), \
                         patch("strategy_lab_service.read_service_status", return_value={"running": True}):
+                    code, body = self.handler(f"?strategy_id={strategy_id}").do_GET()
+                self.assertEqual(code, 200)
+                self.assertEqual(body["account"]["strategy_id"], strategy_id)
+                engine.account_detail.assert_called_once_with(strategy_id, limit=100)
+
+    def test_all_factor_ids_with_decimal_k_can_load_detail(self):
+        from strategy_factorial import load_factorial_specs
+
+        for spec in load_factorial_specs():
+            strategy_id = spec["strategy_id"]
+            with self.subTest(strategy_id=strategy_id):
+                engine = Mock()
+                engine.account_detail.return_value = {"account": {"strategy_id": strategy_id}}
+                with patch.object(auth_service, "verify_token", return_value="admin"), \
+                        patch.object(auth_service, "get_store", return_value=Mock()), \
+                        patch("strategy_simulation.StrategySimulation", return_value=engine):
                     code, body = self.handler(f"?strategy_id={strategy_id}").do_GET()
                 self.assertEqual(code, 200)
                 self.assertEqual(body["account"]["strategy_id"], strategy_id)

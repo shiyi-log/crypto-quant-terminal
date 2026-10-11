@@ -35,9 +35,11 @@ class Generation2IdentityTests(unittest.TestCase):
     def test_auxiliary_research_universe_does_not_become_an_order_leg(self):
         breadth = next(spec for spec in self.specs
                        if spec["variant_of"] == "s19_multi_coin_breadth")
-        self.assertIn("20 币（算宽度）", breadth["research_universe"])
+        self.assertEqual(len(breadth["research_universe"]), 20)
+        self.assertIn("SOL/USDT:USDT", breadth["research_universe"])
+        self.assertNotIn("SOL/USDT:USDT", breadth["execution_universe"])
         self.assertEqual(tuple(breadth["execution_universe"]),
-                         ("BTC/USDT:USDT", "ETH/USDT:USDT"))
+                         ("BTC/USDT:USDT",))
         # The native multi-timeframe adapter is now active; it is still
         # important that auxiliary symbols remain research-only inputs.
         self.assertEqual(breadth["data_status"], "native_timeframe_adapter_active")

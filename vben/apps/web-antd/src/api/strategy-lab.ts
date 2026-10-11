@@ -4,6 +4,12 @@ import { requireSession as requireAuthenticatedSession } from '#/api/session';
 
 export type LabValue = null | number | string;
 
+export interface StrategyLabFactorialFactors {
+  strategy?: string;
+  risk_budget?: 'R50' | 'R200' | 'R1000';
+  stop_width_k?: number;
+}
+
 export interface StrategyDefinition {
   name?: string;
   family?: string;
@@ -14,13 +20,25 @@ export interface StrategyDefinition {
   distinct_from?: string;
   hypothesis_status?: string;
   params_frozen?: Record<string, unknown>;
+  params?: Record<string, unknown>;
   universe?: string[];
+  execution_universe?: string[];
+  research_universe?: string[];
   min_warmup_bars?: number;
   /** Immutable experiment-arm identity (for example B/C/D/E). */
   arm_id?: string;
   variant_of?: string;
+  canonical_strategy_id?: string;
   variant_label?: string;
   data_status?: string;
+  factorial_design_version?: string;
+  factorial_factors?: StrategyLabFactorialFactors;
+  max_loss_per_trade_usdt?: LabValue;
+  risk_sizing_mode?: string;
+  fee_rate_per_side?: LabValue;
+  execution_enabled?: boolean;
+  blocked_execution_reason?: string | null;
+  execution_blockers?: string[];
   position_budget?: {
     target_exposure?: number;
     max_positions?: number;
@@ -35,6 +53,16 @@ export interface StrategyDefinition {
 export interface StrategyLabRow {
   strategy_id: string;
   [key: string]: unknown;
+}
+
+export interface StrategyLabWarmup extends Record<string, unknown> {
+  ready?: boolean;
+  valid_bars?: number;
+  required_bars?: number;
+  reason?: string;
+  /** Start timestamp of the latest closed input candle; not an execution marker. */
+  last_closed_at?: LabValue;
+  by_pair?: Record<string, unknown>;
 }
 
 export interface StrategyLabAccount {
@@ -73,7 +101,8 @@ export interface StrategyLabAccount {
   rule_hash?: string;
   execution_hash?: string;
   definition?: StrategyDefinition;
-  warmup?: Record<string, unknown>;
+  execution?: StrategyLabExecution;
+  warmup?: StrategyLabWarmup;
   open_positions: StrategyLabRow[];
   last_candle_ms?: null | number;
   last_observed_at_ms?: null | number;
@@ -93,6 +122,15 @@ export interface StrategyLabExecution {
   timeframe?: string;
   arm_id?: string;
   active_variant_suffix?: string;
+  max_loss_per_trade_usdt?: LabValue;
+  risk_stop_atr_mult?: LabValue;
+  risk_sizing_mode?: string;
+  risk_stop_pct?: LabValue;
+  risk_round_trip_fee?: LabValue;
+  execution_universe?: string[];
+  research_universe?: string[];
+  execution_enabled?: boolean;
+  blocked_execution_reason?: string | null;
   [key: string]: unknown;
 }
 

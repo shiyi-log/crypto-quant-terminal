@@ -1,5 +1,4 @@
 <script lang="ts" setup>
-import type { EchartsUIType } from '@vben/plugins/echarts';
 import type {
   StrategyLabBlockedStrategy,
   StrategyLabAccount,
@@ -8,11 +7,11 @@ import type {
   StrategyLabRejectedStrategy,
   StrategyLabRow,
 } from '#/api/strategy-lab';
+import type { LabPopulation, LabRiskFilter, LabStopFilter } from './accountFilters';
 
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 
-import { EchartsUI, useEcharts } from '@vben/plugins/echarts';
 import {
   Alert,
   Button,
@@ -21,6 +20,7 @@ import {
   DescriptionsItem,
   Drawer,
   Empty,
+  Select,
   Spin,
   Table,
   TabPane,
@@ -31,11 +31,25 @@ import {
 import { errText } from '#/api/freqtrade/client';
 import { getStrategyLab, getStrategyLabDetail } from '#/api/strategy-lab';
 import { fullOrderTime } from '../utils/orderDisplayId';
+import AccountEquityChart from './AccountEquityChart.vue';
+import {
+  canonicalLabStrategy,
+  filterLabAccounts,
+  labAccountFactors,
+  labAccountPopulation,
+  labWarmupCandleTime,
+  selectLabAccount,
+  selectedLabDetail,
+  selectedLabExecution,
+} from './accountFilters';
 import { labEventType, labFamily, labOrderStatus, labReason, labResearchReason } from './displayLabels';
 
 const overview = ref<StrategyLabOverview | null>(null);
 const detail = ref<StrategyLabDetail | null>(null);
 const selectedId = ref('');
+const population = ref<LabPopulation>('factorial');
+const riskFilter = ref<LabRiskFilter>('R50');
+const stopFilter = ref<LabStopFilter>('1.5');
 const route = useRoute();
 const section = ref('positions');
 const loading = ref(false);
@@ -45,8 +59,6 @@ const detailError = ref('');
 const recordDetail = ref<Record<string, unknown> | null>(null);
 const recordDetailOpen = ref(false);
 const refreshedAt = ref<number | null>(null);
-const chartRef = ref<EchartsUIType>();
-const { renderEcharts } = useEcharts(chartRef);
 let overviewController: AbortController | undefined;
 let detailController: AbortController | undefined;
 let overviewSequence = 0;
@@ -54,13 +66,47 @@ let detailSequence = 0;
 let timer: ReturnType<typeof setInterval> | undefined;
 
 const focusOnly = computed(() => route.name === 'QuantStrategyFocus');
-const accounts = computed(() => {
+const scopedAccounts = computed(() => {
   const all = overview.value?.accounts ?? [];
   if (!focusOnly.value) return all;
   return all.filter((item) => {
-    const baseId = baseStrategyId(item.strategy_id);
+    const baseId = canonicalLabStrategy(item);
     return baseId === 's03_tsmom_vol_target' || baseId === 's05_bollinger_fade';
   });
+});
+const accounts = computed(() => filterLabAccounts(
+  scopedAccounts.value, population.value, riskFilter.value, stopFilter.value,
+));
+const populationLabels: Record<LabPopulation, string> = {
+  factorial: 'ATR 因子账户',
+  controls: '旧规则对照账户',
+  archived: '已归档账户',
+};
+const populationOptions = computed(() =>
+  (['factorial', 'controls', 'archived'] as const).map((value) => ({
+    value,
+    label: `${populationLabels[value]}（${scopedAccounts.value.filter((item) => labAccountPopulation(item) === value).length}）`,
+  })),
+);
+const riskOptions = [
+  { value: 'R50', label: 'R50 · 50 USDT' },
+  { value: 'R200', label: 'R200 · 200 USDT' },
+  { value: 'R1000', label: 'R1000 · 1,000 USDT' },
+  { value: 'all', label: '全部风险档' },
+];
+const stopOptions = [
+  { value: '1', label: 'k = 1.0' },
+  { value: '1.5', label: 'k = 1.5' },
+  { value: '2.5', label: 'k = 2.5' },
+  { value: 'all', label: '全部止损宽度' },
+];
+const filterScope = computed(() => {
+  const count = scopedAccounts.value.filter((item) => labAccountPopulation(item) === population.value).length;
+  const factors = population.value === 'factorial'
+    ? [riskFilter.value === 'all' ? '全部 R 档' : riskFilter.value,
+        stopFilter.value === 'all' ? '全部 k 档' : `k${stopFilter.value}`].join(' · ')
+    : '保留原冻结规则与样本';
+  return `${focusOnly.value ? '重点策略范围 · ' : ''}${populationLabels[population.value]} · ${factors} · 当前显示 ${accounts.value.length} / ${count} 个账户`;
 });
 const blockedStrategies = computed<StrategyLabBlockedStrategy[]>(() =>
   focusOnly.value ? [] : overview.value?.blocked_strategies ?? [],
@@ -82,20 +128,37 @@ const rejectedStrategySummary = computed(() =>
     .map((item) => `${item.label ?? item.strategy_id}：${labResearchReason(item.reason)}`)
     .join('；'),
 );
-const account = computed(() =>
-  detail.value?.account.strategy_id === selectedId.value
-    ? detail.value.account
-    : accounts.value.find((item) => item.strategy_id === selectedId.value),
-);
+const currentDetail = computed(() => selectedLabDetail(detail.value, selectedId.value));
+const account = computed(() => currentDetail.value?.account ??
+  accounts.value.find((item) => item.strategy_id === selectedId.value));
 const definition = computed(() => account.value?.definition ?? {});
 const execution = computed(
-  () => overview.value?.execution ?? overview.value?.execution_model ?? {},
+  () => selectedLabExecution(account.value,
+    overview.value?.execution ?? overview.value?.execution_model ?? {}),
 );
-const orders = computed(() => detail.value?.orders ?? []);
-const trades = computed(() => detail.value?.trades ?? []);
-const events = computed(() => detail.value?.events ?? []);
+const orders = computed(() => currentDetail.value?.orders ?? []);
+const trades = computed(() => currentDetail.value?.trades ?? []);
+const events = computed(() => currentDetail.value?.events ?? []);
 const positions = computed(() => account.value?.open_positions ?? []);
-const equityPoints = computed(() => detail.value?.equity_curve ?? []);
+const equityPoints = computed(() => currentDetail.value?.equity_curve ?? []);
+const factorialAccount = computed(() => account.value &&
+  labAccountPopulation(account.value) === 'factorial');
+const accountFactors = computed(() => labAccountFactors(account.value));
+const atrStopMult = computed(() => numeric(execution.value.risk_stop_atr_mult ??
+  definition.value.params_frozen?.risk_stop_atr_mult ??
+  definition.value.params?.risk_stop_atr_mult));
+const riskBudget = computed(() => execution.value.max_loss_per_trade_usdt ??
+  definition.value.max_loss_per_trade_usdt);
+const executionBlockReason = computed(() => {
+  const blockers = definition.value.execution_blockers;
+  return blockers?.length ? blockers.map(labResearchReason).join('；')
+    : labResearchReason(execution.value.blocked_execution_reason ??
+      definition.value.blocked_execution_reason);
+});
+const executionBlocked = computed(() => execution.value.execution_enabled === false ||
+  definition.value.execution_enabled === false);
+const executionUniverse = computed(() => execution.value.execution_universe ??
+  definition.value.execution_universe ?? definition.value.universe);
 const feeRate = computed(
   () => execution.value.fee_rate_per_side ?? execution.value.taker_fee_per_side,
 );
@@ -223,9 +286,11 @@ function protectionType(row: Record<string, unknown>) {
   const params = definition.value.params_frozen ?? {};
   const hasAtrProtection =
     numeric(params.stop_atr_mult) !== null && numeric(params.tp_atr_mult) !== null;
+  const hasRiskStop = atrStopMult.value !== null;
   if (liquidation !== null && leverage !== null && leverage > 1) {
-    return hasAtrProtection ? '100 倍强平 · ATR 止损/止盈' : '100 倍强平 · 策略离场';
+    return `${fixed(leverage, 0)} 倍强平 · ${hasRiskStop ? 'ATR 风险止损' : hasAtrProtection ? 'ATR 止损/止盈' : '策略离场'}`;
   }
+  if (hasRiskStop) return 'ATR 风险止损';
   if (hasAtrProtection) return 'ATR 止损/止盈';
   return leverage === 1 ? '未启用统一强平' : '风险保护未知';
 }
@@ -286,6 +351,8 @@ function statusOf(value: unknown) {
     warming_up: { color: 'orange', label: '数据预热中' },
     warming: { color: 'orange', label: '数据预热中' },
     blocked: { color: 'orange', label: '数据受阻' },
+    execution_blocked: { color: 'orange', label: '执行暂停，保留研究' },
+    research_paused: { color: 'orange', label: '研究依赖暂停' },
     error: { color: 'red', label: '运行错误' },
     stopped: { color: 'default', label: '已停止' },
     starting: { color: 'orange', label: '执行器启动中' },
@@ -308,6 +375,23 @@ function statusOf(value: unknown) {
     unknown: { color: 'default', label: '状态未知' },
   };
   return labels[key] ?? { color: 'default', label: key };
+}
+
+function accountStatus(item: StrategyLabAccount) {
+  if (labAccountPopulation(item) === 'archived') return statusOf('archived');
+  if (item.execution?.execution_enabled === false || item.definition?.execution_enabled === false)
+    return statusOf('execution_blocked');
+  return statusOf(item.status);
+}
+
+function factorLabel(item: StrategyLabAccount) {
+  const factors = labAccountFactors(item);
+  return factors.riskBudget
+    ? `${factors.riskBudget} · k${fixed(factors.stopWidth, 1)}` : '';
+}
+
+function atrRiskText() {
+  return `R = ${fixed(riskBudget.value, 0)} USDT 是按入场冻结 ATR 止损距离与双边手续费反解仓位的计划预算；k = ${fixed(atrStopMult.value, 1)}。止损由收盘价确认，按下一根开盘价代理成交；跳空、滑点与 ${fixed(strategyLeverage(), 0)} 倍强平可能使实际亏损超过 R。`;
 }
 
 function warmupText(item: StrategyLabAccount) {
@@ -339,19 +423,9 @@ function accountName(item?: StrategyLabAccount) {
     s31_delta_neutral_carry: '资金费率 Delta 中性 Carry',
   };
   const fallback = item?.strategy_id
-    ? fallbackLabels[baseStrategyId(item.strategy_id)]
+    ? fallbackLabels[canonicalLabStrategy(item)]
     : undefined;
   return item?.label ?? item?.name ?? item?.definition?.name ?? fallback ?? item?.strategy_id ?? '未知';
-}
-
-function baseStrategyId(strategyId: unknown) {
-  if (typeof strategyId !== 'string') return '';
-  // Account ids carry the execution arm suffix. Keep this parser in one place
-  // so focused views continue to recognize s03/s05 after arm isolation.
-  return strategyId.replace(
-    /_(?:100x(?:_maker)?|v2|[A-Z]_?(?:gen\d+(?:_multitf)?|carry|5m|15m|1h|1d)?_?(?:100x_)?(?:maker|taker))$/,
-    '',
-  );
 }
 
 function armId(item?: StrategyLabAccount) {
@@ -377,6 +451,8 @@ function dataStatusLabel(item?: StrategyLabAccount) {
     cross_sectional_execution_pending: '横截面执行待接入',
     funding_data_pending: '资金费数据待接入',
     funding_series_loaded_rejected: '资金费数据已入库 · 研究已淘汰',
+    research_context_paused: '所需多币研究上下文已暂停',
+    atr_risk_execution_pending: 'ATR 风险执行规则待接入',
   };
   return labels[value] ?? (value ? labReason(value) : '数据状态未知');
 }
@@ -396,7 +472,8 @@ function observationBadge(strategyOrAccount: unknown): ObservationBadge | null {
     ? (strategyOrAccount as StrategyLabAccount)
     : undefined;
   const strategyId = account?.strategy_id ?? strategyOrAccount;
-  const baseId = baseStrategyId(strategyId);
+  const baseId = account ? canonicalLabStrategy(account)
+    : canonicalLabStrategy(typeof strategyId === 'string' ? strategyId : '');
   const searchText = `${String(strategyId ?? '')} ${String(account?.label ?? '')} ${String(account?.name ?? '')}`.toLowerCase();
   if (
     baseId === 's11_tsmom_bollinger_pullback' ||
@@ -455,30 +532,17 @@ function accountDataStatus(item?: StrategyLabAccount) {
   if (status === 'native_timeframe_adapter_active') {
     return '该账户按策略原生周期读取已收盘 K 线；预热完成前不会生成模拟成交。';
   }
+  if (status === 'research_context_paused') {
+    return '本策略依赖完整的多币市场宽度或排名；其他币线已暂停，因此保留原机制并暂停执行，不能用三币替代原来的 20 币上下文。';
+  }
+  if (status === 'atr_risk_execution_pending') {
+    return '所需 ATR 风险执行规则尚未实现，账户已登记并保留研究，当前不生成模拟订单。';
+  }
   return '';
 }
 
-function preferredFocusAccount(items: StrategyLabAccount[]) {
-  const priority = focusOnly.value
-    ? ['s03_tsmom_vol_target', 's05_bollinger_fade']
-    : [
-        's11_tsmom_bollinger_pullback',
-        's03_tsmom_vol_target',
-        's05_bollinger_fade',
-      ];
-  return priority
-    .map((baseId) => items.find((item) => baseStrategyId(item.strategy_id) === baseId))
-    .find(Boolean);
-}
-
 const accountEmptyDescription = computed(() =>
-  focusOnly.value
-    ? '当前没有时序动量或布林带偏离回归的活动账户，请确认模拟执行器已启动'
-    : blockedStrategies.value.length
-      ? '当前没有可运行账户；下方已列出因数据或执行能力阻塞的研究策略'
-      : rejectedStrategies.value.length
-        ? '当前没有活动账户；下方已列出已淘汰的研究候选，它们不会进入前向模拟'
-        : '模拟执行器尚未登记活动策略账户；请点击“刷新账户”重试',
+  `当前筛选没有账户（${populationLabels[population.value]}）；可调整账户分组、风险档或止损宽度。`,
 );
 
 function eventSummary(row: Record<string, unknown>) {
@@ -560,58 +624,33 @@ const eventColumns = [
   { title: '原因 / 说明', key: 'reason' },
 ];
 
-function drawEquity() {
-  const points = equityPoints.value
-    .filter((point) => numeric(point.timestamp) !== null)
-    .sort((left, right) => Number(left.timestamp) - Number(right.timestamp));
-  renderEcharts({
-    animation: false,
-    color: ['#2563eb'],
-    grid: { left: 64, top: 28, right: 24, bottom: 44 },
-    tooltip: { trigger: 'axis' },
-    xAxis: {
-      type: 'category',
-      data: points.map((point) => fullOrderTime(point.timestamp)),
-    },
-    yAxis: { type: 'value', scale: true, name: '账户净值 USDT' },
-    series: [
-      {
-        name: '净值',
-        type: 'line',
-        data: points.map((point) => numeric(point.equity)),
-        connectNulls: false,
-        showSymbol: points.length <= 1,
-        symbolSize: 8,
-        lineStyle: { width: 2 },
-      },
-    ],
-  });
-}
-
 async function refreshDetail() {
   detailController?.abort();
-  if (!selectedId.value) return;
-  detailController = new AbortController();
   const current = ++detailSequence;
   const strategyId = selectedId.value;
-  detailLoading.value = true;
   detailError.value = '';
+  if (!strategyId) {
+    detail.value = null;
+    detailLoading.value = false;
+    return;
+  }
+  const controller = new AbortController();
+  detailController = controller;
+  detailLoading.value = true;
   try {
     const response = await getStrategyLabDetail(
       strategyId,
-      detailController.signal,
+      controller.signal,
     );
     if (current !== detailSequence || strategyId !== selectedId.value) return;
     detail.value = response;
-    await nextTick();
-    if (section.value === 'equity') drawEquity();
   } catch (reason) {
-    if (current === detailSequence) {
+    if (current === detailSequence && strategyId === selectedId.value && !controller.signal.aborted) {
       detail.value = null;
       detailError.value = errText(reason);
     }
   } finally {
-    if (current === detailSequence) detailLoading.value = false;
+    if (current === detailSequence && strategyId === selectedId.value) detailLoading.value = false;
   }
 }
 
@@ -624,17 +663,10 @@ async function refresh() {
   try {
     const response = await getStrategyLab(overviewController.signal);
     if (current !== overviewSequence) return;
+    const previousId = selectedId.value;
     overview.value = response;
     refreshedAt.value = Date.now();
-    const currentExists = accounts.value.some(
-      (item) => item.strategy_id === selectedId.value,
-    );
-    if (!currentExists)
-      selectedId.value =
-        preferredFocusAccount(accounts.value)?.strategy_id ??
-        accounts.value[0]?.strategy_id ??
-        '';
-    else await refreshDetail();
+    if (previousId && selectedId.value === previousId) await refreshDetail();
   } catch (reason) {
     if (current === overviewSequence) error.value = errText(reason);
   } finally {
@@ -642,36 +674,29 @@ async function refresh() {
   }
 }
 
+watch(accounts, (items) => {
+  selectedId.value = selectLabAccount(items, selectedId.value, focusOnly.value);
+}, { flush: 'sync' });
 watch(selectedId, () => {
   recordDetailOpen.value = false;
   recordDetail.value = null;
   detail.value = null;
   void refreshDetail();
-});
+}, { flush: 'sync' });
 watch(
   () => route.name,
   (name, previous) => {
     if (name === previous) return;
-    // The two navigation entries reuse this component. Reconcile the selected
-    // account when switching filters so a combo account cannot leave the
-    // focused page with an empty detail panel.
-    if (!accounts.value.some((item) => item.strategy_id === selectedId.value)) {
-      selectedId.value = preferredFocusAccount(accounts.value)?.strategy_id ?? '';
-    }
     void refresh();
   },
 );
-watch(section, async (value) => {
-  if (value === 'equity') {
-    await nextTick();
-    drawEquity();
-  }
-});
 onMounted(() => {
   void refresh();
   timer = setInterval(() => void refresh(), 30_000);
 });
 onUnmounted(() => {
+  overviewSequence++;
+  detailSequence++;
   overviewController?.abort();
   detailController?.abort();
   if (timer) clearInterval(timer);
@@ -713,26 +738,23 @@ onUnmounted(() => {
       </div>
       <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
         <div class="metric-cell">
-          <div class="metric-label">已登记策略</div>
+          <div class="metric-label">当前筛选账户</div>
           <div class="metric-value">
             {{ overview ? accounts.length : '未知' }}
           </div>
           <div class="metric-sub">
-            {{ [
-              blockedStrategies.length ? `${blockedStrategies.length} 项研究策略待数据或执行支持` : '',
-              rejectedStrategies.length ? `${rejectedStrategies.length} 项研究候选已淘汰` : '',
-            ].filter(Boolean).join('；') || '每项有独立标签与模拟资金账户' }}
+            {{ populationLabels[population] }} · {{ population === 'factorial' ? '每个 R/k 组合有独立账户' : '保留原规则与历史数据' }}
           </div>
         </div>
         <div class="metric-cell">
           <div class="metric-label">初始模拟资金合计</div>
           <div class="metric-value">{{ fixed(total('initial_capital')) }}</div>
-          <div class="metric-sub">USDT · 账户之间不共享资金</div>
+          <div class="metric-sub">USDT · 仅当前筛选，账户不共享资金</div>
         </div>
         <div class="metric-cell">
           <div class="metric-label">账户净值合计</div>
           <div class="metric-value">{{ fixed(total('equity')) }}</div>
-          <div class="metric-sub">USDT · 仅汇总，不代表可调拨资金</div>
+          <div class="metric-sub">USDT · 仅当前筛选，不代表可调拨资金</div>
         </div>
         <div class="metric-cell">
           <div class="metric-label">最近执行扫描（北京）</div>
@@ -744,6 +766,21 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+      <div class="mt-4 flex flex-wrap items-center gap-3">
+        <label class="lab-filter">
+          <span>账户分组</span>
+          <Select v-model:value="population" :options="populationOptions" class="population-select" aria-label="账户分组" />
+        </label>
+        <label class="lab-filter">
+          <span>计划风险预算</span>
+          <Select v-model:value="riskFilter" :options="riskOptions" :disabled="population !== 'factorial'" class="risk-select" aria-label="计划风险预算" />
+        </label>
+        <label class="lab-filter">
+          <span>止损宽度</span>
+          <Select v-model:value="stopFilter" :options="stopOptions" :disabled="population !== 'factorial'" class="stop-select" aria-label="止损宽度" />
+        </label>
+      </div>
+      <p class="mt-3 text-xs text-muted-foreground">{{ filterScope }}。资金与净值合计只对应当前筛选；旧对照与新因子样本分开统计。</p>
     </Card>
 
     <Alert v-if="error" class="mt-3" type="error" show-icon :message="error" />
@@ -760,7 +797,7 @@ onUnmounted(() => {
       type="info"
       show-icon
       :message="focusOnly ? '重点观察：时序动量与布林带偏离回归' : '这些策略是待检验的研究假设；每项前向模拟独立记录，已有 TrendFollowing 模拟盘继续独立运行。'"
-      :description="`成交按下一根开盘价代理；主口径 maker 手续费 ${percent(feeRate)}/边，taker 0.05%/边作为保守边界。限价单未成交风险、滑点与资金费未知，扣手续费收益不能视为完整净收益。只记录上线后的真实信号，不补造历史模拟成交。`"
+      :description="`成交按下一根开盘价代理；所选账户手续费 ${percent(feeRate)}/边。限价单未成交风险、滑点与资金费未知，扣手续费收益不能视为完整净收益。只记录上线后的真实信号，不补造历史模拟成交。`"
     />
     <Alert
       v-if="blockedStrategies.length"
@@ -808,7 +845,7 @@ onUnmounted(() => {
                 </span>
                 <span class="strategy-tab-sub"
                   >{{ item.strategy_id.split('_')[0]?.toUpperCase() }} ·
-                  {{ statusOf(item.status).label }} · {{ armLabel(item) }}</span
+                  {{ accountStatus(item).label }} · {{ factorLabel(item) || armLabel(item) }}</span
                 >
               </div>
             </template>
@@ -838,9 +875,11 @@ onUnmounted(() => {
                 >{{ observationLabel(account) }}</Tag
               >
               <Tag color="blue">前向研究假设</Tag>
-              <Tag :color="statusOf(account.status).color">{{
-                statusOf(account.status).label
+              <Tag :color="accountStatus(account).color">{{
+                accountStatus(account).label
               }}</Tag>
+              <Tag v-if="factorialAccount" color="purple">{{ accountFactors.riskBudget }} · k{{ fixed(accountFactors.stopWidth, 1) }}</Tag>
+              <Tag v-else>{{ populationLabels[labAccountPopulation(account)] }}</Tag>
               <Tag v-if="armId(account)" color="geekblue">{{ armLabel(account) }}</Tag>
               <Tag v-if="hasDataStatus(account)" color="orange">{{ dataStatusLabel(account) }}</Tag>
               <span class="text-xs text-muted-foreground"
@@ -850,8 +889,10 @@ onUnmounted(() => {
               >
             </div>
             <div class="mb-4 rounded border p-3 text-xs text-muted-foreground">
-              {{ warmupText(account) }} · 最新收盘根
-              {{ fullOrderTime(account.last_candle_ms) }}
+              {{ warmupText(account) }} · 最新收盘 K 线起点（北京）
+              {{ fullOrderTime(labWarmupCandleTime(account)) }}
+              · 最近执行 K 线起点
+              {{ account.last_candle_ms == null ? '尚无执行记录' : fullOrderTime(account.last_candle_ms) }}
               <span v-if="account.warmup?.reason && account.warmup.reason !== 'ready'">
                 · {{ labReason(account.warmup.reason) }}</span
               >
@@ -859,6 +900,30 @@ onUnmounted(() => {
                 · {{ dataStatusLabel(account) }}</span
               >
             </div>
+            <Alert
+              v-if="executionBlocked"
+              class="mb-4"
+              type="warning"
+              show-icon
+              message="执行暂停，保留研究账户与全部数据"
+              :description="executionBlockReason"
+            />
+            <Alert
+              v-if="factorialAccount"
+              class="mb-4"
+              type="info"
+              show-icon
+              :message="`本账户 ATR 风险档 ${accountFactors.riskBudget} · k${fixed(atrStopMult, 1)}`"
+              :description="atrRiskText()"
+            />
+            <Alert
+              v-else
+              class="mb-4"
+              type="info"
+              show-icon
+              message="保留原冻结规则与样本"
+              description="旧账户作为独立对照保留，规则与交易记录不合并进 ATR 因子实验。"
+            />
             <Alert
               v-if="isFocusStrategy(account)"
               class="mb-4"
@@ -961,7 +1026,7 @@ onUnmounted(() => {
                   type="warning"
                   show-icon
                   message="持仓风险保护"
-                  :description="`${liquidationRuleText()} ${definition.params_frozen?.stop_atr_mult != null ? '本策略同时按冻结的 ATR 止损/止盈规则，在收盘确认后按下一根开盘价代理成交。' : '其他策略按各自冻结的收盘离场与持仓期限规则退出。'}`"
+                  :description="`${liquidationRuleText()} ${atrStopMult != null ? atrRiskText() : definition.params_frozen?.stop_atr_mult != null ? '本策略同时按冻结的 ATR 止损/止盈规则，在收盘确认后按下一根开盘价代理成交。' : '本策略按冻结的收盘离场与持仓期限规则退出。'}`"
                 />
                 <Table
                   :columns="positionColumns"
@@ -1218,7 +1283,11 @@ onUnmounted(() => {
                 <div class="mb-2 text-xs text-muted-foreground">
                   仅绘制已落库的真实净值记录；初始资金不是历史交易收益，缺失点不补造。
                 </div>
-                <EchartsUI ref="chartRef" height="300px" />
+                <AccountEquityChart
+                  v-if="section === 'equity' && currentDetail"
+                  :key="selectedId"
+                  :points="equityPoints"
+                />
                 <Empty
                   v-if="!equityPoints.length"
                   description="尚无净值记录，等待执行扫描"
@@ -1251,6 +1320,10 @@ onUnmounted(() => {
                   </div>
                   <div>
                     <div class="rule-label">账户风险预算</div>
+                    <p v-if="factorialAccount">
+                      {{ accountFactors.riskBudget }} · 计划止损与手续费预算
+                      {{ fixed(riskBudget, 0) }} USDT · k = {{ fixed(atrStopMult, 1) }}
+                    </p>
                     <p>
                       目标投入
                       {{ percent(definition.position_budget?.target_exposure) }}
@@ -1259,13 +1332,14 @@ onUnmounted(() => {
                       仓 · 每币
                       {{ fixed(definition.position_budget?.max_per_coin, 0) }}
                       仓 · 杠杆
-                      {{ fixed(definition.position_budget?.leverage, 0) }} 倍
+                      {{ fixed(strategyLeverage(), 0) }} 倍
                     </p>
                   </div>
                   <div class="risk-rule-block">
                     <div class="rule-label">风险保护与止损</div>
                     <p>{{ liquidationRuleText() }}</p>
-                    <p v-if="definition.params_frozen?.stop_atr_mult != null">
+                    <p v-if="atrStopMult != null">{{ atrRiskText() }}</p>
+                    <p v-else-if="definition.params_frozen?.stop_atr_mult != null">
                       s08 影线拒绝策略另有冻结 ATR 止损/止盈：止损倍数
                       {{ fixed(definition.params_frozen.stop_atr_mult, 2) }}，止盈倍数
                       {{ fixed(definition.params_frozen.tp_atr_mult, 2) }}；ATR 在入场时冻结，触发只认收盘价，下一根开盘价代理成交。
@@ -1273,11 +1347,15 @@ onUnmounted(() => {
                     <p v-else>当前策略没有统一固定百分比止损，主要依靠策略离场判据、持仓期限与杠杆强平保护。</p>
                   </div>
                   <div>
-                    <div class="rule-label">币池 / 成交模型</div>
+                    <div class="rule-label">实际交易币池 / 成交模型</div>
                     <p>
-                      {{ definition.universe?.join(' · ') ?? '未知'
+                      {{ executionUniverse?.join(' · ') ?? '未知'
                       }}<br />连续下一根开盘价代理（下一根收盘时记录）
                     </p>
+                    <p v-if="definition.research_universe?.length">
+                      信号研究币池：{{ definition.research_universe.join(' · ') }}
+                    </p>
+                    <p v-if="executionBlocked">执行暂停：{{ executionBlockReason }}</p>
                   </div>
                 </div>
                 <div class="rule-label mt-4">冻结参数</div>
@@ -1358,6 +1436,21 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.lab-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.population-select {
+  min-width: 215px;
+}
+.risk-select {
+  min-width: 180px;
+}
+.stop-select {
+  min-width: 135px;
+}
 .metric-cell {
   border: 1px solid hsl(var(--border));
   border-radius: 8px;

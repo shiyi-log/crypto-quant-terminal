@@ -82,6 +82,46 @@ class StrategyDataTests(unittest.TestCase):
         self.assertEqual(store.get_candles.call_args_list[0].args[:4],
                          ("binance", "futures", "BTC/USDT:USDT", "1h"))
 
+    def test_current_native_close_does_not_resample_before_next_native_boundary(self):
+        for timeframe in ("15m", "1h", "1d"):
+            with self.subTest(timeframe=timeframe):
+                interval = timeframe_milliseconds(timeframe)
+                direct = [candle(index * interval) for index in range(750)]
+                store = candle_store(direct, [], timeframe)
+                as_of = 750 * interval + min(interval - 1, 1_800_000)
+                rows = load_spec_candles(store, {"timeframe": timeframe,
+                                               "universe": ["BTC/USDT:USDT"]},
+                                        limit=750, as_of_ms=as_of)["BTC/USDT:USDT"]
+                self.assertEqual(len(rows), 750)
+                self.assertEqual([call.args[3] for call in store.get_candles.call_args_list],
+                                 [timeframe])
+
+    def test_forming_last_row_does_not_reduce_full_native_warmup(self):
+        interval = timeframe_milliseconds("1d")
+        direct = [candle(index * interval) for index in range(751)]
+        direct[-1]["extras"]["closed"] = False
+        store = candle_store(direct, [], "1d")
+        rows = load_spec_candles(store, {"timeframe": "1d",
+                                       "universe": ["BTC/USDT:USDT"]},
+                                limit=750, as_of_ms=750 * interval + 1_800_000)["BTC/USDT:USDT"]
+        self.assertEqual(len(rows), 750)
+        self.assertEqual([call.args[3] for call in store.get_candles.call_args_list], ["1d"])
+
+    def test_complete_daily_history_fetches_only_missing_tail_from_five_minutes(self):
+        interval = timeframe_milliseconds("1d")
+        ratio = interval // 300_000
+        direct = [candle(index * interval) for index in range(750)]
+        source = [candle(index * 300_000) for index in range(749 * ratio, 752 * ratio)]
+        store = candle_store(direct, source, "1d")
+        rows = load_spec_candles(store, {"timeframe": "1d", "universe": ["BTC/USDT:USDT"]},
+                                as_of_ms=752 * interval)["BTC/USDT:USDT"]
+        self.assertEqual([row["timestamp"] for row in rows],
+                         [index * interval for index in range(2, 752)])
+        self.assertLess(store.get_candles.call_args_list[-1].kwargs["limit"], 1000)
+        continuous, error = _history(rows, 752 * interval, bar_ms=interval)
+        self.assertIsNone(error)
+        self.assertEqual(len(continuous), 750)
+
     def test_missing_target_timeframe_falls_back_to_contiguous_lower_timeframe(self):
         store = Mock()
         base = [candle(index * 300_000, 100 + index) for index in range(24)]

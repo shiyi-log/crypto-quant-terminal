@@ -177,3 +177,112 @@ OHLCV 合法性: 15m/1h 各 800 行 → 全部通过（0 剔除）
 | 29 | 归因顺序反复（标记 → 缺口 → 重采样） | 最终确认：**5m 缺口是绑定约束** |
 
 **教训：应从现象出发先画完整数据流图，再定位瓶颈；逐层猜测花了 4 轮。**
+
+
+---
+
+# ⚠️ 独立复核后的更正（2026-10-12，由 Codex 备用1号触发）
+
+> 备用1号在**只读、REPEATABLE READ、不调 DataStore.initialize()** 的条件下独立复核本报告。
+> 结论：**核心诊断被 git 历史确认；但本报告有 3 处实质错误，另有若干结论已因修复而失效。**
+
+## A. ✅ 被独立确认的部分（用 git 历史复现）
+
+| 我的结论 | 复核结果 |
+|---|---|
+| 历史 K 线导入不设 `closed` 标记 | ✅ `git show bf1a903^:data_sync.py` 确认：仅复制剩余源列，标准 feather 无 closed → 被严格 True 过滤器排除 |
+| 修复点在 K 线路径（非 funding/oi） | ✅ funding_rate 与 oi 走 `upsert_series`，确实不是 K 线 |
+| 现行修法不是无条件 True | ✅ 当前 `data_sync.py:425/430`：源显式 False 仍 False，且 opening+周期 ≤ min(now, 源 mtime) |
+| market_stream 只接受已收盘 5m | ✅ `market_stream.py:230` 起要求 x 为布尔，顶层与 extras 均设 True |
+
+## B. 🔴 我的 3 处实质错误
+
+### B1. 缺口计数 off-by-one（精确错误）
+
+若报告中的左右时间是**已存在的两根 K 线**，缺失数应为 `delta/step − 1`：
+
+| 缺口 | 我写的 | 正确 |
+|---|---|---|
+| 5m 10-09 07:40 → 10-10 10:25 | 321 根 | **320 根** |
+| 5m 10-08 07:20 → 11:45 | 53 根 | **52 根** |
+| 15m 10-08 07:15 → 10-09 01:15 | 72 根 | **71 根** |
+
+**→ 321/53/72 是「间隔数」，不是「缺失数」。**
+
+### B2. 🔴 我说「本地无源数据，回补必须重新下载」——过度概括
+
+**复核找到的本地源**：`bot/user_data/data/orderflow/BTC_5m_orderflow.feather`
+
+```
+288,001 行完整 OHLCV · 2024-01-12 15:40 → 2026-10-08 15:40 · 0 内部缺口
+288,001 行【全部通过 closed_candles 校验】
+覆盖原小 5m 缺口（52 根）；重采样还可覆盖 15m 缺口 33 根
+与标准 futures 最近 2000 根重叠 OHLCV【各字段差异为 0】
+来源：bot/fetch_orderflow.py:71 → Binance 合约 fapi/v1/klines
+```
+
+**⚠️ 正确表述**：标准 feather 的终点确实等于缺口起点（这部分我对），
+**但「标准文件没有」≠「本地所有源都没有」**。
+大 5m 缺口与剩余 15m 缺口超出已核验 feather 范围，那部分才需重新下载。
+
+**→ 教训：报「无源」前，必须先穷举本地所有可能的数据源（含 orderflow/衍生目录）。**
+
+### B3. 「5m 缺口是绑定约束」——算术复现，但因果未被证明
+
+```
+✅ 复现: 截 BTC 10-10 10:25 → 10-11 16:35 的 363 根 5m
+        → 真实 resample_closed_candles 生成 120 根 15m / 29 根 1h（算术正确）
+⚠️ 但: 窄区间算术【不能证明】load_spec_candles 实际只能取到 120/29，
+      更不能独立证明旧 valid_bars=113/27
+```
+
+**当前状态（复核时）**：`load_spec_candles(limit=750)` 对 BTC/ETH 两周期**均返回 750 根**；
+当前代码把**直接表与重采样结果按 timestamp 合并**，不会简单丢弃旧直接历史。
+
+**⚠️ 一个易错判读（复核提醒）**：用墙钟 18:09 会 `ready=False`，
+但原因是 **`closed_candle_stale`**，`valid_bars` 仍为 750 ——
+**不能把 stale 误判为「热身根数不足」。**
+
+## C. ⚠️ 因修复而失效的结论（当时或为真，现已不可复现）
+
+| 我的原始数字 | 复核时点（2026-10-11 18:11 UTC 快照） |
+|---|---|
+| 标记覆盖 5m 7.0% / 15m 6.9% / 1h 27.6% / 1d 96.7% | **已存在的完整收盘行标记覆盖 100%**（5m 8640/8640 · 15m 2875/2875 · 1h 718/718 · 1d 30/30） |
+| 连续后缀 5m 363 / 15m 200 / 1h 24,340 | `_history` 得 **292,250 / 97,411 / 24,352**（全表内部缺口 0，均从 2024-01-01 起） |
+| 15m/1h 相对期望少 5/2 根 | 是**直接表尾部未摄入**，不是标记缺失 |
+
+**⚠️ 复核的正当性说明**：原数字需要**我的原 SQL 时点 + 旧快照**才能历史复核；
+**不能由现在的差异推断当时错误**。我接受这一限定 —— 我的数字是时点相关的。
+
+## D. 中断原因（复核补充，仍未定论）
+
+```
+logs/market.log 有 2026-10-09/10 的 WebSocket 断开、15 秒未收到 PONG、
+  连接超时、无法连接 fstream.binance.com
+⚠️ 但不足以证明整个 26.8 小时连续中断的唯一原因
+⚠️ market-live.log 仅有启动提示；reconnects=0 只代表当前进程，不能反证历史故障
+```
+
+## E. 冻结：`evaluate` 最小正确样例（备用1号实跑）
+
+```python
+from strategy_signals import BTC, ETH, BAR_MS, evaluate
+
+rows = [
+    {"timestamp": 1767225600000 + i * BAR_MS,
+     "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 100.0,
+     "extras": {"closed": True, "taker_buy_base": 80.0}}
+    for i in range(100)
+]
+r = evaluate({"strategy_id": "s07_surge_continuation"},
+             {BTC: rows, ETH: rows}, positions={},
+             as_of_utc=rows[-1]["timestamp"] + BAR_MS)
+
+# 实测: 100 根 → ready=True / valid=100 / required=100 / BTC target_side=1
+#                          reason=orderflow_continuation
+#       99 根  → False / 99 / 100
+#       去掉 closed → False / 0 / 100
+# 统计字段在 r["warmup"] 里
+# ⚠️ 真实回放须用【原生周期】、BTC/ETH 窗口对齐，
+#    并在【每根目标 K 线收盘时】调用；evaluate 本身不重采样
+```

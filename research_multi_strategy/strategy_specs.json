@@ -5112,5 +5112,52 @@
         "why_forward_only": "历史仅 2.8 天 → 无法回测 → 只能前向验证（正合用户『必须有实盘模拟证据』要求)"
       }
     ]
+  },
+  "standby1_verification_20261012": {
+    "verifier": "Codex 备用1号（只读 · REPEATABLE READ · 不调 DataStore.initialize()）",
+    "confirmed": {
+      "missing_closed_marker_at_kline_import": "✅ 由 git show bf1a903^:data_sync.py 独立复现",
+      "funding_oi_not_kline_path": "✅ 走 upsert_series",
+      "current_fix_not_unconditional": "✅ 源显式 False 仍 False，且 opening+周期 ≤ min(now, 源 mtime)",
+      "market_stream_only_closed_5m": "✅ market_stream.py:230 起"
+    },
+    "my_errors": {
+      "B1_gap_count_offbyone": {
+        "321": "应为 320（间隔数 vs 缺失数）",
+        "53": "应为 52",
+        "72": "应为 71"
+      },
+      "B2_local_source_overgeneralized": {
+        "claim": "本地无源，回补必须重新下载",
+        "found": "bot/user_data/data/orderflow/BTC_5m_orderflow.feather 288,001 行，0 内部缺口，全部通过 closed_candles 校验",
+        "covers": "原小 5m 缺口 52 根 + 重采样可覆盖 15m 缺口 33 根",
+        "overlap_check": "与标准 futures 重叠 2000 根 OHLCV 各字段差异 0",
+        "correct_statement": "标准 feather 终点=缺口起点（对），但『标准文件没有』≠『本地所有源都没有』",
+        "lesson": "报『无源』前必须穷举本地所有可能数据源（含 orderflow/衍生目录）"
+      },
+      "B3_binding_constraint_unproven": {
+        "reproduced": "算术复现（363 根 5m → 120 根 15m / 29 根 1h）",
+        "but": "窄区间算术不能证明 load_spec_candles 实际只取到 120/29，也不能证明旧 valid_bars=113/27",
+        "current": "load_spec_candles(limit=750) 两周期均返回 750；代码按 timestamp 合并直接表与重采样",
+        "easy_misread": "墙钟 18:09 时 ready=False 但原因是 closed_candle_stale，valid_bars 仍 750 —— 不能误判为热身不足"
+      }
+    },
+    "now_stale_claims": {
+      "closed_marker_coverage": "已存在完整收盘行覆盖 100%（原 7.0/6.9/27.6/96.7%）",
+      "contiguous_suffix": "292,250 / 97,411 / 24,352（原 363/200/24,340）",
+      "15m_1h_shortfall": "是直接表尾部未摄入，不是标记缺失"
+    },
+    "time_dependency_note": "原数字需原 SQL 时点+旧快照才能历史复核；不能由现在的差异推断当时错误。我接受此限定。",
+    "evaluate_minimal_example": {
+      "code": "evaluate({'strategy_id':'s07_surge_continuation'}, {BTC:rows, ETH:rows}, positions={}, as_of_utc=rows[-1]['timestamp']+BAR_MS)",
+      "rows_require": "extras.closed=True（s07 还需 taker_buy_base）",
+      "measured": {
+        "100bars": "ready=True/valid=100/required=100/target_side=1/orderflow_continuation",
+        "99bars": "False/99/100",
+        "no_closed": "False/0/100"
+      },
+      "note": "统计字段在 r['warmup']；真实回放须用原生周期、BTC/ETH 窗口对齐、每根目标K线收盘时调用；evaluate 不重采样"
+    },
+    "interruption_cause": "logs/market.log 有 WS 断开/PONG 超时/连接超时/无法连 fstream；但不足以证明 26.8h 中断的唯一原因"
   }
 }

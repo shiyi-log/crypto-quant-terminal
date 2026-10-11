@@ -6,6 +6,8 @@ import {
   canonicalLabStrategy,
   filterLabAccounts,
   labAccountPopulation,
+  labAccountFactors,
+  labBookGroup,
   labWarmupCandleTime,
   selectLabAccount,
   selectedLabDetail,
@@ -55,6 +57,36 @@ const archived = canonicals.slice(0, 20).map((canonical) => account(`${canonical
   status: 'archived', lifecycle: 'archived',
 }));
 const allAccounts = [...factorial, ...controls, ...archived];
+const newCanonicals = [
+  's32_cointegration_spread_1h', 's33_basis_momentum_1h',
+  's34_vwap_anchor_reversion_15m', 's35_cascade_continuation_15m',
+  's36_correlation_regime_1h',
+];
+const fnew = newCanonicals.flatMap((canonical) =>
+  (['R50', 'R200', 'R1000'] as const).flatMap((risk) =>
+    [1, 1.5, 2.5].map((k) => account(`${canonical}_Fnew_${risk}_k${k.toFixed(1)}_100x_${canonical.startsWith('s33') ? 'taker' : 'maker'}`, {
+      definition: {
+        canonical_strategy_id: canonical,
+        fnew_design_version: 'fnew-20261012-v1', sample_population: 'fnew-20261012-v1',
+        fnew_factors: { strategy: canonical, risk_budget: risk, stop_width_k: k },
+        execution_enabled: !canonical.startsWith('s32') && !canonical.startsWith('s36'),
+      },
+    })),
+  ),
+);
+const microstructure = (['control', 'filter'] as const).flatMap((group) =>
+  (['R50', 'R200', 'R1000'] as const).flatMap((risk) =>
+    [1, 1.5, 2.5].map((k) => account(`s37_vol_compression_book_${group}_${risk}_k${k.toFixed(1)}_100x_maker`, {
+      definition: {
+        canonical_strategy_id: 's14_vol_compression_release',
+        microstructure_experiment_version: 'orderbook-confirmation-forward-v1',
+        microstructure_group: group,
+        factorial_factors: { strategy: 's37_vol_compression_book', risk_budget: risk, stop_width_k: k, book_group: group },
+      },
+    })),
+  ),
+);
+const expandedAccounts = [...allAccounts, ...fnew, ...microstructure];
 
 describe('strategy lab account populations', () => {
   it('keeps all 261 factor identities and narrows default R50/k1.5 to 29 tabs', () => {
@@ -95,6 +127,61 @@ describe('strategy lab account populations', () => {
     const changed = filterLabAccounts(allAccounts, 'factorial', 'R200', '2.5');
     expect(selectLabAccount(changed, current, true)).toBe('s03_tsmom_vol_target_B15m_R200_k2.5_100x_maker');
     expect(selectLabAccount([], current, false)).toBe('');
+  });
+});
+
+describe('new candidate and book comparison populations', () => {
+  it('keeps frozen populations unchanged while Fnew adds its own 45 identities', () => {
+    expect(filterLabAccounts(expandedAccounts, 'factorial', 'all', 'all')).toEqual(factorial);
+    expect(filterLabAccounts(expandedAccounts, 'factorial', 'R50', '1.5')).toHaveLength(29);
+    expect(filterLabAccounts(expandedAccounts, 'controls', 'R50', '1.5')).toEqual(controls);
+    expect(filterLabAccounts(expandedAccounts, 'archived', 'all', 'all')).toEqual(archived);
+    expect(filterLabAccounts(expandedAccounts, 'fnew', 'all', 'all')).toHaveLength(45);
+    expect(filterLabAccounts(expandedAccounts, 'fnew', 'R200', 'all')).toHaveLength(15);
+    expect(filterLabAccounts(expandedAccounts, 'fnew', 'all', '2.5')).toHaveLength(15);
+    expect(filterLabAccounts(expandedAccounts, 'fnew', 'R50', '1.5')).toHaveLength(5);
+  });
+
+  it('recognizes the active s33 taker identity without inferring archive from its fee suffix', () => {
+    const id = 's33_basis_momentum_1h_Fnew_R1000_k2.5_100x_taker';
+    expect(canonicalLabStrategy(id)).toBe('s33_basis_momentum_1h');
+    expect(labAccountPopulation(account(id))).toBe('fnew');
+    expect(labAccountFactors(account(id))).toEqual({ riskBudget: 'R1000', stopWidth: 2.5 });
+    expect(labAccountPopulation(account(id, { lifecycle: 'archived' }))).toBe('archived');
+  });
+
+  it('keeps all 18 book accounts separate from legacy controls and filters their treatment', () => {
+    expect(filterLabAccounts(expandedAccounts, 'microstructure', 'all', 'all')).toHaveLength(18);
+    const pair = filterLabAccounts(expandedAccounts, 'microstructure', 'R50', '1.5');
+    expect(pair).toHaveLength(2);
+    expect(pair.map(labBookGroup)).toEqual(['control', 'filter']);
+    const control = filterLabAccounts(expandedAccounts, 'microstructure', 'R50', '1.5', 'control');
+    const filtered = filterLabAccounts(expandedAccounts, 'microstructure', 'R50', '1.5', 'filter');
+    expect(control).toHaveLength(1);
+    expect(filtered).toHaveLength(1);
+    expect(canonicalLabStrategy(control[0]!)).toBe(canonicalLabStrategy(filtered[0]!));
+    expect(selectLabAccount(filtered, control[0]!.strategy_id, false)).toBe(filtered[0]!.strategy_id);
+    expect(selectedLabDetail({ account: control[0]!, orders: [], trades: [], equity_curve: [], events: [] }, filtered[0]!.strategy_id)).toBeNull();
+    expect(canonicalLabStrategy(filtered[0]!.strategy_id)).toBe('s37_vol_compression_book');
+  });
+
+  it('uses actual new-account R/k/fees and protects missing projections from legacy defaults', () => {
+    const global = { max_loss_per_trade_usdt: 50, risk_stop_pct: 0.005, fee_rate_per_side: 0.0002 };
+    const own = { max_loss_per_trade_usdt: 1000, risk_stop_atr_mult: 2.5, fee_rate_per_side: 0.0005 };
+    const candidate = account('s33_basis_momentum_1h_Fnew_R1000_k2.5_100x_taker', { execution: own });
+    expect(selectedLabExecution(candidate, global)).toBe(own);
+    const withoutProjection = account(candidate.strategy_id, {
+      definition: { fnew_design_version: 'fnew-20261012-v1', max_loss_per_trade_usdt: 1000,
+        fee_rate_per_side: 0.0005, params_frozen: { risk_stop_atr_mult: 2.5 } },
+    });
+    expect(selectedLabExecution(withoutProjection, global)).toMatchObject(own);
+    expect(selectedLabExecution(withoutProjection, global).risk_stop_pct).toBeUndefined();
+    const book = account('book_metadata_identity', {
+      definition: { microstructure_experiment_version: 'orderbook-confirmation-forward-v1', max_loss_per_trade_usdt: 200,
+        params: { risk_stop_atr_mult: 1.5 } },
+    });
+    expect(labAccountFactors(book)).toEqual({ riskBudget: 'R200', stopWidth: 1.5 });
+    expect(selectedLabExecution(book, global).max_loss_per_trade_usdt).toBe(200);
   });
 });
 

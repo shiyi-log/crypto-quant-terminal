@@ -8,6 +8,7 @@ export interface StrategyLabFactorialFactors {
   strategy?: string;
   risk_budget?: 'R50' | 'R200' | 'R1000';
   stop_width_k?: number;
+  book_group?: 'control' | 'filter';
 }
 
 export interface StrategyDefinition {
@@ -33,6 +34,12 @@ export interface StrategyDefinition {
   data_status?: string;
   factorial_design_version?: string;
   factorial_factors?: StrategyLabFactorialFactors;
+  fnew_design_version?: string;
+  fnew_factors?: StrategyLabFactorialFactors;
+  sample_population?: string;
+  microstructure_experiment_version?: string;
+  microstructure_group?: 'control' | 'filter';
+  risk_budget_scope?: string;
   max_loss_per_trade_usdt?: LabValue;
   risk_sizing_mode?: string;
   fee_rate_per_side?: LabValue;
@@ -95,6 +102,7 @@ export interface StrategyLabAccount {
   variant_of?: string;
   variant_label?: string;
   data_status?: string;
+  sample_population?: string;
   performance_scope?: string;
   funding?: string;
   slippage?: string;
@@ -127,6 +135,7 @@ export interface StrategyLabExecution {
   risk_sizing_mode?: string;
   risk_stop_pct?: LabValue;
   risk_round_trip_fee?: LabValue;
+  risk_budget_scope?: string;
   execution_universe?: string[];
   research_universe?: string[];
   execution_enabled?: boolean;

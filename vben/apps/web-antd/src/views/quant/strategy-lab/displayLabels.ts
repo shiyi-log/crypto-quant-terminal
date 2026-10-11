@@ -12,6 +12,44 @@ const reasonLabels: Readonly<Record<string, string>> = Object.freeze({
   cross_sectional_portfolio_execution_unimplemented: '横截面组合执行能力待实现',
   atr_risk_execution_pending: 'ATR 风险执行规则待接入',
   research_context_paused: '所需多币研究上下文已暂停',
+  paired_execution_pending: '配对执行规则待接入',
+  forward_data_required: '等待新方向前向数据',
+  fnew_closed_history_stale: '新方向所需已收盘行情已过期',
+  futures_warmup_incomplete: '永续行情预热尚未完成',
+  futures_data_stale: '永续行情已过期',
+  spot_warmup_incomplete: '现货行情预热尚未完成',
+  spot_data_stale: '现货行情已过期',
+  basis_spot_warmup_incomplete: '基差信号所需现货预热尚未完成',
+  basis_timestamps_not_aligned: '现货与永续 K 线时间未对齐',
+  basis_timestamps_not_exactly_synchronized: '现货与永续 K 线未精确同步',
+  basis_delta_reversion: '基差变化偏离触发回归信号',
+  basis_delta_reverted: '基差变化已回归',
+  basis_delta_sigma_zero: '基差变化的历史标准差为零',
+  no_basis_delta_extreme: '基差变化尚未达到偏离阈值',
+  invalid_quote_volume: '报价币成交额缺失或无效',
+  vwap_session_start_missing: '缺少当日 VWAP 起点数据',
+  vwap_session_volume_zero: '当日 VWAP 成交量为零',
+  frozen_vwap_anchor_day_unavailable: '冻结的 VWAP 锚定日期缺失',
+  vwap_anchor_reversion: '价格偏离 VWAP 锚点触发回归信号',
+  no_vwap_deviation: '价格尚未达到 VWAP 偏离阈值',
+  vwap_anchor_reached: '价格已回到 VWAP 锚点',
+  vwap_anchor_session_elapsed: 'VWAP 锚定交易日已结束',
+  vwap_session_end_no_entry: 'VWAP 交易日结束，不再开仓',
+  cascade_continuation_proxy: '连续同向波动触发瀑布延续假设',
+  no_cascade_continuation: '尚未触发瀑布延续信号',
+  orderbook_feature_pending: '等待订单簿特征',
+  orderbook_feature_missing: '订单簿特征缺失',
+  orderbook_feature_unavailable: '订单簿特征不可用',
+  orderbook_feature_expired: '订单簿特征已过期',
+  orderbook_confirmation_not_met: '订单簿入场确认未通过',
+  orderbook_confirmation_passed: '订单簿入场确认已通过',
+  orderbook_observation_time_unavailable: '订单簿观察时点缺失',
+  orderbook_feature_identity_mismatch: '订单簿特征与币种或周期不匹配',
+  orderbook_feature_not_available_as_of: '订单簿特征在决策时点尚未可用',
+  orderbook_feature_quality_unavailable: '订单簿特征质量不满足要求',
+  orderbook_feature_values_unavailable: '订单簿特征值缺失或无效',
+  orderbook_confirmation_not_applicable: '本根没有新入场，订单簿确认不适用',
+  waiting_published_orderbook_feature: '等待订单簿特征发布',
   breadth_context_unavailable: '市场宽度数据尚未齐备',
   breadth_direction_reversed: '市场宽度方向已反转',
   breadth_neutral: '市场宽度回到中性区',
@@ -173,6 +211,13 @@ const familyLabels: Readonly<Record<string, string>> = Object.freeze({
   'trend/weekly': '趋势 · 周线突破',
   'trend + exit-rule': '趋势 · 离场规则',
   'cross-asset/confirmation': '跨资产 · 方向确认',
+  '跨资产/价差': '跨资产 · 协整价差',
+  '基差/期限结构': '基差 · 期限结构',
+  '均值回归': '均值回归',
+  '清算/结构': '清算 · 连续波动结构',
+  '跨资产/相关性': '跨资产 · 相关性区制',
+  'orderbook/confirmation-filter': '订单簿 · 入场确认过滤',
+  'microstructure/orderbook-confirmation': '订单簿 · 入场确认过滤',
   unknown: '未知',
 });
 
@@ -211,7 +256,7 @@ export function labEventType(value: unknown): string {
 
 export function labFamily(value: unknown): string {
   const key = keyOf(value).replace(/\s*\/\s*/gu, '/');
-  return familyLabels[key] ?? '未知机制';
+  return familyLabels[key] ?? (typeof value === 'string' && /\p{Script=Han}/u.test(value) ? value.trim() : '未知机制');
 }
 
 /** A missing fill value is distinct from a known numeric zero. */

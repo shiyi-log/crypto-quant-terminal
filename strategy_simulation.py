@@ -79,6 +79,12 @@ def sample_annotation(spec: dict, payload: dict) -> dict:
     if int(stamp) < SAMPLE_QUALITY_CUTOFF_MS:
         return {"sample_quality": "stop_definition_defect_period",
                 "eligible_for_factorial_evaluation": False}
+    if spec.get("fnew_design_version") or spec.get("microstructure_experiment_version"):
+        population = ("fnew_forward" if spec.get("fnew_design_version")
+                      else "microstructure_forward")
+        return {"sample_quality": population, "eligible_for_factorial_evaluation": False,
+                "eligible_for_population_evaluation": True,
+                "sample_population": spec.get("sample_population", population)}
     factorial = bool(spec.get("factorial_design_version"))
     return {"sample_quality": "factorial_forward" if factorial else "legacy_frozen_control",
             "eligible_for_factorial_evaluation": factorial}
@@ -116,6 +122,17 @@ def _ms(value: Any, name: str = "timestamp") -> int:
 def _rule_hash(spec: dict) -> str:
     # The signal implementation owns the economic-rule identity. Execution
     # assumptions have an additional independent immutable hash below.
+    strategy_id = str(spec.get("strategy_id", ""))
+    if strategy_id.startswith(("s32_", "s33_", "s34_", "s35_", "s36_")):
+        from strategy_fnew import fnew_rule_hash, parse_fnew_identity
+
+        if parse_fnew_identity(strategy_id) is not None:
+            return fnew_rule_hash(spec)
+    if strategy_id.startswith("s37_"):
+        from strategy_microstructure import microstructure_rule_hash, parse_microstructure_identity
+
+        if parse_microstructure_identity(strategy_id) is not None:
+            return microstructure_rule_hash(spec)
     from strategy_factorial import parse_factorial_identity
 
     if parse_factorial_identity(spec.get("strategy_id")) is not None:
@@ -132,6 +149,37 @@ def _atr_execution_risk(spec: dict, fee: float) -> dict | None:
     params = spec.get("params", spec.get("params_frozen", {}))
     mode = spec.get("risk_sizing_mode")
     enabled = isinstance(params, dict) and "risk_stop_atr_mult" in params
+    if mode == "entry_pair_atr":
+        if not enabled:
+            raise ValueError("entry_pair_atr sizing requires explicit risk_stop_atr_mult")
+        if spec.get("paired_execution_policy") != "atomic-pair-equal-notional-ohlc-v1":
+            raise ValueError("entry_pair_atr requires the supported immutable paired execution policy")
+        window = _ms(params.get("atr_window", 14), "atr_window")
+        if window < 1:
+            raise ValueError("pair atr_window must be positive")
+        return {
+            "version": "independent-paper-atomic-pair-entry-atr-v1",
+            "risk_sizing_mode": "entry_pair_atr",
+            "risk_scope": "atomic_pair_portfolio",
+            "pair_atr_window": window,
+            "risk_stop_atr_mult": _number(params["risk_stop_atr_mult"], "risk_stop_atr_mult", positive=True),
+            "max_loss_per_trade_usdt": _number(spec.get("max_loss_per_trade_usdt", 50),
+                                                 "max_loss_per_trade_usdt", positive=True),
+            "risk_round_trip_fee": 4 * fee,
+            "risk_sizing": "each_leg_notional * (risk_stop_atr_mult * entry_pair_atr_return + 4 * fee_rate_per_side) <= portfolio_risk_budget",
+            "paired_execution_policy": spec["paired_execution_policy"],
+            "pair_atr_policy": "synchronous_ohlc_envelope_true_range_actual_entry_v1",
+            "entry_atr_policy": "recompute_signal_pair_ohlc_with_actual_next_open_entries_then_freeze",
+            "stop_policy": "sum(side * (close / actual_entry - 1)) <= -k * frozen_pair_atr_return;both_legs_next_open",
+            "pair_trade_count_policy": "completed_pair_is_one_experimental_sample;leg_events_are_audit_only",
+            "liquidation": {**EXECUTION_MODEL["liquidation"],
+                            "trigger": "next_open_then_closed_candle_low_high",
+                            "peer_open_exit": "synchronized_actual_open",
+                            "peer_intrabar_exit": "direction_adverse_closed_bar_extreme;unknown_simultaneous_path",
+                            "order_precedence": "whole_pair_open_bankruptcy_before_pending_orders"},
+            "risk_budget_limit": "planned_pair_stop_and_fee_only; gaps, close_confirmation, liquidation, unobserved_path and unknown costs may exceed it",
+            "atomic_atr_stop_policy": "paired_close_confirmed_aggregate_return",
+        }
     if mode not in (None, "entry_atr"):
         raise ValueError("unsupported risk_sizing_mode")
     if mode == "entry_atr" and not enabled:
@@ -382,6 +430,10 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         return state, []
     if timestamp < max(session_boundary_ms, state["observed_boundary_ms"]):
         raise ValueError("historical warmup must not enter the execution path")
+    if identity["execution"].get("risk_sizing_mode") == "entry_pair_atr":
+        return _apply_pair_closed_batch(state, spec, candles, signal, observed_at_ms,
+                                        session_boundary_ms, identity, timestamp, fingerprint,
+                                        previous)
     events: list[dict] = []
     strategy_id = state["strategy_id"]
 
@@ -756,6 +808,418 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
     return state, events
 
 
+def _pair_entry_plan(orders: list[dict], prices: dict, model: dict) -> dict | None:
+    """Freeze one portfolio risk plan, normalized by both actual entry opens."""
+    try:
+        if len(orders) != 2 or len({order["pair"] for order in orders}) != 2:
+            return None
+        evidence = orders[0].get("evidence")
+        shared = ("pair_group", "pair_legs", "pair_sides", "pair_atr_inputs", "pair_atr_window",
+                  "pair_entry_reference_prices", "pair_coefficients", "pair_entry_rho")
+        if (not isinstance(evidence, dict)
+                or any(not isinstance(order.get("evidence"), dict)
+                       or any(order["evidence"].get(key) != evidence.get(key) for key in shared)
+                       for order in orders)):
+            return None
+        legs, sides = evidence["pair_legs"], evidence["pair_sides"]
+        if (len(legs) != 2 or len(set(legs)) != 2 or set(legs) != {order["pair"] for order in orders}
+                or sides not in ([1, -1], [-1, 1])
+                or [next(order["direction"] for order in orders if order["pair"] == pair)
+                    for pair in legs] != sides
+                or not isinstance(evidence["pair_group"], str) or not evidence["pair_group"]):
+            return None
+        if (evidence["pair_atr_window"] != model["pair_atr_window"]
+                or evidence.get("risk_stop_atr_mult", model["risk_stop_atr_mult"]) != model["risk_stop_atr_mult"]):
+            return None
+        from strategy_pair_signals import compute_pair_atr_return
+
+        entry_prices = {pair: prices[pair] for pair in legs}
+        if any(_ms(row["timestamp"]) > orders[0]["signal_candle_ms"]
+               for pair in legs for row in evidence["pair_atr_inputs"][pair]):
+            return None
+        atr = _number(compute_pair_atr_return(evidence["pair_atr_inputs"], legs, sides,
+                                              entry_prices, evidence["pair_atr_window"]),
+                      "entry_pair_atr_return", positive=True)
+        k = model["risk_stop_atr_mult"]
+        denominator = k * atr + model["risk_round_trip_fee"]
+        cap = _number(model["max_loss_per_trade_usdt"] / denominator,
+                      "pair_risk_cap_notional", positive=True)
+        return {"mode": "entry_pair_atr", "pair_group": evidence["pair_group"],
+                "pair_legs": list(legs), "pair_sides": list(sides),
+                "pair_entry_prices": entry_prices, "entry_pair_atr_return": atr,
+                "pair_entry_reference_prices": copy.deepcopy(evidence["pair_entry_reference_prices"]),
+                "entry_pair_coefficients": copy.deepcopy(evidence.get("pair_coefficients")),
+                "pair_entry_rho": evidence.get("pair_entry_rho"),
+                "risk_stop_atr_mult": k, "stop_distance_pct": k * atr,
+                "max_loss_per_trade_usdt": model["max_loss_per_trade_usdt"],
+                "round_trip_fee": model["risk_round_trip_fee"],
+                "risk_cap_notional_per_leg": cap,
+                "atr_signal_candle_ms": orders[0]["signal_candle_ms"],
+                "limit_basis": "planned_pair_stop_and_fee_only"}
+    except (KeyError, TypeError, ValueError, OverflowError, StopIteration):
+        return None
+
+
+def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dict,
+                             observed_at_ms: int, session_boundary_ms: int,
+                             identity: dict, timestamp: int, fingerprint: str,
+                             previous: int | None) -> tuple[dict, list[dict]]:
+    """New pair contract only; the frozen legacy transition is left intact.
+
+    Intrabar OHLC cannot identify the instant of liquidation. An unaffected
+    peer therefore closes at its direction-adverse bar extreme, an explicit
+    conservative paper bound rather than an invented synchronized market fill.
+    """
+    model, strategy_id = identity["execution"], state["strategy_id"]
+    allowed_pairs, bar_ms = tuple(model["execution_universe"]), model["bar_ms"]
+    fee_rate, leverage = model["fee_rate_per_side"], model["leverage"]
+    events: list[dict] = []
+
+    def event(kind: str, payload: dict) -> None:
+        payload = copy.deepcopy(payload)
+        if "evidence" in payload:
+            payload["evidence"] = _audit_atr_evidence(payload["evidence"])
+        event_id = _hash([strategy_id, timestamp, kind, len(events), payload])
+        events.append({"event_id": event_id, "strategy_id": strategy_id,
+                       "event_type": kind, "candle_ms": timestamp,
+                       "observed_at_ms": observed_at_ms, "rule_hash": state["rule_hash"],
+                       "data_fingerprint": fingerprint,
+                       "payload": dict(payload, strategy_id=strategy_id)})
+
+    def cancel(order: dict, reason: str) -> None:
+        event("order_cancelled", dict(order, status="cancelled", reason=reason,
+                                       observed_at_ms=observed_at_ms))
+
+    def positions_valid() -> bool:
+        values = list(state["positions"].values())
+        if not values:
+            return True
+        if len(values) != 2:
+            return False
+        first = values[0]
+        common = ("group_id", "pair_group", "pair_legs", "pair_sides", "pair_entry_prices",
+                  "entry_pair_atr_return", "opened_candle_ms", "risk_stop_atr_mult")
+        notionals = [value["quantity"] * value["entry_price"] for value in values]
+        return (bool(first.get("group_id")) and bool(first.get("pair_group"))
+                and set(first.get("pair_legs", [])) == set(state["positions"])
+                and first.get("pair_sides") in ([1, -1], [-1, 1])
+                and all(value.get(key) == first.get(key) for value in values for key in common)
+                and all(math.isfinite(notional) and notional > 0 for notional in notionals)
+                and math.isclose(notionals[0], notionals[1], rel_tol=1e-10, abs_tol=1e-8)
+                and all(math.isclose(value.get("entry_notional", notional), notional,
+                                     rel_tol=1e-10, abs_tol=1e-8)
+                        for value, notional in zip(values, notionals, strict=True))
+                and [state["positions"][pair]["direction"] for pair in first["pair_legs"]]
+                    == first["pair_sides"])
+
+    if not positions_valid():
+        raise ValueError("atomic pair position metadata is inconsistent; refusing unhedged fills")
+    if state["positions"] and any(pair not in candles for pair in state["positions"]):
+        # Accepting a partial risk bar would advance the immutable fingerprint
+        # and reject its matching late peer as a revision. The caller must keep
+        # the original state and wait for both marks at this same timestamp.
+        raise ValueError("active atomic pair requires both synchronized candles; defer until matching peer arrives")
+
+    def close_pair(orders: list[dict], prices: dict, *, triggered: set[str] | None = None,
+                   phase: str | None = None) -> None:
+        positions = list(state["positions"].values())
+        if not positions:
+            for order in orders:
+                cancel(order, "position_already_closed")
+            return
+        if set(prices) != set(state["positions"]):
+            raise ValueError("atomic pair close requires both synchronized legs")
+        triggered = triggered or set()
+        trades = []
+        for position in positions:
+            pair = position["pair"]
+            order = next(item for item in orders if item["pair"] == pair)
+            price = prices[pair]
+            liquidation = pair in triggered
+            fee = position["quantity"] * price * fee_rate
+            gross = (-position["margin"] if liquidation else
+                     position["direction"] * position["quantity"] * (price - position["entry_price"]))
+            fees = position["entry_fee"] + fee
+            net = gross - fees
+            state["cash"] += (-fee if liquidation else position["margin"] + gross - fee)
+            state["fees_paid"] += fee
+            state["realized_pnl"] += net
+            fill_model = order.get("fill_model", EXECUTION_MODEL["fill_model"])
+            event("order_filled", dict(order, status="filled", fill_price=price,
+                  quantity=position["quantity"], fee=fee, fill_candle_ms=timestamp,
+                  observed_at_ms=observed_at_ms, liquidation=liquidation,
+                  fill_model=fill_model, simulation_fill_model=True,
+                  risk_sizing=position["risk_sizing"], pair_group=position["pair_group"]))
+            trade = {"trade_id": position["trade_id"], "pair": pair, "side": position["side"],
+                     "quantity": position["quantity"], "margin": position["margin"],
+                     "leverage": leverage, "notional": position["quantity"] * position["entry_price"],
+                     "entry_price": position["entry_price"], "exit_price": price,
+                     "opened_candle_ms": position["opened_candle_ms"], "closed_candle_ms": timestamp,
+                     "observed_at_ms": observed_at_ms, "gross_pnl": gross, "fees": fees,
+                     "net_pnl": net, "return_ratio": net / position["margin"],
+                     "entry_order_id": position["paper_order_id"], "exit_order_id": order["paper_order_id"],
+                     "group_id": position["group_id"], "pair_group": position["pair_group"],
+                     "exchange_order_id": None, "exit_reason": order["reason"],
+                     "funding": "unknown", "slippage": "unknown", "liquidation": liquidation,
+                     "liquidation_phase": phase, "fill_model": fill_model,
+                     "risk_sizing": copy.deepcopy(position["risk_sizing"]),
+                     "sample_unit": "pair_leg_audit_only", "rule_hash": state["rule_hash"]}
+            if liquidation:
+                event("liquidation", {"pair": pair, "trade_id": position["trade_id"],
+                      "liquidation_price": price, "margin": position["margin"],
+                      "liquidation_phase": phase, "pair_group": position["pair_group"]})
+            event("trade_closed", trade)
+            trades.append(trade)
+        net, gross, fees = (sum(trade[key] for trade in trades)
+                            for key in ("net_pnl", "gross_pnl", "fees"))
+        first = positions[0]
+        state["closed_trade_count"] += 1
+        state["winning_trade_count"] += int(net > 0)
+        state["positions"] = {}
+        event("pair_trade_closed", {"trade_id": "pair-trade-" + first["group_id"],
+              "pair_group": first["pair_group"], "pair_legs": first["pair_legs"],
+              "group_id": first["group_id"], "opened_candle_ms": first["opened_candle_ms"],
+              "closed_candle_ms": timestamp, "observed_at_ms": observed_at_ms,
+              "gross_pnl": gross, "fees": fees, "net_pnl": net,
+              "margin": sum(position["margin"] for position in positions),
+              "return_ratio": net / sum(position["margin"] for position in positions),
+              "exit_reason": orders[0]["reason"], "liquidation": bool(triggered),
+              "liquidation_phase": phase, "sample_unit": "completed_atomic_pair",
+              "legs": trades, "risk_sizing": first["risk_sizing"],
+              "funding": "unknown", "slippage": "unknown",
+              "intrabar_peer_timing": "unknown_conservative_adverse_extreme" if phase == "intrabar" else None})
+
+    forced_closed = set()
+
+    def force_pair(phase: str) -> None:
+        nonlocal forced_closed
+        if not state["positions"] or any(pair not in candles for pair in state["positions"]):
+            return
+        triggered = set()
+        for pair, position in state["positions"].items():
+            field = ("open" if phase == "open" else
+                     "low" if position["direction"] == 1 else "high")
+            price = candles[pair][field]
+            if (price - position["liquidation_price"]) * position["direction"] <= 0:
+                triggered.add(pair)
+        if not triggered:
+            return
+        prices, orders = {}, []
+        for pair, position in state["positions"].items():
+            price = (position["liquidation_price"] if pair in triggered else
+                     candles[pair]["open"] if phase == "open" else
+                     candles[pair]["low" if position["direction"] == 1 else "high"])
+            prices[pair] = price
+            order_id = _hash([strategy_id, timestamp, pair, "whole_pair_liquidation", position["trade_id"]])
+            fill_model = ("open_bankruptcy_price" if pair in triggered and phase == "open" else
+                          "intrabar_liquidation_price" if pair in triggered else
+                          "synchronized_peer_open_after_leg_liquidation" if phase == "open" else
+                          "conservative_peer_bar_extreme_after_leg_liquidation")
+            orders.append({"order_id": order_id, "paper_order_id": "pair-liq-" + order_id,
+                           "pair": pair, "kind": "exit", "status": "forced",
+                           "group_id": position["group_id"], "atomic": True,
+                           "reason": "liquidation" if pair in triggered else "paired_peer_liquidation",
+                           "fill_model": fill_model})
+        forced_closed.update(state["positions"])
+        close_pair(orders, prices, triggered=triggered, phase=phase)
+
+    force_pair("open")
+    opens = {pair: candle["open"] for pair, candle in candles.items()}
+    _mark(state, opens)
+    pending, state["pending_orders"] = state["pending_orders"], []
+    grouped = {}
+    for order in pending:
+        grouped.setdefault(order.get("group_id") or order["order_id"], []).append(order)
+    fresh = observed_at_ms - (timestamp + bar_ms) <= model["max_decision_lag_ms"]
+    eligible = []
+    for orders in grouped.values():
+        reason = None
+        if any(order["pair"] in forced_closed and order["kind"] == "exit" for order in orders):
+            reason = "superseded_by_whole_pair_open_liquidation"
+        elif any(order["signal_candle_ms"] < session_boundary_ms for order in orders):
+            reason = "restart_cancel"
+        elif previous is None or timestamp != previous + bar_ms:
+            reason = "gap_cancel"
+        elif any(order["expected_fill_candle_ms"] != timestamp for order in orders):
+            reason = "missed_fill_bar"
+        elif any(order["pair"] not in candles for order in orders):
+            reason = "atomic_leg_missing"
+        elif not fresh:
+            reason = "stale_closed_bar"
+        elif any(len([item for item in orders if item["kind"] == kind]) not in (0, 2)
+                 for kind in ("entry", "exit")):
+            reason = "atomic_order_group_incomplete"
+        if reason:
+            for order in orders:
+                cancel(order, reason)
+        else:
+            eligible.append(orders)
+    for orders in eligible:
+        exits = [order for order in orders if order["kind"] == "exit"]
+        if exits:
+            if set(order["pair"] for order in exits) != set(state["positions"]):
+                for order in exits:
+                    cancel(order, "atomic_exit_position_mismatch")
+                continue
+            close_pair(exits, {order["pair"]: opens[order["pair"]] for order in exits})
+    for orders in eligible:
+        entries = [order for order in orders if order["kind"] == "entry"]
+        if not entries:
+            continue
+        plan = _pair_entry_plan(entries, opens, model)
+        valuation = _mark(state, opens)
+        remaining = model["target_exposure"] * valuation["equity"] - valuation["margin_used"]
+        reason = ("execution_disabled" if model.get("execution_enabled") is False else
+                  "entry_pair_atr_unavailable_or_invalid" if plan is None else
+                  "pair_account_already_occupied" if state["positions"] else
+                  "account_budget_exhausted" if remaining <= 0 or state["cash"] <= 0 else None)
+        if reason:
+            for order in entries:
+                event("order_rejected", dict(order, status="rejected", reason=reason))
+            continue
+        weight = min(order.get("size_multiplier", 1) for order in entries)
+        margin = min(remaining / (2 * (1 + model["target_exposure"] * leverage * fee_rate)),
+                     plan["risk_cap_notional_per_leg"] / leverage,
+                     state["cash"] / (2 * (1 + leverage * fee_rate))) * weight
+        if margin <= 0:
+            for order in entries:
+                event("order_rejected", dict(order, status="rejected", reason="zero_sizing"))
+            continue
+        notional = margin * leverage
+        frozen = dict(plan, actual_notional_per_leg=notional,
+                      planned_loss_usdt=notional * (plan["stop_distance_pct"] + plan["round_trip_fee"]),
+                      portfolio_margin=2 * margin, portfolio_gross_notional=2 * notional)
+        for order in entries:
+            pair, direction, price = order["pair"], order["direction"], opens[order["pair"]]
+            fee, quantity = notional * fee_rate, notional / price
+            state["cash"] -= margin + fee
+            state["fees_paid"] += fee
+            position = {"strategy_id": strategy_id, "pair": pair, "direction": direction,
+                        "side": "long" if direction == 1 else "short", "quantity": quantity,
+                        "leverage": leverage, "notional": notional, "entry_price": price,
+                        "entry_notional": notional,
+                        "mark_price": price, "margin": margin, "entry_fee": fee,
+                        "liquidation_price": price * (1 - direction / leverage),
+                        "opened_candle_ms": timestamp, "entry_evidence": copy.deepcopy(order["evidence"]),
+                        "group_id": order["group_id"], "paper_order_id": order["paper_order_id"],
+                        "exchange_order_id": None, "trade_id": "trade-" + order["order_id"],
+                        "unrealized_pnl": 0.0, "risk_sizing": copy.deepcopy(frozen),
+                        **{key: copy.deepcopy(plan[key]) for key in
+                           ("pair_group", "pair_legs", "pair_sides", "pair_entry_prices",
+                            "entry_pair_atr_return", "pair_entry_reference_prices",
+                            "entry_pair_coefficients", "pair_entry_rho", "risk_stop_atr_mult")}}
+            state["positions"][pair] = position
+            event("order_filled", dict(order, status="filled", fill_price=price,
+                  quantity=quantity, margin=margin, leverage=leverage, notional=notional,
+                  liquidation_price=position["liquidation_price"], fee=fee,
+                  fill_candle_ms=timestamp, observed_at_ms=observed_at_ms,
+                  fill_model=EXECUTION_MODEL["fill_model"], simulation_fill_model=True,
+                  risk_sizing=frozen, pair_group=plan["pair_group"]))
+            event("position_opened", position)
+    force_pair("intrabar")
+    closes = {pair: candle["close"] for pair, candle in candles.items()}
+    valuation = _mark(state, closes)
+    state["warmup"] = _warmup(signal, state["warmup"], allowed_pairs)
+    state["status"] = ("execution_blocked" if model.get("execution_enabled") is False else
+                       "running" if signal.get("ready") else "warming_up")
+    targets = signal.get("signals") or {}
+    group = copy.deepcopy(signal.get("group") or {})
+    active = next(iter(state["positions"].values()), None)
+    if active and all(pair in closes for pair in active["pair_legs"]):
+        pair_return = sum(side * (closes[pair] / active["pair_entry_prices"][pair] - 1)
+                          for pair, side in zip(active["pair_legs"], active["pair_sides"], strict=True))
+        if pair_return <= -active["risk_stop_atr_mult"] * active["entry_pair_atr_return"]:
+            targets = copy.deepcopy(targets)
+            group = {"atomic": True, "legs": active["pair_legs"], "pair_group": active["pair_group"]}
+            for pair in active["pair_legs"]:
+                targets[pair] = {"target_side": 0, "candle_utc": timestamp,
+                                 "reason": "pair_stop_loss_close_confirmed", "size_multiplier": 1,
+                                 "evidence": {"pair_return": pair_return,
+                                              "entry_pair_atr_return": active["entry_pair_atr_return"],
+                                              "pair_group": active["pair_group"]}}
+    legs = group.get("legs", active["pair_legs"] if active else [])
+    decisions = []
+    for pair in legs:
+        info = targets.get(pair)
+        if info is None or pair not in allowed_pairs:
+            continue
+        target = info.get("target_side")
+        if target is not None and (isinstance(target, bool) or target not in (-1, 0, 1)):
+            raise ValueError("target_side must be -1/0/1/null")
+        if info.get("candle_utc") is not None and _ms(info["candle_utc"]) != timestamp:
+            raise ValueError("selected pair signal timestamp does not match closed bar")
+        multiplier = _number(info.get("size_multiplier", 1), "size_multiplier")
+        if not 0 <= multiplier <= 1:
+            raise ValueError("size_multiplier must be in [0,1]")
+        decisions.append({"pair": pair, "target_side": target, "reason": info.get("reason", "signal"),
+                          "evidence": _audit_atr_evidence(info.get("evidence", {})),
+                          "size_multiplier": multiplier})
+    sides = [decision["target_side"] for decision in decisions]
+    valid = (not decisions or bool(group.get("atomic")) and len(legs) == 2
+             and len(set(legs)) == 2 and len(decisions) == 2
+             and sides in ([None, None], [0, 0], [1, -1], [-1, 1]))
+    event("decision", {"ready": bool(signal.get("ready")), "warmup": state["warmup"],
+                       "signals": decisions, "group": group or None,
+                       "signal_fingerprint": _hash(_audit_atr_evidence(signal))})
+    if not valid:
+        event("entry_denied", {"reason": "atomic_signal_group_incomplete_or_invalid", "group": group})
+        decisions = []
+    if active and decisions and set(legs) != set(state["positions"]):
+        event("entry_denied", {"reason": "pair_account_already_occupied", "group": group})
+        decisions = []
+    entry_requested = bool(decisions and sides in ([1, -1], [-1, 1]))
+    same_directions = bool(active and decisions and all(
+        state["positions"][decision["pair"]]["direction"] == decision["target_side"] for decision in decisions))
+    new_group_id = _hash([strategy_id, timestamp, "atomic_pair", legs])
+    entry_denied = None
+    if entry_requested and not same_directions:
+        proposed = [dict(decision, direction=decision["target_side"], signal_candle_ms=timestamp)
+                    for decision in decisions]
+        entry_denied = ("execution_disabled" if model.get("execution_enabled") is False else
+                        "warmup_or_stale_or_missing_data" if not signal.get("ready") or not fresh
+                            or any(pair not in candles for pair in legs) else
+                        "entry_pair_atr_unavailable_or_invalid" if _pair_entry_plan(proposed, closes, model) is None
+                        else None)
+        if entry_denied:
+            for decision in decisions:
+                event("entry_denied", dict(decision, reason=entry_denied))
+    for decision in decisions:
+        pair, target = decision["pair"], decision["target_side"]
+        if target is None or same_directions:
+            continue
+        existing = state["positions"].get(pair)
+        intents = []
+        if existing:
+            intents.append(("exit", existing["direction"], existing["group_id"]))
+        if target and entry_denied is None:
+            intents.append(("entry", target, new_group_id))
+        for kind, direction, group_id in intents:
+            order_id = _hash([strategy_id, timestamp, pair, kind, direction, group_id])
+            order = dict(decision, order_id=order_id, paper_order_id="pair-order-" + order_id,
+                         exchange_order_id=None, direction=direction, kind=kind, status="pending",
+                         signal_candle_ms=timestamp, expected_fill_candle_ms=timestamp + bar_ms,
+                         observed_at_ms=observed_at_ms, signal_observed_at_ms=observed_at_ms,
+                         group_id=group_id, atomic=True, rule_hash=state["rule_hash"],
+                         data_fingerprint=fingerprint, fill_model=EXECUTION_MODEL["fill_model"],
+                         side="long" if direction == 1 else "short",
+                         buy_sell="buy" if (kind == "entry") == (direction == 1) else "sell")
+            state["pending_orders"].append(order)
+            event("order_submitted", order)
+    valuation = _mark(state)
+    state["peak_equity"] = max(state["peak_equity"], valuation["equity"])
+    state["max_drawdown_ratio"] = max(state["max_drawdown_ratio"], 1 - valuation["equity"] / state["peak_equity"])
+    state["last_candle_ms"], state["last_candle_fingerprint"] = timestamp, fingerprint
+    state["last_observed_at_ms"] = observed_at_ms
+    event("equity_snapshot", dict(valuation, timestamp=timestamp, observed_at_ms=observed_at_ms,
+          cash=state["cash"], realized_pnl=state["realized_pnl"], fees_paid=state["fees_paid"],
+          open_position_count=len(state["positions"])))
+    expected = model["initial_capital"] + state["realized_pnl"] + valuation["unrealized_pnl"] - valuation["open_entry_fees"]
+    if (not math.isfinite(valuation["equity"]) or not math.isfinite(state["cash"])
+            or state["cash"] < -1e-7 or abs(expected - valuation["equity"]) > 1e-6):
+        raise ValueError("invalid pair account capital; refusing to commit simulation batch")
+    return state, events
+
+
 class StrategySimulation:
     """Storage adapter: one row lock and transaction per independent account."""
 
@@ -1011,9 +1475,14 @@ class StrategySimulation:
             events = conn.execute("""SELECT event_id,event_type,candle_ms,observed_at_ms,rule_hash,
                 data_fingerprint,payload FROM strategy_sim_events WHERE strategy_id=%s
                 ORDER BY sequence_id DESC LIMIT %s""", (strategy_id, limit)).fetchall()
-            trade_rows = conn.execute("""SELECT payload FROM strategy_sim_events
-                WHERE strategy_id=%s AND event_type='trade_closed' ORDER BY sequence_id DESC LIMIT %s""",
-                (strategy_id, limit)).fetchall()
+            if (row.get("execution") or {}).get("risk_sizing_mode") == "entry_pair_atr":
+                trade_rows = conn.execute("""SELECT payload FROM strategy_sim_events
+                    WHERE strategy_id=%s AND event_type='pair_trade_closed' ORDER BY sequence_id DESC LIMIT %s""",
+                    (strategy_id, limit)).fetchall()
+            else:
+                trade_rows = conn.execute("""SELECT payload FROM strategy_sim_events
+                    WHERE strategy_id=%s AND event_type='trade_closed' ORDER BY sequence_id DESC LIMIT %s""",
+                    (strategy_id, limit)).fetchall()
             equity_rows = conn.execute("""SELECT payload FROM strategy_sim_events
                 WHERE strategy_id=%s AND event_type='equity_snapshot' ORDER BY sequence_id DESC LIMIT %s""",
                 (strategy_id, limit)).fetchall()

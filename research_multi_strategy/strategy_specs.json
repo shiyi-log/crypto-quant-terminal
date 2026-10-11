@@ -3431,7 +3431,21 @@
         "content": "s31 资金费 Delta 中性 Carry",
         "reason": "DSH 独立复算：用正确两腿成本 0.08% 后，2026 年 30d/7d 调仓年化转负（−0.05%/−1.32%），14d 仅 +0.62%。优势从 2024 的 ~11% 衰减到 0 附近。"
       }
-    ]
+    ],
+    "Fnew_20261012": {
+      "purpose": "填补机制空白（价差/基差/量加权锚/清算顺势/相关性）",
+      "created": "2026-10-12",
+      "by": "DSH",
+      "members": [
+        "s32_cointegration_spread_1h",
+        "s33_basis_momentum_1h",
+        "s34_vwap_anchor_reversion_15m",
+        "s35_cascade_continuation_15m",
+        "s36_correlation_regime_1h"
+      ],
+      "note": "全部标前向研究假设；禁止标盈利/通过/可用；禁止补造历史模拟成交",
+      "status": "【候选提案】未实现 —— 由 Codex 决定是否落地"
+    }
   },
   "generation_3": {
     "rationale": "第 1 代（5m/15m 单信号）经扫描全灭；第 2 代转向大目标。第 3 代针对本轮最硬的证据设计：实测策略入场 MFE(0.0556%) 劣于随机入场 MFE(0.0954%)，说明【入场信号本身在选坏时点】。所以第 3 代的核心不是换离场、不是调阈值，而是【提高入场的证据门槛】。",
@@ -4327,6 +4341,21 @@
         "effective_n": 1.1
       },
       "note": "扩到三币把有效独立数从 ~1.1 提到 1.44，提升有限（加密同涨同跌）"
+    },
+    "data_availability_verified": {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "BTC_ETH_TRX": {
+        "15m": "各 97,411 根（2024-01→2026-10）",
+        "1h": "各 24,352",
+        "4h": "各 6,085",
+        "1d": "各 2,462~2,591"
+      },
+      "spot_5m": "3 币 · 873,771 行 → 基差动量可做",
+      "spot_1h": "15 币 · 364,095 行",
+      "ticks": "2,543,808 行",
+      "orderbooks": "4,136,704 行",
+      "note": "TRX 已补齐到全周期（早先只有 200 根 15m，现 97,412）"
     }
   },
   "data_pipeline_findings": {
@@ -4755,6 +4784,333 @@
       "rule_hash 迁移/重建（新门控会让旧 definition 抛错）",
       "名义反解 + R 档接线",
       "git 基线提交（核心 .py/测试/文档仍未版本化）"
+    ]
+  },
+  "mechanism_clusters_20261012": {
+    "created": "2026-10-12",
+    "by": "DSH",
+    "purpose": "族级裁定以突破 3 币约束下的样本瓶颈",
+    "rule_doc": "research_multi_strategy/PREREGISTRATION.md §10",
+    "clusters": {
+      "F1_trend_momentum": {
+        "members": [
+          "s03_tsmom_vol_target",
+          "s09_trend_pullback",
+          "s11_tsmom_bollinger_pullback",
+          "s12_surge_expansion_breakout",
+          "s13_daily_trend_multi_horizon",
+          "s22_dual_confirmation_trend",
+          "s23_triple_confirmation_breakout",
+          "s25_vol_regime_momentum",
+          "s26_surge_gated_trend",
+          "s28_weekly_breakout",
+          "s29_trend_with_trailing"
+        ],
+        "common": "趋势方向 + 突破/回踩入场",
+        "⚠️": "最被否证的族（内部+外部三源收敛），但成员最多"
+      },
+      "F2_cross_asset_spread": {
+        "members": [
+          "s04_btc_eth_pairs",
+          "s10_lead_lag_btc_eth",
+          "s30_dual_asset_confirmation",
+          "s32_cointegration_spread_1h",
+          "s36_correlation_regime_1h"
+        ],
+        "common": "相对强弱/价差/相关性"
+      },
+      "F3_mean_reversion": {
+        "members": [
+          "s05_bollinger_fade",
+          "s06_volume_climax_reversal",
+          "s17_overnight_range_fade",
+          "s21_liquidation_cascade_fade",
+          "s27_long_horizon_mean_reversion",
+          "s34_vwap_anchor_reversion_15m"
+        ],
+        "common": "价格偏离后押回归"
+      },
+      "F4_range_breakout": {
+        "members": [
+          "s01_orb_breakout",
+          "s02_dual_thrust"
+        ],
+        "common": "日内区间上下沿突破"
+      },
+      "F5_volatility_volume": {
+        "members": [
+          "s07_surge_continuation",
+          "s14_vol_compression_release",
+          "s35_cascade_continuation_15m"
+        ],
+        "common": "波动率或量能状态门控"
+      },
+      "F6_structure_drawdown": {
+        "members": [
+          "s08_wick_rejection",
+          "s18_drawdown_recovery"
+        ],
+        "common": "K 线形状 / 路径回撤"
+      }
+    },
+    "method": "族内等权合成单一组合 → 每族只做一次检验 → 块自助法处理自相关 → Bonferroni/BH 校正（6 次检验）",
+    "verdict_rule": {
+      "significant_positive": "族进候选 → 族内逐个策略单独验证",
+      "significant_negative": "族进证伪 → 仍需 DSH+Codex 共同确认",
+      "not_significant": "保持未证实 → 不得归档"
+    },
+    "does_not_replace": "单策略裁定；族显著不等于可上线（人工闸门不变）",
+    "limitations": [
+      "族的机制同一性是主观判断",
+      "等权合成是建模选择",
+      "族级不显著≠族内每个都不行（可能相互抵消）"
+    ],
+    "frozen": "族定义与成员写死；任何变更走 §8 修订流程并留 revision",
+    "method_corrected_20261012": {
+      "my_first_draft_WRONG": "合成族组合（等权）→ 实测仅 470 笔成交，比单个成员慢 20 倍（相关反向成员相互抵消）",
+      "correct_method": "合并族内成交（不合成组合）+ 聚类稳健标准误（按时间块聚类）",
+      "measured_15m_btc": {
+        "merged_trades": 25855,
+        "naive_se_pct": 0.00648,
+        "cluster_se_pct": 0.01347,
+        "design_effect": 4.3,
+        "effective_sample": 5982,
+        "gross_per_trade_pct": 0.00652,
+        "net_per_trade_pct": -0.03348
+      },
+      "comparison": {
+        "composite_470": 470,
+        "naive_25855": "虚增 4.3 倍",
+        "cluster_corrected": 5982
+      },
+      "discipline": "设计效应必须实测，不得假设；每次族级裁定落盘: 合并样本数·朴素SE·聚类SE·设计效应·有效样本量",
+      "still_negative_note": "实测该族净均 -0.03348%（扣 0.04% 后）→ 再次印证 15m 高换手在散户成本下不可行"
+    }
+  },
+  "strategy_proposals_by_dsh": {
+    "date": "2026-10-12",
+    "by": "DSH",
+    "role": "DSH 只负责【寻找】方向；规格与实现由 Codex 落地",
+    "status": "【候选提案 · 尚未实现】—— 不是已冻结规格，不计入账户数",
+    "candidates": [
+      {
+        "strategy_id": "s32_cointegration_spread_1h",
+        "name": "协整价差回归（1h · 三币对）",
+        "family": "跨资产/价差",
+        "timeframe": "1h",
+        "universe": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT",
+          "TRX/USDT:USDT"
+        ],
+        "mechanism": "对三币的每一对做滚动协整检验（ADF 残差）；协整成立时计算价差 z-score，|z|≥2.0 反向入场（做多被低估腿、做空被高估腿，等名义），|z|≤0.5 回归离场。⚠️ 与 s04 的区别: s04 是【收益相对强弱+等名义】，本条是【协整价差+统计偏离】；与已证伪的『横截面中性』区别: 那是 20 币排序，本条是 2 币协整，机制不同源。",
+        "why_different": "外部学术支持最强的一族: copula 配对论文（26,257 小时 · 10 币）显示market-neutral 版最大回撤 <20%，远优于趋势族；且基线成本 0.08% 往返有学术背书。我方 29 项里只有 s04 一个粗糙单对，真正的价差族是空白。",
+        "cost_note": "中性可挂限价单 → maker 0.04% 往返；目标价差移动 ≥0.48%（12×成本）",
+        "forward_hypothesis": true,
+        "status": "forward_research_hypothesis",
+        "not_profit_claim": true,
+        "params_frozen": {
+          "z_entry": 2.0,
+          "z_exit": 0.5,
+          "adf_window": 500,
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        },
+        "min_warmup_bars": 520,
+        "execution_universe": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT",
+          "TRX/USDT:USDT"
+        ],
+        "stop_spec": {
+          "type": "atr_hard_stop_close_confirmed",
+          "k": 1.5,
+          "notional": "max_loss/(k*ATR/E+0.0004)",
+          "note": "配对策略为原子双腿，止损需配对级（s04 同类问题）；未定前标 blocked"
+        },
+        "author": "DSH",
+        "created": "2026-10-12",
+        "evidence_source": "research_multi_strategy/EXTERNAL_DIRECTIONS_20261012.md"
+      },
+      {
+        "strategy_id": "s33_basis_momentum_1h",
+        "name": "基差动量（1h · 永续-现货）",
+        "family": "基差/期限结构",
+        "timeframe": "1h",
+        "universe": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT",
+          "TRX/USDT:USDT"
+        ],
+        "mechanism": "计算 basis = (perp_close - spot_close)/spot_close 及其滚动变化率 Δbasis；Δbasis 显著为正（基差扩张）时做多永续/做空现货对冲后……⚠️ 修正: 单向赌 basis 变化，即 Δbasis>k×σ 时做空永续（押基差回落）、Δbasis<-k×σ 时做多永续。用 ATR-based 止损。",
+        "why_different": "与已证伪的资金费 carry 不同: carry 是【收割基差水平】（赚持有期资金费），本条是【交易基差变化率】（赚方向性回归），持有期短、不依赖资金费累积。机制不同源。",
+        "data_note": "spot 5m 3 币 873,771 行 + futures 5m 884,212 行 → 可聚合到 1h",
+        "cost_note": "单腿永续（不做现货腿）→ 2 次成交 → taker 0.10% 往返；目标移动 ≥1.2%",
+        "forward_hypothesis": true,
+        "status": "forward_research_hypothesis",
+        "not_profit_claim": true,
+        "params_frozen": {
+          "k_sigma": 2.0,
+          "sigma_window": 100,
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        },
+        "min_warmup_bars": 120,
+        "execution_universe": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT",
+          "TRX/USDT:USDT"
+        ],
+        "author": "DSH",
+        "created": "2026-10-12",
+        "evidence_source": "research_multi_strategy/EXTERNAL_DIRECTIONS_20261012.md"
+      },
+      {
+        "strategy_id": "s34_vwap_anchor_reversion_15m",
+        "name": "成交量加权锚定回归（15m）",
+        "family": "均值回归",
+        "timeframe": "15m",
+        "universe": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT",
+          "TRX/USDT:USDT"
+        ],
+        "mechanism": "以当日累计成交量加权均价（VWAP）为锚；价格偏离 VWAP 超过 k×ATR 时反向入场，回归到 VWAP±0.25×ATR 离场。⚠️ 与 s05 布林带区别: 锚点是【成交量加权】而非简单均线，对成交量分布敏感。",
+        "why_different": "VWAP 锚定是实务常用但项目 29 项未覆盖；锚点机制与 s05（等权均线）不同源。",
+        "cost_note": "⚠️ 15m 高换手 → 必须先过成本门槛；若单笔移动中位 <12×成本则判定不可行",
+        "forward_hypothesis": true,
+        "status": "forward_research_hypothesis",
+        "not_profit_claim": true,
+        "params_frozen": {
+          "k_atr": 2.0,
+          "exit_frac": 0.25,
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        },
+        "min_warmup_bars": 60,
+        "execution_universe": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT",
+          "TRX/USDT:USDT"
+        ],
+        "author": "DSH",
+        "created": "2026-10-12",
+        "evidence_source": "research_multi_strategy/EXTERNAL_DIRECTIONS_20261012.md"
+      },
+      {
+        "strategy_id": "s35_cascade_continuation_15m",
+        "name": "清算瀑布顺势（15m）",
+        "family": "清算/结构",
+        "timeframe": "15m",
+        "universe": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "mechanism": "与 s21_liquidation_cascade_fade 【镜像】: 用「连续 K 根同向 + 累计幅度超阈值」识别疑似强平瀑布，判为【趋势加速】而非衰竭，顺瀑布方向入场，持有 H 根。",
+        "why_different": "s21 赌衰竭反转，本条赌延续 —— 对同一事件的两个相反假设，是【独立的赌注方向】而非同机制变体。可行则说明瀑布有动量，不可行则说明有反转，两者之一成立即可裁定。",
+        "cost_note": "15m 高换手 → 同 s34 的成本门槛约束",
+        "forward_hypothesis": true,
+        "status": "forward_research_hypothesis",
+        "not_profit_claim": true,
+        "params_frozen": {
+          "run_bars": 3,
+          "cum_move_atr": 2.0,
+          "H": 8,
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        },
+        "min_warmup_bars": 60,
+        "execution_universe": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "author": "DSH",
+        "created": "2026-10-12",
+        "evidence_source": "research_multi_strategy/EXTERNAL_DIRECTIONS_20261012.md"
+      },
+      {
+        "strategy_id": "s36_correlation_regime_1h",
+        "name": "相关性 regime 切换（1h）",
+        "family": "跨资产/相关性",
+        "timeframe": "1h",
+        "universe": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "mechanism": "滚动计算 BTC-ETH 收益率相关性 ρ（窗口 W）；当 ρ 从高位快速下行（去相关）时，押注【相关性继续下行】→ 做多两者价差的绝对值扩张（多强势腿、空弱势腿，等名义）；ρ 回升到阈值离场。交易的是【相关性结构】而非价格方向。",
+        "why_different": "全新维度: 29 项里没有任何一条以【相关性】为交易标的。机制不同源。",
+        "cost_note": "中性双腿 → maker 0.04% 往返；目标价差扩张 ≥0.48%",
+        "forward_hypothesis": true,
+        "status": "forward_research_hypothesis",
+        "not_profit_claim": true,
+        "params_frozen": {
+          "rho_window": 168,
+          "rho_drop": 0.15,
+          "rho_exit": 0.05,
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        },
+        "min_warmup_bars": 180,
+        "execution_universe": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "author": "DSH",
+        "created": "2026-10-12",
+        "evidence_source": "research_multi_strategy/EXTERNAL_DIRECTIONS_20261012.md"
+      },
+      {
+        "strategy_id": "s37_orderbook_microstructure_filter",
+        "status": "【方向交付·待 Codex 实现】",
+        "role_note": "用户分工: DSH 找方向+验证，Codex 实现",
+        "mechanism": "订单簿微观结构特征（OBI 多档/相对价差/深度斜率/逆向选择代理）作为【K 线信号的入场确认过滤器】，而非高频交易信号",
+        "why_different": "已证伪的『订单流方向』用【成交流失衡】(flow_imbal/taker_buy_base, 5m 聚合)；本条用【订单簿深度/价差/逆向选择】(tick 级 20 档快照) → 不同构造",
+        "external_evidence": {
+          "paper": "arXiv 2602.00776 Explainable Patterns in Cryptocurrency Microstructure",
+          "data": "Binance Futures 订单簿+成交 · 1 秒频率 · 2022-01-01→2025-10-12",
+          "findings": [
+            "特征预测重要性跨资产稳定、SHAP 结构相似",
+            "连接微观结构理论: OBI/spread/adverse selection",
+            "top-of-book taker 与 fixed-depth maker 双回测验证可交易性",
+            "闪崩稳健性分析验证逆向选择理论"
+          ],
+          "related": "Order-Flow Toxicity paper 指出『订单流失衡有效、波动率类指标无效』"
+        },
+        "our_data_feasibility": {
+          "orderbooks": {
+            "BTC": "2,040,937 行",
+            "ETH": "2,093,193 行",
+            "TRX": "6,971 行",
+            "depth": "双侧各 20 档 [价格,数量]",
+            "cadence": "中位 102 ms（≈10 Hz）",
+            "coverage": "2026-10-08 22:23 → 2026-10-11 17:43（仅 2.8 天）",
+            "live_inflow": "BTC 最近1h 34,442 条 · 最近10min 5,859；ETH 34,802/5,844；TRX 7,089/2,585"
+          },
+          "ticks": {
+            "BTC": "1,300,932",
+            "ETH": "1,245,159",
+            "TRX": "927"
+          }
+        },
+        "critical_constraint": "⚠️ 不能做高频: 我实测 15m 毛边际 0.83 bp vs 最便宜成本 4 bp（1/4.8）→ 必须做【低频确认版】: 交易频率 = K 线信号频率（1h/4h），订单簿只做入场过滤",
+        "design_options": [
+          "(a) 过滤器: K线信号 + 订单簿阈值 → 才入场",
+          "(b) 门控 regime: 订单簿特征定义 regime，只在特定 regime 内做 K 线信号"
+        ],
+        "features": [
+          "OBI_k k∈{1,5,20}",
+          "相对价差 (ask1-bid1)/mid",
+          "深度斜率",
+          "逆向选择代理"
+        ],
+        "verification_requirements": [
+          "特征值落盘可查",
+          "决策事件里能看到订单簿特征值（否则无法确认真在用）",
+          "⚠️ 必须有【有过滤器 vs 无过滤器】对照组，否则无法归因",
+          "标前向研究假设，禁止标盈利/通过/可用"
+        ],
+        "why_forward_only": "历史仅 2.8 天 → 无法回测 → 只能前向验证（正合用户『必须有实盘模拟证据』要求)"
+      }
     ]
   }
 }

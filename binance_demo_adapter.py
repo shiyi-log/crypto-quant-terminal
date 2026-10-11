@@ -49,6 +49,7 @@ REQUEST_COSTS = {
     ("fapiPrivate", "GET", "commissionRate"): {"cost": 20},
     ("fapiPrivateV3", "GET", "positionRisk"): {"cost": 5},
     ("fapiPrivateV3", "GET", "account"): {"cost": 5},
+    ("fapiPrivate", "POST", "order/test"): {"cost": 1},
     ("fapiPrivate", "POST", "order"): {"cost": 4},
     ("fapiPrivate", "DELETE", "order"): {"cost": 1},
 }
@@ -162,6 +163,8 @@ def _request_allowed(path: str, api: str, method: str) -> None:
     permitted = ((api == "fapiPublic" and method == "GET"
                   and path in {"exchangeInfo", "time", "premiumIndex"})
                  or (method == "GET" and (api, path) in _PRIVATE_GET)
+                 or (api == "fapiPrivate" and path == "order/test"
+                     and method == "POST")
                  or (api == "fapiPrivate" and path == "order"
                      and method in {"POST", "DELETE"}))
     if not permitted:
@@ -582,6 +585,46 @@ class BinanceDemoAdapter:
                 "assets": sanitize_response(raw.get("assets", [])),
                 "positions": sanitize_response(raw.get("positions", [])),
                 "raw": sanitize_response(raw)}
+
+    def test_limit_order(self, pair: str, side: str, quantity: Any, price: Any,
+                         *, position_side: str = "BOTH") -> dict:
+        """Validate a signed LIMIT/GTC request without sending it to matching.
+
+        Binance's order/test endpoint checks the request but creates no order.
+        Success verifies this test request, not real submission, margin checks,
+        or fills.  This diagnostic is allowed in read-only mode and neither
+        claims a client ID nor changes the ordinary submission gate.
+        """
+        self._guard_client()
+        if not self._credentials_ready:
+            raise DemoSafetyError("explicit Demo credentials are required")
+        symbol = _symbol(pair)
+        if side not in {"buy", "sell"}:
+            raise DemoSafetyError("invalid order side")
+        if position_side not in ("BOTH", "LONG", "SHORT"):
+            raise DemoSafetyError("invalid position side")
+        qty, px = self.validate_order(pair, quantity, price)
+        raw = self._call("order/test", "fapiPrivate", "POST", {
+            "symbol": symbol, "side": side.upper(), "type": "LIMIT",
+            "timeInForce": "GTC", "quantity": qty, "price": px,
+            "positionSide": position_side,
+        })
+        # Demo also returns a fully empty order-shaped template.  Accept only
+        # the observed zero/empty shape, never an actual order or an unfamiliar
+        # response.  Exact types prevent bool False from passing as integer 0.
+        empty_template = {
+            "orderId": 0, "symbol": "", "status": "", "clientOrderId": "",
+            "price": "", "origQty": "", "executedQty": "", "timeInForce": "",
+            "type": "", "reduceOnly": False, "closePosition": False, "side": "",
+            "stopPrice": "", "priceProtect": False, "origType": "", "updateTime": 0,
+        }
+        if (not isinstance(raw, dict)
+                or (raw and (raw.keys() != empty_template.keys()
+                             or any(type(value) is not type(empty_template[field])
+                                    or value != empty_template[field]
+                                    for field, value in raw.items())))):
+            raise DemoSafetyError("invalid Binance Demo test-order response")
+        return sanitize_response(raw)
 
     def _submit(self, pair, side, quantity, price, client_order_id, *, market,
                 post_only=True, reduce_only=False):

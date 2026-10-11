@@ -59,6 +59,7 @@ allOrders、userTrades 为 5；order 查询/提交/撤单为 1/4/1。V3 account/
 | `fetch_commission_rate(pair)` | GET `commissionRate`，权重 20；返回原始 `symbol` / `makerCommissionRate` / `takerCommissionRate` 字符串，缺失或非法值拒绝 |
 | `fetch_symbol_config(pair=None)` | GET `symbolConfig`，记录实际杠杆、保证金模式和原始字段，不修改配置 |
 | `fetch_balance()` | 只读余额/权益与原始 account 字段 |
+| `test_limit_order(pair, side, quantity, price, position_side='BOTH')` | 仅 POST `order/test`（成本 1），可在只读模式检查签名测试下单请求；不调用真实 `order`，不创建本地订单或成交 |
 | `submit_limit_order(pair, side, quantity, price, client_order_id, post_only=True, reduce_only=False)` | 默认 GTX；仅已启用交易且有显式 Demo 凭据时提交 |
 | `submit_market_order(pair, side, quantity, client_order_id, reduce_only=True)` | 只允许 reduce-only 保护退出，不舍入实际持仓数量 |
 | `authorize_owned_client_id(client_order_id)` | 只应从已绑定的持久订单账本恢复归属 |
@@ -66,6 +67,11 @@ allOrders、userTrades 为 5；order 查询/提交/撤单为 1/4/1。V3 account/
 
 量价准备之后 runner 仍须按实际舍入后的量价复核风险预算、名义上限和余额。GTX
 只是提交意图，不能代替实际成交 `maker` 字段，也不能保证成交。
+
+测试下单只接受空对象，或当前 Demo 实测的严格空订单模板：`orderId/updateTime=0`、
+所有订单文本字段为空、所有标志为 false。未知字段、非零订单号或非空订单信息均拒绝，
+不回退真实下单。模板保留 Binance 原生字段，但它属于诊断证据，不能写入实际订单/成交账。
+成功只证明此签名测试请求被接受；普通下单的保证金、风控和实际撮合仍需前向订单验证。
 
 适配器不会替 runner 实现真实仓位归属、信号选择、风控闸门、持久化或统计裁定。
 这些都应由 runner/账本接线。禁止把直接调用上述方法视为自动上线授权。

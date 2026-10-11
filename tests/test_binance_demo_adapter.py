@@ -47,6 +47,15 @@ def fill(**updates):
             "realizedPnl": "0", **updates}
 
 
+def empty_test_order():
+    return {
+        "orderId": 0, "symbol": "", "status": "", "clientOrderId": "",
+        "price": "", "origQty": "", "executedQty": "", "timeInForce": "",
+        "type": "", "reduceOnly": False, "closePosition": False, "side": "",
+        "stopPrice": "", "priceProtect": False, "origType": "", "updateTime": 0,
+    }
+
+
 class FakeClient:
     id = "binance"
     isSandboxModeEnabled = False
@@ -114,6 +123,114 @@ class DemoAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(DemoSafetyError, "read-only"):
             adapter.cancel_order(BTC, client_order_id=ORDER_ID)
         self.assertEqual(self.client.calls, [])
+
+    def test_order_test_is_allowed_read_only_and_never_claims_or_creates_an_order(self):
+        adapter = BinanceDemoAdapter(client=self.client, api_key="offline-key",
+                                     api_secret="offline-secret")
+        self.assertEqual(adapter.test_limit_order(BTC, "buy", "0.010", "60000.10"), {})
+        self.assertEqual(self.client.calls[-1], ("order/test", "fapiPrivate", "POST", {
+            "symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT", "timeInForce": "GTC",
+            "quantity": "0.010", "price": "60000.10", "positionSide": "BOTH"}))
+        self.assertEqual(self.client.configs[-1], {"cost": 1})
+        self.assertEqual(adapter.last_call["rate_limit_cost"], 1)
+        self.assertEqual(adapter._attempts, {})
+        self.assertEqual(adapter._owned_client_ids, set())
+        self.assertFalse(adapter.allow_trading)
+        with self.assertRaisesRegex(DemoSafetyError, "read-only"):
+            adapter.submit_limit_order(BTC, "buy", "0.010", "60000.10", ORDER_ID)
+        self.assertFalse(any(call[0] == "order" for call in self.client.calls))
+
+    def test_order_test_accepts_explicit_hedged_position_sides(self):
+        for position_side in ("LONG", "SHORT"):
+            with self.subTest(position_side=position_side):
+                self.adapter.test_limit_order(BTC, "sell", "0.010", "60000.10",
+                                              position_side=position_side)
+                self.assertEqual(self.client.calls[-1][3]["positionSide"], position_side)
+        self.assertEqual(self.adapter._attempts, {})
+        self.assertEqual(self.adapter._owned_client_ids, {ORDER_ID})
+
+    def test_order_test_invalid_identity_and_size_never_posts(self):
+        for changes in [dict(pair="BTC/USDT"), dict(pair="SOL/USDT:USDT"),
+                        dict(side="BUY"), dict(position_side="both"),
+                        dict(position_side=None), dict(position_side=[]),
+                        dict(quantity="0.0015"), dict(quantity="NaN"),
+                        dict(price="60000.11"), dict(price="Infinity")]:
+            with self.subTest(changes=changes):
+                params = {"pair": BTC, "side": "buy", "quantity": "0.010",
+                          "price": "60000.10", **changes}
+                with self.assertRaises(DemoSafetyError):
+                    self.adapter.test_limit_order(**params)
+        self.assertFalse(any(call[2] == "POST" for call in self.client.calls))
+        self.assertEqual(self.adapter._attempts, {})
+
+    def test_order_test_credentials_and_environment_guards_precede_public_validation(self):
+        adapter = BinanceDemoAdapter(client=self.client)
+        with self.assertRaisesRegex(DemoSafetyError, "credentials"):
+            adapter.test_limit_order(BTC, "buy", "0.010", "60000.10")
+        self.client.urls["api"]["fapiPrivate"] = "https://testnet.binancefuture.com/fapi/v1"
+        with self.assertRaises(DemoSafetyError):
+            self.adapter.test_limit_order(BTC, "buy", "0.010", "60000.10")
+        self.assertEqual(self.client.calls, [])
+
+    def test_order_test_errors_are_redacted_and_never_fall_back_to_real_order(self):
+        for exception in (ccxt.AuthenticationError, ccxt.PermissionDenied,
+                          ccxt.InvalidOrder, ccxt.RequestTimeout):
+            with self.subTest(exception=exception):
+                self.client.responses[("order/test", "POST")] = exception(
+                    'Binance {"code":-2015,"msg":"sensitive signed credential"}')
+                self.client.calls.clear()
+                with self.assertRaises(DemoRequestError) as caught:
+                    self.adapter.test_limit_order(BTC, "buy", "0.010", "60000.10")
+                self.assertEqual(caught.exception.error_kind, exception.__name__)
+                self.assertEqual(caught.exception.exchange_code, -2015)
+                self.assertNotIn("sensitive", str(caught.exception))
+                self.assertIsNone(caught.exception.__cause__)
+                self.assertEqual(sum(call[0] == "order/test" for call in self.client.calls), 1)
+                self.assertFalse(any(call[0] == "order" for call in self.client.calls))
+        self.assertEqual(self.adapter._attempts, {})
+
+    def test_order_test_accepts_demo_empty_template_without_an_order_claim(self):
+        raw = empty_test_order()
+        self.client.responses[("order/test", "POST")] = raw
+        self.assertEqual(self.adapter.test_limit_order(BTC, "buy", "0.010", "60000.10"), raw)
+        self.assertEqual(self.adapter._attempts, {})
+        self.assertEqual(self.adapter._owned_client_ids, {ORDER_ID})
+        self.assertEqual(sum(call[0] == "order/test" for call in self.client.calls), 1)
+        self.assertFalse(any(call[0] == "order" for call in self.client.calls))
+
+    def test_order_test_rejects_polluted_or_incomplete_demo_templates(self):
+        raw = empty_test_order()
+        self.adapter.fetch_exchange_info()
+        polluted = [{**raw, "orderId": value} for value in (False, True, 1, "0", 0.0, None)]
+        polluted.extend({**raw, "updateTime": value} for value in (False, 1, "0", 0.0))
+        polluted.extend({**raw, field: value} for field in ("reduceOnly", "closePosition",
+                                                         "priceProtect")
+                        for value in (0, "false", True, None))
+        polluted.extend({**raw, field: value} for field in (
+            "symbol", "status", "clientOrderId", "price", "origQty", "executedQty",
+            "timeInForce", "type", "side", "stopPrice", "origType")
+                        for value in ("0", 0, None, "unexpected"))
+        polluted.extend(({**raw, "unknown": ""}, {**raw, "signature": ""},
+                         {field: value for field, value in raw.items() if field != "orderId"}))
+        for response in polluted:
+            with self.subTest(response=response):
+                with patch.object(self.client, "request", return_value=response) as request:
+                    with self.assertRaisesRegex(DemoSafetyError, "test-order response"):
+                        self.adapter.test_limit_order(BTC, "buy", "0.010", "60000.10")
+                self.assertEqual(request.call_args.args[:3], ("order/test", "fapiPrivate", "POST"))
+                self.assertEqual(request.call_count, 1)
+        self.assertEqual(self.adapter._attempts, {})
+
+    def test_order_test_rejects_nonempty_order_and_other_response_shapes(self):
+        self.adapter.fetch_exchange_info()
+        for response in (None, [], False, "{}", {"orderId": 123}, {"code": 0}):
+            with self.subTest(response=response):
+                with patch.object(self.client, "request", return_value=response) as request:
+                    with self.assertRaisesRegex(DemoSafetyError, "test-order response"):
+                        self.adapter.test_limit_order(BTC, "buy", "0.010", "60000.10")
+                self.assertEqual(request.call_args.args[:3], ("order/test", "fapiPrivate", "POST"))
+                self.assertEqual(request.call_count, 1)
+        self.assertEqual(self.adapter._attempts, {})
 
     def test_demo_host_https_port_and_path_are_exact(self):
         assert_demo_url("https://demo-fapi.binance.com/fapi/v3/account?signature=private")
@@ -509,6 +626,34 @@ class DemoAdapterTests(unittest.TestCase):
 
 
 class RealClientOfflineGuards(unittest.TestCase):
+    def test_order_test_signs_only_exact_demo_post_endpoint_without_network(self):
+        with patch("requests.sessions.Session.request", side_effect=AssertionError("network")):
+            client = _build_client("offline-key", "offline-secret")
+            signed = client.sign("order/test", "fapiPrivate", "POST", {
+                "symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT",
+                "quantity": "0.010", "price": "60000.10", "timeInForce": "GTC"})
+        self.assertEqual(signed["url"], "https://demo-fapi.binance.com/fapi/v1/order/test")
+        for method in ("GET", "DELETE"):
+            with self.subTest(method=method), self.assertRaises(DemoSafetyError):
+                client.sign("order/test", "fapiPrivate", method, {})
+        with self.assertRaises(DemoSafetyError):
+            client.sign("order/test", "fapiPrivateV3", "POST", {})
+        client.urls["api"]["fapiPrivate"] = "https://fapi.binance.com/fapi/v1"
+        with self.assertRaises(DemoSafetyError):
+            client.sign("order/test", "fapiPrivate", "POST", {})
+
+    def test_order_test_transport_has_reviewed_cost_and_never_retries(self):
+        client = _build_client("offline-key", "offline-secret")
+        client.options["order/test"] = {"maxRetriesOnFailure": 3}
+        with patch.object(client, "throttle") as throttle, patch.object(
+                client, "fetch", side_effect=ccxt.RequestTimeout("offline")) as fetch:
+            with self.assertRaises(ccxt.RequestTimeout):
+                client.request("order/test", "fapiPrivate", "POST", {}, config={"cost": 0})
+        throttle.assert_called_once_with(1)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertIsNone(client.last_request_headers)
+        self.assertIsNone(client.last_request_url)
+
     def test_constructor_no_network_and_demo_switch_has_no_live_fallback(self):
         with patch("requests.sessions.Session.request", side_effect=AssertionError("network")):
             client = _build_client("offline-key", "offline-secret")

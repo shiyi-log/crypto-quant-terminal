@@ -1,0 +1,90 @@
+{
+  "observed_at_utc": "2026-10-11T17:37:58.937874+00:00",
+  "core_commit": "f782e52",
+  "factorial": {
+    "accounts": 261,
+    "execution_enabled": 234,
+    "ready": 234,
+    "rule_hash_matches": 261,
+    "execution_hash_matches": 261
+  },
+  "events": [
+    {
+      "event_type": "account_created",
+      "n": 261,
+      "first_candle_ms": null,
+      "latest_candle_ms": null
+    },
+    {
+      "event_type": "decision",
+      "n": 126,
+      "first_candle_ms": 1791738900000,
+      "latest_candle_ms": 1791738900000
+    },
+    {
+      "event_type": "equity_snapshot",
+      "n": 126,
+      "first_candle_ms": 1791738900000,
+      "latest_candle_ms": 1791738900000
+    },
+    {
+      "event_type": "order_submitted",
+      "n": 72,
+      "first_candle_ms": 1791738900000,
+      "latest_candle_ms": 1791738900000
+    }
+  ],
+  "service": {
+    "running": true,
+    "status": "observing",
+    "pid": 49682,
+    "account_count": 290,
+    "factorial_account_count": 261,
+    "factorial_execution_enabled_count": 234,
+    "last_error": null,
+    "native_timeframes": {
+      "15m": {
+        "latest_closed_at": 1791738900000,
+        "session_boundary_ms": 1791738900000,
+        "strategy_count": 150,
+        "status": "observing"
+      },
+      "1d": {
+        "latest_closed_at": 1791590400000,
+        "session_boundary_ms": 1791676800000,
+        "strategy_count": 110,
+        "status": "waiting_new_closed_candle"
+      },
+      "1h": {
+        "latest_closed_at": 1791734400000,
+        "session_boundary_ms": 1791738000000,
+        "strategy_count": 30,
+        "status": "waiting_new_closed_candle"
+      }
+    }
+  },
+  "http": [
+    {
+      "id": "s03_tsmom_vol_target_B15m_R200_k1.5_100x_maker",
+      "http": 200,
+      "sample_population": "atr-risk-full-factorial-v1",
+      "risk_budget": 200.0,
+      "stop_width_k": 1.5,
+      "event_sample_quality": [
+        "factorial_forward",
+        "factorial_forward",
+        "factorial_forward"
+      ]
+    },
+    {
+      "id": "s04_btc_eth_pairs_B15m_R50_k1.0_100x_maker",
+      "http": 200,
+      "sample_population": "atr-risk-full-factorial-v1",
+      "risk_budget": 50.0,
+      "stop_width_k": 1.0,
+      "event_sample_quality": [
+        "unknown"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "checkedAt": "2026-10-11T19:17:27.828284+00:00",
+  "unauthorizedHttpStatus": 401,
+  "statusHttpStatus": 200,
+  "evidenceHttpStatus": 200,
+  "status": {
+    "credentialsConfigured": false,
+    "runnerState": "not_started",
+    "workerRunning": false,
+    "tradingEnabled": false,
+    "orderCount": 0,
+    "fillCount": 0,
+    "lastCheck": null,
+    "eligibleAccountCount": 234
+  },
+  "evidence": {
+    "environment": "binance_demo",
+    "endpoint": "demo-fapi.binance.com",
+    "snapshotAt": "2026-10-12T03:17:27.769683+08:00",
+    "scope": "selected_candle_strategy_execution_only",
+    "questions": {
+      "fees": {
+        "state": "no_actual_fills",
+        "fillCount": 0,
+        "knownFeeFillCount": 0,
+        "unknownFeeFillCount": 0,
+        "rates": [],
+        "chargedByAsset": []
+      },
+      "secondsProfit": {
+        "state": "seconds_experiment_not_configured",
+        "secondsExperimentConfigured": false,
+        "closedRoundTripCount": 0,
+        "knownNetRoundTripCount": 0,
+        "unknownNetRoundTripCount": 0,
+        "closedNetTradingPnlUsdt": null,
+        "knownNetSubtotalUsdt": "0",
+        "fundingIncluded": false,
+        "liveProfitabilityVerified": false
+      },
+      "execution": {
+        "state": "no_exchange_orders",
+        "exchangeAcceptedEntryCount": 0,
+        "terminalAcceptedEntryCount": 0,
+        "zeroFillTerminalAcceptedEntryCount": 0,
+        "acceptedTerminalNonfillRatio": null,
+        "exchangeRejectedEntryCount": 0,
+        "localTerminalUnconfirmedEntryCount": 0,
+        "pendingEntryCount": 0,
+        "unknownEntryCount": 0,
+        "partialTerminalAcceptedEntryCount": 0,
+        "signalPriceDeviation": {
+          "fillCount": 0,
+          "knownReferenceFillCount": 0,
+          "meanAdverseDeviationBps": null,
+          "scope": "demo_fill_vs_live_paper_signal_includes_environment_and_latency"
+        },
+        "liveLaunchAllowed": false,
+        "launchDecision": "manual_review_required"
+      }
+    },
+    "limitations": [
+      "Account rate quotes are separate from actually charged fill commissions.",
+      "Demo fills and non-fill ratios do not establish live execution equivalence.",
+      "Signal price deviation includes environment differences and latency; it is not measured live slippage.",
+      "Actual realized P&L already reflects fills: do not subtract price deviation a second time.",
+      "Candle strategies, short holds and five-second polling do not constitute a seconds experiment.",
+      "Trading P&L excludes funding; unknown or unconverted commissions never become zero."
+    ]
+  },
+  "verification": {
+    "backendDemoTests": 162,
+    "backendSkippedTests": 0,
+    "frontendTypecheck": true,
+    "frontendBuild": true,
+    "signedExchangeRequestMade": false,
+    "demoOrdersSubmittedByVerification": false,
+    "frontendDemoTests": 17,
+    "liquidationModelTargetedTests": 31
+  },
+  "browserVerified": {
+    "route": "http://127.0.0.1:8888/#/quant/binance-demo",
+    "threeQuestionCards": true,
+    "quotedAndChargedFeesSeparated": true,
+    "noSampleDataWritten": true,
+    "secondsExperimentState": "not_configured"
+  },
+  "screenshots": [
+    "artifacts/binance-demo-evidence-20261012.png"
+  ]
+}

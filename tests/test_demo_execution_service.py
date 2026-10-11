@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from demo_execution_service import DemoRunnerConfig, derive_round_trips
+from demo_execution_service import (DemoExecutionService, DemoRunnerConfig,
+                                    attempted_entry_outcomes, derive_round_trips,
+                                    signal_reference_evidence)
 from demo_runner_controller import DemoRunnerController, STATE_KEY
 
 
@@ -64,6 +66,44 @@ class ActualFillAccountingTests(unittest.TestCase):
         self.assertEqual(policy["max_notional_usdt"], "1000")
         self.assertIn("not_guaranteed", policy["risk_loss_bound"])
         self.assertIn("not_full_portfolio_returns", policy["comparison_scope"])
+
+
+class ExecutionEvidenceTests(unittest.TestCase):
+    def test_closed_reference_records_original_decimal_and_close_instant(self):
+        evidence = signal_reference_evidence({"timestamp": 900_000, "close": "60000.1900",
+                                               "extras": {"closed": True}}, "15m")
+        self.assertEqual(evidence["signal_reference_price"], "60000.1900")
+        self.assertEqual(evidence["reference_timestamp_ms"], 1_800_000)
+        self.assertEqual(evidence["reference_source"], "paper_closed_candle_from_live_market")
+        self.assertFalse(evidence["live_executable_slippage_verified"])
+        self.assertIn("environment_and_latency", evidence["reference_comparison_scope"])
+
+    def test_unavailable_or_unclosed_reference_is_unknown_without_a_market_fallback(self):
+        for candle in (None, {}, {"close": "60000.1", "extras": {"closed": False}},
+                       {"close": "NaN", "timestamp": 900_000, "extras": {"closed": True}}):
+            with self.subTest(candle=candle):
+                evidence = signal_reference_evidence(candle, "15m")
+                for key in ("signal_reference_price", "reference_timestamp_ms", "reference_source"):
+                    self.assertIsNone(evidence[key])
+
+    def test_nonfill_population_excludes_unattempted_intents_and_includes_attempt_rejection(self):
+        def order(status, attempts, filled="0", exchange_id=None, reduce=False):
+            return {"status": status, "submission_attempts": attempts, "filled_quantity": filled,
+                    "exchange_order_id": exchange_id, "reduce_only": reduce}
+        evidence = attempted_entry_outcomes([
+            order("expired", 0), order("intent", 0), order("unknown", 1),
+            order("filled", 1, "1", "100"), order("rejected", 1),
+            order("canceled", 0, "0", "101"), order("filled", 1, "1", "102", True)])
+        self.assertEqual(evidence["terminal_entry_count"], 3)
+        self.assertEqual(evidence["unfilled_entry_count"], 2)
+        self.assertEqual(evidence["unfilled_entry_ratio"], 2 / 3)
+        self.assertEqual(evidence["unfilled_entry_population"], "terminal_attempted_entries_not_verified_accepted")
+
+    def test_candle_account_and_five_second_poll_do_not_test_seconds_hypothesis(self):
+        service = DemoExecutionService(Mock(), Mock(), Mock(), DemoRunnerConfig("paper"))
+        self.assertEqual(service.config.poll_interval_ms, 5000)
+        self.assertFalse(service.status()["seconds_hypothesis_tested"])
+        self.assertEqual(service.status()["experiment_scope"], "selected_candle_strategy_execution_only")
 
 
 @dataclass

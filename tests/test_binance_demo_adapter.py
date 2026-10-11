@@ -406,6 +406,63 @@ class DemoAdapterTests(unittest.TestCase):
             with self.assertRaises(DemoSafetyError):
                 self.adapter.fetch_position_mode()
 
+    def test_commission_rate_preserves_native_strings_with_explicit_rate_limit_weight(self):
+        raw = {"symbol": "BTCUSDT", "makerCommissionRate": "0.00020000",
+               "takerCommissionRate": "0.00050000"}
+        self.client.responses[("commissionRate", "GET")] = raw
+        result = self.adapter.fetch_commission_rate(BTC)
+        self.assertEqual(result, raw)
+        self.assertEqual(self.client.calls[-1], ("commissionRate", "fapiPrivate", "GET",
+                                               {"symbol": "BTCUSDT"}))
+        self.assertEqual(self.client.configs[-1], {"cost": 20})
+        self.assertEqual(self.adapter.last_call["rate_limit_cost"], 20)
+
+    def test_commission_rate_validates_both_fields_without_modeled_fallback(self):
+        valid = {"symbol": "BTCUSDT", "makerCommissionRate": "0.00020000",
+                 "takerCommissionRate": "0.00050000"}
+        for value in [None, "", "NaN", "Infinity", "-0.0001", 0.0002, True, "invalid"]:
+            for field in ("makerCommissionRate", "takerCommissionRate"):
+                with self.subTest(value=value, field=field):
+                    self.client.responses[("commissionRate", "GET")] = {**valid, field: value}
+                    with self.assertRaises(DemoSafetyError):
+                        self.adapter.fetch_commission_rate(BTC)
+        self.client.responses[("commissionRate", "GET")] = {"symbol": "BTCUSDT"}
+        with self.assertRaises(DemoSafetyError):
+            self.adapter.fetch_commission_rate(BTC)
+
+    def test_commission_rate_rejects_wrong_symbol_and_unpermitted_pair(self):
+        self.client.responses[("commissionRate", "GET")] = {
+            "symbol": "ETHUSDT", "makerCommissionRate": "0", "takerCommissionRate": "0"}
+        with self.assertRaises(DemoSafetyError):
+            self.adapter.fetch_commission_rate(BTC)
+        self.client.calls.clear()
+        for pair in ["BTC/USDT", "SOL/USDT:USDT"]:
+            with self.assertRaises(DemoSafetyError):
+                self.adapter.fetch_commission_rate(pair)
+        self.assertEqual(self.client.calls, [])
+
+    def test_commission_rate_request_failure_never_returns_configured_rate(self):
+        self.client.responses[("commissionRate", "GET")] = ccxt.RequestTimeout("signed private")
+        with self.assertRaises(DemoRequestError) as caught:
+            self.adapter.fetch_commission_rate(BTC)
+        self.assertEqual(caught.exception.error_kind, "RequestTimeout")
+        self.assertNotIn("private", str(caught.exception))
+
+    def test_commission_rate_missing_credentials_or_environment_drift_rejects_before_request(self):
+        adapter = BinanceDemoAdapter(client=self.client)
+        with self.assertRaisesRegex(DemoSafetyError, "credentials"):
+            adapter.fetch_commission_rate(BTC)
+        self.client.urls["api"]["fapiPrivate"] = "https://fapi.binance.com/fapi/v1"
+        with self.assertRaises(DemoSafetyError):
+            self.adapter.fetch_commission_rate(BTC)
+        self.assertEqual(self.client.calls, [])
+
+    def test_commission_rate_zero_is_valid_and_negative_or_infinite_is_not(self):
+        for pair, symbol in [("ETH/USDT:USDT", "ETHUSDT"), ("TRX/USDT:USDT", "TRXUSDT")]:
+            raw = {"symbol": symbol, "makerCommissionRate": "0", "takerCommissionRate": "2E-4"}
+            self.client.responses[("commissionRate", "GET")] = raw
+            self.assertEqual(self.adapter.fetch_commission_rate(pair), raw)
+
     def test_symbol_configuration_records_actual_leverage_and_margin_without_mutation(self):
         raw = {"symbol": "BTCUSDT", "leverage": 20, "marginType": "CROSSED",
                "isAutoAddMargin": "false", "maxNotionalValue": "1000000"}
@@ -469,6 +526,7 @@ class RealClientOfflineGuards(unittest.TestCase):
         for path, api, method in [("order", "private", "POST"),
                                   ("leverage", "fapiPrivate", "POST"),
                                   ("marginType", "fapiPrivate", "POST"),
+                                  ("commissionRate", "fapiPrivate", "POST"),
                                   ("positionSide/dual", "fapiPrivate", "POST")]:
             with self.subTest(path=path), self.assertRaises(DemoSafetyError):
                 client.sign(path, api, method, {})

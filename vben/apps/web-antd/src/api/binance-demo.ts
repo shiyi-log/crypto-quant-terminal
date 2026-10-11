@@ -5,6 +5,80 @@ import { requireSession } from './session';
 export type DemoDecimal = null | string;
 export type DemoRecord = Record<string, unknown>;
 
+export interface DemoCommissionRateQuote {
+  symbol: string;
+  makerCommissionRate: DemoDecimal;
+  takerCommissionRate: DemoDecimal;
+}
+
+export interface DemoConnectionCheck {
+  connected?: boolean;
+  checkedAt?: number;
+  readOnly?: boolean;
+  errorCode?: string;
+  commissionRates?: DemoCommissionRateQuote[];
+  commissionRateObservedAt?: null | number;
+  commissionRateSource?: 'demo_signed_account_commission_rate_quote_not_fill';
+}
+
+export interface DemoEffectiveFeeRate {
+  symbol: string;
+  liquidity: 'maker' | 'taker' | 'unknown';
+  role: 'entry' | 'exit';
+  fillCount: number;
+  knownCommissionUsdt: DemoDecimal;
+  actualReportedQuoteUsdt: DemoDecimal;
+  effectiveFeeRate: DemoDecimal;
+}
+
+export interface DemoEvidence {
+  environment: 'binance_demo';
+  endpoint: 'demo-fapi.binance.com';
+  snapshotAt: string;
+  scope: 'selected_candle_strategy_execution_only';
+  questions: {
+    fees: {
+      state: 'no_actual_fills' | 'actual_fees_partially_known' | 'actual_fees_observed';
+      fillCount: number;
+      knownFeeFillCount: number;
+      unknownFeeFillCount: number;
+      rates: DemoEffectiveFeeRate[];
+      chargedByAsset: { asset: string; knownCommission: string }[];
+    };
+    secondsProfit: {
+      state: 'seconds_experiment_not_configured';
+      secondsExperimentConfigured: false;
+      closedRoundTripCount: number;
+      knownNetRoundTripCount: number;
+      unknownNetRoundTripCount: number;
+      closedNetTradingPnlUsdt: DemoDecimal;
+      knownNetSubtotalUsdt: string;
+      fundingIncluded: false;
+      liveProfitabilityVerified: false;
+    };
+    execution: {
+      state: 'no_exchange_orders' | 'demo_execution_observed';
+      exchangeAcceptedEntryCount: number;
+      terminalAcceptedEntryCount: number;
+      zeroFillTerminalAcceptedEntryCount: number;
+      acceptedTerminalNonfillRatio: null | number;
+      exchangeRejectedEntryCount: number;
+      localTerminalUnconfirmedEntryCount: number;
+      pendingEntryCount: number;
+      unknownEntryCount: number;
+      partialTerminalAcceptedEntryCount: number;
+      signalPriceDeviation: {
+        fillCount: number;
+        knownReferenceFillCount: number;
+        meanAdverseDeviationBps: DemoDecimal;
+        scope: 'demo_fill_vs_live_paper_signal_includes_environment_and_latency';
+      };
+      liveLaunchAllowed: false;
+      launchDecision: 'manual_review_required';
+    };
+  };
+}
+
 export interface DemoStrategyAccount {
   accountId: string;
   strategyId: string;
@@ -39,7 +113,7 @@ export interface DemoStatus {
   };
   accounts: DemoStrategyAccount[];
   metrics: DemoRecord;
-  lastCheck?: null | { connected?: boolean; checkedAt?: number; readOnly?: boolean; errorCode?: string };
+  lastCheck?: null | DemoConnectionCheck;
   limitations: string[];
 }
 
@@ -108,6 +182,16 @@ export async function getBinanceDemoStatus(signal?: AbortSignal): Promise<DemoSt
   const result = body(await ftClient.get(basePath, { signal }));
   assertDemo(result);
   return result as unknown as DemoStatus;
+}
+
+export async function getBinanceDemoEvidence(signal?: AbortSignal): Promise<DemoEvidence> {
+  authenticated();
+  const result = body(await ftClient.get(`${basePath}/evidence`, { signal }));
+  assertDemo(result);
+  if (result.scope !== 'selected_candle_strategy_execution_only') {
+    throw new Error('Demo 证据范围不匹配，已停止展示');
+  }
+  return result as unknown as DemoEvidence;
 }
 
 async function mutate(path: string, payload: DemoRecord): Promise<DemoRecord> {

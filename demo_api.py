@@ -11,7 +11,7 @@ import json
 import re
 import threading
 import time
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qs, urlsplit
 
 from binance_demo_credentials import DemoCredentialError, DemoCredentialStore
@@ -21,7 +21,7 @@ MAX_BODY_BYTES = 4096
 MAX_QUERY_BYTES = 512
 _ACCOUNT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,179}\Z")
 _GET_PATHS = {"", "/status", "/accounts", "/orders", "/fills", "/positions",
-              "/account", "/comparisons"}
+              "/account", "/comparisons", "/evidence"}
 _POST_PATHS = {"/credentials", "/check", "/start", "/stop"}
 LIMITATIONS = [
     "币安 Demo 的订单簿、定价和执行可能与实盘不同，不能据此自动上线。",
@@ -41,6 +41,25 @@ def _identity(value):
     if not isinstance(value, str) or not _ACCOUNT_ID.fullmatch(value):
         raise DemoApiError("invalid_account_id")
     return value
+
+
+def _commission_quote(raw, symbol: str) -> dict:
+    """An account quote is separate evidence from actual fill commissions."""
+    if not isinstance(raw, dict) or raw.get("symbol") != symbol:
+        raise ValueError("invalid Demo commission quote identity")
+    result = {"symbol": symbol}
+    for field in ("makerCommissionRate", "takerCommissionRate"):
+        rate = raw.get(field)
+        if not isinstance(rate, str) or not rate or len(rate) > 128:
+            raise ValueError("missing Demo commission quote")
+        try:
+            value = Decimal(rate)
+        except InvalidOperation:
+            raise ValueError("invalid Demo commission quote") from None
+        if not value.is_finite() or not 0 <= value <= 1:
+            raise ValueError("invalid Demo commission quote")
+        result[field] = rate
+    return result
 
 
 def _strict_json(raw: bytes) -> dict:
@@ -211,6 +230,10 @@ class DemoApi:
                     "accounts": self.account_provider(), "metrics": self._metrics(),
                     "lastCheck": self.data_store.get_document("binance_demo_connection_check.json"),
                     "limitations": LIMITATIONS}
+        if suffix == "/evidence":
+            from demo_evidence import read_demo_evidence
+            return read_demo_evidence(self.data_store,
+                                      virtual_account_key=self.demo_store.virtual_account_key)
         if suffix == "/accounts":
             items = self.account_provider()
         elif suffix == "/orders":
@@ -286,7 +309,7 @@ class DemoApi:
         raise DemoApiError("demo_route_not_found", 404)
 
     def check(self):
-        from binance_demo_adapter import BinanceDemoAdapter
+        from binance_demo_adapter import ALLOWED_PAIRS, BinanceDemoAdapter, PAIR_SYMBOLS
 
         if not self._check_lock.acquire(blocking=False):
             raise DemoApiError("demo_check_in_progress", 409)
@@ -298,8 +321,13 @@ class DemoApi:
             checked_at = int(time.time() * 1000)
             try:
                 balance, positions = adapter.fetch_balance(), adapter.fetch_positions()
+                rates = [_commission_quote(adapter.fetch_commission_rate(pair), PAIR_SYMBOLS[pair])
+                         for pair in ALLOWED_PAIRS]
+                quote_metadata = {"commissionRates": rates,
+                    "commissionRateObservedAt": checked_at,
+                    "commissionRateSource": "demo_signed_account_commission_rate_quote_not_fill"}
                 self.demo_store.append_account_snapshot({"balance": balance,
-                    "demoFingerprint": fingerprint}, observed_ms=checked_at)
+                    "demoFingerprint": fingerprint, **quote_metadata}, observed_ms=checked_at)
                 self.demo_store.append_position_snapshot({"positions": positions,
                     "demoFingerprint": fingerprint}, observed_ms=checked_at)
             except Exception as exc:
@@ -310,7 +338,8 @@ class DemoApi:
             result = {"connected": True, "checkedAt": checked_at,
                       "environment": "binance_demo", "endpoint": "demo-fapi.binance.com",
                       "fingerprint": fingerprint,
-                      "readOnly": True, "feeVerification": "requires_actual_fills"}
+                      "readOnly": True, "feeVerification": "requires_actual_fills",
+                      **quote_metadata}
             self.data_store.put_document("binance_demo_connection_check.json", result)
             return result
         finally:

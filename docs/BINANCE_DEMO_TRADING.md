@@ -8,7 +8,7 @@ CCXT 使用 `enable_demo_trading(True)`；不启用 sandbox。所有请求与签
 
 用户在前端配置独立 Demo API key/secret，由服务端加密保存在数据库。主密钥独立于数据库
 和 Git；接口只返回是否已配置。不要使用实盘 API 密钥，不要把密钥发到聊天或提交到 Git。
-检查按钮只读取 Demo 余额和仓位；开始按钮明确选择一个已经冻结的纸面账户。
+检查按钮只读取 Demo 余额、仓位和三币账户报价费率；开始按钮明确选择一个已经冻结的纸面账户。
 
 部署时先显式安装隔离的 Demo 表和加密凭据表，然后重启本机鉴权服务：
 
@@ -61,11 +61,29 @@ Demo 名义默认上限 1,000 USDT。止损距离定仓使用原纸面风险档�
 终结订单的缺失手续费资产、maker/taker 或 realizedPnl 会继续补查，十分钟后以一分钟
 间隔核对；没有新回报时始终保留 unknown。收到相互矛盾的部分费用回报时净额也为 unknown。
 
+订单意图中的 `signal_reference_price` 冻结量化前的原始信号收盘价，来源固定为
+`paper_closed_candle_from_live_market`；`reference_timestamp_ms` 是该信号 K 线的收盘时刻。
+实际提交限价另存 `submitted_limit_price`；旧 `reference_price` 是提交限价的别名，不是原始
+信号价格。止损和纸面退出能取得触发 K 线时也冻结此参考；缺失时保持 null，市价退出没有
+提交限价。Demo 成交相对该实盘纸面参考的差异同时包含环境/定价差异和时延，不能命名为
+可执行的实盘滑点，也不能证明实盘成交质量。
+
+未成交率的人口是已经尝试提交或具有交易所订单号、且处于终结状态的入口意图，包含拒单；
+不是已验证由交易所接受的订单人口。未提交便在本地过期的意图不计入分母，未知提交结果
+在结果终结前也不计入。分子是该人口中报告成交数量为零的入口。
+
+以上是 runner/Store 的尝试提交人口。页面“三个验证目标”使用全历史一致只读快照，主未成交
+分母进一步限定为已有交易所订单号的已接受终结入口，交易所明确拒单、本地终结未确认、
+待处理与未知入口分别列出；不能将两种人口的比例混用。报价费率与实收费用也分别展示。
+详见 [三问题证据口径](DEMO_THREE_QUESTIONS.md)。
+
 完成一个往返后，统计实际持有秒数、maker/taker 成交数、实际 realizedPnl 与各资产费用。
 只有 realizedPnl 和全部 USDT 手续费均已知，才计算
 `actual_net_trading_pnl_usdt = actual_realized_pnl_usdt - actual_commission_usdt`。
 非 USDT 费用没有转换率时净额为 unknown；此净額不含尚未采集的资金费。
 秒级利润只能依据实际对应秒级成交样本，不能用十五分钟回测结果替代。
+当前实验范围明确为 `selected_candle_strategy_execution_only`，
+`seconds_hypothesis_tested=False`：分钟/小时策略配合五秒轮询不构成秒级交易策略实验。
 
 ## 结论边界与验证
 

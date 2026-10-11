@@ -1,19 +1,20 @@
 <script lang="ts" setup>
-import type { DemoFill, DemoOrder, DemoRecord, DemoStatus } from '#/api/binance-demo';
+import type { DemoEvidence, DemoFill, DemoOrder, DemoRecord, DemoStatus } from '#/api/binance-demo';
 
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 
 import { Alert, Button, Card, Descriptions, Empty, Form, Input, message, Popconfirm, Select, Table, Tabs, Tag } from 'ant-design-vue';
 
 import {
-  checkBinanceDemoConnection, getBinanceDemoAccount, getBinanceDemoComparisons,
+  checkBinanceDemoConnection, getBinanceDemoAccount, getBinanceDemoComparisons, getBinanceDemoEvidence,
   getBinanceDemoFills, getBinanceDemoOrders, getBinanceDemoPositions,
   getBinanceDemoStatus, saveBinanceDemoCredentials, startBinanceDemo, stopBinanceDemo,
 } from '#/api/binance-demo';
 
-import { accountLabel, canStartDemo, comparisonObservation, decimalText, demoError, demoState, exchangeTime, fillSide, isSubmissionUnknown, makerText, orderRecordStatus, submitCredentials, unfilledRatio, valueText } from './display';
+import { accountLabel, canStartDemo, comparisonObservation, decimalText, demoError, demoState, exchangeTime, fillSide, isSubmissionUnknown, makerText, orderRecordStatus, quotedRateText, submitCredentials, unfilledRatio, valueText } from './display';
 
 const status = ref<DemoStatus | null>(null);
+const evidence = ref<DemoEvidence | null>(null);
 const orders = ref<DemoOrder[]>([]);
 const fills = ref<DemoFill[]>([]);
 const positions = ref<DemoRecord[]>([]);
@@ -26,6 +27,7 @@ const loading = ref(false);
 const action = ref('');
 const error = ref('');
 const recordError = ref('');
+const evidenceError = ref('');
 const updatedAt = ref<number | null>(null);
 let timer: ReturnType<typeof setInterval> | undefined;
 let controller: AbortController | undefined;
@@ -41,8 +43,16 @@ const accounts = computed(() => (status.value?.accounts ?? []).map((account) => 
 const selected = computed(() => status.value?.accounts?.find((account) => account.accountId === selectedAccount.value));
 const startAllowed = computed(() => canStartDemo(status.value, selectedAccount.value) && !running.value);
 const metrics = computed(() => status.value?.metrics ?? {});
+const feeEvidence = computed(() => evidence.value?.questions?.fees);
+const secondsEvidence = computed(() => evidence.value?.questions?.secondsProfit);
+const executionEvidence = computed(() => evidence.value?.questions?.execution);
+const feeEvidenceLabel = computed(() => ({
+  no_actual_fills: '尚无实际成交费用', actual_fees_partially_known: '实际手续费仍有缺失', actual_fees_observed: '已取得实际手续费回报',
+})[feeEvidence.value?.state ?? 'no_actual_fills']);
 const credentialsConfigured = computed(() => Boolean(status.value?.credentials?.configured));
 const credentialsReadable = computed(() => credentialsConfigured.value && status.value?.credentials?.decryptionAvailable !== false);
+const feeQuotes = computed(() => status.value?.lastCheck?.commissionRateSource === 'demo_signed_account_commission_rate_quote_not_fill'
+  ? status.value.lastCheck.commissionRates ?? [] : []);
 const comparisonRows = computed(() => comparisons.value.map(comparisonObservation));
 const roundTrips = computed(() => {
   const rows = status.value?.runner?.round_trips;
@@ -127,6 +137,20 @@ const comparisonColumns = [
   { title: '原因', dataIndex: 'reason', key: 'reason', width: 210 },
   { title: '输入指纹', dataIndex: 'inputFingerprint', key: 'inputFingerprint', width: 260, ellipsis: true },
 ];
+const quoteColumns = [
+  { title: '交易对 · symbol', dataIndex: 'symbol', key: 'symbol', width: 160 },
+  { title: 'Maker 报价费率（每边）', key: 'makerCommissionRate', width: 260 },
+  { title: 'Taker 报价费率（每边）', key: 'takerCommissionRate', width: 260 },
+];
+const effectiveRateColumns = [
+  { title: '交易对 · symbol', dataIndex: 'symbol', key: 'symbol', width: 145 },
+  { title: '成交身份', key: 'liquidity', width: 100 },
+  { title: '开仓 / 平仓', key: 'role', width: 110 },
+  { title: '成交笔数', dataIndex: 'fillCount', key: 'fillCount', width: 100 },
+  { title: '已回报手续费（USDT）', key: 'knownCommissionUsdt', width: 190 },
+  { title: '实际回报成交额（USDT）', key: 'actualReportedQuoteUsdt', width: 195 },
+  { title: '实收费率', key: 'effectiveFeeRate', width: 230 },
+];
 const roundTripColumns = [
   { title: '交易对', dataIndex: 'pair', key: 'pair', width: 150 },
   { title: '开仓时间', key: 'opened_ms', width: 180 },
@@ -166,9 +190,10 @@ async function refresh() {
   const results = await Promise.allSettled([
     getBinanceDemoStatus(signal), getBinanceDemoOrders(signal), getBinanceDemoFills(signal),
     getBinanceDemoPositions(signal), getBinanceDemoAccount(signal), getBinanceDemoComparisons(signal),
+    getBinanceDemoEvidence(signal),
   ]);
   if (requestSequence !== sequence) return;
-  const [overview, orderResult, fillResult, positionResult, accountResult, comparisonResult] = results;
+  const [overview, orderResult, fillResult, positionResult, accountResult, comparisonResult, evidenceResult] = results;
   if (overview?.status === 'fulfilled') {
     status.value = overview.value;
     if ((!selectedAccount.value || overview.value.runner?.accountLocked || overview.value.runner?.workerRunning) && overview.value.runner?.selectedAccountId) {
@@ -184,7 +209,9 @@ async function refresh() {
   positions.value = positionResult?.status === 'fulfilled' ? positionResult.value.items : [];
   balances.value = accountResult?.status === 'fulfilled' ? accountResult.value.items : [];
   comparisons.value = comparisonResult?.status === 'fulfilled' ? comparisonResult.value.items : [];
-  const failed = results.slice(1).find((result) => result.status === 'rejected');
+  evidence.value = evidenceResult?.status === 'fulfilled' ? evidenceResult.value : null;
+  evidenceError.value = evidenceResult?.status === 'rejected' ? `证据读取失败：${demoError(evidenceResult.reason)}` : '';
+  const failed = results.slice(1, 6).find((result) => result.status === 'rejected');
   recordError.value = failed?.status === 'rejected' ? `交易记录读取失败：${demoError(failed.reason)}` : '';
   updatedAt.value = Date.now();
   loading.value = false;
@@ -253,6 +280,11 @@ onUnmounted(() => {
       message="Demo 的订单簿定价和执行可能与实盘不同。费用以每笔实际成交回报为准。"
       description="前向结果用于评估成交、费用和策略表现；当前不代表策略盈利或秒级交易已验证。上线须另经人工决定。"
     />
+    <Alert
+      class="mb-4" show-icon type="warning"
+      message="秒级交易实验尚未配置，当前页面不会给出秒级盈利结论。"
+      description="当前 runner 镜像所选 K 线策略。5 秒轮询、几秒持仓或出现成交记录，均不代表已完成秒级策略实验；仍需独立秒级信号、真实成交与扣费样本。"
+    />
 
     <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
       <Card :bordered="false" title="Demo 密钥配置">
@@ -311,8 +343,37 @@ onUnmounted(() => {
       <div class="metric"><div class="metric-label">终结入口单未成交率</div><div class="metric-value">{{ unfilledRatio(metrics.unfilledEntryRatio) }}</div><div class="text-xs text-muted-foreground">{{ metric('unfilledEntryCount') }} / {{ metric('terminalEntryCount') }} 已终结入口单</div></div>
       <div class="metric"><div class="metric-label">部分成交订单</div><div class="metric-value">{{ metric('partiallyFilledOrderCount') }}</div></div>
       <div class="metric"><div class="metric-label">拒单</div><div class="metric-value">{{ metric('rejectedOrderCount') }}</div></div>
-      <div class="metric"><div class="metric-label">提交至回报延迟中位（ms）</div><div class="metric-value">{{ metric('medianLatencyMs') }}</div></div>
+      <div class="metric"><div class="metric-label">订单请求延迟中位（ms）</div><div class="metric-value">{{ metric('medianLatencyMs') }}</div><div class="text-xs text-muted-foreground">包含提交、查询及撤单请求</div></div>
     </div>
+
+    <Card :bordered="false" title="三个验证目标的当前证据" class="mb-4">
+      <template #extra><span class="text-xs text-muted-foreground">全量账本快照 {{ exchangeTime(evidence?.snapshotAt) }}</span></template>
+      <Alert v-if="evidenceError" class="mb-3" show-icon type="error" :message="evidenceError" />
+      <div v-if="evidence" class="grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <div class="evidence-card">
+          <div class="font-medium">手续费具体多少</div>
+          <Tag class="mt-2" :color="feeEvidence?.state === 'actual_fees_observed' ? 'blue' : 'default'">{{ feeEvidenceLabel }}</Tag>
+          <div class="mt-3 text-sm leading-6">实际成交 {{ valueText(feeEvidence?.fillCount) }} 笔 · 费用已知 {{ valueText(feeEvidence?.knownFeeFillCount) }} 笔 · 费用未知 {{ valueText(feeEvidence?.unknownFeeFillCount) }} 笔</div>
+          <div class="mt-2 text-xs leading-5 text-muted-foreground">账户报价见费用页签；实际金额与实收费率来自成交回报，不能据报价确认实盘费用。</div>
+        </div>
+        <div class="evidence-card">
+          <div class="font-medium">秒级交易有没有利润</div>
+          <Tag class="mt-2" color="default">秒级实验未配置</Tag>
+          <div class="mt-3 text-sm leading-6">现有 K 线实验闭合 {{ valueText(secondsEvidence?.closedRoundTripCount) }} 笔 · 净损益已知 {{ valueText(secondsEvidence?.knownNetRoundTripCount) }} 笔</div>
+          <div v-if="secondsEvidence && secondsEvidence.knownNetRoundTripCount > 0" class="mt-1 text-sm leading-6">已知净损益小计 {{ decimalText(secondsEvidence.knownNetSubtotalUsdt) }} USDT · 净损益未知 {{ valueText(secondsEvidence.unknownNetRoundTripCount) }} 笔</div>
+          <div class="mt-2 text-xs leading-5 text-muted-foreground">当前 K 线实验净交易损益 {{ decimalText(secondsEvidence?.closedNetTradingPnlUsdt) }} USDT（不含资金费）。这些样本不能回答秒级盈利问题。</div>
+        </div>
+        <div class="evidence-card">
+          <div class="font-medium">实际执行与上线评估</div>
+          <Tag class="mt-2" color="default">{{ executionEvidence?.state === 'demo_execution_observed' ? '已观察 Demo 执行' : '尚无交易所订单' }}</Tag>
+          <div class="mt-3 text-sm leading-6">交易所接受入口单 {{ valueText(executionEvidence?.exchangeAcceptedEntryCount) }} 笔 · 交易所拒单 {{ valueText(executionEvidence?.exchangeRejectedEntryCount) }} 笔</div>
+          <div class="mt-1 text-xs leading-5">挂单 {{ valueText(executionEvidence?.pendingEntryCount) }} · 提交未确认 {{ valueText(executionEvidence?.unknownEntryCount) }} · 终结部分成交 {{ valueText(executionEvidence?.partialTerminalAcceptedEntryCount) }}</div>
+          <div class="mt-2 text-xs leading-5 text-muted-foreground">相对信号参考价的不利偏差均值 {{ decimalText(executionEvidence?.signalPriceDeviation?.meanAdverseDeviationBps) }} bp，包含环境差异与延迟，不能单独认定为实盘滑点。</div>
+          <div class="mt-2 text-xs leading-5 text-muted-foreground">已终结已接受入口单未成交率 {{ unfilledRatio(executionEvidence?.acceptedTerminalNonfillRatio) }}（{{ valueText(executionEvidence?.zeroFillTerminalAcceptedEntryCount) }}/{{ valueText(executionEvidence?.terminalAcceptedEntryCount) }}）。上线仍需人工评审，当前未获实盘准入。</div>
+        </div>
+      </div>
+      <Empty v-else-if="!evidenceError" description="尚未取得全量账本证据" />
+    </Card>
 
     <Card :bordered="false" title="Demo 交易记录">
       <template #extra><span class="text-xs text-muted-foreground">{{ exchangeTime(updatedAt) }} · 最近 100 条</span></template>
@@ -371,6 +432,28 @@ onUnmounted(() => {
           </Table>
         </Tabs.TabPane>
         <Tabs.TabPane key="net-pnl" tab="实收费用与净损益">
+          <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <span class="font-medium">账户查询费率</span>
+            <span class="text-xs text-muted-foreground">查询时间 {{ exchangeTime(status?.lastCheck?.commissionRateObservedAt) }}</span>
+          </div>
+          <div class="mb-3 text-xs leading-5 text-muted-foreground">报价来自 Demo 已签名账户费率查询，仅表示查询时的 Maker/Taker 费率。报价费率不等于实际扣费，也不能验证实盘费率；实际金额仍以每条成交的 commission 与 commissionAsset 为准。</div>
+          <Table :columns="quoteColumns" :data-source="feeQuotes" row-key="symbol" :pagination="false" :scroll="{ x: 680 }" size="small" class="mb-4">
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'makerCommissionRate' || column.key === 'takerCommissionRate'">{{ quotedRateText(record[String(column.key)]) }}</template>
+            </template>
+            <template #emptyText><Empty description="尚无账户查询费率，请先配置凭据并执行只读连接检查" /></template>
+          </Table>
+          <div class="mb-2 font-medium">实际成交回报的实收费率</div>
+          <div class="mb-3 text-xs leading-5 text-muted-foreground">按交易对、Maker/Taker 和开仓/平仓分类，以已回报 USDT 手续费除以实际回报成交额。缺少费用、成交额或 USDT 换算时费率未知；这仍是 Demo 执行证据。</div>
+          <Table :columns="effectiveRateColumns" :data-source="feeEvidence?.rates ?? []" :row-key="(row: any) => `${row.symbol}:${row.liquidity}:${row.role}`" :pagination="false" :scroll="{ x: 1070 }" size="small" class="mb-4">
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'effectiveFeeRate'">{{ quotedRateText(record.effectiveFeeRate) }}</template>
+              <template v-else-if="column.key === 'liquidity'">{{ record.liquidity === 'maker' ? 'Maker' : record.liquidity === 'taker' ? 'Taker' : '未知' }}</template>
+              <template v-else-if="column.key === 'role'">{{ record.role === 'entry' ? '开仓' : '平仓' }}</template>
+              <template v-else-if="column.key === 'knownCommissionUsdt' || column.key === 'actualReportedQuoteUsdt'">{{ decimalText(record[String(column.key)]) }}</template>
+            </template>
+            <template #emptyText><Empty description="尚无实际成交费率证据，不以账户报价代替" /></template>
+          </Table>
           <div class="mb-3 text-xs leading-5 text-muted-foreground">净交易损益来自已平仓的 Demo 实际成交回报，扣除已确认 USDT 手续费，尚未包含资金费。费用缺失或手续费资产无法换算为 USDT 时净损益显示未知；不据此宣称策略或秒级交易已盈利。下方按资产汇总已回报手续费，未回报部分不补零。</div>
           <div class="mb-3 flex flex-wrap gap-2">
             <Tag v-for="(fee, index) in actualFees" :key="index">已回报手续费：{{ decimalText(fee.commission) }} {{ fee.commission_asset || '资产未知' }} · {{ valueText(fee.fill_count) }} 笔</Tag>
@@ -398,4 +481,5 @@ onUnmounted(() => {
 .metric-value { margin-top: 4px; font-size: 23px; font-weight: 600; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .identity-details { overflow-wrap: anywhere; line-height: 1.7; }
 .decimal { font-variant-numeric: tabular-nums; }
+.evidence-card { min-width: 0; border: 1px solid hsl(var(--border)); border-radius: 8px; padding: 14px; }
 </style>

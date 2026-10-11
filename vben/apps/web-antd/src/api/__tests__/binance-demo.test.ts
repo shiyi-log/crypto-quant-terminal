@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), requireSession: v
 vi.mock('../freqtrade/client', () => ({ ftClient: { get: mocks.get, post: mocks.post }, unwrap: (value: unknown) => value }));
 vi.mock('../session', () => ({ requireSession: mocks.requireSession }));
 
-import { checkBinanceDemoConnection, getBinanceDemoAccount, getBinanceDemoFills, getBinanceDemoPositions, getBinanceDemoStatus, saveBinanceDemoCredentials, startBinanceDemo, stopBinanceDemo } from '../binance-demo';
+import { checkBinanceDemoConnection, getBinanceDemoAccount, getBinanceDemoEvidence, getBinanceDemoFills, getBinanceDemoPositions, getBinanceDemoStatus, saveBinanceDemoCredentials, startBinanceDemo, stopBinanceDemo } from '../binance-demo';
 
 describe('authenticated Binance Demo API contract', () => {
   beforeEach(() => {
@@ -43,6 +43,18 @@ describe('authenticated Binance Demo API contract', () => {
     expect(mocks.get).toHaveBeenCalledWith('/locals/binance-demo/fills', { params: { limit: 100 }, signal: undefined });
   });
 
+  it('keeps account commission quotations distinct from actual fill charges', async () => {
+    const quote = { symbol: 'BTCUSDT', makerCommissionRate: '0.00020000', takerCommissionRate: '0.00050000' };
+    mocks.get.mockResolvedValue({ environment: 'binance_demo', endpoint: 'demo-fapi.binance.com', lastCheck: {
+      commissionRates: [quote], commissionRateObservedAt: 1000,
+      commissionRateSource: 'demo_signed_account_commission_rate_quote_not_fill',
+    } });
+    const response = await getBinanceDemoStatus();
+    expect(response.lastCheck?.commissionRates).toEqual([quote]);
+    expect(response.lastCheck?.commissionRateSource).toBe('demo_signed_account_commission_rate_quote_not_fill');
+    expect(response.lastCheck?.commissionRateObservedAt).toBe(1000);
+  });
+
   it('does not issue network requests without an authenticated session', async () => {
     mocks.requireSession.mockImplementationOnce(() => { throw new Error('请先登录'); });
     await expect(saveBinanceDemoCredentials('key', 'secret')).rejects.toThrow('请先登录');
@@ -57,5 +69,24 @@ describe('authenticated Binance Demo API contract', () => {
       ['/locals/binance-demo/account', { signal: undefined }],
       ['/locals/binance-demo/positions', { signal: undefined }],
     ]);
+  });
+
+  it('loads all-history evidence without a 100-record limit and preserves unknown net and fee values', async () => {
+    const value = { environment: 'binance_demo', endpoint: 'demo-fapi.binance.com',
+      scope: 'selected_candle_strategy_execution_only', snapshotAt: '2026-10-12T03:00:00+08:00', questions: {
+        fees: { state: 'actual_fees_partially_known', fillCount: 2, knownFeeFillCount: 1, unknownFeeFillCount: 1, rates: [{ symbol: 'BTCUSDT', liquidity: 'unknown', role: 'entry', fillCount: 2, knownCommissionUsdt: null, actualReportedQuoteUsdt: null, effectiveFeeRate: null }] },
+        secondsProfit: { state: 'seconds_experiment_not_configured', closedNetTradingPnlUsdt: null, liveProfitabilityVerified: false },
+      } };
+    mocks.get.mockResolvedValue(value);
+    const response = await getBinanceDemoEvidence();
+    expect(response.questions.fees.rates[0]?.effectiveFeeRate).toBeNull();
+    expect(response.questions.secondsProfit.closedNetTradingPnlUsdt).toBeNull();
+    expect(response.questions.secondsProfit.liveProfitabilityVerified).toBe(false);
+    expect(mocks.get).toHaveBeenCalledWith('/locals/binance-demo/evidence', { signal: undefined });
+  });
+
+  it('does not display a report claiming an unsupported evidence scope', async () => {
+    mocks.get.mockResolvedValue({ environment: 'binance_demo', endpoint: 'demo-fapi.binance.com', scope: 'seconds_profitability_verified' });
+    await expect(getBinanceDemoEvidence()).rejects.toThrow('证据范围不匹配');
   });
 });

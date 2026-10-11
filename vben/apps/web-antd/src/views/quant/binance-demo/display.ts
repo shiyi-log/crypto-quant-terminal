@@ -5,6 +5,23 @@ export function decimalText(value: unknown): string {
   return typeof value === 'string' && value !== '' ? value : '未知';
 }
 
+/** Move a decimal string two places without rounding the quoted exchange rate. */
+export function quotedRateText(value: unknown): string {
+  if (typeof value !== 'string') return '未知';
+  const match = /^(-?)(\d+)(?:\.(\d+))?(?:[Ee]([+-]?\d+))?$/.exec(value);
+  if (!match) return '未知';
+  // Only the exponent becomes a number; the coefficient is kept as digits.
+  const exponent = Number(match[4] ?? '0');
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1000) return '未知';
+  const digits = `${match[2]}${match[3] ?? ''}`;
+  const point = match[2]!.length + exponent;
+  const integer = point <= 0 ? '0' : point >= digits.length ? digits.padEnd(point, '0') : digits.slice(0, point);
+  const fraction = point <= 0 ? `${'0'.repeat(-point)}${digits}` : point >= digits.length ? '' : digits.slice(point);
+  const whole = `${integer}${fraction.slice(0, 2).padEnd(2, '0')}`.replace(/^0+(?=\d)/, '');
+  const tail = fraction.slice(2).replace(/0+$/, '');
+  return `${match[1]}${whole}${tail ? `.${tail}` : ''}%（原值 ${value}）`;
+}
+
 export function valueText(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—';
   return typeof value === 'object' ? '—' : String(value);

@@ -133,6 +133,8 @@ class PaperStub:
     def __init__(self):
         self.rows = []
         self.latest_price = "60000.1"
+        self.signal_price = "60000.1"
+        self.latest_candle_ms = NOW
         self.row = {"strategy_id": "offline-paper", "rule_hash": "rule", "execution_hash": "execution",
             "definition": {"strategy_id": "offline-paper", "params": {"risk_stop_atr_mult": 1.5}},
             "execution": {"execution_enabled": True, "risk_sizing_mode": "entry_atr",
@@ -149,8 +151,8 @@ class PaperStub:
         return copy.deepcopy([row for row in self.rows if row["sequence_id"] > after_sequence][:limit])
 
     def closed_candle(self, pair, timeframe, candle_ms=None):
-        return {"timestamp": candle_ms if candle_ms is not None else NOW,
-                "close": "60000.1" if candle_ms is not None else self.latest_price,
+        return {"timestamp": candle_ms if candle_ms is not None else self.latest_candle_ms,
+                "close": self.signal_price if candle_ms is not None else self.latest_price,
                 "extras": {"closed": True}}
 
     def signal(self, now, *, kind="entry", side="buy"):
@@ -426,6 +428,75 @@ class DemoContractIntegrationTests(unittest.TestCase):
         fill = self.ledger.runner_fills()[0]
         self.assertEqual(fill["commission_asset"], "USDT")
         self.assertEqual(Decimal(fill["commission"]), Decimal("0.123456789"))
+
+    def test_original_signal_reference_is_distinct_from_quantized_submitted_limit(self):
+        self.paper.signal_price = "60000.19"
+        row = self.enter()
+        evidence = row["intent_payload"]
+        self.assertEqual(evidence["signal_reference_price"], "60000.19")
+        self.assertEqual(evidence["submitted_limit_price"], "60000.10")
+        self.assertEqual(evidence["reference_price"], evidence["submitted_limit_price"])
+        self.assertEqual(evidence["reference_timestamp_ms"], NOW)
+        self.assertEqual(evidence["reference_source"], "paper_closed_candle_from_live_market")
+
+    def test_risk_exit_freezes_triggering_candle_reference_without_limit_price(self):
+        row = self.enter()
+        self.client.add_fill(row["client_id"], ".008")
+        self.tick(31_000)
+        self.paper.latest_price = "58000.19"
+        self.paper.latest_candle_ms = NOW - 900_000
+        self.tick()
+        exits = [order for order in self.ledger.runner_orders() if order["reduce_only"]]
+        self.assertEqual(len(exits), 1)
+        evidence = exits[0]["intent_payload"]
+        self.assertEqual(evidence["signal_reference_price"], "58000.19")
+        self.assertEqual(evidence["reference_timestamp_ms"], NOW)
+        self.assertIsNone(evidence["submitted_limit_price"])
+        self.assertIsNone(evidence["reference_price"])
+
+    def test_paper_exit_freezes_original_closed_candle_reference(self):
+        row = self.enter()
+        self.client.add_fill(row["client_id"], row["quantity"])
+        self.tick()
+        self.paper.signal_price = "60000.19"
+        self.paper.signal(self.clock, kind="exit", side="sell")
+        self.tick()
+        exits = [order for order in self.ledger.runner_orders() if order["reduce_only"]]
+        self.assertEqual(len(exits), 1)
+        evidence = exits[0]["intent_payload"]
+        self.assertEqual(evidence["signal_reference_price"], "60000.19")
+        self.assertEqual(evidence["reference_timestamp_ms"], NOW)
+        self.assertIsNone(evidence["submitted_limit_price"])
+
+    def test_missing_paper_exit_reference_stays_unknown_and_does_not_gate_exit(self):
+        row = self.enter()
+        self.client.add_fill(row["client_id"], row["quantity"])
+        self.tick()
+        self.paper.closed_candle = lambda *args, **kwargs: None
+        self.paper.signal(self.clock, kind="exit", side="sell")
+        self.tick()
+        exits = [order for order in self.ledger.runner_orders() if order["reduce_only"]]
+        self.assertEqual(len(exits), 1)
+        evidence = exits[0]["intent_payload"]
+        self.assertIsNone(evidence["signal_reference_price"])
+        self.assertIsNone(evidence["reference_source"])
+        self.assertIsNone(evidence["reference_timestamp_ms"])
+
+    def test_local_expired_unsubmitted_intent_does_not_enter_nonfill_population(self):
+        self.service.start()
+        event = {"event_id": "unsubmitted-local", "data_fingerprint": "local-fingerprint",
+                 "candle_ms": NOW - 900_000}
+        intent = self.service._base_intent(event, BTC, "buy", "entry", Decimal(".001"),
+            Decimal("60000.1"), self.clock, raw={"expires_ms": self.clock})
+        self.ledger.reserve_order(intent)
+        self.tick()
+        self.assertEqual(self.ledger.get_order(intent["client_id"])["status"], "expired")
+        status, metrics = self.service.status(), self.ledger.metrics()
+        self.assertEqual(status["terminal_entry_count"], metrics["terminal_entry_count"])
+        self.assertEqual(status["unfilled_entry_count"], metrics["unfilled_entry_count"])
+        self.assertEqual(status["terminal_entry_count"], 0)
+        self.assertIsNone(status["unfilled_entry_ratio"])
+        self.assertFalse(status["seconds_hypothesis_tested"])
 
 
 if __name__ == "__main__":

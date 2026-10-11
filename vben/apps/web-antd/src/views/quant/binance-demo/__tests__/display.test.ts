@@ -2,7 +2,7 @@ import type { DemoStatus } from '../../../../api/binance-demo';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { canStartDemo, comparisonObservation, decimalText, demoError, demoState, exchangeTime, feeText, fillSide, makerText, orderRecordStatus, orderStatus, submitCredentials, unfilledRatio } from '../display';
+import { canStartDemo, comparisonObservation, decimalText, demoError, demoState, exchangeTime, feeText, fillSide, makerText, orderRecordStatus, orderStatus, quotedRateText, submitCredentials, unfilledRatio } from '../display';
 
 function status(): DemoStatus {
   return {
@@ -41,6 +41,18 @@ describe('Demo exchange report presentation', () => {
     value.runner.state = 'connected';
     expect(demoState(value).label).toBe('待配置');
     expect(canStartDemo(value, 's03_R50_k1.5')).toBe(false);
+  });
+
+  it('shows exact quoted fee percentages and keeps missing quotations unknown', () => {
+    expect(quotedRateText('0.00020000')).toBe('0.02%（原值 0.00020000）');
+    expect(quotedRateText('0.00050000')).toBe('0.05%（原值 0.00050000）');
+    expect(quotedRateText('0.00000000')).toBe('0%（原值 0.00000000）');
+    expect(quotedRateText('-0.00000001')).toBe('-0.000001%（原值 -0.00000001）');
+    expect(quotedRateText('0E-8')).toBe('0%（原值 0E-8）');
+    expect(quotedRateText('1E-10')).toBe('0.00000001%（原值 1E-10）');
+    expect(quotedRateText('-1E-6')).toBe('-0.0001%（原值 -1E-6）');
+    expect(quotedRateText(null)).toBe('未知');
+    expect(quotedRateText(0.0002)).toBe('未知');
   });
 
   it('keeps a protected session locked to its selected identity and blocks unavailable decryption', () => {

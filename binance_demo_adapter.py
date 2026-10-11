@@ -29,6 +29,7 @@ _PRIVATE_GET = {
     ("fapiPrivate", "order"), ("fapiPrivate", "allOrders"),
     ("fapiPrivate", "openOrders"), ("fapiPrivate", "userTrades"),
     ("fapiPrivate", "positionSide/dual"), ("fapiPrivate", "symbolConfig"),
+    ("fapiPrivate", "commissionRate"),
     ("fapiPrivateV3", "positionRisk"),
     ("fapiPrivateV3", "account"),
 }
@@ -45,6 +46,7 @@ REQUEST_COSTS = {
     ("fapiPrivate", "GET", "userTrades"): {"cost": 5},
     ("fapiPrivate", "GET", "positionSide/dual"): {"cost": 30},
     ("fapiPrivate", "GET", "symbolConfig"): {"cost": 5},
+    ("fapiPrivate", "GET", "commissionRate"): {"cost": 20},
     ("fapiPrivateV3", "GET", "positionRisk"): {"cost": 5},
     ("fapiPrivateV3", "GET", "account"): {"cost": 5},
     ("fapiPrivate", "POST", "order"): {"cost": 4},
@@ -513,6 +515,21 @@ class BinanceDemoAdapter:
         if not isinstance(mode, bool):
             raise DemoSafetyError("Demo position mode response is incomplete")
         return {"hedged": mode, "dual_side_position": mode, "raw": sanitize_response(raw)}
+
+    def fetch_commission_rate(self, pair: str) -> dict[str, str]:
+        """Return native, current Demo account rates; never a modeled fallback."""
+        symbol = _symbol(pair)
+        raw = self._call("commissionRate", "fapiPrivate", "GET", {"symbol": symbol})
+        if not isinstance(raw, dict) or raw.get("symbol") != symbol:
+            raise DemoSafetyError("Demo commission-rate response identity mismatch")
+        for field in ("makerCommissionRate", "takerCommissionRate"):
+            value = raw.get(field)
+            if not isinstance(value, str) or _decimal(value) < 0:
+                raise DemoSafetyError("Demo commission-rate response is incomplete or invalid")
+        # Keep the original decimal text and Binance field names.  Commission
+        # rates are a current snapshot; realized fees still come from fills.
+        return {field: raw[field] for field in (
+            "symbol", "makerCommissionRate", "takerCommissionRate")}
 
     def fetch_symbol_config(self, pair: str | None = None) -> list[dict]:
         params = {"symbol": _symbol(pair)} if pair is not None else {}

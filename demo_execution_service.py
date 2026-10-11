@@ -113,6 +113,38 @@ def _stamp(value):
     return int(value)
 
 
+def signal_reference_evidence(candle, timeframe):
+    """Freeze a live-paper candle close separately from the Demo order price."""
+    evidence = {"signal_reference_price": None, "reference_source": None,
+                "reference_timestamp_ms": None,
+                "reference_comparison_scope": "demo_vs_live_paper_includes_environment_and_latency",
+                "live_executable_slippage_verified": False}
+    if not isinstance(candle, dict) or candle.get("extras", {}).get("closed") is not True:
+        return evidence
+    try:
+        from strategy_data import TIMEFRAME_MS
+        price = str(_decimal(candle["close"], positive=True))
+        closed_ms = _stamp(candle["timestamp"]) + TIMEFRAME_MS[timeframe]
+    except (KeyError, TypeError, ValueError):
+        return evidence
+    return {**evidence, "signal_reference_price": price,
+            "reference_source": "paper_closed_candle_from_live_market",
+            "reference_timestamp_ms": closed_ms}
+
+
+def attempted_entry_outcomes(orders):
+    """Match DemoStore's population, without claiming exchange acceptance."""
+    attempted = [order for order in orders if not order.get("reduce_only")
+                 and order["status"] in {"filled", "canceled", "rejected", "expired"}
+                 and (order.get("submission_attempts") == 1
+                      or order.get("exchange_order_id") is not None)]
+    unfilled = sum(_decimal(order["filled_quantity"]) == 0 for order in attempted)
+    return {"terminal_entry_count": len(attempted), "unfilled_entry_count": unfilled,
+            "unfilled_entry_ratio": unfilled / len(attempted) if attempted else None,
+            "unfilled_entry_population": "terminal_attempted_entries_not_verified_accepted",
+            "unfilled_entry_definition": "zero_reported_filled_quantity_in_terminal_attempted_entry"}
+
+
 @dataclass(frozen=True)
 class DemoRunnerConfig:
     strategy_id: str
@@ -226,6 +258,8 @@ class DemoExecutionService:
                         "environment": "binance_demo", "endpoint_host": HOST,
                         "strategy_id": config.strategy_id, "demo_policy_hash": self.policy_hash,
                         "live_enabled": False, "hypothesis_status": "forward_research",
+                        "seconds_hypothesis_tested": False,
+                        "experiment_scope": "selected_candle_strategy_execution_only",
                         "commission_source": "actual_exchange_fills_only",
                         "comparison_scope": self.policy["comparison_scope"]}
 
@@ -499,7 +533,7 @@ class DemoExecutionService:
                 "signal_ms": int(event.get("candle_ms") or now), "created_ms": now,
                 "endpoint_host": HOST, "raw": raw or {}}
 
-    def _exit(self, pair, qty, reason, signal_id, now, fingerprint=None):
+    def _exit(self, pair, qty, reason, signal_id, now, fingerprint=None, *, reference_candle=None):
         actual = self._actual_net.get(pair, Decimal(0))
         if actual * qty <= 0:
             qty = Decimal(0)
@@ -514,7 +548,10 @@ class DemoExecutionService:
         event = {"event_id": signal_id, "data_fingerprint": fingerprint or self.binding["input_fingerprint"],
                  "candle_ms": now}
         intent = self._base_intent(event, pair, "sell" if qty > 0 else "buy", "exit", abs(qty),
-                                   None, now, raw={"exit_reason": reason, "demo_policy_hash": self.policy_hash})
+                                   None, now, raw={"exit_reason": reason, "demo_policy_hash": self.policy_hash,
+                                       "submitted_limit_price": None, "reference_price": None,
+                                       **signal_reference_evidence(reference_candle,
+                                           self.account["execution"]["timeframe"])})
         progress = [[row["client_id"], str(row["filled_quantity"])] for row in self._orders()
                     if row["pair"] == pair and row.get("reduce_only") and row["status"] in TERMINAL]
         batch = _hash(sorted(progress))[:16]
@@ -557,7 +594,8 @@ class DemoExecutionService:
                 self._reconcile(now, cancel_entries=True)
                 current = self._net().get(pair, Decimal(0))
                 self._exit(pair, current, "stop_loss_close_confirmed",
-                           _hash(["demo_stop", row["client_id"], candle["timestamp"]]), now)
+                           _hash(["demo_stop", row["client_id"], candle["timestamp"]]), now,
+                           reference_candle=candle)
 
     def _paper_event(self, event, now, conflicts):
         if event["rule_hash"] != self.account["rule_hash"]:
@@ -578,8 +616,14 @@ class DemoExecutionService:
         net = self._net().get(pair, Decimal(0))
         if payload["kind"] == "exit":
             self._reconcile(now, cancel_entries=True)
+            try:
+                reference_candle = self.paper.closed_candle(pair, self.account["execution"]["timeframe"],
+                                                            int(payload["signal_candle_ms"]))
+            except Exception:
+                # Missing telemetry must never become an execution gate.
+                reference_candle = None
             self._exit(pair, self._net().get(pair, Decimal(0)), payload.get("reason", "paper_exit"),
-                       event["event_id"], now, event["data_fingerprint"])
+                       event["event_id"], now, event["data_fingerprint"], reference_candle=reference_candle)
             return
         denied = None
         if not self._entries_enabled:
@@ -605,6 +649,7 @@ class DemoExecutionService:
                          fingerprint=event["data_fingerprint"], now=now)
             return
         price = _decimal(candle["close"], positive=True)
+        reference_evidence = signal_reference_evidence(candle, self.account["execution"]["timeframe"])
         atr, k = _decimal(atr, positive=True), _decimal(k, positive=True)
         modeled_fee = _decimal(self.account["execution"]["fee_rate_per_side"])
         risk = _decimal(self.account["execution"]["max_loss_per_trade_usdt"], positive=True)
@@ -628,7 +673,8 @@ class DemoExecutionService:
         intent = self._base_intent(event, pair, payload["buy_sell"], "entry", qty, price, now,
             raw={"paper_signal": payload, "demo_policy_hash": self.policy_hash,
                  "entry_atr": str(atr), "risk_stop_atr_mult": str(k),
-                 "reference_price": str(price), "expires_ms": now + self.config.entry_order_ttl_ms,
+                 "reference_price": str(price), "submitted_limit_price": str(price),
+                 **reference_evidence, "expires_ms": now + self.config.entry_order_ttl_ms,
                  "sizing_modeled_fee_per_side": str(modeled_fee), "sizing_notional_proxy": str(sizing_notional),
                  "actual_fee_unknown_until_fill": True})
         self._submit(intent)
@@ -702,12 +748,8 @@ class DemoExecutionService:
                              {"last_sequence_id": self.last_sequence, "entries_enabled": self._entries_enabled}, now=now)
                 net = self._net()
                 orders = self._orders()
-                closed_entries = [order for order in orders if not order.get("reduce_only") and order["status"] in TERMINAL]
-                nonfills = sum(_decimal(order["filled_quantity"]) == 0 for order in closed_entries)
                 self._status.update(owned_positions={pair: str(qty) for pair, qty in net.items()},
-                    last_sequence_id=self.last_sequence, terminal_entry_count=len(closed_entries),
-                    unfilled_entry_count=nonfills,
-                    unfilled_entry_ratio=nonfills / len(closed_entries) if closed_entries else None,
+                    last_sequence_id=self.last_sequence, **attempted_entry_outcomes(orders),
                     status=("blocked_unknown_exposure" if conflicts else
                             "observing" if self._entries_enabled else
                             "paused_protecting" if net else "paused_flat"))

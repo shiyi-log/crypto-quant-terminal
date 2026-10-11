@@ -56,6 +56,7 @@ allOrders、userTrades 为 5；order 查询/提交/撤单为 1/4/1。V3 account/
 | `fetch_trades(pair, since_ms=None, end_ms=None, order_id=None, from_id=None, limit=1000)` | 实际 userTrades；显式时间区间必须少于七天；`from_id` 按成交 ID 分页，禁止和时间/订单 ID 同发 |
 | `fetch_positions()` | 全账户只读快照，含 `signed_qty`、`position_side`、`allowed_pair`、原始字段 |
 | `fetch_position_mode()` | GET `positionSide/dual`，即使无仓位也返回 `hedged`；缺字段拒绝 |
+| `fetch_commission_rate(pair)` | GET `commissionRate`，权重 20；返回原始 `symbol` / `makerCommissionRate` / `takerCommissionRate` 字符串，缺失或非法值拒绝 |
 | `fetch_symbol_config(pair=None)` | GET `symbolConfig`，记录实际杠杆、保证金模式和原始字段，不修改配置 |
 | `fetch_balance()` | 只读余额/权益与原始 account 字段 |
 | `submit_limit_order(pair, side, quantity, price, client_order_id, post_only=True, reduce_only=False)` | 默认 GTX；仅已启用交易且有显式 Demo 凭据时提交 |
@@ -101,6 +102,11 @@ Binance 格式核对；只移除凭据、请求头、签名等认证材料。
 保持未知。BNB/USDT 等混合费用按资产单独汇总，没有同一时点换算证据就不能给出完整
 USDT 净利润。不会把配置费率替代为“实测”，不会把缺失费用填成零。
 
+`fetch_commission_rate` 可在只读检查时获取当前 Demo 账户的币种费率快照，且不回退到
+建模费率。两项费率必须是有限、非负的十进制字符串，返回原始字符格式；请求失败、字段
+缺失或币种不匹配即失败。该快照不能替代每笔实际成交的 commission，也不证明 Demo
+与实盘费率相同。
+
 订单部分成交与未成交不从信号推断；runner 应保存提交时点、实际成交与撤单状态，
 据此计算未成交率、延迟、滑点，并将同一规则/输入哈希的内部模拟与 Demo 并排比较。
 该适配器没有预先认定任何秒级策略盈利或亏损，15m 边际不能外推所有秒级策略。
@@ -119,7 +125,7 @@ Binance 官方说明 Demo 的图表、订单簿定价和执行可能与实际交
 
 ## 当前验证状态
 
-45 项离线测试与最终独立只读审查通过。没有读取实际凭据、发签名网络请求、提交 Demo
+51 项离线测试及独立只读审查通过，手续费率查询已补环境、凭据、权重和非法响应回归。没有读取实际凭据、发签名网络请求、提交 Demo
 订单或修改交易所账户配置。覆盖真正 CCXT 客户端的无网络构造、重定向、单端点重试与
 错误环境拒绝，以及并发 claim、外部撤单、价格/数量精度、部分成交、真实费用和脱敏。
 真实 Demo 手续费、未成交率、秒级净利润及可上线性尚无成交证据。

@@ -115,6 +115,9 @@ class DemoApiTests(unittest.TestCase):
         self.controller.status.return_value = {"running": False, "entriesEnabled": False,
                                               "status": "not_started", "controllerError": None}
         self.adapter_factory = Mock()
+        self.adapter_factory.return_value.fetch_commission_rate.side_effect = lambda pair: {
+            "symbol": pair.split("/")[0] + "USDT",
+            "makerCommissionRate": "0.00001200", "takerCommissionRate": "0.00004500"}
         self.api = DemoApi(self.data, self.credentials, self.ledger, self.controller,
                            adapter_factory=self.adapter_factory,
                            account_provider=lambda: [{"accountId": "selected", "eligible": True}])
@@ -125,6 +128,16 @@ class DemoApiTests(unittest.TestCase):
         result = self.api.get("")
         self.assertEqual(result["runner"]["state"], "reconciliation_error")
         self.assertEqual(result["runner"]["lastError"], "RequestTimeout")
+        self.adapter_factory.assert_not_called()
+        self.credentials.load_credentials.assert_not_called()
+
+    def test_evidence_get_reads_database_evidence_without_network_or_credentials(self):
+        reader = Mock(return_value={"environment": "binance_demo", "questions": {"live": "unknown"}})
+        self.ledger.virtual_account_key = "selected-demo-ledger"
+        with patch.dict("sys.modules", {"demo_evidence": Mock(read_demo_evidence=reader)}):
+            result = self.api.get("/evidence")
+        reader.assert_called_once_with(self.data, virtual_account_key="selected-demo-ledger")
+        self.assertEqual(result["questions"]["live"], "unknown")
         self.adapter_factory.assert_not_called()
         self.credentials.load_credentials.assert_not_called()
 
@@ -168,7 +181,59 @@ class DemoApiTests(unittest.TestCase):
         self.ledger.append_account_snapshot.assert_called_once()
         self.ledger.append_position_snapshot.assert_called_once()
         self.assertEqual(result["feeVerification"], "requires_actual_fills")
+        self.assertEqual(result["commissionRateSource"], "demo_signed_account_commission_rate_quote_not_fill")
+        self.assertEqual(result["commissionRateObservedAt"], result["checkedAt"])
+        self.assertEqual([row["symbol"] for row in result["commissionRates"]], ["BTCUSDT", "ETHUSDT", "TRXUSDT"])
+        self.assertEqual(result["commissionRates"][0]["makerCommissionRate"], "0.00001200")
+        self.assertEqual(result["commissionRates"][0]["takerCommissionRate"], "0.00004500")
+        self.assertEqual(adapter.fetch_commission_rate.call_count, 3)
+        account_payload = self.ledger.append_account_snapshot.call_args.args[0]
+        self.assertEqual(account_payload["commissionRates"], result["commissionRates"])
+        self.assertEqual(account_payload["commissionRateSource"], result["commissionRateSource"])
+        self.assertNotIn("commissionRates", self.ledger.append_position_snapshot.call_args.args[0])
         self.assertNotIn("synthetic-secret", json.dumps(result))
+
+    def test_missing_or_malformed_account_quote_never_reports_success_or_assumed_fee(self):
+        self.credentials.load_credentials.return_value = DemoCredentials("synthetic-key", "synthetic-secret")
+        adapter = self.adapter_factory.return_value
+        adapter.fetch_balance.return_value = {"raw": {"assets": []}}
+        adapter.fetch_positions.return_value = []
+        valid = {"symbol": "BTCUSDT", "makerCommissionRate": "0.00001200",
+                 "takerCommissionRate": "0.00004500"}
+        for malformed in (None, {}, {**valid, "symbol": "ETHUSDT"},
+                          {**valid, "makerCommissionRate": None},
+                          {**valid, "makerCommissionRate": 0.0002},
+                          {**valid, "takerCommissionRate": "NaN"},
+                          {**valid, "takerCommissionRate": "-0.0005"},
+                          {**valid, "takerCommissionRate": "Infinity"},
+                          {**valid, "takerCommissionRate": "2"}):
+            with self.subTest(malformed=malformed):
+                adapter.fetch_commission_rate.side_effect = None
+                adapter.fetch_commission_rate.return_value = malformed
+                with self.assertRaisesRegex(DemoApiError, "demo_signed_check_failed"):
+                    self.api.post("/check", {}, actor="admin")
+                stored = self.data.put_document.call_args.args[1]
+                self.assertFalse(stored["connected"])
+                self.assertNotIn("commissionRates", stored)
+                self.assertNotIn("synthetic-secret", json.dumps(stored))
+        self.ledger.append_account_snapshot.assert_not_called()
+        self.ledger.append_position_snapshot.assert_not_called()
+
+    def test_account_quote_network_error_is_redacted_and_status_get_does_not_retry(self):
+        self.credentials.load_credentials.return_value = DemoCredentials("synthetic-key", "synthetic-secret")
+        adapter = self.adapter_factory.return_value
+        adapter.fetch_balance.return_value = {"raw": {"assets": []}}
+        adapter.fetch_positions.return_value = []
+        adapter.fetch_commission_rate.side_effect = RuntimeError("synthetic-secret in signed request")
+        with self.assertRaisesRegex(DemoApiError, "demo_signed_check_failed"):
+            self.api.post("/check", {}, actor="admin")
+        stored = self.data.put_document.call_args.args[1]
+        self.assertFalse(stored["connected"])
+        self.assertNotIn("synthetic-secret", json.dumps(stored))
+        self.data.get_document.return_value = stored
+        self.assertFalse(self.api.get("")["lastCheck"]["connected"])
+        adapter.fetch_commission_rate.assert_called_once()
+        self.ledger.append_account_snapshot.assert_not_called()
 
     def test_raw_and_runner_wrapped_snapshots_keep_binance_fields(self):
         balance = {"raw": {"assets": [{"asset": "USDT", "walletBalance": "123.0000"}],

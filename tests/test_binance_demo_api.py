@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 
 from binance_demo_credentials import DemoCredentials
 from demo_api import DemoApi, DemoApiError, MAX_BODY_BYTES, PREFIX, handle_demo_request
+from demo_runner_controller import DemoHandoffError
 
 
 ORIGIN = "http://127.0.0.1:8888"
@@ -95,6 +96,23 @@ class DemoHttpTests(unittest.TestCase):
             verify_token=lambda _: "admin", allowed_origins={ORIGIN}, api_provider=provider)
         self.assertEqual(code, 503)
         self.assertNotIn("synthetic-secret-value", json.dumps(payload))
+
+    def test_flat_handoff_uses_authenticated_local_origin_guard_and_empty_body(self):
+        for alteration, expected in (("unauth", 401), ("remote", 403), ("origin", 403),
+                                     ("fields", 400)):
+            with self.subTest(alteration=alteration):
+                handler = self.handler("/yield-flat", {"accountId": "selected"}
+                                       if alteration == "fields" else {})
+                if alteration == "remote":
+                    handler._is_local.return_value = False
+                if alteration == "origin":
+                    handler.headers["Origin"] = "https://foreign.invalid"
+                self.assertEqual(self.route(handler, username=None if alteration == "unauth"
+                                            else "admin")[0], expected)
+                self.provider.assert_not_called()
+        handler = self.handler("/yield-flat")
+        self.assertEqual(self.route(handler)[0], 200)
+        self.provider.return_value.post.assert_called_once_with("/yield-flat", {}, actor="admin")
 
 
 class DemoApiTests(unittest.TestCase):
@@ -258,6 +276,36 @@ class DemoApiTests(unittest.TestCase):
         self.controller.stop.return_value = None
         result = self.api.post("/stop", {}, actor="admin")
         self.assertIn("continue_owned_risk_protection", result["stopPolicy"])
+
+    def test_flat_handoff_pauses_then_closes_without_start_or_credential_changes(self):
+        calls = []
+        self.controller.stop.side_effect = lambda: calls.append("stop")
+        self.controller.close_if_flat.side_effect = lambda: calls.append("close")
+        result = self.api.post("/yield-flat", {}, actor="admin")
+        self.assertEqual(calls, ["stop", "close"])
+        self.assertFalse(result["automaticRestart"])
+        self.assertIn("yield_only_when_owned_ledger_flat", result["handoffPolicy"])
+        self.controller.start.assert_not_called()
+        self.credentials.load_credentials.assert_not_called()
+        self.credentials.save_credentials.assert_not_called()
+        self.adapter_factory.assert_not_called()
+
+    def test_flat_handoff_refusal_is_a_fixed_conflict_code(self):
+        self.controller.close_if_flat.side_effect = DemoHandoffError("demo_worker_busy",
+            "request contained synthetic-secret-value")
+        with self.assertRaises(DemoApiError) as refused:
+            self.api.post("/yield-flat", {}, actor="admin")
+        self.assertEqual(refused.exception.status, 409)
+        self.assertEqual(refused.exception.code, "demo_worker_busy")
+        self.assertNotIn("synthetic-secret-value", str(refused.exception))
+        self.controller.start.assert_not_called()
+
+    def test_retained_account_flock_blocks_credential_rotation_after_worker_failure(self):
+        self.controller.status.return_value = {"running": False, "entriesEnabled": False,
+            "workerRunning": False, "accountLockOwned": True, "status": "not_started"}
+        with self.assertRaisesRegex(DemoApiError, "pause_and_reconcile"):
+            self.api.post("/credentials", {"apiKey": "new", "secret": "new"}, actor="admin")
+        self.credentials.save_credentials.assert_not_called()
 
     def test_configuration_cannot_race_readonly_signed_check(self):
         entered, release, save_attempted = threading.Event(), threading.Event(), threading.Event()

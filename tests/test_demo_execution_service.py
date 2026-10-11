@@ -132,6 +132,8 @@ class ControllerRecoveryTests(unittest.TestCase):
         self.ledger.get_binding.return_value = None
         self.ledger.net_fill_positions.return_value = {}
         self.ledger.pending_orders.return_value = []
+        self.ledger.runner_orders.return_value = []
+        self.ledger.runner_fills.return_value = []
         self.paper.account.return_value = {"execution": {"risk_sizing_mode": "entry_atr"}}
         self.provider, self.factory = Mock(return_value=Credentials()), Mock()
         self.created = []
@@ -155,7 +157,11 @@ class ControllerRecoveryTests(unittest.TestCase):
         self.service_patch = patch("demo_runner_controller.DemoExecutionService", side_effect=service_factory)
         self.thread_patch = patch("demo_runner_controller.threading.Thread")
         self.service_patch.start()
-        self.thread_patch.start()
+        thread_factory = self.thread_patch.start()
+        # The mocked worker finishes when joined; an unspecified Mock result
+        # is truthy and would correctly fail the flat-handoff safety guard.
+        worker = thread_factory.return_value
+        worker.join.side_effect = lambda **kwargs: setattr(worker.is_alive, "return_value", False)
         self.addCleanup(self.service_patch.stop)
         self.addCleanup(self.thread_patch.stop)
         self.controller = DemoRunnerController(self.data, self.ledger, self.provider, self.factory,

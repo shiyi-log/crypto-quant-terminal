@@ -82,8 +82,103 @@ Demo 名义默认上限 1,000 USDT。止损距离定仓使用原纸面风险档�
 `actual_net_trading_pnl_usdt = actual_realized_pnl_usdt - actual_commission_usdt`。
 非 USDT 费用没有转换率时净额为 unknown；此净額不含尚未采集的资金费。
 秒级利润只能依据实际对应秒级成交样本，不能用十五分钟回测结果替代。
-当前实验范围明确为 `selected_candle_strategy_execution_only`，
+以上冻结 K 线策略 runner 的实验范围为 `selected_candle_strategy_execution_only`，
 `seconds_hypothesis_tested=False`：分钟/小时策略配合五秒轮询不构成秒级交易策略实验。
+
+## 独立秒级首轮操作
+
+秒级实验使用独立 CLI、信号来源和两个账本，不修改上述冻结账户的绑定，也不伪造它的
+K 线 `order_submitted` 事件。下面是一轮最多八个信号、最多六百秒观察窗口、每次入口
+报价名义不超过 75 USDT 的操作示例。保护、平仓和成交补查可以超过观察窗口；六百秒
+到期只停止新入口，不中断已有仓位的保护。
+
+默认 runner、冒烟测试和秒级 CLI 共用
+`database/runtime/binance_demo_runner.lock` 这一个账户锁。namespace 只隔离审计账本，
+不能隔离交易所净仓；不能为不同实验另设锁并行下单。秒级 CLI 自身不会停止、重启或
+启动服务。交接流程如下：
+
+1. 记录当前选定的冻结账户。通过已鉴权且带合法 Origin 的应用请求，向
+   `/api/locals/binance-demo/stop` 发送 `POST {}`，暂停默认入口并继续核对、撤单及保护。
+   此操作仍持有账户锁。
+2. 向 `/api/locals/binance-demo/yield-flat` 发送 `POST {}`。控制器仅在其账本无净仓、
+   无未决订单且订单成交数量与成交明细完全对账后，等待保护 worker 结束并释放锁；
+   保存原选定账户且入口保持暂停。若核对未完成或 worker 未结束，返回冲突并保留锁与
+   暂停状态下的保护。鉴权服务和网页继续在线，交接不要求停止鉴权服务。
+3. 使用全新的 session ID 运行有限首轮：
+
+   ```bash
+   uv run python tools/run_binance_demo_second_level.py \
+     --execute --session second_level_round1_20261012 \
+     --pair BTC --max-signals 8 --duration-seconds 600 --max-notional-usdt 75
+   ```
+
+   CLI 取得同一把锁后，核查其他 Demo namespace 的所有历史未决订单、净仓和成交
+   数量缺口，再从现有加密凭据 provider 加载密钥。首次运行还要求交易所全账户空仓、
+   无挂单和单向持仓模式；预检失败不会启动新交易。`demo_account_lock_busy` 表示
+   账户尚未交接，不能绕开锁。
+4. 结束后核对报告的 `position_flat/open_orders_zero/persistence_complete`、全部
+   订单与成交数量，以及实际交易所仓位和挂单。需要恢复时按下一节操作。只有交接账本
+   与交易所状态均已确认无未决事项，才通过
+   `/api/locals/binance-demo/start` 发送 `POST {"accountId":"原选定冻结账户ID"}`
+   显式恢复默认入口；CLI 不会自动恢复它。
+
+同一轮分别使用 `second_level_<session>_maker` 与 `second_level_<session>_taker`
+两个账本，挂单距离保存在样本元数据中。每次只运行一个预分配 arm，确认账户已平仓后
+再评估下一个信号。每秒读取最新收到的实盘 futures 深度快照，`|OBI5| >= 0.9` 触发，
+回到 `|OBI5| <= 0.3` 后重新武装；拒绝超过五秒、重复、倒退、未来或 session 前的输入。
+八个合格信号依次分配为 maker 0bp、taker、maker 1bp、taker、maker 2bp、taker、
+maker 5bp、taker，与成交结果无关。观察窗口内可能不足八个信号；未观察、未被交易所
+接受和未成交的档位分别记录，不能据配置声称覆盖完成。
+
+maker 入口为 Demo 当时最优买/卖报价向外偏移指定距离的 `GTX` post-only 限价单。
+taker 入口为带 10bp 穿透价格上限的 `LIMIT/IOC`，可以部分成交或完全未成交，不能称
+百分之百成交的市价单。退出均用实际可归属数量的 `reduceOnly MARKET`；maker 入口
+加市价退出是混合执行，不能按双边 maker 的 4bp 往返成本计算。
+
+退出目标是**信号决策时间加十秒**，决策时映射为固定单调时钟截止点，不是在成交后
+重新计时十秒。请求、核对或撤单延迟会压缩或延长实际持仓；实际持有时间另按成交回报
+时间统计。maker 三秒 TTL 从本地提交认领时的调用开始计时，包含预算等待和 HTTP
+请求耗时，不保证在交易所挂满三秒。报告保留本地调用开始/返回、单调时钟耗时和
+交易所原始时间；调用耗时与纯网络耗时须按字段来源区分，未校验两端时钟前，也不能
+把两类时间直接相减称作真实网络延迟。
+
+## 秒级恢复与证据口径
+
+一旦 session 已有来源 checkpoint 或订单，再用**同一 session 和完全相同参数**运行
+只会恢复原冻结订单、补查成交并保护已有仓位，不新增信号；可明确加上 `--recover-only`：
+
+```bash
+uv run python tools/run_binance_demo_second_level.py \
+  --execute --recover-only --session second_level_round1_20261012 \
+  --pair BTC --max-signals 8 --duration-seconds 600 --max-notional-usdt 75
+```
+
+来源进度在交给执行器前持久化。策略政策、参数、币对或加载凭据的非秘密身份指纹
+发生变化会拒绝恢复，不能换 session ID 绕过未知提交。下单原子认领后只尝试一次；
+已认领或结果未知的订单只按原 clientOrderId 查询，绝不重新 POST。收到部分成交时先
+撤销剩余入口、确认终态，再退出真实数量。未知订单、缺失成交或保护失败会保留恢复
+标记，不能当作实验成功或自行丢弃订单。
+
+报告保存在数据库 documents 的
+`binance_demo_second_level/<session>/report.json`，每次另存独立历史报告；来源状态在
+同目录 `source.json`。原生订单、成交和同一 `signal_id` 的对照仍保存在隔离 Demo 表中。
+每个信号的纸面对照使用**决策之后收到的 Demo bookTicker** 作为 crossing quote 代理，
+没有深度、排队或实际成交保证；maker 排队及是否成交保持 unknown，不以报价触及
+限价伪造成交。纸面费用仅在提供账户报价时作为明确标注的假设计算，未提供报价则
+保持 unknown；当前 CLI 不把报价补成实际费用。实际费用仅来自 Demo `userTrades`
+的 `commission/commissionAsset/isMaker`，缺失仍为 unknown。
+
+`observed_arms/accepted_arms/filled_arms` 区分评估、交易所接受与真实成交。认领尝试
+人口含本地 POST 前保护拒绝；未成交率必须明确使用哪一种人口，不能将本地拒绝或
+未知结果混进已接受终结订单的分母。净交易损益仍要求实际 realizedPnl 和全部费用
+完整，不包含资金费；短样本仅验证 Demo 管道与本轮执行情况，不证明盈利、实盘有效
+或可上线。
+
+已审计的手动冒烟往返见
+[实际收据](../artifacts/binance-demo-smoke-20261012.json)：BTCUSDT 开仓和平仓均成交，
+两边为 taker，实收约 0.0400%/边，合计 0.04014969 USDT，扣费净交易损益
+−0.04026968 USDT，最终空仓且无挂单。该手动测试不构成秒级策略样本，也未验证
+maker 实收费率。
 
 ## 结论边界与验证
 

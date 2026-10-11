@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qs, urlsplit
 
 from binance_demo_credentials import DemoCredentialError, DemoCredentialStore
+from demo_runner_controller import DemoHandoffError
 
 PREFIX = "/api/locals/binance-demo"
 MAX_BODY_BYTES = 4096
@@ -22,7 +23,7 @@ MAX_QUERY_BYTES = 512
 _ACCOUNT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,179}\Z")
 _GET_PATHS = {"", "/status", "/accounts", "/orders", "/fills", "/positions",
               "/account", "/comparisons", "/evidence"}
-_POST_PATHS = {"/credentials", "/check", "/start", "/stop"}
+_POST_PATHS = {"/credentials", "/check", "/start", "/stop", "/yield-flat"}
 LIMITATIONS = [
     "币安 Demo 的订单簿、定价和执行可能与实盘不同，不能据此自动上线。",
     "手续费以实际成交 commission 为准，缺失字段保留 unknown。",
@@ -205,7 +206,7 @@ class DemoApi:
         has_exposure = any(Decimal(value) != 0 for value in self.demo_store.net_fill_positions().values())
         return {**status, "state": state, "tradingEnabled": entries,
                 "workerRunning": worker, "hasExposure": has_exposure,
-                "accountLocked": bool(worker or pending or has_exposure),
+                "accountLocked": bool(status.get("accountLockOwned") or worker or pending or has_exposure),
                 "lastError": status.get("controllerError") or status.get("last_error")}
 
     def _metrics(self):
@@ -306,6 +307,15 @@ class DemoApi:
             result = self.controller.stop()
             return {"environment": "binance_demo", "runner": result or self._runner_status(),
                     "stopPolicy": "pause_entries_cancel_entry_orders_continue_owned_risk_protection"}
+        if suffix == "/yield-flat":
+            try:
+                self.controller.stop()
+                result = self.controller.close_if_flat()
+            except DemoHandoffError as exc:
+                raise DemoApiError(exc.code, 409) from None
+            return {"environment": "binance_demo", "runner": result or self._runner_status(),
+                    "handoffPolicy": "pause_entries_join_worker_yield_only_when_owned_ledger_flat",
+                    "automaticRestart": False}
         raise DemoApiError("demo_route_not_found", 404)
 
     def check(self):

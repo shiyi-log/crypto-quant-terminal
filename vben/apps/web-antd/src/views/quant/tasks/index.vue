@@ -127,11 +127,13 @@ onUnmounted(() => {
 
 /* ══════════════════ ① 顶部说明条 / 可读错误 ══════════════════ */
 
-const bannerError = ref('');
+const sourceErrors = reactive<Record<string, string>>({});
+const bannerError = computed(() => Object.values(sourceErrors).filter(Boolean).join('；'));
+const initialLoading = ref(false);
 
 /** 首次加载失败（例如认证服务连不上 8891）时，把可读文案落到顶部说明条 */
-function reportBannerError(e: any) {
-  if (!bannerError.value) bannerError.value = errText(e);
+function reportBannerError(source: string, e: any) {
+  sourceErrors[source] = `${source}：${errText(e)}`;
 }
 
 /* ══════════════════ 公共下拉选项 ══════════════════ */
@@ -180,9 +182,10 @@ const btRunning = computed(() => btStatus.value?.running === true);
 async function loadBacktestStatus() {
   try {
     btStatus.value = await getBacktestStatus();
+    sourceErrors['回测状态'] = '';
     if (btStatus.value?.running) startBacktestPoll();
   } catch (e) {
-    reportBannerError(e);
+    reportBannerError('回测状态', e);
   }
 }
 
@@ -366,9 +369,10 @@ async function loadHistory(silent = false) {
   historyLoading.value = true;
   try {
     history.value = await getBacktestHistory();
+    sourceErrors['回测历史'] = '';
   } catch (e) {
-    if (silent) reportBannerError(e);
-    else message.error(errText(e));
+    reportBannerError('回测历史', e);
+    if (!silent) message.error(errText(e));
   } finally {
     historyLoading.value = false;
   }
@@ -453,8 +457,9 @@ async function loadPairs() {
   try {
     const r = await getWebAvailablePairs();
     pairOptions.value = sortCoins(r?.pairs ?? []).map((p) => ({ label: p, value: p }));
+    sourceErrors['交易对列表'] = '';
   } catch (e) {
-    reportBannerError(e);
+    reportBannerError('交易对列表', e);
   }
 }
 
@@ -464,8 +469,9 @@ async function loadWhitelist() {
     const r = await getWhitelist();
     const list = r?.whitelist ?? [];
     if (dlPairs.value.length === 0) dlPairs.value = sortCoins(list).slice(0, 5);
+    sourceErrors['运行白名单'] = '';
   } catch (e) {
-    reportBannerError(e);
+    reportBannerError('运行白名单', e);
   }
 }
 
@@ -808,6 +814,7 @@ async function loadStrategies() {
   try {
     const r = await getWebStrategies();
     strategies.value = Array.isArray(r?.strategies) ? r.strategies : [];
+    sourceErrors['策略列表'] = '';
     const first = strategies.value[0] ?? '';
     if (first) {
       if (!btForm.strategy) btForm.strategy = first;
@@ -815,27 +822,34 @@ async function loadStrategies() {
       if (!rcForm.strategy) rcForm.strategy = first;
     }
   } catch (e) {
-    reportBannerError(e);
+    reportBannerError('策略列表', e);
   }
 }
 
-onMounted(() => {
-  void loadStrategies();
-  void loadPairs();
-  void loadWhitelist();
-  void loadHistory(true);
-  void loadBacktestStatus();
-});
+async function loadInitial() {
+  if (initialLoading.value) return;
+  initialLoading.value = true;
+  try {
+    await Promise.allSettled([loadStrategies(), loadPairs(), loadWhitelist(), loadHistory(true), loadBacktestStatus()]);
+  } finally {
+    initialLoading.value = false;
+  }
+}
+
+onMounted(() => void loadInitial());
 </script>
 
 <template>
   <div class="p-4">
+    <div class="mb-3 text-right">
+      <Button size="small" :loading="initialLoading" @click="loadInitial">刷新研究数据</Button>
+    </div>
     <!-- ① 说明条 / 可读错误 -->
     <Alert :type="bannerError ? 'error' : 'info'" show-icon>
       <template #message>
         {{
           bannerError
-            ? '研究实例（Freqtrade webserver 8891）不可用'
+            ? '部分研究数据加载失败'
             : '本页的任务跑在独立的研究实例（Freqtrade webserver）上'
         }}
       </template>
@@ -843,7 +857,7 @@ onMounted(() => {
         <div v-if="bannerError" class="text-xs">
           {{ bannerError }}
           <div class="mt-1 text-gray-400">
-            上方下拉与历史列表可能为空；确认认证服务与 8891 上的研究实例已启动后刷新重试。
+            当前保留已成功读取的数据；点击“刷新研究数据”重试失败来源。
           </div>
         </div>
         <div v-else class="text-xs">
@@ -950,7 +964,7 @@ onMounted(() => {
         </Row>
       </div>
       <div v-else class="mt-3 py-6 text-center text-xs text-gray-400">
-        暂无回测状态（进页面读取一次；只有 running = true 才会开始轮询）
+        {{ sourceErrors['回测状态'] ? '回测状态加载失败，请刷新研究数据重试。' : initialLoading ? '正在读取回测状态…' : '当前没有已记录的回测状态。' }}
       </div>
 
       <!-- KPI -->
@@ -1020,7 +1034,7 @@ onMounted(() => {
           </template>
         </template>
         <template #emptyText>
-          <div class="py-6 text-xs text-gray-400">暂无历史回测结果</div>
+          <div class="py-6 text-xs text-gray-400">{{ sourceErrors['回测历史'] ? '回测历史加载失败，请刷新重试。' : '尚无已归档的历史回测结果。' }}</div>
         </template>
       </Table>
     </Card>

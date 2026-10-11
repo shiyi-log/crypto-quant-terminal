@@ -17,6 +17,7 @@ from market_live import (
     Client, DEFAULT_INTERVALS, SERVICE_KEY, Subscription, create_app, normalize_kline,
     parse_subscriptions, timeframe_milliseconds, upstream_url,
 )
+from orderflow_detector import VolumeSurgeDetector
 
 
 FUTURE = {"pair": "BTC/USDT:USDT", "timeframe": "1m"}
@@ -127,6 +128,22 @@ class ProtocolTests(unittest.TestCase):
         message["stream"] = "ethusdt@kline_1m"
         with self.assertRaises(ValueError):
             normalize_kline(message, "futures", subscriptions, 123)
+
+    def test_authoritative_orderflow_fields_and_imbalance(self):
+        subscriptions = parse_subscriptions([FUTURE], DEFAULT_INTERVALS)
+        message = kline()
+        message["data"]["k"].update(q="100", n=7, V="4.5", Q="75")
+        candle = normalize_kline(message, "futures", subscriptions, 123)[1]["candle"]
+        self.assertEqual(candle["quote_volume"], 100)
+        self.assertEqual(candle["num_trades"], 7)
+        self.assertEqual(candle["taker_buy_base"], 4.5)
+        self.assertEqual(candle["taker_buy_quote"], 75)
+        self.assertEqual(candle["flow_imbal"], .5)
+        for field, value in (("q", "NaN"), ("n", -1), ("n", True), ("Q", "101")):
+            invalid = copy.deepcopy(message)
+            invalid["data"]["k"][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                normalize_kline(invalid, "futures", subscriptions, 123)
 
 
 class LocalWebSocketTests(unittest.IsolatedAsyncioTestCase):
@@ -330,6 +347,42 @@ class LocalWebSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(health["exchange_to_receive_latency_ms"]["clock_skew_possible"])
         self.assertLess(health["exchange_to_receive_latency_ms"]["p50"], 0)
         self.assertGreater(health["receive_to_send_latency_ms"]["samples"], 0)
+
+    async def test_closed_5m_surges_preserve_orderflow_fields_and_emit_once(self):
+        seen = []
+        detector = VolumeSurgeDetector(window_size=2, on_surge=seen.append)
+        self.service.surge_detector = detector
+        ws = await self.connect()
+        await self.subscribe(ws, [{"pair": FUTURE["pair"], "timeframe": "5m"}])
+        timestamp = int(time.time() * 1000) // 300_000 * 300_000
+        event_time = timestamp + 1
+
+        async def publish_volume(index, quote_volume, *, closed=True):
+            message = kline(timeframe="5m", timestamp=timestamp + index * 300_000,
+                            event=event_time + index * 300_000, closed=closed)
+            message["data"]["k"].update(q=str(quote_volume), n=7, V="4.5",
+                                        Q=str(quote_volume * .75))
+            await self.publish(message)
+            return message, await receive_type(ws, "kline")
+
+        await publish_volume(0, 10)
+        await publish_volume(1, 10)
+        final, payload = await publish_volume(2, 40)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["observation"]["volume_ratio"], 4)
+        self.assertEqual(seen[0]["observation"]["flow_imbal"], .5)
+        self.assertEqual(payload["candle"]["num_trades"], 7)
+        extras = self.archive.offers[-1][0][5][0]["extras"]
+        self.assertEqual(extras["quote_volume"], 40)
+        self.assertEqual(extras["taker_buy_base"], 4.5)
+        self.assertEqual(extras["taker_buy_quote"], 30)
+        self.assertEqual(extras["flow_imbal"], .5)
+        await self.publish(final)
+        await eventually(lambda: self.service.markets["futures"].rejected == 1)
+        self.assertEqual(len(seen), 1)
+        await publish_volume(3, 100, closed=False)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(len(self.service.surge_events), 1)
 
     async def test_late_final_previous_candle_updates_history_without_current_regression(self):
         ws = await self.connect()

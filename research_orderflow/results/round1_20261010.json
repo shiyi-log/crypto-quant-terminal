@@ -1,0 +1,126 @@
+{
+  "track": "orderflow-direction",
+  "round": 1,
+  "ts_utc": "2026-10-10T13:30:00Z",
+  "frozen_criteria": {
+    "direction": "momentum at short horizons, reversal beyond ~300s",
+    "cost_maker_bp_per_side": 2.0,
+    "cost_taker_bp_per_side": 5.0,
+    "pass_condition": "gross > round-trip cost in >=2 independent periods",
+    "forbidden": "reporting IC without bp"
+  },
+  "sample": {
+    "BTC": {
+      "ticks": 841829,
+      "sec_buckets": 108539,
+      "tick_span_hours": 38.6,
+      "orderflow_5m_bars": 287995
+    },
+    "ETH": {
+      "ticks": 705860,
+      "sec_buckets": 105519,
+      "tick_span_hours": 38.6,
+      "orderflow_5m_bars": 287995
+    }
+  },
+  "horizon_table": {
+    "BTC": {
+      "spearman_ic_1s": -0.21055314485009224,
+      "spearman_ic_1s_t": -70.95700215839265,
+      "spearman_ic_5m": -0.019774432433671104,
+      "by_horizon": {
+        "1s": {
+          "high_imbal_bp": 0.006324481416735297,
+          "low_imbal_bp": -0.00659799835726106,
+          "momentum_edge_bp": 0.006461239886998179,
+          "required_fee_bp_per_side": 0.0032306199434990893
+        },
+        "2s": {
+          "high_imbal_bp": 0.01582485799693552,
+          "low_imbal_bp": -0.013754236309582009,
+          "momentum_edge_bp": 0.014789547153258765,
+          "required_fee_bp_per_side": 0.007394773576629383
+        },
+        "5s": {
+          "high_imbal_bp": 0.031267649301416726,
+          "low_imbal_bp": -0.029540922299771438,
+          "momentum_edge_bp": 0.03040428580059408,
+          "required_fee_bp_per_side": 0.01520214290029704
+        },
+        "10s": {
+          "high_imbal_bp": 0.04807325598649499,
+          "low_imbal_bp": -0.02977678229424196,
+          "momentum_edge_bp": 0.03892501914036847,
+          "required_fee_bp_per_side": 0.019462509570184236
+        },
+        "30s": {
+          "high_imbal_bp": 0.08010776436965919,
+          "low_imbal_bp": -0.014837017241070482,
+          "momentum_edge_bp": 0.047472390805364834,
+          "required_fee_bp_per_side": 0.023736195402682417
+        },
+        "60s": {
+          "high_imbal_bp": 0.11672364794045255,
+          "low_imbal_bp": 0.049155726971054664,
+          "momentum_edge_bp": 0.03378396048469894,
+          "required_fee_bp_per_side": 0.01689198024234947
+        },
+        "300s": {
+          "high_imbal_bp": 0.4328373383345366,
+          "low_imbal_bp": 0.4630127884535775,
+          "momentum_edge_bp": -0.015087725059520468,
+          "required_fee_bp_per_side": -0.007543862529760234
+        }
+      }
+    },
+    "ETH": {
+      "spearman_ic_1s": -0.18896296972070611,
+      "spearman_ic_1s_t": -62.50738910401555,
+      "spearman_ic_5m": -0.019911932323895383,
+      "by_horizon": {
+        "1s": {
+          "high_imbal_bp": 0.002317441063886468,
+          "low_imbal_bp": 0.0017644572717165452,
+          "momentum_edge_bp": 0.00027649189608496146,
+          "required_fee_bp_per_side": 0.00013824594804248073
+        },
+        "2s": {
+          "high_imbal_bp": 0.012436614537899255,
+          "low_imbal_bp": -0.01036619687255239,
+          "momentum_edge_bp": 0.011401405705225822,
+          "required_fee_bp_per_side": 0.005700702852612911
+        },
+        "5s": {
+          "high_imbal_bp": 0.040592173324630276,
+          "low_imbal_bp": -0.02627483664699068,
+          "momentum_edge_bp": 0.03343350498581048,
+          "required_fee_bp_per_side": 0.01671675249290524
+        },
+        "10s": {
+          "high_imbal_bp": 0.07113118554948702,
+          "low_imbal_bp": -0.03430042303792948,
+          "momentum_edge_bp": 0.05271580429370826,
+          "required_fee_bp_per_side": 0.02635790214685413
+        },
+        "30s": {
+          "high_imbal_bp": 0.10476403375175548,
+          "low_imbal_bp": -0.019166194693272996,
+          "momentum_edge_bp": 0.06196511422251424,
+          "required_fee_bp_per_side": 0.03098255711125712
+        },
+        "60s": {
+          "high_imbal_bp": 0.17506453077377326,
+          "low_imbal_bp": 0.040305123111361835,
+          "momentum_edge_bp": 0.06737970383120571,
+          "required_fee_bp_per_side": 0.03368985191560286
+        },
+        "300s": {
+          "high_imbal_bp": 0.6733141557151429,
+          "low_imbal_bp": 0.5574428409231951,
+          "momentum_edge_bp": 0.057935657395973894,
+          "required_fee_bp_per_side": 0.028967828697986947
+        }
+      }
+    }
+  }
+}

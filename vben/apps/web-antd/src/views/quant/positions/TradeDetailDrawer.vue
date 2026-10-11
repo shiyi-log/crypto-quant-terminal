@@ -7,9 +7,9 @@ import { Alert, Button, Drawer, Table, Tag } from 'ant-design-vue';
 
 import { errText, getTrade } from '#/api/freqtrade';
 import {
+  fullOrderDisplayId,
   fullOrderTime,
-  orderDisplayId,
-  tradeDisplayId,
+  fullTradeDisplayId,
 } from '../utils/orderDisplayId';
 
 const props = defineProps<{ open: boolean; record: FtTrade | null }>();
@@ -68,7 +68,7 @@ const profitAmount = computed(
 const summaryFields = computed(() => {
   const t = trade.value;
   return [
-    { label: '开仓订单编号', value: tradeDisplayId(t) },
+    { label: '开仓完整订单编号', value: fullTradeDisplayId(t) },
     { label: '原始交易 ID', value: t.trade_id ?? '—' },
     { label: '策略', value: t.strategy ?? '—' },
     { label: '杠杆', value: format(t.leverage, 2, 'x') },
@@ -162,7 +162,7 @@ const orders = computed(() =>
     : [],
 );
 const orderCols = [
-  { key: 'id', title: '订单编号', width: 340 },
+  { key: 'id', title: '完整订单编号', width: 340 },
   { key: 'source_id', title: '交易所原始订单号', width: 220 },
   { key: 'side', title: '用途 / 买卖', width: 130 },
   { key: 'type', title: '类型', width: 100 },
@@ -369,8 +369,8 @@ onUnmounted(() => {
         <template v-if="column.key === 'id'">
           <span
             class="block max-w-[320px] truncate font-mono text-xs"
-            :title="orderDisplayId(order, trade)"
-            >{{ orderDisplayId(order, trade) }}</span
+            :title="fullOrderDisplayId(order, trade)"
+            >{{ fullOrderDisplayId(order, trade) }}</span
           >
         </template>
         <template v-else-if="column.key === 'source_id'">

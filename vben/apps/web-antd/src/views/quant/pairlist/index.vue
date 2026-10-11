@@ -43,10 +43,13 @@ const blErrors = ref<Record<string, string>>({});
 const blMethod = ref<string[]>([]);
 const locks = ref<any[]>([]);
 const lockCount = ref(0);
+const loaded = ref<Record<string, boolean>>({});
+const loadErrors = ref<Record<string, string>>({});
 
 const loading = ref(false);
 /** 只有首屏才显示 loading；30 秒一次的轮询静默刷新，避免表格反复闪 */
 const inited = ref(false);
+let fetching = false;
 
 const newPairs = ref('');
 const showExpanded = ref(false);
@@ -86,22 +89,35 @@ const lockCols = [
   { key: 'action', title: '操作', width: 100 },
 ];
 
-/** 锁的时间戳是秒；naive 字符串用 new Date 解析失败时原样回显 */
+/** Freqtrade 锁时间戳为毫秒；兼容秒值和 API 的 UTC naive 字符串回退。 */
+const lockTimeMs = (v?: number | string): number | undefined => {
+  if (v === null || v === undefined || v === '') return undefined;
+  if (typeof v === 'number' || /^\d+(?:\.\d+)?$/.test(v)) {
+    const numeric = Number(v);
+    if (!Number.isFinite(numeric)) return undefined;
+    return Math.abs(numeric) >= 1e12 ? numeric : numeric * 1000;
+  }
+  const utc = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(v)
+    ? `${v.replace(' ', 'T')}Z`
+    : v;
+  const ms = new Date(utc).getTime();
+  return Number.isNaN(ms) ? undefined : ms;
+};
+
 const timeText = (v?: number | string) => {
   if (v === null || v === undefined || v === '') return '—';
-  const d = new Date(
-    typeof v === 'number' ? v * 1000 : v,
-  );
-  if (Number.isNaN(d.getTime())) return String(v);
+  const ms = lockTimeMs(v);
+  if (ms === undefined) return String(v);
+  const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, '0');
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 };
 
 /** 剩余时间：前端算，避免把「还剩多久」这种事交给后端格式化 */
 const remainText = (t: any) => {
-  const end = Number(t?.lock_end_timestamp ?? 0);
-  if (!end) return '—';
-  const ms = end * 1000 - Date.now();
+  const end = lockTimeMs(t?.lock_end_timestamp ?? t?.lock_end_time);
+  if (end === undefined) return '—';
+  const ms = end - Date.now();
   if (ms <= 0) return '已到期';
   const h = Math.floor(ms / 3_600_000);
   const m = Math.floor((ms % 3_600_000) / 60_000);
@@ -161,26 +177,37 @@ function normalizeErrors(raw: any): Record<string, string> {
 }
 
 async function load() {
+  if (fetching) return;
+  fetching = true;
   if (!inited.value) loading.value = true;
+  const failures: Record<string, string> = {};
+  const refresh = async <T,>(key: string, label: string, request: () => Promise<T>, apply: (value: T) => void) => {
+    try {
+      apply(await request());
+      loaded.value = { ...loaded.value, [key]: true };
+    } catch (error) {
+      failures[key] = `${label}：${errText(error)}`;
+    }
+  };
   try {
-    const [w, b, l] = await Promise.all([
-      getWhitelist().catch(() => null),
-      getBlacklist().catch(() => null),
-      getLocks().catch(() => null),
+    await Promise.all([
+      refresh('whitelist', '白名单', getWhitelist, (value) => { whitelist.value = value.whitelist ?? []; }),
+      refresh('blacklist', '黑名单', getBlacklist, (value) => {
+        blacklist.value = value.blacklist ?? [];
+        expanded.value = value.blacklist_expanded ?? [];
+        blErrors.value = normalizeErrors(value.errors);
+        blMethod.value = value.method ?? [];
+        selectedRowKeys.value = selectedRowKeys.value.filter((key: any) => blacklist.value.includes(String(key)));
+      }),
+      refresh('locks', '保护锁', getLocks, (value) => {
+        locks.value = value.locks ?? [];
+        lockCount.value = value.lock_count ?? locks.value.length;
+      }),
     ]);
-    whitelist.value = w?.whitelist ?? [];
-    blacklist.value = b?.blacklist ?? [];
-    expanded.value = b?.blacklist_expanded ?? [];
-    blErrors.value = normalizeErrors(b?.errors);
-    blMethod.value = b?.method ?? [];
-    locks.value = l?.locks ?? [];
-    lockCount.value = l?.lock_count ?? locks.value.length;
-    // 名单可能被别处改过，勾选里已经不存在的交易对要丢掉
-    selectedRowKeys.value = selectedRowKeys.value.filter((k: any) =>
-      blacklist.value.includes(String(k)),
-    );
+    loadErrors.value = failures;
   } finally {
     loading.value = false;
+    fetching = false;
     inited.value = true;
   }
 }
@@ -275,10 +302,13 @@ onUnmounted(() => clearInterval(timer));
 
 <template>
   <div class="p-4">
+    <Alert v-if="Object.keys(loadErrors).length" class="mb-3" type="warning" show-icon
+      message="部分名单读取失败，保留上次成功数据；首次未读取的名单显示未知。"
+      :description="Object.values(loadErrors).join('；')" />
     <!-- 白名单：机器人实际在找机会的币对 -->
     <Card :bordered="false" class="shadow-sm" title="交易对白名单">
       <template #extra>
-        <span class="text-xs text-gray-400">{{ whitelist.length }} 笔</span>
+        <span class="text-xs text-gray-400">{{ loaded.whitelist ? whitelist.length : '—' }} 个</span>
       </template>
       <div class="mb-3 text-xs text-gray-400">
         这是运行期生效的交易对名单 —— 机器人只在这些交易对上寻找入场机会，取自当前实际使用的
@@ -287,14 +317,14 @@ onUnmounted(() => clearInterval(timer));
       <div v-if="whitelist.length" class="flex flex-wrap gap-1">
         <Tag v-for="p in sortCoins(whitelist)" :key="p" color="blue">{{ p }}</Tag>
       </div>
-      <div v-else class="py-6 text-center text-sm text-gray-400">白名单为空</div>
+      <div v-else class="py-6 text-center text-sm text-gray-400">{{ loaded.whitelist ? '白名单为空' : '白名单尚未读取，请查看刷新状态' }}</div>
     </Card>
 
     <!-- 黑名单：临时拉黑，立即生效 -->
     <Card :bordered="false" class="mt-3 shadow-sm" title="黑名单">
       <template #extra>
         <Space>
-          <span class="text-xs text-gray-400">{{ blacklist.length }} 笔</span>
+          <span class="text-xs text-gray-400">{{ loaded.blacklist ? blacklist.length : '—' }} 个</span>
           <Button
             danger
             :disabled="!selectedRowKeys.length"
@@ -359,7 +389,7 @@ onUnmounted(() => clearInterval(timer));
           </template>
         </template>
         <template #emptyText>
-          <div class="py-8 text-sm text-gray-400">黑名单为空</div>
+          <div class="py-8 text-sm text-gray-400">{{ loaded.blacklist ? '黑名单为空' : '黑名单尚未读取，请查看刷新状态' }}</div>
         </template>
       </Table>
 
@@ -377,7 +407,7 @@ onUnmounted(() => clearInterval(timer));
     <Card :bordered="false" class="mt-3 shadow-sm" title="Pair Lock（保护锁）">
       <template #extra>
         <span class="text-xs text-gray-400">
-          {{ lockCount }} 笔 · 生效中 {{ locks.filter((l: any) => l.active).length }}
+          {{ loaded.locks ? lockCount : '—' }} 笔 · 生效中 {{ loaded.locks ? locks.filter((l: any) => l.active).length : '—' }}
         </span>
       </template>
 
@@ -434,7 +464,7 @@ onUnmounted(() => clearInterval(timer));
           </template>
         </template>
         <template #emptyText>
-          <div class="py-8 text-sm text-gray-400">当前无保护锁</div>
+          <div class="py-8 text-sm text-gray-400">{{ loaded.locks ? '当前无保护锁' : '保护锁尚未读取，请查看刷新状态' }}</div>
         </template>
       </Table>
     </Card>

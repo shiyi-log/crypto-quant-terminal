@@ -19,7 +19,8 @@ export async function getUserInfoApi(): Promise<UserInfo> {
     if (me.username) {
       username = me.username;
     }
-  } catch {
+  } catch (error: any) {
+    if (error?.response?.status === 401) throw error;
     /* 认证服务不可达：保持默认，不影响登录 */
   }
   return {

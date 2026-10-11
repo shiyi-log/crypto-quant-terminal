@@ -89,6 +89,7 @@ const timescale = ref(30);
 const seriesLoading = ref(false);
 const seriesErr = ref('');
 const errs = ref<string[]>([]);
+const dataErrors = ref<Record<string, string>>({});
 const updatedAt = ref('');
 
 const equityRef = ref<EchartsUIType>();
@@ -151,6 +152,7 @@ function fmtHistTime(v: any): string {
 
 /* ══════════ ① 账户概览 KPI ══════════ */
 const modeText = computed(() => {
+  if (!balance.value) return '账户模式尚未读取';
   const note = String(balance.value?.note ?? '');
   if (/simulat/i.test(note)) return 'dry-run 模拟盘';
   return note || '实盘账户';
@@ -172,7 +174,8 @@ const kpis = computed(() => {
     },
     {
       label: '胜率',
-      value: isNum(p?.winrate) ? (Number(p?.winrate) * 100).toFixed(1) : '—',
+      value: Number(p?.closed_trade_count) > 0 && isNum(p?.winrate)
+        ? (Number(p?.winrate) * 100).toFixed(1) : 'unknown',
       suffix: '%',
       sub: `${p?.winning_trades ?? '—'} 胜 / ${p?.losing_trades ?? '—'} 负`,
       color: '',
@@ -395,18 +398,32 @@ const seriesUnitText = computed(() => {
     : '';
 });
 
+let seriesRequestId = 0;
+let seriesScope = '';
 async function loadSeries() {
+  const requestId = ++seriesRequestId;
+  const requestedPeriod = period.value;
+  const requestedTimescale = timescale.value;
+  const requestedScope = `${requestedPeriod}:${requestedTimescale}`;
+  // 切换区间时不能把上一种粒度的数据挂在新标题下。
+  if (requestedScope !== seriesScope) {
+    series.value = null;
+    seriesErr.value = '';
+  }
   seriesLoading.value = true;
   try {
-    const res = await PERIOD_API[period.value](timescale.value);
+    const res = await PERIOD_API[requestedPeriod](requestedTimescale);
+    if (requestId !== seriesRequestId) return;
     series.value = res ?? null;
+    seriesScope = requestedScope;
     seriesErr.value = '';
   } catch (error) {
+    if (requestId !== seriesRequestId) return;
     seriesErr.value = errText(error);
   } finally {
-    seriesLoading.value = false;
+    if (requestId === seriesRequestId) seriesLoading.value = false;
   }
-  drawSeries();
+  if (requestId === seriesRequestId) drawSeries();
 }
 
 /* ══════════ ④ 出场原因统计 ══════════ */
@@ -482,21 +499,27 @@ function normRows(
 }
 
 const attrTables = computed(() => [
-  { field: 'pair', rows: normRows(perf.value, 'pair'), title: '分币对绩效' },
+  { field: 'pair', rows: normRows(perf.value, 'pair'), title: '分币对绩效', loaded: perf.value !== null, error: dataErrors.value['分币对绩效 /v1/performance'] },
   {
     field: 'enter_tag',
     rows: normRows(entryStats.value, 'enter_tag'),
     title: '入场标签归因',
+    loaded: entryStats.value !== null,
+    error: dataErrors.value['入场标签 /v1/entries'],
   },
   {
     field: 'exit_reason',
     rows: normRows(exitStats.value, 'exit_reason'),
     title: '出场原因归因',
+    loaded: exitStats.value !== null,
+    error: dataErrors.value['出场原因 /v1/exits'],
   },
   {
     field: 'mix_tag',
     rows: normRows(mixStats.value, 'mix_tag'),
     title: '组合标签归因（入场 × 出场）',
+    loaded: mixStats.value !== null,
+    error: dataErrors.value['组合标签 /v1/mix_tags'],
   },
 ]);
 
@@ -528,6 +551,7 @@ const attrColumns = [
 /* ══════════ 轮询 ══════════ */
 async function load() {
   const fails: string[] = [];
+  const sectionFailures: Record<string, string> = {};
   /** 单个接口失败只记录并返回 null，不影响其它板块 */
   const safe = async <T,>(
     label: string,
@@ -537,6 +561,7 @@ async function load() {
       return await fn();
     } catch (error) {
       fails.push(`${label}：${errText(error)}`);
+      sectionFailures[label] = errText(error);
       return null;
     }
   };
@@ -565,6 +590,7 @@ async function load() {
   if (h) drawEquity();
 
   errs.value = fails;
+  dataErrors.value = sectionFailures;
   updatedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   await loadSeries();
 }
@@ -639,7 +665,9 @@ onUnmounted(() => clearInterval(timer));
       </template>
       <EchartsUI v-if="equityPoints.length >= 2" ref="equityRef" height="300px" />
       <div v-else class="py-10 text-center text-sm text-gray-400">
-        <div>暂无净值历史 —— 机器人按周期记录钱包余额，采集到数据后此处显示实盘净值曲线</div>
+        <div>{{ dataErrors['净值历史 /v1/historic_balance']
+          ? '净值历史读取失败，请查看上方告警'
+          : hist ? '暂无足够净值采样 —— 至少需要两个钱包余额采样点才能绘图' : '净值历史尚未读取' }}</div>
         <div v-if="histColumns.length" class="mt-2 text-xs">
           接口返回的列名：
           <span class="font-mono">{{ histColumns.join(' / ') }}</span>
@@ -655,9 +683,9 @@ onUnmounted(() => clearInterval(timer));
     <Card :bordered="false" class="mt-3 shadow-sm" title="盈亏分解（日 / 周 / 月）">
       <template #extra>
         <span class="mr-2 text-xs text-gray-400">
-          合计 {{ signed(seriesSummary.total) }}<template v-if="seriesUnitText">
+          合计 {{ series ? signed(seriesSummary.total) : '—' }}<template v-if="seriesUnitText">
             {{ seriesUnitText }}</template>
-          · {{ seriesSummary.trades }} 笔 · {{ seriesSummary.count }} 个周期
+          · {{ series ? seriesSummary.trades : '—' }} 笔 · {{ series ? seriesSummary.count : '—' }} 个周期
         </span>
         <Select
           v-model:value="timescale"
@@ -683,8 +711,7 @@ onUnmounted(() => clearInterval(timer));
       <Spin :spinning="seriesLoading">
         <EchartsUI v-if="chartRows.length" ref="seriesRef" height="280px" />
         <div v-else class="py-10 text-center text-sm text-gray-400">
-          暂无{{ period === 'daily' ? '日' : period === 'weekly' ? '周' : '月' }}度盈亏数据
-          —— 该区间内没有已平仓交易
+          {{ seriesErr ? '当前区间盈亏数据读取失败，请查看上方告警' : seriesLoading ? '正在读取当前区间盈亏数据' : '当前区间暂无盈亏数据' }}
         </div>
         <Table
           v-if="seriesRows.length"
@@ -755,7 +782,7 @@ onUnmounted(() => clearInterval(timer));
             </template>
           </Table>
           <div v-else class="py-10 text-center text-sm text-gray-400">
-            暂无出场原因统计 —— 当前没有已平仓交易
+            {{ dataErrors['出场统计 /v1/stats'] ? '出场统计读取失败，请查看上方告警' : stats ? '暂无出场原因统计 —— 当前没有已平仓交易' : '出场统计尚未读取' }}
           </div>
         </Col>
         <Col :lg="9" :xs="24">
@@ -823,7 +850,7 @@ onUnmounted(() => clearInterval(timer));
             </template>
           </Table>
           <div v-else class="py-10 text-center text-sm text-gray-400">
-            暂无数据 —— 该维度需要已平仓交易
+            {{ t.error ? '该维度读取失败，请查看上方告警' : t.loaded ? '暂无数据 —— 该维度需要已平仓交易' : '该维度尚未读取' }}
           </div>
         </Card>
       </Col>

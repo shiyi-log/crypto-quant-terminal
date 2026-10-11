@@ -37,6 +37,7 @@ const exchange = ref('');
 /** 开仓数 current / 上限 max */
 const current = ref(0);
 const maxOpen = ref<number | string>('—');
+const maxOpenText = computed(() => Number(maxOpen.value) === -1 ? '不限' : maxOpen.value);
 
 /** 正在执行的动作名，既用于按钮 loading，也用于期间禁用其它按钮 */
 const busy = ref('');
@@ -227,7 +228,7 @@ function onForceExit() {
     <span class="shrink-0 text-gray-500 dark:text-gray-400">
       持仓
       <span class="font-medium text-gray-800 dark:text-gray-200">
-        {{ available && countAvailable ? current : '—' }}/{{ available ? maxOpen : '—' }}
+        {{ available && countAvailable ? current : '—' }}/{{ available ? maxOpenText : '—' }}
       </span>
     </span>
 

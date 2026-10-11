@@ -8,7 +8,13 @@
  *   POST /auth/reset-password   重置密码（仅限本机）
  * 数据接口由该服务代理，前端始终拿不到 Freqtrade 的真实凭据。
  */
-import { FT_API_URL, FT_SERVER_ORIGIN, FT_TOKEN_KEY, ftLogout } from '#/api/freqtrade';
+import {
+  FT_API_URL,
+  FT_SERVER_ORIGIN,
+  FT_TOKEN_KEY,
+  ftLogout,
+} from '#/api/freqtrade';
+import { FT_SESSION_EXPIRED_KEY, handleSessionExpired } from '../session';
 
 export namespace AuthApi {
   /** 登录接口参数 */
@@ -41,13 +47,18 @@ function token() {
   return localStorage.getItem(FT_TOKEN_KEY) ?? '';
 }
 
-async function request(path: string, options: RequestInit = {}, withAuth = false) {
+async function request(
+  path: string,
+  options: RequestInit = {},
+  withAuth = false,
+) {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...((options.headers as Record<string, string>) ?? {}),
   };
+  const requestToken = token();
   if (withAuth) {
-    headers.Authorization = `Bearer ${token()}`;
+    headers.Authorization = `Bearer ${requestToken}`;
   }
   const res = await fetch(`${AUTH_BASE}${path}`, { ...options, headers });
   let body: any = null;
@@ -57,7 +68,13 @@ async function request(path: string, options: RequestInit = {}, withAuth = false
     body = null;
   }
   if (!res.ok) {
-    throw new Error(body?.detail || `${res.status} ${res.statusText}`);
+    if (withAuth && res.status === 401 && path !== '/auth/logout') {
+      await handleSessionExpired(requestToken);
+    }
+    throw Object.assign(
+      new Error(body?.detail || `${res.status} ${res.statusText}`),
+      { response: { data: body, status: res.status } },
+    );
   }
   return body;
 }
@@ -91,6 +108,7 @@ export async function loginApi(
   localStorage.setItem(FT_TOKEN_KEY, accessToken);
   try {
     sessionStorage.removeItem('ft_manual_logout');
+    sessionStorage.removeItem(FT_SESSION_EXPIRED_KEY);
   } catch {
     /* 忽略 */
   }
@@ -127,11 +145,10 @@ export async function resetPasswordApi(
 }
 
 /**
- * Freqtrade 侧没有 refresh 接口，认证服务用的是无状态签名令牌，
- * 直接回传当前令牌即可。
+ * 认证服务没有 refresh 接口，过期令牌不能充当刷新结果。
  */
 export async function refreshTokenApi(): Promise<AuthApi.RefreshTokenResult> {
-  return { data: token(), status: 200 };
+  throw new Error('登录已失效，请重新登录');
 }
 
 /**

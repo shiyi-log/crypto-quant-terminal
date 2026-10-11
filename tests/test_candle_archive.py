@@ -211,6 +211,37 @@ class CandleArchiveWriterTests(unittest.TestCase):
         self.assertEqual(saved["extras"]["live_snapshot_timestamp"], 4000)
         self.assertTrue(saved["extras"]["closed"])
 
+    def test_closed_ws_survives_later_rest_snapshots_before_first_flush(self):
+        for same_batch in (False, True):
+            for rest_closed in (False, True):
+                for rest_first in (False, True):
+                    with self.subTest(same_batch=same_batch, rest_closed=rest_closed,
+                                      rest_first=rest_first):
+                        writer, store = self.writer(flush_interval=30.0)
+                        final = candle(1000, 120, event=3000, closed=True)
+                        final["extras"].update(quote_volume=12345.0,
+                                               taker_buy_base=7.5, flow_imbal=0.2)
+                        snapshot = candle(1000, 90, snapshot=9000, closed=rest_closed)
+                        rows = [snapshot, final] if rest_first else [final, snapshot]
+                        if same_batch:
+                            self.assertTrue(self.offer(writer, rows))
+                        else:
+                            for row in rows:
+                                self.assertTrue(self.offer(writer, [row]))
+                        self.assertTrue(writer.close(timeout=2.0))
+                        self.assertEqual(next(iter(store.rows.values())), final)
+
+    def test_newer_closed_ws_can_correct_previous_closed_ws(self):
+        writer, store = self.writer(flush_interval=30.0)
+        original = candle(1000, 120, event=3000, closed=True)
+        correction = candle(1000, 125, event=3100, closed=True)
+        correction["extras"]["quote_volume"] = 13000.0
+        for row in (original, correction,
+                    candle(1000, 90, snapshot=9000, closed=True)):
+            self.assertTrue(self.offer(writer, [row]))
+        self.assertTrue(writer.close(timeout=2.0))
+        self.assertEqual(next(iter(store.rows.values())), correction)
+
     def test_closed_candle_wins_at_equal_event_version(self):
         writer, store = self.writer(flush_interval=30.0)
         for row in (candle(1000, 100, event=3000),

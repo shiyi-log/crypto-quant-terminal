@@ -30,7 +30,9 @@ import { EXIT_LABELS, getBacktestDetail, getBacktestList, modelLabel } from '#/a
 const list = ref<any[]>([]);
 const ident = ref('');
 const detail = ref<any>(null);
-const loading = ref(false);
+const listLoading = ref(false);
+const detailLoading = ref(false);
+const loading = computed(() => listLoading.value || detailLoading.value);
 const errMsg = ref<string | null>(null);
 const filter = ref<'all' | 'loss' | 'win'>('all');
 const pairFilter = ref<string>('');
@@ -55,10 +57,16 @@ const localTime = (v?: string) => {
 };
 
 const summary = computed(() => detail.value?.summary ?? {});
+const hasEquity = computed(() => (detail.value?.equity ?? []).length > 0);
+const hasPredictions = computed(() =>
+  (detail.value?.trades ?? []).some((trade: any) =>
+    typeof trade.model_pred_pct === 'number' && Number.isFinite(trade.model_pred_pct),
+  ),
+);
 
 const kpis = computed(() => {
   const s = summary.value;
-  if (!s.trades) return [];
+  if (!detail.value?.summary) return [];
   return [
     { k: '净利润', v: `${s.profit_abs > 0 ? '+' : ''}${s.profit_abs}`, u: 'USDT', c: cls(s.profit_abs) },
     { k: '收益率', v: `${s.profit_pct > 0 ? '+' : ''}${s.profit_pct}`, u: '%', c: cls(s.profit_pct) },
@@ -122,7 +130,7 @@ const columns = [
 
 function drawEquity() {
   const eq = detail.value?.equity ?? [];
-  if (eq.length < 2) return;
+  if (!eq.length) return;
   renderEcharts({
     grid: { bottom: 40, containLabel: true, left: 60, right: 20, top: 30 },
     series: [
@@ -145,7 +153,7 @@ function drawEquity() {
 function drawScatter() {
   const t = detail.value?.trades ?? [];
   const pts = t
-    .filter((x: any) => x.model_pred_pct !== null)
+    .filter((x: any) => typeof x.model_pred_pct === 'number' && Number.isFinite(x.model_pred_pct))
     .map((x: any) => ({
       itemStyle: { color: x.profit_pct >= 0 ? '#12b886' : '#f0424f', opacity: 0.8 },
       value: [x.model_pred_pct, x.profit_pct, x.pair],
@@ -186,39 +194,63 @@ function drawScatter() {
   });
 }
 
+let detailRequest = 0;
+async function loadDetail() {
+  const selected = ident.value;
+  if (!selected) {
+    detail.value = null;
+    return;
+  }
+  const request = ++detailRequest;
+  detailLoading.value = true;
+  if (detail.value?.identifier !== selected) detail.value = null;
+  try {
+    const response = await getBacktestDetail(selected);
+    if (request !== detailRequest || ident.value !== selected) return;
+    detail.value = response;
+    errMsg.value = null;
+    // 图表位于 v-else 分支：必须等 Vue 把 DOM 渲染出来再初始化 ECharts
+    await nextTick();
+    if (request !== detailRequest || ident.value !== selected) return;
+    drawEquity();
+    drawScatter();
+  } catch (e: any) {
+    if (request === detailRequest) {
+      errMsg.value = `回测明细加载失败：${e?.message ?? '接口暂不可用'}${detail.value ? '；当前保留上次成功结果' : ''}`;
+    }
+  } finally {
+    if (request === detailRequest) detailLoading.value = false;
+  }
+}
+
 async function load() {
-  loading.value = true;
+  if (listLoading.value) return;
+  listLoading.value = true;
   try {
     const l = await getBacktestList();
     list.value = l.items ?? [];
-    if (!ident.value && list.value.length) {
-      // 默认选中 BTC 相关的那次回测；没有则退回列表第一个
-      // （列表按收益率排序，BTC 不在第一个）
-      const btc = list.value.find((x: any) =>
-        String(x.identifier).toLowerCase().includes('btc'),
-      );
-      ident.value = (btc ?? list.value[0]!).identifier;
+    if (!list.value.length) {
+      ident.value = '';
+      detail.value = null;
+      errMsg.value = null;
+      return;
     }
-    if (ident.value) {
-      detail.value = await getBacktestDetail(ident.value);
-      // 图表位于 v-else 分支：必须等 Vue 把 DOM 渲染出来再初始化 ECharts
-      await nextTick();
-      await nextTick();
-      drawEquity();
-      drawScatter();
+    if (!list.value.some((item: any) => item.identifier === ident.value)) {
+      const btc = list.value.find((x: any) => String(x.identifier).toLowerCase().includes('btc'));
+      ident.value = (btc ?? list.value[0]!).identifier;
+    } else {
+      await loadDetail();
     }
   } catch (e: any) {
-      // 没有回测结果 / 接口不可用时，不要抛成未捕获的 Promise 拒绝
-      detail.value = null;
-      errMsg.value = e?.message ?? '加载回测明细失败';
+    errMsg.value = `回测列表加载失败：${e?.message ?? '接口暂不可用'}${list.value.length ? '；当前保留上次成功结果' : ''}`;
   } finally {
-    loading.value = false;
+    listLoading.value = false;
   }
 }
 
 watch(ident, () => {
   pairFilter.value = '';
-  load();
+  void loadDetail();
 });
 let timer: any = null;
 onMounted(() => {
@@ -246,17 +278,18 @@ onUnmounted(() => clearInterval(timer));
         </span>
         <!-- 下拉显示中文名，值仍是 identifier（取数要用）；悬停可看原始标识 -->
         <span :title="ident" class="ml-3 inline-block">
-          <Select v-model:value="ident" :options="identOptions" style="width: 340px" />
+          <Select v-model:value="ident" :options="identOptions" :loading="listLoading" placeholder="选择回测结果" style="width: 340px" />
         </span>
       </template>
 
       <Spin :spinning="loading">
         <div v-if="!list.length" class="py-16 text-center text-muted-foreground">
-          暂无回测明细 —— 运行
-          <code class="mx-1">python extract_detail.py --auto</code>
-          生成
+          {{ errMsg ? '回测列表暂未能加载，请刷新重试。' : '尚无已归档的回测明细。' }}
         </div>
 
+        <div v-else-if="!detail" class="py-16 text-center text-muted-foreground">
+          {{ detailLoading ? '正在加载所选回测明细…' : '所选回测明细暂不可用，请重新选择或刷新重试。' }}
+        </div>
         <template v-else>
           <!-- 指标 -->
           <Row :gutter="[12, 12]">
@@ -276,7 +309,8 @@ onUnmounted(() => clearInterval(timer));
           <Row :gutter="[12, 12]" class="mt-4">
             <Col :lg="13" :xs="24">
               <div class="mb-2 text-sm font-medium">资金曲线</div>
-              <EchartsUI ref="chartRef" height="260px" />
+              <EchartsUI v-if="hasEquity" ref="chartRef" height="260px" />
+              <div v-else class="py-20 text-center text-muted-foreground">该回测未记录资金曲线。</div>
             </Col>
             <Col :lg="11" :xs="24">
               <div class="mb-2 text-sm font-medium">
@@ -285,7 +319,8 @@ onUnmounted(() => clearInterval(timer));
                   <span class="ml-1 cursor-help text-xs text-blue-500">说明</span>
                 </Tooltip>
               </div>
-              <EchartsUI ref="scatterRef" height="260px" />
+              <EchartsUI v-if="hasPredictions" ref="scatterRef" height="260px" />
+              <div v-else class="py-20 text-center text-muted-foreground">该回测没有可用的模型预测记录。</div>
             </Col>
           </Row>
         </template>
@@ -359,6 +394,11 @@ onUnmounted(() => clearInterval(timer));
           <template v-else-if="column.key === 'duration_h'">
             <span class="font-mono text-xs">{{ record.duration_h }}</span>
           </template>
+        </template>
+        <template #emptyText>
+          <div class="py-8 text-center text-sm text-gray-400">
+            {{ detailLoading ? '正在读取交易明细…' : '当前筛选条件下暂无交易记录' }}
+          </div>
         </template>
       </Table>
     </Card>

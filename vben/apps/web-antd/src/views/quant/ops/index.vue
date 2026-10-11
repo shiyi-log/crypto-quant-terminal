@@ -12,9 +12,9 @@ import { sortCoins } from '../utils/coinOrder';
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 
-import { Card, Col, Row, Spin, Table, Tag } from 'ant-design-vue';
+import { Alert, Card, Col, Row, Spin, Table, Tag } from 'ant-design-vue';
 
-import { getAutoIterate, getOps } from '#/api/freqtrade';
+import { errText, getAutoIterate, getOps } from '#/api/freqtrade';
 
 
 import { Tabs, TabPane } from 'ant-design-vue';
@@ -28,6 +28,9 @@ const tab = ref('ops');
 const ops = ref<any>(null);
 const ai = ref<any>(null);
 const loading = ref(false);
+const opsError = ref('');
+const inspectionError = ref('');
+let fetching = false;
 
 /** 「弱信号」用结构化标志判断，不依赖 status 的中文文案 */
 const isWeakFactor = (f: any) => f.weak ?? /弱信号/.test(String(f.status ?? ''));
@@ -38,11 +41,25 @@ const strongFactors = computed(() =>
 const inDryRun = computed(() => ops.value?.strategy?.dry_run === true);
 
 async function load() {
+  if (fetching) return;
+  fetching = true;
   if (!ops.value) loading.value = true;
   try {
-    ops.value = await getOps();
-    ai.value = await getAutoIterate().catch(() => null);
+    const [snapshot, inspection] = await Promise.allSettled([getOps(), getAutoIterate()]);
+    if (snapshot.status === 'fulfilled') {
+      ops.value = snapshot.value;
+      opsError.value = '';
+    } else {
+      opsError.value = `运维快照加载失败：${errText(snapshot.reason)}${ops.value ? '；当前保留上次成功快照' : ''}`;
+    }
+    if (inspection.status === 'fulfilled') {
+      ai.value = inspection.value;
+      inspectionError.value = '';
+    } else {
+      inspectionError.value = `巡检留档加载失败：${errText(inspection.reason)}${ai.value ? '；当前保留上次成功记录' : ''}`;
+    }
   } finally {
+    fetching = false;
     loading.value = false;
   }
 }
@@ -59,11 +76,12 @@ onUnmounted(() => clearInterval(timer));
   <div class="p-4">
     <Tabs v-model:activeKey="tab" size="small">
       <TabPane key="ops" tab="运维">
+    <Alert v-if="opsError" class="mb-3" :message="opsError" type="error" show-icon />
+    <Alert v-if="inspectionError" class="mb-3" :message="inspectionError" type="warning" show-icon />
     <Spin :spinning="loading">
       <LegacyInspectionCard :inspection="ai" />
       <div v-if="!ops" class="py-16 text-center text-muted-foreground">
-        暂无运维快照 —— 确认 monitor.py 常驻运行
-        （<code class="mx-1">./start.sh status</code> 查看）
+        {{ loading ? '正在加载运维快照…' : opsError ? '运维数据暂不可用，请刷新重试。' : '尚无运维快照。' }}
       </div>
       <template v-else>
         <Card v-if="ops" :bordered="false" class="mt-4 shadow-sm" title="🔧 实盘运维">
@@ -156,6 +174,9 @@ onUnmounted(() => clearInterval(timer));
               <span class="font-mono text-xs">{{ record.vol30_pct }}%</span>
             </template>
           </template>
+          <template #emptyText>
+            <div class="py-6 text-center text-xs text-gray-400">当前没有接近突破的币对</div>
+          </template>
         </Table>
             </div>
             <div>
@@ -188,6 +209,9 @@ onUnmounted(() => clearInterval(timer));
             <template v-else-if="column.key === 'status'">
               <Tag :color="record.status === '正常' ? 'green' : 'orange'">{{ record.status }}</Tag>
             </template>
+          </template>
+          <template #emptyText>
+            <div class="py-6 text-center text-xs text-gray-400">暂无因子健康度数据</div>
           </template>
         </Table>
             </div>

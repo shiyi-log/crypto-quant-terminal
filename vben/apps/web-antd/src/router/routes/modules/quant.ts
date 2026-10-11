@@ -51,6 +51,24 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        name: 'QuantOrderflow',
+        path: 'orderflow',
+        component: () => import('#/views/quant/orderflow/index.vue'),
+        meta: {
+          icon: 'lucide:chart-no-axes-combined',
+          title: '订单流突增',
+        },
+      },
+      {
+        name: 'QuantPriceSpikes',
+        path: 'price-spikes',
+        component: () => import('#/views/quant/orderflow/price-spikes.vue'),
+        meta: {
+          icon: 'lucide:chart-no-axes-combined',
+          title: '爆发行情观测',
+        },
+      },
+      {
         name: 'QuantBacktest',
         path: 'backtest',
         component: () => import('#/views/quant/backtest/index.vue'),
@@ -97,6 +115,24 @@ const routes: RouteRecordRaw[] = [
         meta: {
           icon: 'lucide:flask-conical',
           title: '策略研究',
+        },
+      },
+      {
+        name: 'QuantStrategyLab',
+        path: 'strategy-lab',
+        component: () => import('#/views/quant/strategy-lab/index.vue'),
+        meta: {
+          icon: 'lucide:panels-top-left',
+          title: '多策略模拟',
+        },
+      },
+      {
+        name: 'QuantStrategyFocus',
+        path: 'strategy-focus',
+        component: () => import('#/views/quant/strategy-lab/index.vue'),
+        meta: {
+          icon: 'lucide:star',
+          title: '重点策略观察',
         },
       },
       {

@@ -1,0 +1,138 @@
+{
+  "generated_utc": "2026-10-10T13:20:00Z",
+  "question": "用「瞬间买盘卖盘数量」判断方向，可行吗？",
+  "data_available": {
+    "orderflow_5m": {
+      "coins": [
+        "BTC",
+        "ETH"
+      ],
+      "rows_each": 288001,
+      "period": "2024-01-12 → 2026-10-08",
+      "fields": [
+        "buy_ratio",
+        "flow_imbal",
+        "flow_imbal_q",
+        "taker_buy_base",
+        "sell_volume",
+        "num_trades",
+        "avg_trade_sz",
+        "quote_volume"
+      ]
+    },
+    "orderflow_1d": {
+      "coins": 55,
+      "whitelist_hit": 20,
+      "rows_each": 1000,
+      "period": "2024-01-13 → 2026-10-08"
+    },
+    "ticks_raw": {
+      "rows": 1547296,
+      "fields": [
+        "price",
+        "quantity",
+        "buyer_maker"
+      ],
+      "span_hours": 38.6
+    },
+    "orderbooks_raw": {
+      "rows": 2225400,
+      "fields": [
+        "bids",
+        "asks",
+        "last_update_id"
+      ],
+      "levels": 20
+    },
+    "note": "ticks/orderbooks 为实时采集，起于 2026-10-08，仍在持续"
+  },
+  "tests": {
+    "orderflow_5m": {
+      "BTC": {
+        "n": 287995,
+        "spearman_ic": -0.0198,
+        "t": -10.61,
+        "quintile_next_ret_bp": {
+          "lowest": 0.07,
+          "low": 0.14,
+          "mid": 0.04,
+          "high": -0.01,
+          "highest": -0.08
+        }
+      },
+      "ETH": {
+        "n": 287995,
+        "spearman_ic": -0.0199,
+        "t": -10.69,
+        "monotone": false
+      }
+    },
+    "ticks_1s_bucket": {
+      "BTC": {
+        "buckets": 108447,
+        "spearman_ic": -0.2103,
+        "t": -70.83,
+        "gross_bp_by_horizon": {
+          "1s": -0.01,
+          "2s": -0.01,
+          "5s": -0.03,
+          "10s": -0.04,
+          "30s": -0.05,
+          "60s": -0.03
+        }
+      },
+      "ETH": {
+        "buckets": 105437,
+        "gross_bp_by_horizon": {
+          "1s": 0.0,
+          "2s": -0.01,
+          "5s": -0.03,
+          "10s": -0.05,
+          "30s": -0.06,
+          "60s": -0.07
+        }
+      }
+    }
+  },
+  "costs": {
+    "maker_fee_per_side_bp": 2.0,
+    "taker_fee_per_side_bp": 5.0,
+    "round_trip_maker_bp": 4.0,
+    "round_trip_taker_bp": 10.0,
+    "source": "config exchange.maker_fee=0.0002 / taker_fee=0.0005"
+  },
+  "market_making_check": {
+    "BTC_spread_bp": 0.0122,
+    "ETH_spread_bp": 0.0404,
+    "spread_is_one_tick_pct": {
+      "BTC": 100.0,
+      "ETH": 99.9
+    },
+    "capture_half_spread_bp": {
+      "BTC": 0.0061,
+      "ETH": 0.0202
+    },
+    "maker_fee_bp": 2.0,
+    "net_per_fill_bp": {
+      "BTC": -1.9939,
+      "ETH": -1.9798
+    },
+    "verdict": "做市每成交一次净亏约 2bp —— 价差只有手续费的 0.6%~2%"
+  },
+  "verdict": {
+    "order_flow_signal_is_real": true,
+    "order_flow_signal_sign": "mean_reverting（失衡高 → 随后略跌），与「追买盘」方向相反",
+    "order_flow_signal_magnitude_bp": 0.2,
+    "cost_bp": 4.0,
+    "signal_over_cost": 0.05,
+    "tradable_as_direction_signal": false,
+    "market_making_possible": false,
+    "reason": "信号在统计上真实（逐笔 IC=-0.21, t=-70.8），但其对应的价格移动只有 0.01~0.2bp，而 maker 往返成本 4bp、taker 10bp —— 信号仅为成本的 1~5%。做市路径同样被堵死：BTC/ETH 价差恒为 1 tick（0.012/0.040 bp），而 maker 手续费 2bp/边，每成交一次净亏约 2bp。根因是【费率档位】：0.02%/0.05% 的零售档对任何高频策略都过高。",
+    "caveats": [
+      "逐笔样本仅 38.6 小时（2 天），非长期样本",
+      "1 秒分桶是粗粒度，专业做市用事件时间/成交量分桶",
+      "未建模队列位置、撤单率、逆向选择",
+      "若获得负费率（做市返佣）档位，结论可能反转 —— 但当前账户不具备"
+    ]
+  }
+}

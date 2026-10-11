@@ -1,0 +1,245 @@
+{
+  "generated_utc": "2026-10-10T09:36:00Z",
+  "scope": {
+    "symbols": [
+      "BTC",
+      "ETH"
+    ],
+    "timeframe": "1h",
+    "period": "2024-01-01 → 2026-10-08 05:00 UTC",
+    "bars": 24270,
+    "variants": 13,
+    "capital": 10000.0,
+    "cost_model": {
+      "taker_per_side": 0.0005,
+      "maker_per_side": 0.0002,
+      "slippage": "unknown",
+      "funding": "unknown"
+    },
+    "data_note": "DB 的 1h 序列在 2026-10-08 06:00→10-09 03:00 有 20 小时缺口，已截断至缺口前"
+  },
+  "variants": {
+    "trend-20-20": {
+      "trades": 1398,
+      "ending_equity": 9822.242335551644,
+      "net_pnl": -177.75766444835608,
+      "gross_mean_per_trade": 0.2222724478708141,
+      "gross_t": 0.6782535380353655,
+      "gross_p": 0.4977232795343729,
+      "gross_total": 310.7368821233981,
+      "gross_over_cost": 0.6073359345904038,
+      "significant_gross": false,
+      "exit_reasons": {
+        "trend_end": 1398
+      }
+    },
+    "trend-width-0.5": {
+      "trades": 1387,
+      "ending_equity": 9841.30240912873,
+      "net_pnl": -158.69759087127022,
+      "gross_mean_per_trade": 0.23523175832167942,
+      "gross_t": 0.711593814557564,
+      "gross_p": 0.47683608505900454,
+      "gross_total": 326.26644879216934,
+      "gross_over_cost": 0.6420626250419887,
+      "significant_gross": false,
+      "exit_reasons": {
+        "trend_end": 1387
+      }
+    },
+    "trend-rvol-0.3": {
+      "trades": 1245,
+      "ending_equity": 9797.307137471604,
+      "net_pnl": -202.6928625283963,
+      "gross_mean_per_trade": 0.18691840312474658,
+      "gross_t": 0.5232774482964714,
+      "gross_p": 0.6008743856619088,
+      "gross_total": 232.7134118903095,
+      "gross_over_cost": 0.51320032326958,
+      "significant_gross": false,
+      "exit_reasons": {
+        "trend_end": 1245
+      }
+    },
+    "trend-adx-25": {
+      "trades": 972,
+      "ending_equity": 9596.580048771108,
+      "net_pnl": -403.4199512288924,
+      "gross_mean_per_trade": -0.06760255051838913,
+      "gross_t": -0.16003740576860642,
+      "gross_p": 0.8728848932773303,
+      "gross_total": -65.70967910387424,
+      "gross_over_cost": -0.18698734825767993,
+      "significant_gross": false,
+      "exit_reasons": {
+        "trend_end": 972
+      }
+    },
+    "trend-tp-2": {
+      "trades": 2738,
+      "ending_equity": 9131.737771705328,
+      "net_pnl": -868.2622282946722,
+      "gross_mean_per_trade": 0.03465149284335448,
+      "gross_t": 0.22347206587814805,
+      "gross_p": 0.8231847990094527,
+      "gross_total": 94.87578740510457,
+      "gross_over_cost": 0.09801710914086603,
+      "significant_gross": false,
+      "exit_reasons": {
+        "take_profit": 1344,
+        "trend_end": 1394
+      }
+    },
+    "trend-tp-1": {
+      "trades": 4350,
+      "ending_equity": 8737.291588588636,
+      "net_pnl": -1262.708411411364,
+      "gross_mean_per_trade": 0.057888172535637925,
+      "gross_t": 0.623005628382794,
+      "gross_p": 0.5333134906003019,
+      "gross_total": 251.81355053002497,
+      "gross_over_cost": 0.1661340134296482,
+      "significant_gross": false,
+      "exit_reasons": {
+        "take_profit": 2965,
+        "trend_end": 1385
+      }
+    },
+    "trend-sl-0.5": {
+      "trades": 3692,
+      "ending_equity": 9284.292147807277,
+      "net_pnl": -715.7078521927233,
+      "gross_mean_per_trade": 0.15450032449969023,
+      "gross_t": 1.2990814585738895,
+      "gross_p": 0.19399711784321227,
+      "gross_total": 570.4151980528563,
+      "gross_over_cost": 0.4356013606209029,
+      "significant_gross": false,
+      "exit_reasons": {
+        "stop_loss": 2965,
+        "trend_end": 727
+      }
+    },
+    "trend-tp-0.5": {
+      "trades": 6895,
+      "ending_equity": 7878.845810950469,
+      "net_pnl": -2121.154189049531,
+      "gross_mean_per_trade": 0.020440191311543825,
+      "gross_t": 0.38798667313037977,
+      "gross_p": 0.698037875130483,
+      "gross_total": 140.93511909309467,
+      "gross_over_cost": 0.06230307467781294,
+      "significant_gross": false,
+      "exit_reasons": {
+        "take_profit": 5549,
+        "trend_end": 1346
+      }
+    },
+    "trend-sl-0.3": {
+      "trades": 5368,
+      "ending_equity": 8720.886766744828,
+      "net_pnl": -1279.1132332551715,
+      "gross_mean_per_trade": 0.10120778445721873,
+      "gross_t": 1.3234784974549276,
+      "gross_p": 0.1857326758839204,
+      "gross_total": 543.2833869663501,
+      "gross_over_cost": 0.2945669342691267,
+      "significant_gross": false,
+      "exit_reasons": {
+        "stop_loss": 4796,
+        "trend_end": 572
+      }
+    },
+    "trend-atr-2-1": {
+      "trades": 6228,
+      "ending_equity": 7890.103128372076,
+      "net_pnl": -2109.896871627924,
+      "gross_mean_per_trade": -0.008827113875456366,
+      "gross_t": -0.14774409207966,
+      "gross_p": 0.8825495164517321,
+      "gross_total": -54.97526521634225,
+      "gross_over_cost": -0.026752974441852977,
+      "significant_gross": false,
+      "exit_reasons": {
+        "stop_loss": 3713,
+        "take_profit": 1965,
+        "trend_end": 550
+      }
+    },
+    "trend-tp-1-sl-0.5-adx": {
+      "trades": 6635,
+      "ending_equity": 7908.027944025716,
+      "net_pnl": -2091.9720559742836,
+      "gross_mean_per_trade": 0.01639840015529133,
+      "gross_t": 0.40802748883812195,
+      "gross_p": 0.6832666614811527,
+      "gross_total": 108.80338503035796,
+      "gross_over_cost": 0.049438658303403785,
+      "significant_gross": false,
+      "exit_reasons": {
+        "stop_loss": 4389,
+        "take_profit": 2130,
+        "trend_end": 116
+      }
+    },
+    "trend-trailing-1-sl-0.5": {
+      "trades": 9228,
+      "ending_equity": 7677.484327587195,
+      "net_pnl": -2322.5156724128046,
+      "gross_mean_per_trade": 0.07330959323943409,
+      "gross_t": 1.9489102597858432,
+      "gross_p": 0.05133640697562081,
+      "gross_total": 676.5009264134978,
+      "gross_over_cost": 0.22531264598147077,
+      "significant_gross": false,
+      "exit_reasons": {
+        "stop_loss": 5736,
+        "trailing_take_profit": 3250,
+        "trend_end": 242
+      }
+    },
+    "trend-tp-1-sl-0.5": {
+      "trades": 11006,
+      "ending_equity": 6836.738696425887,
+      "net_pnl": -3163.2613035741133,
+      "gross_mean_per_trade": 0.020988401398837186,
+      "gross_t": 0.7390599394802525,
+      "gross_p": 0.45988636366804614,
+      "gross_total": 230.99834579560206,
+      "gross_over_cost": 0.06805559080858528,
+      "significant_gross": false,
+      "exit_reasons": {
+        "stop_loss": 7205,
+        "take_profit": 3518,
+        "trend_end": 283
+      }
+    }
+  },
+  "baseline_analysis": {
+    "n": 1398,
+    "gross_mean": 0.2222724478708141,
+    "gross_std": 12.25313307532646,
+    "cohens_d": 0.018140050100197914,
+    "ci95": [
+      -0.42059004337294403,
+      0.8651349391145723
+    ],
+    "gross_t": 0.6782535380353655,
+    "gross_p": 0.4977232795343729,
+    "required_n_80pct": 23825.339525620562,
+    "trades_per_month_btc_eth": 63.54545454545455,
+    "years_needed_btc_eth": 31.24448435644089,
+    "net_expectation_per_trade": {
+      "taker": -0.14370696354128668,
+      "maker": 0.07588068330597378,
+      "zero_fee": 0.2222724478708141
+    }
+  },
+  "verdict": {
+    "all_13_variants_net_negative": true,
+    "no_variant_gross_significant": true,
+    "taker_gross_over_cost": 0.6073359345904038,
+    "interpretation": "1h BTC/ETH 上该信号族的毛优势仅约成本的 0.61 倍，taker 费率下数学上必亏（实测 -1.78%）。加止盈止损使交易次数放大 5~8 倍、成本同比例放大，13 个变体全部更差。maker 费率下理论微正（+1.06%/22个月），但毛优势不显著（t=0.68, p=0.50, 95%CI 跨 0），且限价单的逆选择未建模。检出该效应量需 23,825 笔 → BTC+ETH 需 31 年。",
+    "negative_control_passed": true
+  }
+}

@@ -1,5 +1,6 @@
 <script lang="ts" setup>
 import { sortCoins } from '../utils/coinOrder';
+import { shortOrderTime, tradeDisplayId } from '../utils/orderDisplayId';
 /**
  * 总览 —— 一屏看全：账户 / 实盘策略 / 持仓 / 研究结论 / 回测曲线
  *
@@ -14,9 +15,10 @@ import { sortCoins } from '../utils/coinOrder';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 
 
-import { Card, Col, Progress, Row, Table, Tag } from 'ant-design-vue';
+import { Alert, Card, Col, Progress, Row, Table, Tag } from 'ant-design-vue';
 
 import {
+  errText,
   getBackgroundJobs,
   getBalance,
   getConfig,
@@ -47,6 +49,9 @@ const ops = ref<any>(null);
 const it = ref<any>(null);
 const rs = ref<any>(null);
 const whitelist = ref<string[]>([]);
+const loading = ref(false);
+const loaded = ref<Record<string, boolean>>({});
+const loadErrors = ref<string[]>([]);
 
 
 const up = (v: any) => Number(v) > 0;
@@ -56,13 +61,6 @@ const fmt = (v: any, n = 2) =>
   v === null || v === undefined || Number.isNaN(Number(v))
     ? '—'
     : Number(v).toFixed(n);
-const localTime = (v?: string) => {
-  if (!v) return '—';
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return String(v);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-};
 
 /* ══════════ 第一行：账户 KPI ══════════ */
 const kpis = computed(() => [
@@ -84,39 +82,42 @@ const kpis = computed(() => [
     label: '已平仓盈亏',
     value: (up(profit.value.profit_closed_coin) ? '+' : '') + fmt(profit.value.profit_closed_coin),
     suffix: bal.value.symbol ?? 'USDT',
-    sub: `${profit.value.winning_trades ?? 0} 胜 / ${profit.value.losing_trades ?? 0} 负`,
+    sub: `${profit.value.winning_trades ?? '—'} 胜 / ${profit.value.losing_trades ?? '—'} 负`,
     color: cls(profit.value.profit_closed_coin),
   },
   {
     label: '当前持仓',
-    value: String(positions.value.length),
-    suffix: `笔 / 上限 ${cfg.value.max_open_trades ?? '—'}`,
+    value: loaded.value.positions ? String(positions.value.length) : '—',
+    suffix: `笔 / 上限 ${Number(cfg.value.max_open_trades) === -1 ? '不限' : cfg.value.max_open_trades ?? '—'}`,
     sub: `已用 ${fmt(openStake.value)} USDT`,
     color: '',
   },
   {
     label: '胜率',
-    value: fmt((profit.value.winrate ?? 0) * 100, 1),
-    suffix: '%',
-    sub: `共 ${profit.value.closed_trade_count ?? 0} 笔已平仓`,
+    value: Number(profit.value.closed_trade_count) > 0
+      ? fmt(Number(profit.value.winrate) * 100, 1)
+      : loaded.value.profit ? '暂无平仓样本' : '未知',
+    suffix: Number(profit.value.closed_trade_count) > 0 ? '%' : '',
+    sub: `共 ${profit.value.closed_trade_count ?? '—'} 笔已平仓`,
     color: '',
   },
   {
     label: '运行状态',
     value: cfg.value.state === 'running' ? '运行中' : (cfg.value.state ?? '—'),
     suffix: '',
-    sub: cfg.value.dry_run ? '干跑模拟' : '实盘',
+    sub: loaded.value.config ? (cfg.value.dry_run ? '干跑模拟' : '实盘') : '等待交易状态',
     color: cfg.value.state === 'running' ? 'text-emerald-500' : 'text-gray-400',
   },
 ]);
 
-const openStake = computed(() =>
-  positions.value.reduce((a, t) => a + (t.stake_amount ?? 0), 0),
-);
+const openStake = computed(() => loaded.value.positions
+  ? positions.value.reduce((a, t) => a + (t.stake_amount ?? 0), 0)
+  : null);
 
 
 /** 直接汇总交易引擎的浮动盈亏金额；缺失数据不按零处理。 */
 const openProfit = computed(() => {
+  if (!loaded.value.positions) return null;
   if (positions.value.some((trade) => trade.profit_abs == null || !Number.isFinite(Number(trade.profit_abs)))) {
     return null;
   }
@@ -211,6 +212,7 @@ const holdStats = computed(() => {
 });
 
 const posColumns = [
+  { key: 'display_id', title: '开仓订单编号', width: 190 },
   { dataIndex: 'pair', key: 'pair', title: '币对', width: 150 },
   { key: 'side', title: '方向', width: 70 },
   { key: 'open_rate', title: '开仓价', align: 'right' as const },
@@ -222,6 +224,7 @@ const posColumns = [
 ];
 
 const tradeColumns = [
+  { key: 'display_id', title: '开仓订单编号', width: 190 },
   { dataIndex: 'pair', key: 'pair', title: '币对', width: 140 },
   { key: 'side', title: '方向', width: 60 },
   { key: 'profit_pct', title: '收益率', align: 'right' as const },
@@ -233,46 +236,69 @@ const tradeColumns = [
 /* ══════════ 资金曲线 ══════════ */
 
 async function load() {
-  const [c, p, b, pr, st, tr, o, i, r, rp, jb, sv] = await Promise.all([
-    getConfig().catch(() => ({})),
-    getProfit().catch(() => ({})),
-    getBalance().catch(() => ({})),
-    getRunProgress().catch(() => null),
-    getOpenTrades().catch(() => []),
-    getTrades(20).catch(() => ({ trades: [] })),
-    getOps().catch(() => null),
-    getIteration().catch(() => null),
-    getResearch().catch(() => null),
-    getResearchProgress().catch(() => null),
-    getBackgroundJobs().catch(() => []),
-    getServices().catch(() => null),
-  ]);
-  getWhitelist()
-    .then((w) => (whitelist.value = w.whitelist ?? []))
-    .catch(() => (whitelist.value = []));
-  cfg.value = c ?? {};
-  profit.value = p ?? {};
-  bal.value = b ?? {};
-  positions.value = Array.isArray(st) ? st : [];
-  trades.value = (tr as any)?.trades ?? [];
-  ops.value = o;
-  it.value = i;
-  rs.value = r;
-  researchProg.value = rp;
-  jobs.value = Array.isArray(jb) ? jb : [];
-  services.value = sv;
-  progress.value = pr;
+  if (loading.value) return;
+  loading.value = true;
+  const failures: string[] = [];
+  const refresh = async <T,>(key: string, label: string, request: () => Promise<T>, apply: (value: T) => void) => {
+    try {
+      apply(await request());
+      loaded.value = { ...loaded.value, [key]: true };
+    } catch (error) {
+      failures.push(`${label}：${errText(error)}`);
+    }
+  };
+  try {
+    await Promise.all([
+      refresh('config', '交易状态', getConfig, (value) => { cfg.value = value; }),
+      refresh('profit', '盈亏统计', getProfit, (value) => { profit.value = value; }),
+      refresh('balance', '账户余额', getBalance, (value) => { bal.value = value; }),
+      refresh('progress', '回测进度', getRunProgress, (value) => { progress.value = value; }),
+      refresh('positions', '当前持仓', getOpenTrades, (value) => { positions.value = value; }),
+      refresh('trades', '最近成交', () => getTrades(20), (value) => { trades.value = value.trades ?? []; }),
+      refresh('ops', '运维快照', getOps, (value) => { ops.value = value; }),
+      refresh('iteration', '模型迭代', getIteration, (value) => { it.value = value; }),
+      refresh('research', '研究汇总', getResearch, (value) => { rs.value = value; }),
+      refresh('researchProgress', '研究进度', getResearchProgress, (value) => { researchProg.value = value; }),
+      refresh('jobs', '后台任务', getBackgroundJobs, (value) => { jobs.value = value; }),
+      refresh('services', '程序运行状况', getServices, (value) => { services.value = value; }),
+      refresh('whitelist', '交易对白名单', getWhitelist, (value) => { whitelist.value = value.whitelist ?? []; }),
+    ]);
+    loadErrors.value = failures;
+  } finally {
+    loading.value = false;
+  }
 }
 
 /** 每个服务的一句状态说明（让它一眼看出「跑到哪」） */
 function serviceNote(sv: any): string {
   const st = sv?.state;
   if (!st) return '';
-  if (st.round !== undefined) return `第 ${st.round} 轮 · ${st.percent ?? 0}%`;
+  if (st.round !== undefined) return `第 ${st.round} 轮 · ${taskPercent(st.percent) === null ? '进度未知' : `${taskPercent(st.percent)}%`}`;
   if (st.rounds_done !== undefined) return `已完成 ${st.rounds_done} 轮`;
   if (st.summary_generated_at) return `数据更新 ${st.summary_generated_at}`;
   if (st.ok !== undefined) return st.ok ? '上次刷新成功' : '上次刷新失败';
   return '';
+}
+
+function taskPercent(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const percent = Number(value);
+  return Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : null;
+}
+
+function taskStatus(status: unknown): string {
+  const labels: Record<string, string> = {
+    running: '运行中',
+    done: '已完成',
+    failed: '失败',
+    stopped: '已停止',
+    idle: '待命',
+    pending: '等待中',
+    queued: '排队中',
+    cancelled: '已取消',
+    canceled: '已取消',
+  };
+  return typeof status === 'string' ? labels[status] ?? status : '状态未知';
 }
 
 /** 全部任务：回测/训练、模型迭代、后台任务 */
@@ -283,21 +309,21 @@ const allTasks = computed(() => {
       key: 'run',
       name: '回测 / 训练',
       icon: '🧪',
-      percent: Number(progress.value.percent ?? 0),
+      percent: taskPercent(progress.value.percent),
       status: progress.value.status,
       note: [progress.value.phase ?? progress.value.model,
              progress.value.current_pair].filter(Boolean).join(' · '),
     });
   }
-  if (researchProg.value) {
-    const r = researchProg.value;
+  const r = researchProg.value?.progress;
+  if (r) {
     out.push({
       key: 'research',
       name: '模型自动迭代',
       icon: '🔬',
-      percent: Number(r.percent ?? 0),
+      percent: taskPercent(r.percent),
       status: r.status,
-      note: `第 ${r.round ?? '—'} 轮 · trial ${r.trial ?? 0}/${r.total ?? 0}` +
+      note: `第 ${r.round ?? '—'} 轮 · trial ${r.trial ?? '—'}/${r.total ?? '—'}` +
             (r.phase ? ` · ${r.phase}` : ''),
     });
   }
@@ -306,7 +332,7 @@ const allTasks = computed(() => {
       key: `job-${j.job_id ?? j.id}`,
       name: j.kind ?? j.name ?? '后台任务',
       icon: '⚙️',
-      percent: Number(j.percent ?? 0),
+      percent: taskPercent(j.percent),
       status: j.status,
       note: j.message ?? j.phase ?? '',
     });
@@ -325,6 +351,9 @@ onUnmounted(() => clearInterval(timer));
 <template>
   <div class="p-4">
     <TaskProgress />
+    <Alert v-if="loadErrors.length" class="mb-3" type="warning" show-icon
+      message="部分数据刷新失败，保留上次成功数据；首次未读取的指标显示未知。"
+      :description="loadErrors.join('；')" />
 
     <!-- ① 账户 KPI -->
     <Row :gutter="[12, 12]">
@@ -402,7 +431,7 @@ onUnmounted(() => clearInterval(timer));
     <Card :bordered="false" class="mt-3 shadow-sm" title="当前持仓">
       <template #extra>
         <span class="text-xs text-gray-400">
-          {{ positions.length }} 笔 · 占用 {{ fmt(openStake) }} USDT · 浮动盈亏
+          {{ loaded.positions ? positions.length : '—' }} 笔 · 占用 {{ fmt(openStake) }} USDT · 浮动盈亏
           <span :class="cls(openProfit)">
             {{ up(openProfit) ? '+' : '' }}{{ fmt(openProfit) }} USDT
           </span><template
@@ -417,11 +446,15 @@ onUnmounted(() => clearInterval(timer));
         :columns="posColumns"
         :data-source="sortCoins(positions, (row) => row.pair)"
         :pagination="false"
+        :scroll="{ x: 'max-content' }"
         row-key="trade_id"
         size="small"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'pair'">
+          <template v-if="column.key === 'display_id'">
+            <span class="font-mono text-xs">{{ tradeDisplayId(record) }}</span>
+          </template>
+          <template v-else-if="column.key === 'pair'">
             <span class="font-medium">{{ record.pair }}</span>
           </template>
           <template v-else-if="column.key === 'side'">
@@ -450,12 +483,12 @@ onUnmounted(() => clearInterval(timer));
             </span>
           </template>
           <template v-else-if="column.key === 'open_date'">
-            <span class="text-xs">{{ localTime(record.open_date) }}</span>
+            <span class="text-xs">{{ shortOrderTime(record.open_timestamp, record.open_date) }}</span>
           </template>
         </template>
       </Table>
       <div v-else class="py-8 text-center text-sm text-gray-400">
-        当前无持仓 —— 趋势策略等突破信号
+        {{ loaded.positions ? '当前无持仓 —— 趋势策略等突破信号' : '持仓数据尚未读取，请查看刷新状态' }}
       </div>
     </Card>
 
@@ -499,19 +532,20 @@ onUnmounted(() => clearInterval(timer));
                 <span>{{ t.icon }}</span>
                 <span class="font-medium">{{ t.name }}</span>
                 <Tag
-                  :color="t.status === 'running' ? 'blue' : (t.status === 'done' ? 'green' : 'default')"
+                  :color="t.status === 'running' ? 'blue' : t.status === 'done' ? 'green' : t.status === 'failed' ? 'red' : 'default'"
                 >
-                  {{ t.status === 'running' ? '运行中' : (t.status === 'done' ? '已完成' : t.status || '—') }}
+                  {{ taskStatus(t.status) }}
                 </Tag>
-                <span class="ml-auto font-mono text-xs">{{ t.percent.toFixed(0) }}%</span>
+                <span class="ml-auto font-mono text-xs">{{ t.percent === null ? '进度未知' : `${t.percent.toFixed(0)}%` }}</span>
               </div>
               <Progress
+                v-if="t.percent !== null"
                 :percent="t.percent"
-                :status="t.status === 'running' ? 'active' : 'normal'"
+                :status="t.status === 'failed' ? 'exception' : t.status === 'running' ? 'active' : 'normal'"
                 size="small"
                 class="mt-1"
               />
-              <div v-if="t.note" class="mt-0.5 truncate text-xs text-gray-500">{{ t.note }}</div>
+              <div v-if="t.note" class="mt-0.5 truncate text-xs text-gray-500" :title="t.note">{{ t.note }}</div>
             </div>
           </div>
           <div v-else class="py-8 text-center text-sm text-gray-400">当前无运行中的任务</div>
@@ -535,11 +569,15 @@ onUnmounted(() => clearInterval(timer));
         :columns="tradeColumns"
         :data-source="sortCoins(recentRows, (row) => row.pair)"
         :pagination="false"
+        :scroll="{ x: 'max-content' }"
         row-key="trade_id"
         size="small"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'pair'">
+          <template v-if="column.key === 'display_id'">
+            <span class="font-mono text-xs">{{ tradeDisplayId(record) }}</span>
+          </template>
+          <template v-else-if="column.key === 'pair'">
             <span class="font-medium">{{ record.pair }}</span>
           </template>
           <template v-else-if="column.key === 'side'">
@@ -563,13 +601,13 @@ onUnmounted(() => clearInterval(timer));
           </template>
           <template v-else-if="column.key === 'close_date'">
             <span class="text-xs">
-              {{ record.is_open ? '—' : localTime(record.close_date) }}
+              {{ record.is_open ? '—' : shortOrderTime(record.close_timestamp, record.close_date) }}
             </span>
           </template>
         </template>
       </Table>
       <div v-else class="py-8 text-center text-sm text-gray-400">
-        暂无持仓与成交 —— 等待突破信号
+        {{ loaded.positions && loaded.trades ? '暂无持仓与成交 —— 等待突破信号' : '成交数据尚未读取，请查看刷新状态' }}
       </div>
     </Card>
   </div>

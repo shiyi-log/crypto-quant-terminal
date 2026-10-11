@@ -4,6 +4,7 @@ import { shortOrderTime, tradeDisplayId } from '../utils/orderDisplayId';
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 
 import {
+  Alert,
   Button,
   Card,
   Dropdown,
@@ -38,6 +39,8 @@ const bal = ref<any>({});
 const loading = ref(false);
 const detailOpen = ref(false);
 const detailRecord = ref<any>(null);
+const loaded = ref<Record<string, boolean>>({});
+const loadErrors = ref<Record<string, string>>({});
 
 function viewTradeDetail(record: any) {
   detailRecord.value = { ...record };
@@ -68,7 +71,8 @@ const fmt = (v: any, n = 2) =>
     ? '—'
     : Number(v).toFixed(n);
 const pct = (t: any) =>
-  t.profit_ratio !== undefined ? t.profit_ratio * 100 : (t.profit_pct ?? 0);
+  t.profit_ratio !== undefined && t.profit_ratio !== null
+    ? t.profit_ratio * 100 : (t.profit_pct ?? null);
 
 /**
  * 「最近成交」的行。
@@ -84,6 +88,7 @@ const recentRows = computed(() => [
 
 /** 汇总真实持仓金额，缺失值不当作零。 */
 const openProfit = computed(() => {
+  if (!loaded.value.positions) return null;
   if (open.value.some((trade) => trade.profit_abs == null || !Number.isFinite(Number(trade.profit_abs)))) {
     return null;
   }
@@ -91,7 +96,7 @@ const openProfit = computed(() => {
 });
 
 const openCols = [
-  { key: 'display_id', title: '开仓订单编号', width: 300 },
+  { key: 'display_id', title: '开仓订单编号', width: 190 },
   { dataIndex: 'pair', key: 'pair', title: '币对' },
   { key: 'side', title: '方向', width: 80 },
   { dataIndex: 'open_rate', key: 'open_rate', title: '开仓价', align: 'right' as const },
@@ -105,7 +110,7 @@ const openCols = [
 ];
 
 const tradeCols = [
-  { key: 'display_id', title: '开仓订单编号', width: 300 },
+  { key: 'display_id', title: '开仓订单编号', width: 190 },
   { dataIndex: 'pair', key: 'pair', title: '币对' },
   { key: 'side', title: '方向', width: 70 },
   { dataIndex: 'open_rate', key: 'open_rate', title: '开仓价', align: 'right' as const, width: 100 },
@@ -372,18 +377,25 @@ function onAction(key: string, r: any) {
 async function load() {
   if (loading.value) return;
   loading.value = true;
+  const failures: Record<string, string> = {};
+  const refresh = async <T,>(key: string, label: string, request: () => Promise<T>, apply: (value: T) => void) => {
+    try {
+      apply(await request());
+      loaded.value = { ...loaded.value, [key]: true };
+    } catch (error) {
+      failures[key] = `${label}：${errText(error)}`;
+    }
+  };
   try {
-    const [o, t, b] = await Promise.all([
-      getOpenTrades(),
-      getTrades(30),
-      getBalance(),
+    await Promise.all([
+      refresh('positions', '当前持仓', getOpenTrades, (value) => { open.value = value; }),
+      refresh('trades', '最近成交', () => getTrades(30), (value) => {
+        trades.value = value.trades ?? [];
+        total.value = value.total_trades ?? 0;
+      }),
+      refresh('balance', '账户余额', getBalance, (value) => { bal.value = value; }),
     ]);
-    open.value = o as any[];
-    trades.value = (t as any).trades ?? [];
-    total.value = (t as any).total_trades ?? 0;
-    bal.value = b;
-  } catch (error) {
-    message.error(`余额与持仓刷新失败，保留上次数据：${errText(error)}`);
+    loadErrors.value = failures;
   } finally {
     loading.value = false;
   }
@@ -421,6 +433,9 @@ onUnmounted(() => {
 
 <template>
   <div class="p-4">
+    <Alert v-if="Object.keys(loadErrors).length" class="mb-3" type="warning" show-icon
+      message="部分数据刷新失败，保留上次成功数据；首次未读取的数据不会作为空账户。"
+      :description="Object.values(loadErrors).join('；')" />
     <Card
       :bordered="false"
       class="mb-3 shadow-sm"
@@ -457,7 +472,7 @@ onUnmounted(() => {
           </template>
         </template>
         <template #emptyText>
-          <div class="py-8 text-sm text-gray-400">无余额数据</div>
+          <div class="py-8 text-sm text-gray-400">{{ loaded.balance ? '无余额数据' : '余额数据尚未读取，请查看刷新状态' }}</div>
         </template>
       </Table>
     </Card>
@@ -471,7 +486,7 @@ onUnmounted(() => {
           {{ wsConnected ? '实时推送已连接' : '轮询模式' }}
         </span>
         <span class="text-xs text-gray-400">
-          {{ open.length }} 笔 · 浮动盈亏
+          {{ loaded.positions ? open.length : '—' }} 笔 · 浮动盈亏
           <span :class="Number(openProfit) > 0 ? 'text-red-500' : Number(openProfit) < 0 ? 'text-emerald-500' : ''">
             {{ Number(openProfit) > 0 ? '+' : '' }}{{ fmt(openProfit) }} USDT
           </span>
@@ -488,7 +503,7 @@ onUnmounted(() => {
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'display_id'">
-            <span class="block max-w-[280px] truncate font-mono text-xs" :title="tradeDisplayId(record)">
+            <span class="block font-mono text-xs" :title="tradeDisplayId(record)">
               {{ tradeDisplayId(record) }}
             </span>
           </template>
@@ -544,7 +559,7 @@ onUnmounted(() => {
           </template>
         </template>
         <template #emptyText>
-          <div class="py-8 text-sm text-gray-400">当前无持仓</div>
+          <div class="py-8 text-sm text-gray-400">{{ loaded.positions ? '当前无持仓' : '持仓数据尚未读取，请查看刷新状态' }}</div>
         </template>
       </Table>
     </Card>
@@ -557,7 +572,7 @@ onUnmounted(() => {
       >
       <template #extra>
         <span class="text-xs text-gray-400">
-          持仓 {{ open.length }} 笔 · 已平仓 {{ total }} 笔<template v-if="holdStats">
+          持仓 {{ loaded.positions ? open.length : '—' }} 笔 · 已平仓 {{ loaded.trades ? total : '—' }} 笔<template v-if="holdStats">
             · 平均持有 {{ holdStats.mean }} 天（中位 {{ holdStats.median }} 天）
           </template>
         </span>
@@ -573,7 +588,7 @@ onUnmounted(() => {
         >
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'display_id'">
-              <span class="block max-w-[280px] truncate font-mono text-xs" :title="tradeDisplayId(record)">
+              <span class="block font-mono text-xs" :title="tradeDisplayId(record)">
                 {{ tradeDisplayId(record) }}
               </span>
             </template>
@@ -630,11 +645,11 @@ onUnmounted(() => {
             </template>
           </template>
           <template #emptyText>
-            <div class="py-8 text-sm text-gray-400">暂无持仓与成交记录</div>
+            <div class="py-8 text-sm text-gray-400">{{ loaded.positions && loaded.trades ? '暂无持仓与成交记录' : '成交数据尚未读取，请查看刷新状态' }}</div>
           </template>
         </Table>
         <div class="mt-2 text-xs text-gray-400">
-          编号格式：时间戳 + 币种 + 交易所原始订单号，时间为北京时间（UTC+8）。列表缺少订单数据时以开仓时间展示，原始号可在详情中查询。
+          列表编号：时间戳 + 币种，时间为北京时间（UTC+8）；交易所原始订单号在详情中查看。
         </div>
       </Card>
 

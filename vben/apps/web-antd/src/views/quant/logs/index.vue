@@ -1,9 +1,9 @@
 <script lang="ts" setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 
-import { Card, Radio, Space, Switch } from 'ant-design-vue';
+import { Alert, Card, Radio, Space, Switch } from 'ant-design-vue';
 
-import { getLogs } from '#/api/freqtrade';
+import { errText, getLogs } from '#/api/freqtrade';
 
 import { levelCn, translateLog } from '../utils/logText';
 
@@ -14,6 +14,9 @@ const autoScroll = ref(true);
 const showRaw = ref(false);
 const boxRef = ref<HTMLElement>();
 const atBottom = ref(true);
+const loaded = ref(false);
+const loadError = ref('');
+const loading = ref(false);
 
 /** 是否停在底部（决定要不要继续自动滚动） */
 function onScroll() {
@@ -55,17 +58,23 @@ const levelColor = (lv: string) =>
         : 'text-gray-500';
 
 async function load() {
+  if (loading.value) return;
+  loading.value = true;
   try {
     const d = await getLogs(200);
     logs.value = d.logs ?? [];
     total.value = d.log_count ?? 0;
+    loaded.value = true;
+    loadError.value = '';
     if (autoScroll.value && atBottom.value) {
       requestAnimationFrame(() => {
         if (boxRef.value) boxRef.value.scrollTop = boxRef.value.scrollHeight;
       });
     }
-  } catch {
-    /* 单次失败忽略 */
+  } catch (error) {
+    loadError.value = errText(error);
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -80,10 +89,12 @@ onUnmounted(() => clearInterval(timer));
 
 <template>
   <div class="p-4">
+    <Alert v-if="loadError" class="mb-3" type="warning" show-icon
+      message="日志读取失败，保留上次成功数据。" :description="loadError" />
     <Card :bordered="false" class="shadow-sm" title="运行日志">
       <template #extra>
         <Space>
-          <span class="text-xs text-gray-400">共 {{ total }} 条</span>
+          <span class="text-xs text-gray-400">共 {{ loaded ? total : '—' }} 条</span>
           <Radio.Group v-model:value="level" button-style="solid" size="small">
             <Radio.Button value="">全部</Radio.Button>
             <Radio.Button value="INFO">信息</Radio.Button>
@@ -114,7 +125,7 @@ onUnmounted(() => clearInterval(timer));
         class="max-h-[66vh] overflow-auto rounded border border-gray-100 bg-gray-50/50 font-mono text-xs dark:border-gray-700 dark:bg-gray-900/40"
       >
         <div v-if="!shown.length" class="py-16 text-center text-gray-400">
-          暂无日志
+          {{ !loaded ? '日志尚未读取，请查看刷新状态' : logs.length ? '当前级别没有日志，可切换为全部' : '暂无日志' }}
         </div>
         <div
           v-for="(l, i) in shown"

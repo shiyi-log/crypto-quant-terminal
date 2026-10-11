@@ -18,11 +18,16 @@ def _timestamp(value):
 
 def _version(row):
     extras = row.get("extras") or {}
+    closed = extras.get("closed") is True
     timestamps = [
         _timestamp(extras[name]) for name in ("live_event_timestamp", "live_snapshot_timestamp")
         if extras.get(name) is not None
     ]
-    return (max(timestamps, default=-1), extras.get("closed") is True)
+    # Match DataStore's ordering before a batch reaches the database. A later
+    # REST snapshot must not replace a final WS fact in the pending queue and
+    # erase its order-flow fields before the database can protect it.
+    return (closed and extras.get("live_event_timestamp") is not None,
+            max(timestamps, default=-1), closed)
 
 
 @dataclass(frozen=True)
@@ -70,8 +75,9 @@ class CandleArchiveWriter:
     def offer(self, exchange, market, pair, timeframe, candle_type, rows, source_key=None):
         """仅在内存合并，容量不足/已关闭返回 False，绝不等待数据库。
 
-        同根以 WS extras.live_event_timestamp / REST live_snapshot_timestamp
-        排序；同时间 closed 优先，再取最新 offer。无版本 REST 不覆盖 WS。
+        同根已收盘 WS 优先，再按 WS extras.live_event_timestamp /
+        REST live_snapshot_timestamp 排序；同时间 closed 优先，再取最新 offer。
+        无版本 REST 不覆盖 WS。
         数据库也会校验版本，防止已提交的
         WS 在后续 REST 归档中被覆盖。满队列拒绝整个批次，不丢弃已有根。
         """

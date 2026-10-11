@@ -68,3 +68,7 @@ __pycache__/
 /*.md
 !/README.md
 !/THIRD_PARTY_NOTICES.md
+
+# 本地行情缓存和闭盘修复的私有回滚日志。
+/research_data/
+/artifacts/closed-candle-*/

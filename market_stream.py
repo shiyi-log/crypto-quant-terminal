@@ -14,10 +14,14 @@ import os
 from pathlib import Path
 import re
 import signal
+import shutil
 import threading
 import time
 from typing import Any
 import uuid
+
+from orderflow_detector import VolumeSurgeDetector
+from orderflow_maturity import OrderflowMaturityWorker
 
 LOG = logging.getLogger("market_stream")
 ROOT = Path(__file__).resolve().parent
@@ -102,6 +106,10 @@ class StreamConfig:
     status_interval: float = 2.0
     spool_dir: Path = ROOT / "database/runtime/market_spool"
     enabled: bool = True
+    disk_warning_pct: float = 15.0
+    disk_critical_pct: float = 5.0
+    disk_warning_bytes: int = 0
+    disk_critical_bytes: int = 0
 
     def __post_init__(self) -> None:
         if self.market not in {"futures", "spot"}:
@@ -110,18 +118,68 @@ class StreamConfig:
             raise ValueError("交易对、队列容量与批次容量必须有效")
         if min(self.flush_interval, self.retry_max, self.shutdown_timeout, self.status_interval) <= 0:
             raise ValueError("等待时间必须大于 0")
+        if not 0 <= self.disk_critical_pct < self.disk_warning_pct <= 100:
+            raise ValueError("磁盘容量阈值必须满足 0 <= critical < warning <= 100")
+        if self.disk_warning_bytes < 0 or self.disk_critical_bytes < 0:
+            raise ValueError("磁盘剩余字节阈值不能为负数")
+        if self.disk_critical_bytes and self.disk_warning_bytes and self.disk_critical_bytes > self.disk_warning_bytes:
+            raise ValueError("磁盘临界剩余字节阈值不能高于告警阈值")
 
     def connections(self) -> list[tuple[str, str]]:
         # 当前币安合约文档将成交和盘口分置于 market/public 分区。
         symbols = [symbol_for(pair) for pair in self.pairs]
         trades = "/".join(f"{s}@{'aggTrade' if self.market == 'futures' else 'trade'}" for s in symbols)
+        klines = "/".join(f"{s}@kline_5m" for s in symbols)
         books = "/".join(f"{s}@depth20@100ms" for s in symbols)
         if self.market == "futures":
             return [
-                ("trades", f"wss://fstream.binance.com/market/stream?streams={trades}"),
+                ("trades", f"wss://fstream.binance.com/market/stream?streams={trades}/{klines}"),
                 ("orderbooks", f"wss://fstream.binance.com/public/stream?streams={books}"),
             ]
-        return [("market", f"wss://stream.binance.com:9443/stream?streams={trades}/{books}")]
+        return [("market", f"wss://stream.binance.com:9443/stream?streams={trades}/{books}/{klines}")]
+
+
+def _disk_capacity(path: Path, config: StreamConfig) -> dict[str, Any]:
+    """读取暂存目录所在分区容量，并根据剩余百分比/字节数分级。"""
+    checked_at = int(time.time() * 1000)
+    try:
+        usage = shutil.disk_usage(path)
+        free_pct = (usage.free / usage.total * 100) if usage.total else 0.0
+        critical_reasons: list[str] = []
+        warning_reasons: list[str] = []
+        if free_pct < config.disk_critical_pct:
+            critical_reasons.append(f"剩余空间 {free_pct:.2f}% < {config.disk_critical_pct:g}%")
+        elif free_pct < config.disk_warning_pct:
+            warning_reasons.append(f"剩余空间 {free_pct:.2f}% < {config.disk_warning_pct:g}%")
+        if config.disk_critical_bytes and usage.free < config.disk_critical_bytes:
+            critical_reasons.append(f"剩余 {usage.free} bytes < {config.disk_critical_bytes} bytes")
+        elif config.disk_warning_bytes and usage.free < config.disk_warning_bytes:
+            warning_reasons.append(f"剩余 {usage.free} bytes < {config.disk_warning_bytes} bytes")
+        if critical_reasons:
+            level, reason = "critical", "; ".join(critical_reasons)
+        elif warning_reasons:
+            level, reason = "warning", "; ".join(warning_reasons)
+        else:
+            level, reason = "ok", None
+        return {
+            "disk_total_bytes": int(usage.total),
+            "disk_used_bytes": int(usage.used),
+            "disk_free_bytes": int(usage.free),
+            "disk_free_pct": round(free_pct, 2),
+            "disk_alert_level": level,
+            "disk_alert_reason": reason,
+            "disk_checked_at": checked_at,
+        }
+    except (OSError, ValueError) as exc:
+        return {
+            "disk_total_bytes": None,
+            "disk_used_bytes": None,
+            "disk_free_bytes": None,
+            "disk_free_pct": None,
+            "disk_alert_level": "unknown",
+            "disk_alert_reason": f"无法检查暂存目录磁盘容量：{exc}",
+            "disk_checked_at": checked_at,
+        }
 
 
 def _decimal(value: Any) -> str:
@@ -158,6 +216,66 @@ def normalize_message(message: dict[str, Any], config: StreamConfig, received_ms
         raise ValueError(f"收到未订阅符号：{symbol}")
     pair = mapping[symbol]
     extras = {"received_timestamp": received_ms, "raw": payload}
+    if payload.get("e") == "kline":
+        raw = payload.get("k")
+        if not isinstance(raw, dict):
+            raise ValueError("K 线正文必须为对象")
+        payload_symbol = payload.get("s")
+        if not isinstance(payload_symbol, str) or not payload_symbol:
+            raise ValueError("K 线缺少交易对符号")
+        if stream and stream.split("@", 1)[0].lower() != payload_symbol.lower():
+            raise ValueError("K 线流与正文交易对符号不一致")
+        if raw.get("s") != payload_symbol:
+            raise ValueError("K 线与正文交易对符号不一致")
+        closed = raw.get("x")
+        if not isinstance(closed, bool):
+            raise ValueError("K 线收盘标记必须是布尔值")
+        if raw.get("i") != "5m" or not closed:
+            # 采集器只观察收盘后的 5m K 线，未收盘更新由交易/图表流负责。
+            return None
+        timestamp = _nonnegative_int(raw.get("t"))
+        event_timestamp = _nonnegative_int(payload.get("E", received_ms))
+        def finite_float(value: Any, name: str, *, positive: bool = False) -> float:
+            number = Decimal(_decimal(value))
+            converted = float(number)
+            if not -float("inf") < converted < float("inf"):
+                raise ValueError(f"K 线{name}超出有限数范围")
+            if positive and (number <= 0 or converted <= 0):
+                raise ValueError(f"K 线{name}必须为正数")
+            return converted
+        candle = {
+            "timestamp": timestamp,
+            "open": finite_float(raw.get("o"), "价格", positive=True),
+            "high": finite_float(raw.get("h"), "价格", positive=True),
+            "low": finite_float(raw.get("l"), "价格", positive=True),
+            "close": finite_float(raw.get("c"), "价格", positive=True),
+            "volume": _decimal(raw.get("v")),
+            "closed": True,
+        }
+        opening, high, low, closing = (Decimal(_decimal(raw[field])) for field in ("o", "h", "l", "c"))
+        if not (low <= min(opening, closing) <= max(opening, closing) <= high):
+            raise ValueError("K 线最高价和最低价必须覆盖开盘价与收盘价")
+        quote_volume = _decimal(raw.get("q"))
+        candle["quote_volume"] = finite_float(quote_volume, "成交额")
+        if raw.get("n") is not None:
+            candle["num_trades"] = _nonnegative_int(raw["n"])
+        if raw.get("V") is not None:
+            candle["taker_buy_base"] = _decimal(raw["V"])
+        if raw.get("Q") is not None:
+            taker_buy_quote = finite_float(raw["Q"], "买方成交额")
+            if Decimal(_decimal(raw["Q"])) > Decimal(quote_volume):
+                raise ValueError("买方成交额不能高于 K 线成交额")
+            candle["taker_buy_quote"] = taker_buy_quote
+            if candle["quote_volume"] > 0:
+                candle["flow_imbal"] = 2 * taker_buy_quote / candle["quote_volume"] - 1
+        extras.update(source="binance_kline_5m", closed=True,
+                      exchange_event_timestamp=event_timestamp)
+        return {
+            "kind": "kline", "market": config.market, "pair": pair,
+            "timeframe": "5m", "candle": candle,
+            "row": {**candle, "extras": extras},
+            "source_timestamp": received_ms,
+        }
     if payload.get("e") in {"aggTrade", "trade"}:
         aggregate = payload["e"] == "aggTrade"
         maker = payload["m"]
@@ -227,14 +345,26 @@ class FileSpool:
         if not isinstance(content, dict) or content.get("version") != 1 or not isinstance(content.get("events"), list):
             raise ValueError(f"暂存批次格式错误：{path.name}")
         for event in content["events"]:
-            if not isinstance(event, dict) or event.get("kind") not in {"tick", "orderbook"}:
+            if not isinstance(event, dict) or event.get("kind") not in {
+                "tick", "orderbook", "kline", "orderflow_surge", "price_candidate",
+            }:
                 raise ValueError(f"暂存事件类型错误：{path.name}")
             if event.get("market") not in {"spot", "futures"} or not isinstance(event.get("pair"), str):
                 raise ValueError(f"暂存事件市场或交易对错误：{path.name}")
             row = event.get("row")
-            required = {"trade_id", "timestamp", "price", "quantity", "buyer_maker"} if event["kind"] == "tick" else {"timestamp", "last_update_id", "bids", "asks"}
+            required = {
+                "tick": {"trade_id", "timestamp", "price", "quantity", "buyer_maker"},
+                "orderbook": {"timestamp", "last_update_id", "bids", "asks"},
+                "kline": {"timestamp", "open", "high", "low", "close", "volume", "extras"},
+                "orderflow_surge": {"event_id", "observation", "method_version", "data_fingerprint"},
+                "price_candidate": {"event_id", "observation", "method_version", "data_fingerprint"},
+            }[event["kind"]]
             if not isinstance(row, dict) or not required.issubset(row):
                 raise ValueError(f"暂存事件字段缺失：{path.name}")
+            if event["kind"] == "kline" and event.get("timeframe") != "5m":
+                raise ValueError(f"暂存 K 线周期错误：{path.name}")
+            if event["kind"] in {"orderflow_surge", "price_candidate"} and not isinstance(row["observation"], dict):
+                raise ValueError(f"暂存订单流观测格式错误：{path.name}")
         return content["events"]
 
     def quarantine(self, path: Path) -> Path:
@@ -261,8 +391,12 @@ class FileSpool:
 
 
 class MarketCollector:
-    def __init__(self, config: StreamConfig, store: Any):
+    def __init__(self, config: StreamConfig, store: Any,
+                 surge_detector: VolumeSurgeDetector | None = None,
+                 *, maturity_store_factory: Any | None = None):
         self.config, self.store = config, store
+        self.maturity_worker = (OrderflowMaturityWorker(maturity_store_factory)
+                                if maturity_store_factory is not None else None)
         self.spool = FileSpool(config.spool_dir)
         self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=config.queue_size)
         self.stop = asyncio.Event()
@@ -282,6 +416,109 @@ class MarketCollector:
         self._retry_at = 0.0
         self._failure_streak = 0
         self._status_lock = asyncio.Lock()
+        self.surge_detector = surge_detector or VolumeSurgeDetector()
+        self.status.update({
+            "surge_observed": 0, "surge_persisted": 0, "surge_pending": 0,
+            "surge_failures": 0, "surge_dropped": 0, "surge_last_error": None,
+            "price_candidate_observed": 0, "price_candidate_persisted": 0,
+            "price_candidate_pending": 0, "price_candidate_failures": 0,
+            "price_candidate_dropped": 0, "price_candidate_last_error": None,
+            "surge_warmup": {
+                pair: {**self.surge_detector.warmup_status(pair, market=config.market),
+                       "source": None}
+                for pair in config.pairs
+            },
+        })
+
+    @staticmethod
+    def _surge_observation(event: dict[str, Any]) -> dict[str, Any]:
+        """Adapt detector envelopes to DataStore's flat observation contract."""
+        observation = event.get("observation")
+        if not isinstance(observation, dict):
+            raise ValueError("突增检测器事件缺少 observation")
+        result = dict(observation)
+        result.update({key: event[key] for key in (
+            "event_id", "event_type", "method_version", "data_fingerprint",
+            "market", "pair", "timeframe", "observed_at", "status",
+        ) if key in event})
+        result["threshold_level"] = result.pop("threshold_band", result.get("threshold_level"))
+        result["threshold_multiple"] = result.pop("threshold", result.get("threshold_multiple"))
+        return result
+
+    async def seed_surge_detector(self) -> None:
+        """Warm from this collector's own durable closed Binance 5m candles."""
+        getter = getattr(self.store, "get_candles", None)
+        reader = getattr(self.store, "read_orderflow_surges", None)
+        list_observations = getattr(self.store, "list_surge_observations", None)
+        now_ms = int(time.time() * 1000)
+        for pair in self.config.pairs:
+            try:
+                if callable(getter):
+                    history: dict[int, tuple[Any, str]] = {}
+                    rows = await asyncio.to_thread(
+                        getter, "binance", self.config.market, pair, "5m",
+                        self.config.market, self.surge_detector.window_size + 1,
+                    )
+                    for row in rows or []:
+                        if not isinstance(row, dict):
+                            continue
+                        extras = row.get("extras")
+                        if (not isinstance(extras, dict)
+                                or extras.get("closed") is not True
+                                or extras.get("live_event_timestamp") is None):
+                            continue
+                        try:
+                            timestamp = _nonnegative_int(row.get("timestamp"))
+                        except (TypeError, ValueError, OverflowError):
+                            continue
+                        if timestamp + 300_000 > now_ms:
+                            continue
+                        quote_volume = extras.get("quote_volume", row.get("quote_volume"))
+                        if quote_volume is not None:
+                            history[timestamp] = (
+                                quote_volume, "binance_websocket_closed_kline",
+                            )
+                    if history:
+                        ordered = sorted(history.items())
+                        suffix: list[tuple[int, Any, str]] = []
+                        for timestamp, (volume, source) in reversed(ordered):
+                            if suffix and suffix[-1][0] - timestamp != 300_000:
+                                break
+                            suffix.append((timestamp, volume, source))
+                        suffix.reverse()
+                        ordered = [(timestamp, volume) for timestamp, volume, _ in suffix]
+                        ordered = ordered[-self.surge_detector.window_size:]
+                        self.surge_detector.seed(
+                            pair, [volume for _, volume in ordered], market=self.config.market,
+                            timestamps=[timestamp for timestamp, _ in ordered],
+                        )
+                        sources = {source for _, _, source in suffix[-len(ordered):]} if ordered else set()
+                        self.status["surge_warmup"][pair] = {
+                            **self.surge_detector.warmup_status(pair, market=self.config.market),
+                            "source": next(iter(sources)) if len(sources) == 1 else (
+                                "mixed" if sources else None
+                            ),
+                        }
+                if callable(reader):
+                    persisted = await asyncio.to_thread(
+                        reader, market=self.config.market, pair=pair, timeframe="5m",
+                        limit=self.surge_detector.window_size,
+                    )
+                elif callable(list_observations):
+                    persisted = await asyncio.to_thread(
+                        list_observations, pair, "5m", None, self.surge_detector.window_size,
+                    )
+                else:
+                    persisted = []
+                self.surge_detector.restore_event_ids(
+                    row["event_id"] for row in persisted or []
+                    if isinstance(row, dict) and isinstance(row.get("event_id"), str)
+                    and row.get("market", self.config.market) == self.config.market
+                )
+            except Exception as exc:
+                # A cold detector is safe; make the missing warm-up visible.
+                self.status["surge_last_error"] = str(exc)
+                self.record_error(f"突增检测器历史预热失败：{exc}")
 
     def record_error(self, error: Exception | str) -> None:
         self.status["last_error"] = str(error)
@@ -314,6 +551,61 @@ class MarketCollector:
             return
         self.status["received"] += 1
         self.status["last_message"] = received_ms
+        if event["kind"] == "kline":
+            surge = None
+            candidate = None
+            try:
+                surge = self.surge_detector.process(
+                    event["pair"], event["timeframe"], event["candle"],
+                    market=event["market"], source_timestamp=event["source_timestamp"],
+                )
+                candidate = getattr(self.surge_detector, "last_candidate", None)
+                self.status["surge_warmup"][event["pair"]] = {
+                    **self.surge_detector.warmup_status(
+                        event["pair"], market=event["market"]
+                    ),
+                    "source": self.status["surge_warmup"][event["pair"]].get("source"),
+                }
+            except Exception as exc:
+                self.status["surge_last_error"] = str(exc)
+                self.record_error(f"突增检测器处理失败：{exc}")
+            # Closed 5m candles and observations are low-frequency facts.  Save
+            # them together before returning, so a process crash cannot lose
+            # the observation after the detector marks its ID as emitted.
+            extras = event["row"]["extras"]
+            extras.update({key: value for key, value in event["candle"].items()
+                           if key not in {"timestamp", "open", "high", "low", "close", "volume"}})
+            extras["live_event_timestamp"] = extras["exchange_event_timestamp"]
+            batch = [event]
+            if candidate is not None:
+                batch.append({"kind": "price_candidate", "market": event["market"],
+                              "pair": event["pair"], "timeframe": "5m", "row": candidate})
+                self.status["price_candidate_observed"] += 1
+                self.status["price_candidate_pending"] += 1
+            if surge is not None:
+                batch.append({"kind": "orderflow_surge", "market": event["market"],
+                              "pair": event["pair"], "timeframe": "5m", "row": surge})
+                self.status["surge_observed"] += 1
+                # Count before spooling so a concurrent writer cannot acknowledge
+                # the batch before the pending metric is visible.
+                self.status["surge_pending"] += 1
+            try:
+                await self.persist_batch(batch)
+            except OSError as exc:
+                self.status["dropped"] += len(batch)
+                self.status["surge_dropped"] += int(surge is not None)
+                self.status["surge_pending"] = max(
+                    0, self.status["surge_pending"] - int(surge is not None)
+                )
+                self.status["price_candidate_dropped"] += int(candidate is not None)
+                self.status["price_candidate_pending"] = max(
+                    0, self.status["price_candidate_pending"] - int(candidate is not None)
+                )
+                self.status["state"] = "storage_error"
+                self.record_error(f"收盘 K 线与在线订单流观测暂存失败，停止采集：{exc}")
+                self.stop.set()
+                raise
+            return
         try:
             self.queue.put_nowait(event)
         except asyncio.QueueFull:
@@ -337,8 +629,42 @@ class MarketCollector:
         for event in events:
             groups[(event["kind"], event["market"], event["pair"])].append(event["row"])
         for (kind, market, pair), rows in groups.items():
-            method = self.store.upsert_ticks if kind == "tick" else self.store.insert_orderbooks
-            method("binance", market, pair, rows)
+            if kind == "kline":
+                self.store.upsert_candles(
+                    "binance", market, pair, "5m", market, rows,
+                    source_key="live:binance-ws-klines",
+                )
+            elif kind == "orderflow_surge":
+                append = getattr(self.store, "append_orderflow_surge", None)
+                for event in rows:
+                    try:
+                        if callable(append):
+                            append(event)
+                        else:
+                            self.store.insert_surge_observation(self._surge_observation(event))
+                    except Exception as exc:
+                        self.status["surge_failures"] += 1
+                        self.status["surge_last_error"] = str(exc)
+                        raise
+            elif kind == "price_candidate":
+                append = getattr(self.store, "append_price_candidate", None)
+                if not callable(append):
+                    raise RuntimeError("DataStore 缺少 append_price_candidate")
+                for event in rows:
+                    try:
+                        append(event)
+                    except Exception as exc:
+                        self.status["price_candidate_failures"] += 1
+                        self.status["price_candidate_last_error"] = str(exc)
+                        raise
+            else:
+                method = self.store.upsert_ticks if kind == "tick" else self.store.insert_orderbooks
+                method("binance", market, pair, rows)
+        maturity_worker = getattr(self, "maturity_worker", None)
+        if maturity_worker is not None and any(event["kind"] in {
+            "kline", "orderflow_surge", "price_candidate",
+        } for event in events):
+            maturity_worker.notify()
 
     async def flush_spool(self) -> bool:
         if time.monotonic() < self._retry_at:
@@ -349,7 +675,13 @@ class MarketCollector:
         path = pending[0]
         try:
             events = await asyncio.to_thread(self.spool.load, path)
-        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        except OSError as exc:
+            # 临时读取故障不代表内容损坏，保留原批次供存储恢复后重播。
+            self.status["state"] = "storage_error"
+            self.record_error(f"暂存批次读取失败，保留原文件并停止采集：{exc}")
+            self.stop.set()
+            raise
+        except (UnicodeError, ValueError, TypeError) as exc:
             # 中断写入产生的残缺 tmp 不能永久堵住整个队列；原文件隔离保留。
             isolated = await asyncio.to_thread(self.spool.quarantine, path)
             self.status["quarantined_batches"] += 1
@@ -362,21 +694,42 @@ class MarketCollector:
         self.status["inflight"] = len(events)
         try:
             # psycopg 是同步接口，放在线程中，不阻塞 WebSocket 的收包循环。
-            await asyncio.to_thread(self._write, events)
-            await asyncio.to_thread(self.spool.acknowledge, path)
-        except Exception as exc:
-            self._failure_streak += 1
-            self._retry_at = time.monotonic() + min(self.config.retry_max, 2 ** min(self._failure_streak - 1, 10))
-            self.status["database_failures"] += 1
-            self.status["database_error"] = str(exc)
-            self.record_error(f"写入失败，批次保留并退避重试：{exc}")
-            return False
+            try:
+                await asyncio.to_thread(self._write, events)
+            except Exception as exc:
+                self._failure_streak += 1
+                self._retry_at = time.monotonic() + min(self.config.retry_max, 2 ** min(self._failure_streak - 1, 10))
+                self.status["database_failures"] += 1
+                self.status["database_error"] = str(exc)
+                self.record_error(f"写入失败，批次保留并退避重试：{exc}")
+                return False
+            try:
+                await asyncio.to_thread(self.spool.acknowledge, path)
+            except OSError as exc:
+                # 数据库已经提交；删除或目录 fsync 失败属于暂存盘故障。
+                # unlink 后 fsync 失败时文件可能已消失，不能声称批次仍保留。
+                self.status["state"] = "storage_error"
+                self.record_error(f"已提交批次的暂存确认失败，停止采集：{exc}")
+                self.stop.set()
+                raise
         finally:
             self.status["inflight"] = 0
         self._failure_streak = 0
         self._retry_at = 0.0
         self.status["persisted"] += len(events)
         self.status["replayed"] += len(events)
+        surges = sum(event["kind"] == "orderflow_surge" for event in events)
+        candidates = sum(event["kind"] == "price_candidate" for event in events)
+        self.status["surge_persisted"] += surges
+        self.status["surge_pending"] = max(0, self.status["surge_pending"] - surges)
+        if surges:
+            self.status["surge_last_error"] = None
+        self.status["price_candidate_persisted"] += candidates
+        self.status["price_candidate_pending"] = max(
+            0, self.status["price_candidate_pending"] - candidates
+        )
+        if candidates:
+            self.status["price_candidate_last_error"] = None
         self.status["last_flush"] = int(time.time() * 1000)
         self.status["database_error"] = None
         return True
@@ -429,9 +782,14 @@ class MarketCollector:
             if remaining:
                 try:
                     await self.persist_batch(remaining)
-                except OSError as exc:
+                except Exception as exc:
                     self.status["dropped"] += len(remaining)
                     self.record_error(f"关闭时仍有 {len(remaining)} 条消息未能落盘：{exc}")
+                finally:
+                    # queue.get() removes an item even when persistence fails;
+                    # acknowledge each removal so queue.join() cannot hang.
+                    for _ in remaining:
+                        self.queue.task_done()
             self.status["buffer_length"] = 0
 
     async def publish_status(self) -> None:
@@ -441,6 +799,7 @@ class MarketCollector:
 
     async def _publish_status(self) -> None:
         corrupt = await asyncio.to_thread(self.spool.corrupt_files)
+        disk_capacity = await asyncio.to_thread(_disk_capacity, self.config.spool_dir, self.config)
         self.status["corrupt_batches"] = len(corrupt)
         if corrupt:
             self.status["storage_warning"] = "暂存批次损坏已隔离保留，部分行情可能缺失，需要人工检查 .corrupt 文件"
@@ -448,6 +807,11 @@ class MarketCollector:
         self.status["corrupt_files"] = [path.name for path in corrupt[:100]]
         self.status["corrupt_file_list_truncated"] = len(corrupt) > 100
         snapshot = dict(self.status)
+        snapshot["orderflow_maturity"] = {
+            "enabled": self.maturity_worker is not None,
+            **(self.maturity_worker.status if self.maturity_worker is not None else {}),
+        }
+        snapshot.update(disk_capacity)
         snapshot["queue_length"] = self.queue.qsize()
         pending = await asyncio.to_thread(self.spool.pending)
         snapshot["spool_batches"] = len(pending)
@@ -459,6 +823,7 @@ class MarketCollector:
             temporary.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(temporary, path)
         await asyncio.to_thread(write_status)
+        self.status.update(disk_capacity)
         try:
             await asyncio.to_thread(self.store.put_document, "market_stream_status.json", snapshot)
         except Exception as exc:
@@ -528,26 +893,60 @@ class MarketCollector:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, self.stop.set)
         writer = asyncio.create_task(self.writer(), name="market-writer")
-        status = asyncio.create_task(self.status_loop(), name="market-status")
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=15), trust_env=True) as session:
-            connections = [asyncio.create_task(self.connection(session, name, url), name=f"market-{name}")
-                           for name, url in self.config.connections()]
-            stopped = asyncio.create_task(self.stop.wait())
-            try:
+        status = None
+        connections: list[asyncio.Task[Any]] = []
+        stopped = None
+        try:
+            stopped = asyncio.create_task(self.stop.wait(), name="market-stop")
+            seed_task = asyncio.create_task(self.seed_surge_detector(), name="market-seed")
+            done, _ = await asyncio.wait((seed_task, stopped), return_when=asyncio.FIRST_COMPLETED)
+            if stopped in done:
+                seed_task.cancel()
+                await asyncio.gather(seed_task, return_exceptions=True)
+                return
+            await seed_task
+            if self.maturity_worker is not None:
+                self.maturity_worker.start()
+            status = asyncio.create_task(self.status_loop(), name="market-status")
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=15), trust_env=True) as session:
+                connections = [asyncio.create_task(self.connection(session, name, url), name=f"market-{name}")
+                               for name, url in self.config.connections()]
                 done, _ = await asyncio.wait([stopped, writer, status], return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
                     if task is not stopped:
                         task.result()
-            finally:
-                self.stop.set()
-                for task in connections:
+        finally:
+            self.stop.set()
+            for task in connections:
+                if not task.done():
                     task.cancel()
-                await asyncio.gather(*connections, return_exceptions=True)
-                await asyncio.gather(writer, status, return_exceptions=True)
+            await asyncio.gather(*connections, return_exceptions=True)
+            if stopped is not None and not stopped.done():
                 stopped.cancel()
-                if self.status["state"] != "storage_error":
-                    self.status["state"] = "stopped"
+                await asyncio.gather(stopped, return_exceptions=True)
+            workers = [task for task in (writer, status) if task is not None]
+            if workers:
+                await asyncio.gather(
+                    asyncio.wait_for(asyncio.gather(*workers, return_exceptions=True),
+                                     timeout=self.config.shutdown_timeout),
+                    return_exceptions=True,
+                )
+            if self.maturity_worker is not None:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(self.maturity_worker.close),
+                        timeout=self.config.shutdown_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    self.status["state"] = "storage_error"
+                    self.record_error("订单流成熟度 worker 关闭超时")
+            if self.status["state"] != "storage_error":
+                self.status["state"] = "stopped"
+            try:
                 await self.publish_status()
+            except OSError as exc:
+                self.status["state"] = "storage_error"
+                self.record_error(f"最终状态写入失败：{exc}")
 
 
 def parse_config(argv: list[str] | None = None) -> StreamConfig:
@@ -555,10 +954,22 @@ def parse_config(argv: list[str] | None = None) -> StreamConfig:
     parser.add_argument("--market", choices=("futures", "spot"), default=os.getenv("QUANT_STREAM_MARKET", "futures"))
     parser.add_argument("--pairs", default=os.getenv("QUANT_STREAM_PAIRS", "BTC/USDT,ETH/USDT"), help="逗号分隔交易对")
     parser.add_argument("--spool-dir", type=Path, default=Path(os.getenv("QUANT_STREAM_SPOOL_DIR", str(ROOT / "database/runtime/market_spool"))))
+    parser.add_argument("--disk-warning-pct", type=float, default=float(os.getenv("QUANT_STREAM_DISK_WARNING_PCT", "15")),
+                        help="磁盘剩余百分比低于此值时告警")
+    parser.add_argument("--disk-critical-pct", type=float, default=float(os.getenv("QUANT_STREAM_DISK_CRITICAL_PCT", "5")),
+                        help="磁盘剩余百分比低于此值时进入临界告警")
+    parser.add_argument("--disk-warning-bytes", type=int, default=int(os.getenv("QUANT_STREAM_DISK_WARNING_BYTES", "0")),
+                        help="磁盘剩余字节低于此值时告警，0 表示不启用")
+    parser.add_argument("--disk-critical-bytes", type=int, default=int(os.getenv("QUANT_STREAM_DISK_CRITICAL_BYTES", "0")),
+                        help="磁盘剩余字节低于此值时进入临界告警，0 表示不启用")
     arguments = parser.parse_args(argv)
     pairs = tuple(dict.fromkeys(normalize_pair(pair, arguments.market) for pair in arguments.pairs.split(",") if pair.strip()))
     return StreamConfig(pairs=pairs, market=arguments.market, spool_dir=arguments.spool_dir,
-                        enabled=os.getenv("QUANT_STREAM_ENABLED", "true").lower() not in {"false", "0", "no"})
+                        enabled=os.getenv("QUANT_STREAM_ENABLED", "true").lower() not in {"false", "0", "no"},
+                        disk_warning_pct=arguments.disk_warning_pct,
+                        disk_critical_pct=arguments.disk_critical_pct,
+                        disk_warning_bytes=arguments.disk_warning_bytes,
+                        disk_critical_bytes=arguments.disk_critical_bytes)
 
 
 def main() -> int:
@@ -571,15 +982,20 @@ def main() -> int:
         return 0
     from data_store import DataStore
     store = DataStore()
-    collector = MarketCollector(config, store)
+    collector = None
     try:
+        collector = MarketCollector(config, store,
+                                    maturity_store_factory=lambda: DataStore(max_connections=1))
         asyncio.run(collector.run())
     except CollectorAlreadyRunning as exc:
         LOG.error("%s", exc)
         return 2
+    except OSError as exc:
+        LOG.error("行情采集存储不可用：%s", exc)
+        return 1
     finally:
         store.close()
-    return 1 if collector.status["state"] == "storage_error" else 0
+    return 1 if collector is not None and collector.status["state"] == "storage_error" else 0
 
 
 if __name__ == "__main__":

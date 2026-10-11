@@ -101,6 +101,22 @@ class DataStoreIntegrationTests(unittest.TestCase):
         self.store.upsert_candles("binance", "futures", pair, "1m", "futures", [self.candle(2000)])
         self.assertEqual(self.summary(pair), {"rows": 3, "first_timestamp": 1000, "last_timestamp": 3000})
 
+    def test_historical_missing_close_flag_can_be_added_without_live_version(self):
+        pair = self.key("historical-close-marker")
+        original = self.candle(0)
+        original["extras"] = {"quote_volume": 1000.0, "taker_buy_base": 4.0}
+        identity = ("binance", "futures", pair, "5m", "futures")
+        self.store.upsert_candles(*identity, [original], source_key="trusted.feather")
+        final = {**original, "extras": {**original["extras"], "closed": True}}
+        self.assertEqual(self.store.upsert_candles(*identity, [final],
+                                                 source_key="trusted.feather"), 1)
+        stored = self.store.get_candles(*identity, limit=1)[0]
+        self.assertEqual(stored["extras"], final["extras"])
+        self.assertEqual(stored["close"], original["close"])
+        # An old unmarked import must not subsequently reopen the final row.
+        self.assertEqual(self.store.upsert_candles(*identity, [original]), 0)
+        self.assertTrue(self.store.get_candles(*identity, limit=1)[0]["extras"]["closed"])
+
     def test_live_candle_versions_guard_late_snapshots_and_accept_new_reconciliation(self):
         pair = self.key("versions")
         def row(price, event=None, snapshot=None, closed=False):
@@ -124,6 +140,73 @@ class DataStoreIntegrationTests(unittest.TestCase):
         self.assertEqual(write([row(125, event=2100)]), 0)
         self.assertEqual(latest_price(), 130)
         self.assertEqual(self.summary(pair), {"rows": 1, "first_timestamp": 1000, "last_timestamp": 1000})
+
+    def test_closed_websocket_orderflow_evidence_survives_later_rest_snapshot(self):
+        pair = self.key("closed-ws-evidence")
+        original = self.candle(1000, 101)
+        original["extras"] = {
+            "closed": True, "live_event_timestamp": 2000,
+            "quote_volume": 1000, "num_trades": 8,
+            "taker_buy_quote": 600, "flow_imbal": .2,
+            "raw": {"e": "kline", "E": 2000},
+        }
+        def write(rows):
+            return self.store.upsert_candles(
+                "binance", "futures", pair, "1m", "futures", rows)
+        write([original])
+        for closed in (False, True):
+            snapshot = self.candle(1000, 90)
+            snapshot["extras"] = {"closed": closed, "live_snapshot_timestamp": 9000}
+            self.assertEqual(write([snapshot]), 0)
+            actual = self.store.get_candles("binance", "futures", pair, "1m")[0]
+            self.assertEqual(actual["close"], original["close"])
+            self.assertEqual(actual["extras"], original["extras"])
+
+        # A real later exchange correction replaces the fact atomically,
+        # including its order-flow evidence; REST time never becomes its version.
+        corrected = self.candle(1000, 102)
+        corrected["extras"] = {**original["extras"], "live_event_timestamp": 2100,
+                               "quote_volume": 1200, "num_trades": 9}
+        self.assertEqual(write([corrected]), 1)
+        actual = self.store.get_candles("binance", "futures", pair, "1m")[0]
+        self.assertEqual(actual["close"], 102)
+        self.assertEqual(actual["extras"], corrected["extras"])
+
+    def test_websocket_final_close_replaces_rest_without_allowing_reopening(self):
+        pair = self.key("ws-final-close")
+        snapshot = self.candle(1000, 90)
+        snapshot["extras"] = {"closed": False, "live_snapshot_timestamp": 9000}
+        final = self.candle(1000, 101)
+        final["extras"] = {"closed": True, "live_event_timestamp": 2000,
+                           "quote_volume": 1000}
+        def write(rows):
+            return self.store.upsert_candles(
+                "binance", "futures", pair, "1m", "futures", rows)
+        write([snapshot])
+        self.assertEqual(write([final]), 1)
+        reopened = self.candle(1000, 95)
+        reopened["extras"] = {"closed": False, "live_event_timestamp": 10_000}
+        self.assertEqual(write([reopened]), 0)
+        actual = self.store.get_candles("binance", "futures", pair, "1m")[0]
+        self.assertEqual(actual["close"], 101)
+        self.assertEqual(actual["extras"], final["extras"])
+
+    def test_duplicate_candle_batch_prefers_closed_websocket_over_rest_time(self):
+        for reverse in (False, True):
+            pair = self.key("batch-closed-ws")
+            original = self.candle(1000, 101)
+            original["extras"] = {"closed": True, "live_event_timestamp": 2000,
+                                  "quote_volume": 1000}
+            snapshot = self.candle(1000, 90)
+            snapshot["extras"] = {"closed": True, "live_snapshot_timestamp": 9000}
+            rows = [original, snapshot]
+            if reverse:
+                rows.reverse()
+            self.assertEqual(self.store.upsert_candles(
+                "binance", "futures", pair, "1m", "futures", rows), 1)
+            actual = self.store.get_candles("binance", "futures", pair, "1m")[0]
+            self.assertEqual(actual["close"], 101)
+            self.assertEqual(actual["extras"], original["extras"])
 
     def test_multitable_snapshot_rolls_back_and_removes_deleted_tables(self):
         source = self.key("snapshot")

@@ -54,6 +54,30 @@ function visibleChallengers(list: any[]) {
   return verExpanded.value ? list : list.slice(-CAND_PREVIEW);
 }
 const loading = ref(false);
+const refreshing = ref(false);
+const loadErrors = ref<Record<string, string>>({});
+
+const requestWarnings = computed(() =>
+  Object.entries(loadErrors.value).map(([source, detail]) => ({ source, detail })),
+);
+
+function checkedSnapshot(snapshot: any, required: string[], source: string) {
+  if (
+    !snapshot ||
+    typeof snapshot !== 'object' ||
+    Array.isArray(snapshot) ||
+    required.some((key) => !snapshot[key] || typeof snapshot[key] !== 'object')
+  ) {
+    throw new Error(`${source}格式不完整，无法展示`);
+  }
+  return snapshot;
+}
+
+function fmt(value: unknown, digits = 2) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toFixed(digits)
+    : '未知';
+}
 
 /* ── 模型版本管理（正在使用 vs 最新迭代）── */
 const ver = ref<any>(null);
@@ -167,9 +191,11 @@ const universeStaticRows = computed<any[]>(() => {
   const uc = u?.universe_comparison;
   if (!uc) return [];
   return [
-    { label: '静态 20（当前名单·有偏差）', ...uc.static20_ins },
-    { label: '静态 21（无偏差·同期）', ...uc.static21_ins },
-  ];
+    ['静态 20（当前名单·有偏差）', uc.static20_ins],
+    ['静态 21（无偏差·同期）', uc.static21_ins],
+  ]
+    .filter(([, result]) => result && typeof result === 'object')
+    .map(([label, result]) => ({ label, ...result }));
 });
 /** 时点选池序列是否单调（非单调 = 噪声） */
 const pitMonotonic = computed(() => {
@@ -316,14 +342,41 @@ async function doPromote() {
 }
 
 async function load() {
+  if (refreshing.value) return;
+  refreshing.value = true;
   // 只有首屏显示 Spin；轮询刷新时静默，避免每 60 秒闪一次
   if (!it.value) loading.value = true;
   try {
-    it.value = await getIteration();
-    ml.value = await getMlStatus().catch(() => null);
-    ver.value = await getModelVersions().catch(() => null);
+    const results = await Promise.allSettled([
+      getIteration().then((snapshot) =>
+        checkedSnapshot(snapshot, ['conclusion'], '迭代汇总'),
+      ),
+      getMlStatus().then((snapshot) =>
+        checkedSnapshot(snapshot, ['conclusion'], '深度学习记录'),
+      ),
+      getModelVersions().then((snapshot) =>
+        checkedSnapshot(snapshot, ['layers'], '模型版本登记'),
+      ),
+    ]);
+    const sources = [
+      { name: '迭代汇总', target: it },
+      { name: '深度学习记录', target: ml },
+      { name: '模型版本登记', target: ver },
+    ];
+    const errors: Record<string, string> = {};
+    results.forEach((result, index) => {
+      const source = sources[index]!;
+      if (result.status === 'fulfilled') {
+        source.target.value = result.value;
+      } else {
+        errors[source.name] = result.reason?.message || '暂时无法读取，请重试';
+      }
+    });
+    loadErrors.value = errors;
+    if (!it.value && ml.value) tab.value = 'dl';
   } finally {
     loading.value = false;
+    refreshing.value = false;
   }
 }
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -339,6 +392,18 @@ onUnmounted(() => {
 <template>
   <div class="p-4">
     <ResearchLedger />
+    <div class="mb-3 flex justify-end">
+      <Button :loading="refreshing" size="small" @click="load">刷新迭代数据</Button>
+    </div>
+    <Alert
+      v-for="warning in requestWarnings"
+      :key="warning.source"
+      class="mb-3"
+      type="warning"
+      show-icon
+      :message="`${warning.source}读取失败`"
+      :description="`${warning.detail}；其他数据源独立加载，已显示的该来源内容保留上一次成功快照。`"
+    />
     <Spin :spinning="loading">
       <!-- ══════════ 版本登记：优选记录与实际部署分开 ══════════ -->
       <Card v-if="ver" :bordered="false" class="shadow-sm">
@@ -406,8 +471,7 @@ onUnmounted(() => {
                   v-if="!l.challengers?.length"
                   class="text-xs text-muted-foreground"
                 >
-                  暂无候选 —— 运行
-                  <code class="mx-1">python bot/auto_research.py</code> 自动产出
+                  暂无候选记录
                 </div>
                 <div
                   v-for="c in visibleChallengers(l.challengers)"
@@ -613,12 +677,12 @@ onUnmounted(() => {
         </div>
       </Modal>
 
-      <div v-if="!it" class="py-16 text-center text-muted-foreground">
-        暂无迭代数据 —— 运行
-        <code class="mx-1">python build_iteration.py</code> 生成
-      </div>
+      <Empty
+        v-if="!it && !loading && !loadErrors['迭代汇总']"
+        description="暂无迭代汇总记录"
+      />
 
-      <template v-else>
+      <template v-if="it || ml">
         <Alert
           class="mb-3"
           type="warning"
@@ -628,12 +692,12 @@ onUnmounted(() => {
         />
         <Tabs v-model:activeKey="tab" size="small">
           <!-- 顶部结论 -->
-          <TabPane key="result" tab="迭代结果">
+          <TabPane v-if="it" key="result" tab="迭代结果">
             <Card :bordered="false" class="shadow-sm">
               <div class="flex flex-wrap items-center gap-3">
                 <Tag color="blue" class="!px-3 !py-1 text-sm">核心改进</Tag>
                 <span class="text-base font-semibold">{{
-                  it.conclusion.key_improvement
+                  it.conclusion?.key_improvement ?? '暂无结论'
                 }}</span>
                 <span class="text-xs text-muted-foreground">
                   池 {{ it.universe_size }} 币 · 生成 {{ it.generated_at }}
@@ -642,7 +706,7 @@ onUnmounted(() => {
               <ul
                 class="mt-2 list-inside list-disc text-xs text-muted-foreground"
               >
-                <li v-for="(e, i) in it.conclusion.evidence" :key="i">
+                <li v-for="(e, i) in it.conclusion?.evidence ?? []" :key="i">
                   {{ e }}
                 </li>
               </ul>
@@ -772,6 +836,9 @@ onUnmounted(() => {
                       {{ record.pos_years }}/{{ record.n_years }}
                     </template>
                   </template>
+            <template #emptyText>
+              <div class="py-6 text-center text-xs text-gray-400">暂无 trial 记录</div>
+            </template>
                 </Table>
               </Card>
 
@@ -895,7 +962,7 @@ onUnmounted(() => {
           </TabPane>
 
           <!-- 参数优化（走查 96 组网格） -->
-          <TabPane key="param" tab="参数与风险">
+          <TabPane v-if="it" key="param" tab="参数与风险">
             <Card
               v-if="it.optimization"
               :bordered="false"
@@ -1043,7 +1110,7 @@ onUnmounted(() => {
                     ]"
                     :data-source="it.optimization.top_oos"
                     :pagination="false"
-                    row-key="cfg"
+                    :row-key="(record: any) => `${record.entry}-${record.exit}-${record.top_n}`"
                     size="small"
                   >
                     <template #bodyCell="{ column, record }">
@@ -1081,7 +1148,7 @@ onUnmounted(() => {
 
             <!-- 幸存者偏差 -->
             <Card
-              v-if="it.universe"
+              v-if="it.universe?.universe_comparison?.static20_ins && it.universe?.universe_comparison?.static21_ins"
               :bordered="false"
               class="mt-4 shadow-sm"
               title="⚠️ 幸存者偏差量化"
@@ -1314,7 +1381,7 @@ onUnmounted(() => {
           </TabPane>
 
           <!-- 深度学习迭代 -->
-          <TabPane key="dl" tab="深度学习">
+          <TabPane v-if="ml" key="dl" tab="深度学习">
             <Card
               v-if="ml"
               :bordered="false"
@@ -1389,7 +1456,7 @@ onUnmounted(() => {
                       状态组（已做多重比较校正）
                     </div>
                     <div class="mt-1 text-lg font-semibold">
-                      {{ ml.regime_groups.length }}
+                      {{ regimeTotal }}
                     </div>
                     <div class="text-[11px] text-muted-foreground">
                       {{ regimePassed }} /
@@ -1437,10 +1504,10 @@ onUnmounted(() => {
                         class="mt-0.5 font-mono text-sm font-semibold"
                         :class="v.t_period > 2 ? 'text-emerald-600' : ''"
                       >
-                        IC {{ v.ic_period.toFixed(4) }}
+                        IC {{ fmt(v.ic_period, 4) }}
                       </div>
                       <div class="text-[11px] text-muted-foreground">
-                        t={{ v.t_period.toFixed(2) }} · 正窗口
+                        t={{ fmt(v.t_period) }} · 正窗口
                         {{ v.pos_windows }}/{{ v.n_windows }}
                       </div>
                     </div>
@@ -1458,7 +1525,7 @@ onUnmounted(() => {
                   ⭐ 逐窗口（非池化）口径下 t 最高的序列模型：{{
                     String(bestSeq.name).toUpperCase()
                   }}
-                  t={{ Number(bestSeq.t_period).toFixed(2) }} · 正窗口
+                  t={{ fmt(bestSeq.t_period) }} · 正窗口
                   {{ bestSeq.pos_windows }}/{{ bestSeq.n_windows }}
                 </div>
               </div>
@@ -1531,7 +1598,7 @@ onUnmounted(() => {
           </TabPane>
 
           <!-- 判据 -->
-          <TabPane key="ref" tab="参考">
+          <TabPane v-if="it" key="ref" tab="参考">
             <Card
               :bordered="false"
               class="mt-4 shadow-sm"
@@ -1542,7 +1609,7 @@ onUnmounted(() => {
                   为什么用 Calmar / 年化波动比，而不是 Sharpe
                 </div>
                 <ul class="mt-1 list-inside list-disc space-y-0.5">
-                  <li v-for="(c, i) in it.conclusion.caveats" :key="i">
+                  <li v-for="(c, i) in it.conclusion?.caveats ?? []" :key="i">
                     {{ c }}
                   </li>
                 </ul>

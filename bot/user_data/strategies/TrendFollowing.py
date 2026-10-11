@@ -8,7 +8,7 @@ v1  纯 Donchian 突破，全部币等权 + ATR 风险仓位
 
 v2  本版本 —— 走查验证后的两项改进
     ① 【突破强度选币】只做突破幅度最大的 top_n 个币
-    ② 【固定分数仓位】每笔 = 总资金 × 目标敞口 / top_n（不再用 ATR 动态定仓）
+    ② 【组合预算仓位】按剩余预算分配，组合 stake 不超过钱包 × 目标敞口
 
 为什么这样改（walkforward.py 实测，55 币 7 年）
 ──────────────────────────────────────────────
@@ -89,6 +89,7 @@ class TrendFollowing(IStrategy):
 
     # 运行门控，不参与策略参数优化；历史回测不等待真实时间。
     _startup_entry_delay_seconds = 30.0
+    _stake_denial_log_interval_seconds = 300.0
 
     def _is_live_mode(self) -> bool:
         mode = self.config.get("runmode")
@@ -100,6 +101,7 @@ class TrendFollowing(IStrategy):
         self._strength_cache_key = None
         self._strength_cache = {}
         self._strength_snapshot = {}
+        self._stake_denial_logs = {}
         self._entry_not_before = (
             monotonic() + self._startup_entry_delay_seconds if self._is_live_mode() else None
         )
@@ -393,6 +395,27 @@ class TrendFollowing(IStrategy):
 
     # ══════════════════ 仓位 ══════════════════
 
+    def _log_stake_denial(self, pair, reason, state, message, *args) -> None:
+        # 只缓存日志；钱包、持仓和预算在每次回调中仍重新读取与计算。
+        records = getattr(self, "_stake_denial_logs", None)
+        if records is None:
+            records = self._stake_denial_logs = {}
+        now = monotonic()
+        previous = records.get(pair)
+        if (previous is not None and previous["reason"] == reason
+                and previous["state"] == state
+                and now - previous["logged_at"] < self._stake_denial_log_interval_seconds):
+            previous["suppressed"] += 1
+            return
+        suppressed = previous["suppressed"] if previous else 0
+        logger.info(
+            message + " reason=%s repeated_denials_suppressed=%s log_interval_seconds=%s",
+            *args, reason, suppressed, self._stake_denial_log_interval_seconds,
+        )
+        records[pair] = {
+            "reason": reason, "state": state, "logged_at": now, "suppressed": 0,
+        }
+
     def custom_stake_amount(self, pair: str, current_time, current_rate: float,
                             proposed_stake: float, min_stake, max_stake,
                             leverage: float, entry_tag, side: str, **kwargs) -> float:
@@ -431,21 +454,28 @@ class TrendFollowing(IStrategy):
                 configured_slots = max(self.top_n.value, 1)
             remaining_slots = max(int(configured_slots) - open_count, 0)
         remaining_budget = max(target_budget - open_stake, 0.0)
+        # 钱包随盈亏浮动不重置限流；持仓或配置改变则立即留下新证据。
+        denial_state = (open_count, open_stake, remaining_slots, self.target_exposure.value)
         if remaining_slots == 0 or remaining_budget <= 0:
-            logger.info(
+            self._log_stake_denial(
+                pair, "slots_exhausted" if remaining_slots == 0 else "budget_exhausted",
+                denial_state,
                 "TrendFollowing stake denied pair=%s open_count=%s open_stake=%.8f "
-                "target_budget=%.8f remaining_slots=%s",
+                "target_budget=%.8f remaining_slots=%s remaining_budget=%.8f",
                 pair, open_count, open_stake, target_budget, remaining_slots,
+                target_budget - open_stake,
             )
             return 0.0
 
         stake = remaining_budget / remaining_slots
         if min_stake and stake < min_stake:
-            logger.info(
+            self._log_stake_denial(
+                pair, "below_exchange_minimum", (*denial_state, min_stake),
                 "TrendFollowing stake below exchange minimum pair=%s stake=%.8f min_stake=%.8f",
                 pair, stake, min_stake,
             )
             return 0.0
         if max_stake:
             stake = min(stake, max_stake)
+        getattr(self, "_stake_denial_logs", {}).pop(pair, None)
         return stake

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import calendar
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -152,6 +153,25 @@ def timestamp_ms(values: Any) -> Any:
     return result.where(dates.notna())
 
 
+def candle_close_timestamp(timestamp: int, timeframe: str) -> int:
+    """Return the UTC close boundary, including calendar-month timeframes."""
+    match = re.fullmatch(r"([1-9]\d*)([smhdwM])", timeframe)
+    if match is None:
+        raise ValueError("不支持的行情周期")
+    count, unit = int(match.group(1)), match.group(2)
+    if unit != "M":
+        milliseconds = {"s": 1000, "m": 60_000, "h": 3_600_000,
+                        "d": 86_400_000, "w": 604_800_000}
+        return timestamp + count * milliseconds[unit]
+    opened = datetime.fromtimestamp(timestamp / 1000, timezone.utc)
+    month_index = opened.year * 12 + opened.month - 1 + count
+    year, month_zero = divmod(month_index, 12)
+    month = month_zero + 1
+    closed = opened.replace(year=year, month=month,
+                            day=min(opened.day, calendar.monthrange(year, month)[1]))
+    return int(closed.timestamp() * 1000)
+
+
 def normalized_frame(frame: Any, funding: bool = False) -> tuple[Any, int]:
     import numpy as np
     import pandas as pd
@@ -205,6 +225,10 @@ class DataSynchronizer:
         self.batch_size = max(1, batch_size)
         self.summary: dict[str, Any] = {}
         self._last_fast_service = time.monotonic()
+        # A full database can prevent recording the failed source fingerprint.
+        # Keep that failure in memory so a daemon retry is not incorrectly skipped
+        # based on an older successful fingerprint.
+        self._failed_sources: set[str] = set()
 
     def _warn(self, message: str) -> None:
         warnings = self.summary.setdefault("warnings", [])
@@ -244,13 +268,53 @@ class DataSynchronizer:
         return path.relative_to(self.root).as_posix()
 
     def _unchanged(self, key: str, stamp: tuple[int, int], force: bool) -> bool:
+        if key in self._failed_sources:
+            return False
         state = self.store.source_state(key)
         return (not force and state is not None and not state.get("error")
                 and (state.get("mtime_ns"), state.get("size")) == stamp)
 
+    def _storage_error(self, operation: str, exc: Exception) -> None:
+        """Record a persistence failure without masking the source failure."""
+        self.summary["storage_errors"] = self.summary.get("storage_errors", 0) + 1
+        self._warn(f"{operation}: {type(exc).__name__}")
+
+    def _save_sync_state(self, state: dict[str, Any] | None = None) -> None:
+        try:
+            self.store.set_sync_state(self.summary if state is None else state)
+        except Exception as exc:
+            # State is best effort: a full database must not abort the scan or
+            # replace a useful source-level error with an uncaught exception.
+            self._storage_error("无法保存同步状态", exc)
+            self.summary["status"] = "error"
+            # The completion timestamp only describes a state that was
+            # durably persisted. Do not report this run as successful when the
+            # final state write failed.
+            self.summary.pop("last_success_at", None)
+
+    def _record_source_error(self, path: Path, key: str, kind: str,
+                             sqlite: bool, original: Exception,
+                             stamp: tuple[int, int] | None) -> None:
+        self._failed_sources.add(key)
+        try:
+            if not path.exists():
+                return
+            error_stamp = stamp or fingerprint(path, sqlite=sqlite)
+        except Exception as exc:
+            self._storage_error("无法读取失败源指纹", exc)
+            return
+        try:
+            self.store.record_source(key, key, kind, error_stamp[0], error_stamp[1], 0,
+                                     error=type(original).__name__)
+        except Exception as exc:
+            # The original exception has already been counted by _run_source;
+            # only account for the additional persistence failure here.
+            self._storage_error("无法记录源错误", exc)
+
     def _run_source(self, path: Path, kind: str, callback: Any, force: bool,
                     sqlite: bool = False) -> None:
         key = self._key(path)
+        stamp: tuple[int, int] | None = None
         try:
             stamp = fingerprint(path, sqlite=sqlite)
             if self._unchanged(key, stamp, force):
@@ -260,15 +324,13 @@ class DataSynchronizer:
             if not sqlite and fingerprint(path) != stamp:
                 raise RuntimeError("源文件在同步期间变化，将于下一轮重试")
             self.store.record_source(key, key, kind, stamp[0], stamp[1], rows)
+            self._failed_sources.discard(key)
             self.summary["files"] += 1
             self.summary["rows"] += rows
         except Exception as exc:
             # 错误消息可能含数据库 DSN 或原始凭据，状态和日志只存异常类别。
             self.summary["errors"] += 1
-            if path.exists():
-                stamp = fingerprint(path, sqlite=sqlite)
-                self.store.record_source(key, key, kind, stamp[0], stamp[1], 0,
-                                         error=type(exc).__name__)
+            self._record_source_error(path, key, kind, sqlite, exc, stamp)
             print(f"[sync] {key}: {type(exc).__name__}", flush=True)
 
     def _document(self, path: Path, key: str) -> int:
@@ -302,11 +364,15 @@ class DataSynchronizer:
         if time.monotonic() - self._last_fast_service >= 5:
             self._fast_sources(False)
             self._last_fast_service = time.monotonic()
-            self.store.set_sync_state({**self.summary, "last_at": utc_now()})
+            self._save_sync_state({**self.summary, "last_at": utc_now()})
 
     def _feather(self, path: Path, key: str) -> int:
         import pandas as pd
 
+        # The source snapshot cannot be newer than its last modification time.
+        # A static file's forming tail must not become final just because the
+        # next synchronization runs after the close boundary.
+        observed_at = min(int(time.time() * 1000), path.stat().st_mtime_ns // 1_000_000)
         exchange, market, pair, timeframe, kind = candle_identity(path, self.user_data / "data")
         frame = pd.read_feather(path)
         total = 0
@@ -356,9 +422,17 @@ class DataSynchronizer:
         for start in range(0, len(frame), self.batch_size):
             rows = []
             for row in frame.iloc[start:start + self.batch_size].to_dict(orient="records"):
+                extras = clean_payload({col: value for col, value in row.items() if col not in columns})
+                # Historical files do not normally carry an exchange close flag.
+                # Infer missing flags at one observation time capped by the source
+                # mtime.  An explicit false is a partial snapshot;
+                # elapsed wall time alone cannot make its OHLCV final.
+                extras["closed"] = (extras.get("closed") is not False
+                                    and candle_close_timestamp(int(row["timestamp"]), timeframe)
+                                    <= observed_at)
                 rows.append({"timestamp": int(row["timestamp"]),
                              **{col: float(row[col]) for col in columns - {"date", "timestamp"}},
-                             "extras": clean_payload({col: value for col, value in row.items() if col not in columns})})
+                             "extras": extras})
             total += self.store.upsert_candles(exchange, market, pair, timeframe, kind, rows, source_key=key)
             self._yield_fast()
         return total
@@ -473,9 +547,10 @@ class DataSynchronizer:
     def run(self, fast: bool = False, force: bool = False) -> dict[str, Any]:
         self.summary = {"status": "running", "running": True, "mode": "fast" if fast else "full",
                         "started_at": utc_now(), "pid": os.getpid(), "files": 0,
-                        "rows": 0, "errors": 0, "skipped": 0, "rejected_rows": 0,
+                        "rows": 0, "errors": 0, "storage_errors": 0, "skipped": 0,
+                        "rejected_rows": 0,
                         "warnings": []}
-        self.store.set_sync_state(self.summary)
+        self._save_sync_state(self.summary)
         data_roots = self._data_roots()
         self._fast_sources(force)
         if not fast:
@@ -503,11 +578,13 @@ class DataSynchronizer:
                             self._run_source(path, "artifact", self._artifact, force)
                         self._yield_fast()
         finished_at = utc_now()
-        self.summary.update(status="error" if self.summary["errors"] else "completed",
+        self.summary.update(status="error" if (self.summary["errors"]
+                                                 or self.summary.get("storage_errors", 0))
+                             else "completed",
                             running=False, finished_at=finished_at, last_at=finished_at)
-        if not self.summary["errors"]:
+        if not self.summary["errors"] and not self.summary.get("storage_errors", 0):
             self.summary["last_success_at"] = finished_at
-        self.store.set_sync_state(self.summary)
+        self._save_sync_state(self.summary)
         return dict(self.summary)
 
 
@@ -546,7 +623,7 @@ def main(argv: list[str] | None = None) -> int:
                     last_full = time.monotonic()
                 print(json.dumps(result, ensure_ascii=False), flush=True)
                 if not args.daemon:
-                    return 1 if result["errors"] else 0
+                    return 1 if result["errors"] or result.get("storage_errors", 0) else 0
                 # 短等待允许信号及时结束；不会阻塞模型和其它服务进程。
                 deadline = started + max(1.0, args.interval)
                 while running:

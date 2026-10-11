@@ -4,6 +4,8 @@
  *
  * 统一用 unwrap() 取响应体 —— 见 client.ts 中的说明。
  */
+import { handleSessionExpired } from '../session';
+
 import {
   errText,
   FT_SERVER_ORIGIN,
@@ -206,6 +208,7 @@ async function fetchRunProgress(): Promise<any | null> {
       },
     );
     if (!res.ok) {
+      if (res.status === 401) await handleSessionExpired(token);
       return null;
     }
     return await res.json();
@@ -237,11 +240,7 @@ export async function getRunProgress(): Promise<any | null> {
  * 与 run_progress.json 同构，另附 trial 账本统计。
  */
 export async function getResearchProgress(): Promise<any | null> {
-  try {
-    return unwrap(await ftClient.get('/locals/research_progress'));
-  } catch {
-    return null;
-  }
+  return unwrap(await ftClient.get('/locals/research_progress'));
 }
 
 /**
@@ -249,11 +248,7 @@ export async function getResearchProgress(): Promise<any | null> {
  * 与 start.sh status 同源：端口探活 + 进程名匹配 + 各服务状态文件
  */
 export async function getServices(): Promise<any | null> {
-  try {
-    return unwrap(await ftClient.get('/locals/services'));
-  } catch {
-    return null;
-  }
+  return unwrap(await ftClient.get('/locals/services'));
 }
 
 /**

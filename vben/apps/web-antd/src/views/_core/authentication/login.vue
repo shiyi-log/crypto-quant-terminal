@@ -7,13 +7,18 @@ import { AuthenticationLogin, z } from '@vben/common-ui';
 import { Alert, Button, Input, message, Space } from 'ant-design-vue';
 
 import { resetPasswordApi } from '#/api/core/auth';
+import { FT_SESSION_EXPIRED_KEY } from '#/api/session';
 import { useAuthStore } from '#/store';
 
 defineOptions({ name: 'Login' });
 
 const authStore = useAuthStore();
 
-const errMsg = ref('');
+const errMsg = ref(
+  sessionStorage.getItem(FT_SESSION_EXPIRED_KEY)
+    ? '登录已失效，请重新登录'
+    : '',
+);
 
 /** 重置密码面板 */
 const showReset = ref(false);
@@ -91,7 +96,10 @@ async function doAutoLogin() {
 }
 
 onMounted(async () => {
-  if (sessionStorage.getItem('ft_manual_logout')) {
+  if (
+    sessionStorage.getItem('ft_manual_logout') ||
+    sessionStorage.getItem(FT_SESSION_EXPIRED_KEY)
+  ) {
     return;
   }
   autoLoading.value = true;
@@ -186,7 +194,12 @@ async function doReset(generate: boolean) {
       <Input v-model:value="resetUser" placeholder="admin" />
 
       <Space class="mt-5 w-full" direction="vertical">
-        <Button :loading="resetLoading" block type="primary" @click="doReset(true)">
+        <Button
+          :loading="resetLoading"
+          block
+          type="primary"
+          @click="doReset(true)"
+        >
           生成随机新密码
         </Button>
         <Button block @click="showReset = false">返回登录</Button>
@@ -196,7 +209,9 @@ async function doReset(generate: boolean) {
         v-if="resetResult"
         class="mt-5 rounded-md border border-green-300 bg-green-50 p-4 text-sm dark:border-green-800 dark:bg-green-950/40"
       >
-        <div class="mb-1 text-green-700 dark:text-green-300">重置成功，新密码：</div>
+        <div class="mb-1 text-green-700 dark:text-green-300">
+          重置成功，新密码：
+        </div>
         <div class="font-mono text-base font-semibold tracking-wider">
           {{ resetResult.password }}
         </div>

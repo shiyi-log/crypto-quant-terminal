@@ -182,6 +182,115 @@ class AutoLoginContractTests(unittest.TestCase):
         archive.offer.assert_called_once()
 
 
+class OrderflowSurgePublicContractTests(unittest.TestCase):
+    """Keep the authenticated order-flow evidence endpoint bounded and explicit."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp_dir = tempfile.TemporaryDirectory(prefix="quant_orderflow_contract_")
+        cls.addClassCleanup(cls.temp_dir.cleanup)
+        spec = importlib.util.spec_from_file_location(
+            "quant_auth_orderflow_contract_test", ROOT / "auth_service.py"
+        )
+        assert spec is not None and spec.loader is not None
+        cls.auth = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {"QUANT_AUTH_DIR": cls.temp_dir.name}):
+            spec.loader.exec_module(cls.auth)
+
+    def _handler(self, path):
+        handler = object.__new__(self.auth.Handler)
+        handler.path = path
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.headers = {}
+        handler._read_body = Mock(return_value=b"")
+        handler._bearer = Mock(return_value="test-only-token")
+        handler._send = Mock(side_effect=lambda code, payload: (code, payload))
+        return handler
+
+    def _get(self, path, *, authenticated=True, store=None):
+        handler = self._handler(path)
+        if store is None:
+            store = Mock()
+            store.read_orderflow_surges.return_value = []
+        with patch.object(self.auth, "verify_token", return_value=("admin" if authenticated else None)), \
+             patch.object(self.auth, "get_store", return_value=store):
+            return handler.do_GET(), handler, store
+
+    def test_requires_authentication(self):
+        (code, payload), _handler, _store = self._get(
+            "/api/locals/orderflow/surges", authenticated=False
+        )
+        self.assertEqual(code, 401)
+        self.assertEqual(payload["detail"], "未登录或登录已过期")
+
+    def test_rejects_invalid_pair_timeframe_limit_and_bounds(self):
+        for query in (
+            "?pair=BTC%2FUSDT",
+            "?pair=SOL%2FUSDT%3AUSDT",
+            "?timeframe=1h",
+            "?limit=0",
+            "?limit=501",
+            "?limit=nope",
+            "?start=10&end=9",
+        ):
+            (code, _payload), _handler, _store = self._get(
+                "/api/locals/orderflow/surges" + query
+            )
+            self.assertEqual(code, 400, query)
+
+    def test_returns_revision_rows_for_btc_and_preserves_unknown_status(self):
+        item = {
+            "event_id": "volume-surge:test",
+            "pair": "BTC/USDT:USDT",
+            "market": "futures",
+            "timeframe": "5m",
+            "timestamp": 1700000000000,
+            "status": "unknown",
+            "observation": {"volume_ratio": 4.2, "baseline_quote_volume": 100},
+        }
+        store = Mock()
+        store.read_orderflow_surges.return_value = [item]
+        (code, payload), _handler, _store = self._get(
+            "/api/locals/orderflow/surges?pair=btc%2Fusdt%3Ausdt&status=unknown&limit=25",
+            store=store,
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["pair"], "BTC/USDT:USDT")
+        self.assertEqual(payload["timeframe"], "5m")
+        self.assertEqual(payload["limit"], 25)
+        self.assertEqual(payload["items"][0]["status"], "unknown")
+        self.assertTrue(payload["maturity"]["unknown_is_unmatured"])
+        self.assertTrue(payload["maturity"]["unknown_excluded_from_performance_statistics"])
+        store.read_orderflow_surges.assert_called_once_with(
+            market="futures", pair="BTC/USDT:USDT", timeframe="5m",
+            status="unknown", limit=25, include_revisions=False,
+        )
+
+    def test_supports_eth_and_filters_time_bounds(self):
+        store = Mock()
+        store.read_orderflow_surges.return_value = [
+            {"event_id": "old", "timestamp": 99},
+            {"event_id": "new", "timestamp": 100},
+            {"event_id": "future", "timestamp": 101},
+        ]
+        (code, payload), _handler, _store = self._get(
+            "/api/locals/orderflow/surges?pair=ETH%2FUSDT%3AUSDT&start=100&end=100",
+            store=store,
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual([row["event_id"] for row in payload["items"]], ["new"])
+        store.read_orderflow_surges.assert_called_once_with(
+            market="futures", pair="ETH/USDT:USDT", timeframe="5m",
+            status=None, limit=100, include_revisions=False, start=100, end=100,
+        )
+
+    def test_duplicate_query_parameter_is_rejected(self):
+        (code, _payload), _handler, _store = self._get(
+            "/api/locals/orderflow/surges?limit=10&limit=20"
+        )
+        self.assertEqual(code, 400)
+
+
 class ForwardPaperPublicContractTests(unittest.TestCase):
     """Keep the forward-paper UI contract read-only and format-compatible."""
 

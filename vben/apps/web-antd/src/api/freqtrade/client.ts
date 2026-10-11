@@ -17,7 +17,9 @@
 import { useAppConfig } from '@vben/hooks';
 import { RequestClient } from '@vben/request';
 
-export const FT_TOKEN_KEY = 'ft_access_token';
+import { FT_TOKEN_KEY, handleSessionExpired } from '../session';
+
+export { FT_TOKEN_KEY } from '../session';
 
 const { apiURL } = useAppConfig(import.meta.env, import.meta.env.PROD);
 
@@ -48,6 +50,23 @@ ftClient.addRequestInterceptor({
       config.headers.Authorization = `Bearer ${token}`;
     }
     return config;
+  },
+});
+
+ftClient.addResponseInterceptor({
+  rejected: async (error) => {
+    if (
+      error?.response?.status === 401 &&
+      !error.config?.url?.includes('/token/login')
+    ) {
+      const authorization = error.config?.headers?.Authorization;
+      const requestToken =
+        typeof authorization === 'string' && authorization.startsWith('Bearer ')
+          ? authorization.slice(7)
+          : '';
+      await handleSessionExpired(requestToken);
+    }
+    throw error;
   },
 });
 
@@ -91,4 +110,3 @@ export function errText(error: any): string {
 export function ftLogout() {
   localStorage.removeItem(FT_TOKEN_KEY);
 }
-

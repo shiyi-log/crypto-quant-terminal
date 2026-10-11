@@ -2,9 +2,9 @@
 import { sortCoins } from '../utils/coinOrder';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 
-import { Card, Col, Progress, Row, Table, Tag } from 'ant-design-vue';
+import { Alert, Button, Card, Col, Progress, Row, Table, Tag } from 'ant-design-vue';
 
-import { EXIT_LABELS, getResearchProgress, getRunProgress } from '#/api/freqtrade';
+import { errText, EXIT_LABELS, FT_SERVER_ORIGIN, FT_TOKEN_KEY, getBacktestStatus, getResearchProgress } from '#/api/freqtrade';
 
 
 import { Tabs, TabPane } from 'ant-design-vue';
@@ -17,6 +17,24 @@ import TasksPage from '#/views/quant/tasks/index.vue';
 const tab = ref('bt');
 
 const progress = ref<any>(null);
+const fileError = ref('');
+const webError = ref('');
+const progressError = computed(() => [fileError.value, webError.value].filter(Boolean).join('；'));
+const researchError = ref('');
+const progressSource = ref<'file' | 'web'>('file');
+const webProgress = ref<any>(null);
+let webCheckedAt = 0;
+let fileCheckedAt = 0;
+let fileMissing = false;
+let fileProgress: any = null;
+let fetching = false;
+
+const progressStatusText = computed(() => {
+  if (progress.value?.status === 'done') return '已完成';
+  if (progress.value?.status === 'failed') return '失败';
+  if (progress.value?.status === 'idle') return '当前无运行任务';
+  return '运行中';
+});
 /* 模型自动迭代任务（bot/auto_research.py）—— 与回测任务并列展示 */
 const rp = ref<any>(null);
 const rprog = computed(() => rp.value?.progress ?? null);
@@ -108,13 +126,130 @@ const maxAbs = computed(() =>
   Math.max(...exits.value.map((e: any) => Math.abs(e.profit_abs)), 1),
 );
 
+/** 脚本进度文件与研究实例使用不同结果合同，统一金额与百分比单位后展示。 */
+function fromWebStatus(status: any) {
+  const entries = Object.entries(status?.backtest_result?.strategy ?? {});
+  const [strategy, metrics] = (entries[0] ?? ['', null]) as [string, any];
+  const number = (value: any, factor = 1) =>
+    typeof value === 'number' && Number.isFinite(value)
+      ? Number((value * factor).toFixed(2))
+      : '—';
+  const rows = (values: any[], kind: 'pair' | 'reason') =>
+    (values ?? []).filter((row) => row.key !== 'TOTAL').map((row) => ({
+      [kind]: row.key,
+      trades: row.trades,
+      profit_abs: number(row.profit_total_abs),
+      profit_pct: number(row.profit_total, 100),
+    }));
+  return {
+    status: status.running ? 'running' : metrics ? 'done' : 'idle',
+    phase: status.running ? '研究实例回测中' : metrics ? '研究实例已有完成结果' : '研究实例待命',
+    percent: typeof status.progress === 'number' ? Math.min(100, Math.max(0, status.progress * 100)) : 0,
+    current_pair: '',
+    trained: '—',
+    total: '—',
+    elapsed_seconds: '—',
+    model: strategy || '—',
+    timerange: metrics?.timerange || '',
+    result: metrics ? {
+      strategy,
+      start: metrics.backtest_start,
+      end: metrics.backtest_end,
+      days: metrics.backtest_days,
+      profit_abs: number(metrics.profit_total_abs),
+      profit_pct: number(metrics.profit_total, 100),
+      final_balance: number(metrics.final_balance),
+      starting_balance: number(metrics.starting_balance),
+      winrate: number(metrics.winrate, 100),
+      wins: metrics.wins,
+      losses: metrics.losses,
+      trades: metrics.total_trades,
+      trades_long: metrics.trade_count_long,
+      trades_short: metrics.trade_count_short,
+      max_drawdown_pct: number(metrics.max_drawdown_account, 100),
+      sharpe: number(metrics.sharpe),
+      profit_factor: number(metrics.profit_factor),
+      cagr: number(metrics.cagr, 100),
+      trades_per_day: number(metrics.trades_per_day),
+      pairs: rows(metrics.results_per_pair, 'pair'),
+      exits: rows(metrics.exit_reason_summary, 'reason'),
+    } : null,
+  };
+}
+
+async function readFileProgress() {
+  // 确认无脚本任务进度时降低探查频率；找到任务后恢复快速轮询。
+  if (fileMissing && Date.now() - fileCheckedAt < 30_000) return fileProgress;
+  fileCheckedAt = Date.now();
+  const token = localStorage.getItem(FT_TOKEN_KEY);
+  const response = await fetch(`${FT_SERVER_ORIGIN}/run_progress.json?t=${Date.now()}`, {
+    cache: 'no-store',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (response.status === 404) {
+    fileMissing = true;
+    fileProgress = null;
+    return null;
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || `HTTP ${response.status}`);
+  }
+  const body = await response.json();
+  if (!body || typeof body !== 'object' || typeof body.status !== 'string') {
+    throw new Error('任务进度返回格式不完整');
+  }
+  fileProgress = body;
+  fileMissing = false;
+  return fileProgress;
+}
+
 async function load() {
-  const [p, r] = await Promise.all([
-    getRunProgress().catch(() => null),
-    getResearchProgress().catch(() => null),
-  ]);
-  if (p) progress.value = p;
-  if (r) rp.value = r;
+  if (fetching) return;
+  fetching = true;
+  try {
+    const [file, research] = await Promise.allSettled([
+      readFileProgress(),
+      getResearchProgress().catch(() => null),
+    ]);
+    const p = file.status === 'fulfilled' ? file.value : null;
+    if (file.status === 'fulfilled') fileError.value = '';
+    else fileError.value = `脚本任务进度读取失败：${errText(file.reason)}`;
+    const r = research.status === 'fulfilled' ? research.value : null;
+    if (p) {
+      progress.value = p;
+      progressSource.value = 'file';
+      webError.value = '';
+    } else if (!webProgress.value || Date.now() - webCheckedAt >= 30_000) {
+      webCheckedAt = Date.now();
+      try {
+        webProgress.value = fromWebStatus(await getBacktestStatus());
+        progress.value = webProgress.value;
+        progressSource.value = 'web';
+        webError.value = '';
+      } catch (e) {
+        webError.value = `研究实例回测状态加载失败：${errText(e)}${progress.value ? '；当前保留上次成功状态' : ''}`;
+      }
+    } else {
+      progress.value = webProgress.value;
+      progressSource.value = 'web';
+    }
+    if (r) {
+      rp.value = r;
+      researchError.value = '';
+    } else {
+      researchError.value = `模型迭代任务状态暂不可用${rp.value ? '；当前保留上次成功记录' : '，请刷新重试'}`;
+    }
+  } finally {
+    fetching = false;
+  }
+}
+
+function refresh() {
+  webCheckedAt = 0;
+  fileCheckedAt = 0;
+  void load();
 }
 
 let timer: any = null;
@@ -130,6 +265,9 @@ onUnmounted(() => clearInterval(timer));
   <div class="p-4">
     <Tabs v-model:activeKey="tab" size="small">
       <TabPane key="bt" tab="回测">
+    <div class="mb-3 text-right"><Button size="small" @click="refresh">刷新状态</Button></div>
+    <Alert v-if="progressError" class="mb-3" :message="progressError" type="error" show-icon />
+    <Alert v-if="researchError" class="mb-3" :message="researchError" type="warning" show-icon />
     <!-- 进度 -->
     <Card :bordered="false" class="shadow-sm" title="回测 / 训练任务">
       <template #extra>
@@ -140,22 +278,17 @@ onUnmounted(() => clearInterval(timer));
               ? 'success'
               : progress.status === 'failed'
                 ? 'error'
-                : 'processing'
+                : progress.status === 'idle' ? 'default' : 'processing'
           "
         >
-          {{
-            progress.status === 'done'
-              ? '已完成'
-              : progress.status === 'failed'
-                ? '失败'
-                : '运行中'
-          }}
+          {{ progressStatusText }}
         </Tag>
+        <span v-if="progressSource === 'web' && progress" class="ml-2 text-xs text-gray-400">研究实例状态{{ fileMissing ? ' · 无脚本任务进度文件' : '' }}</span>
       </template>
       <template v-if="progress">
         <Progress
           :percent="Number((progress.percent ?? 0).toFixed(1))"
-          :status="progress.status === 'failed' ? 'exception' : 'active'"
+          :status="progress.status === 'failed' ? 'exception' : progress.status === 'done' ? 'success' : progress.status === 'idle' ? 'normal' : 'active'"
         />
         <Row :gutter="[12, 12]" class="mt-4">
           <Col :lg="3" :sm="8" :xs="12">
@@ -176,7 +309,7 @@ onUnmounted(() => clearInterval(timer));
           </Col>
           <Col :lg="3" :sm="8" :xs="12">
             <div class="text-xs text-gray-400">已用时</div>
-            <div class="text-sm font-semibold">{{ progress.elapsed_seconds }}s</div>
+            <div class="text-sm font-semibold">{{ typeof progress.elapsed_seconds === 'number' ? `${progress.elapsed_seconds}s` : '—' }}</div>
           </Col>
           <Col :lg="3" :sm="8" :xs="12">
             <div class="text-xs text-gray-400">模型 / 区间</div>
@@ -186,7 +319,7 @@ onUnmounted(() => clearInterval(timer));
         </Row>
       </template>
       <div v-else class="py-12 text-center text-sm text-gray-400">
-        暂无任务 —— 用 <code>python run_backtest_task.py</code> 启动回测后此处显示进度
+        {{ progressError ? '回测状态暂不可用，请刷新重试。' : '正在读取回测状态…' }}
       </div>
     </Card>
 
@@ -290,6 +423,9 @@ onUnmounted(() => clearInterval(timer));
                 <span class="text-xs text-gray-400">{{ record.phase }}</span>
               </template>
             </template>
+            <template #emptyText>
+              <div class="py-6 text-center text-xs text-gray-400">暂无最近 trial 记录</div>
+            </template>
           </Table>
           <div class="mt-1 text-xs text-gray-400">
             账本累计 {{ rp?.trials?.total || 0 }} 条 trial · {{ rp?.trials?.runs || 0 }} 轮 ·
@@ -299,9 +435,11 @@ onUnmounted(() => clearInterval(timer));
       </template>
 
       <div v-else class="py-12 text-center text-sm text-gray-400">
-        暂无迭代任务 —— 运行 <code>python auto_research.py</code>（在 bot/ 下）后此处显示进度
+        {{ researchError ? '迭代任务状态暂不可用，请刷新重试。' : '当前没有已记录的模型迭代任务。' }}
       </div>
     </Card>
+
+    <Alert v-if="result?.error" class="mt-3" :message="String(result.error)" type="error" show-icon />
 
     <!-- 结果 -->
     <template v-if="result && !result.error">
@@ -362,6 +500,9 @@ onUnmounted(() => clearInterval(timer));
                   </div>
                 </template>
               </template>
+              <template #emptyText>
+                <div class="py-6 text-center text-xs text-gray-400">暂无平仓原因统计</div>
+              </template>
             </Table>
           </Card>
         </Col>
@@ -388,6 +529,9 @@ onUnmounted(() => clearInterval(timer));
                     {{ record.profit_pct > 0 ? '+' : '' }}{{ record.profit_pct }}%
                   </span>
                 </template>
+              </template>
+              <template #emptyText>
+                <div class="py-6 text-center text-xs text-gray-400">暂无分币对表现数据</div>
               </template>
             </Table>
           </Card>

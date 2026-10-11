@@ -1,7 +1,7 @@
 <script lang="ts" setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
-import { Alert, Button, Card, Empty, Select, Table, Tag } from 'ant-design-vue';
+import { Alert, Button, Card, Empty, Modal, Select, Table, Tag } from 'ant-design-vue';
 
 import {
   getForwardPaper,
@@ -13,6 +13,7 @@ import {
   type ResearchLedger,
   type ResearchLedgerVersion,
 } from '#/api/freqtrade';
+import { fullOrderTime, orderDisplayId } from '../utils/orderDisplayId';
 
 const ledger = ref<ResearchLedger | null>(null);
 const loading = ref(false);
@@ -21,6 +22,12 @@ const forwardPaper = ref<ForwardPaperResponse | null>(null);
 const forwardLoading = ref(false);
 const forwardError = ref('');
 const selectedForwardVariant = ref('all');
+const ledgerRefreshedAt = ref('');
+const forwardRefreshedAt = ref('');
+const selectedOrder = ref<ResearchLedger['actual_orders'][number] | null>(null);
+const orderDetailOpen = ref(false);
+let refreshTimer: ReturnType<typeof setInterval> | undefined;
+let active = true;
 
 const versionColumns = [
   { dataIndex: 'id', title: '版本 / 轮次', width: 190 },
@@ -46,7 +53,7 @@ const tradeColumns = [
   { dataIndex: 'attribution_status', title: '归因状态' },
 ];
 const orderColumns = [
-  { dataIndex: 'order_id', title: '订单', width: 90 },
+  { dataIndex: 'order_id', title: '订单（点击详情）', width: 210 },
   { dataIndex: 'trade_id', title: '交易' },
   { dataIndex: 'pair', title: '币对' },
   { dataIndex: 'side', title: '方向' },
@@ -106,6 +113,14 @@ function value(value: unknown, suffix = '') {
   return value === null || value === undefined || value === ''
     ? '暂无'
     : `${value}${suffix}`;
+}
+function showOrderDetail(order: Record<string, unknown>) {
+  const selected = ledger.value?.actual_orders.find(
+    (item) => item.order_id === order.order_id,
+  );
+  if (!selected) return;
+  selectedOrder.value = selected;
+  orderDetailOpen.value = true;
 }
 function number(value: unknown, digits = 4) {
   return typeof value === 'number' && Number.isFinite(value)
@@ -617,6 +632,7 @@ function replayStatus(value: unknown) {
 }
 
 async function load() {
+  if (loading.value || forwardLoading.value) return;
   loading.value = true;
   error.value = '';
   forwardLoading.value = true;
@@ -626,18 +642,31 @@ async function load() {
       getResearchLedger(),
       getForwardPaper(undefined, 30),
     ]);
+    if (!active) return;
     if (ledgerResult.status === 'fulfilled') {
-      ledger.value = ledgerResult.value;
+      try {
+        assertLedgerSnapshot(ledgerResult.value);
+        ledger.value = ledgerResult.value;
+        ledgerRefreshedAt.value = new Date().toLocaleString('zh-CN');
+      } catch (cause) {
+        error.value = readError(cause, '证据账响应不完整');
+      }
     } else {
-      ledger.value = null;
-      error.value = ledgerResult.reason?.message || '证据账读取失败';
+      error.value = readError(ledgerResult.reason, '证据账读取失败');
     }
     if (forwardResult.status === 'fulfilled') {
-      forwardPaper.value = forwardResult.value;
+      try {
+        assertForwardSnapshot(forwardResult.value);
+        forwardPaper.value = forwardResult.value;
+        forwardRefreshedAt.value = new Date().toLocaleString('zh-CN');
+        if (!forwardVariantOptions.value.some((item) => item.value === selectedForwardVariant.value)) {
+          selectedForwardVariant.value = 'all';
+        }
+      } catch (cause) {
+        forwardError.value = readError(cause, '前向纸面响应不完整');
+      }
     } else {
-      forwardPaper.value = null;
-      forwardError.value =
-        forwardResult.reason?.message || '前向纸面运行读取失败';
+      forwardError.value = readError(forwardResult.reason, '前向纸面运行读取失败');
     }
   } finally {
     loading.value = false;
@@ -645,7 +674,54 @@ async function load() {
   }
 }
 
-onMounted(load);
+function readError(cause: unknown, fallback: string) {
+  return cause instanceof Error && cause.message ? cause.message : fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function assertLedgerSnapshot(snapshot: ResearchLedger) {
+  if (!isRecord(snapshot) || !isRecord(snapshot.summary)) {
+    throw new Error('证据账响应缺少摘要，无法读取本次快照');
+  }
+  for (const field of ['versions', 'actual_trades', 'actual_orders', 'lessons', 'directions'] as const) {
+    if (!Array.isArray(snapshot[field]) || !snapshot[field].every(isRecord)) {
+      throw new Error(`证据账响应缺少有效的 ${field} 列表`);
+    }
+  }
+  if (!Array.isArray(snapshot.errors) || !snapshot.errors.every((item) => typeof item === 'string')) {
+    throw new Error('证据账响应缺少有效的数据错误列表');
+  }
+}
+
+function assertForwardSnapshot(snapshot: ForwardPaperResponse) {
+  if (!isRecord(snapshot) || !isRecord(snapshot.summary) || !isRecord(snapshot.manifest)) {
+    throw new Error('前向纸面响应缺少摘要或规则清单，无法读取本次快照');
+  }
+  for (const field of ['decisions', 'fills', 'closes'] as const) {
+    if (!Array.isArray(snapshot[field]) || !snapshot[field].every(isRecord)) {
+      throw new Error(`前向纸面响应缺少有效的 ${field} 列表`);
+    }
+  }
+  if (snapshot.manifest.variants != null &&
+      (!Array.isArray(snapshot.manifest.variants) || !snapshot.manifest.variants.every(isRecord))) {
+    throw new Error('前向纸面规则清单中的变体列表无效');
+  }
+}
+
+onMounted(() => {
+  void load();
+  refreshTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') void load();
+  }, 30_000);
+});
+
+onBeforeUnmount(() => {
+  active = false;
+  clearInterval(refreshTimer);
+});
 </script>
 
 <template>
@@ -660,13 +736,18 @@ onMounted(load);
       type="error"
       show-icon
       :message="error"
-      description="请检查认证服务和账本接口后重试。"
+      :description="ledger
+        ? `本次刷新失败，保留 ${ledgerRefreshedAt} 读取的快照；下次自动刷新会重试。`
+        : '证据账暂不可用，请重试；读取失败不代表账本没有数据。'"
     >
       <template #action
         ><Button size="small" @click="load">重试</Button></template
       >
     </Alert>
 
+    <div v-if="loading && !ledger" class="text-xs text-muted-foreground">
+      正在读取证据账…
+    </div>
     <Empty v-if="!ledger && !loading && !error" description="暂无证据账数据" />
     <template v-if="ledger">
       <Tag v-if="ledger.source_id?.includes('dryrun')" color="red" class="mb-2">
@@ -675,7 +756,8 @@ onMounted(load);
       <div class="mb-3 text-xs text-muted-foreground">
         来源 {{ value(ledger.source_id) }} · 接口快照
         {{ value(ledger.generated_at) }} · 研究账本事件同步
-        {{ value(ledger.last_synced_at) }}
+        {{ value(ledger.last_synced_at) }} · 最近成功读取 {{ ledgerRefreshedAt }}
+        · 页面可见时每 30 秒自动刷新
       </div>
 
       <div class="grid grid-cols-2 gap-3 lg:grid-cols-6">
@@ -933,7 +1015,12 @@ onMounted(load);
             size="small"
           >
             <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'fill'"
+              <template v-if="column.dataIndex === 'order_id'">
+                <Button class="!px-0 font-mono text-xs" size="small" type="link" @click="showOrderDetail(record)">
+                  {{ orderDisplayId(record) }}
+                </Button>
+              </template>
+              <template v-else-if="column.key === 'fill'"
                 ><span class="font-mono text-xs"
                   >{{ value(record.amount) }} / {{ value(record.filled) }}</span
                 ></template
@@ -1028,22 +1115,23 @@ onMounted(load);
       正在读取前向纸面记录…
     </div>
     <Alert
-      v-else-if="forwardError"
+      v-if="forwardError"
       class="mb-3"
       type="warning"
       show-icon
-      message="前向纸面记录暂不可用"
-      :description="forwardError"
+      :message="forwardPaper ? '前向纸面记录刷新失败，保留上次快照' : '前向纸面记录暂不可用'"
+      :description="`${forwardError}${forwardPaper ? `；最近成功读取 ${forwardRefreshedAt}` : '；读取失败不代表没有运行记录'}`"
     />
     <Empty
-      v-else-if="!forwardPaper"
+      v-if="!forwardPaper && !forwardLoading && !forwardError"
       description="暂无前向纸面运行记录"
     />
-    <template v-else>
+    <template v-if="forwardPaper">
       <div class="mb-3 text-xs text-muted-foreground">
         运行 {{ forwardPaper.run_id }} · 最近 K 线
         {{ value(forwardPaper.summary.candle_through_utc) }} · 数据指纹
         <span class="font-mono">{{ value(forwardPaper.summary.data_fingerprint) }}</span>
+        · 最近成功读取 {{ forwardRefreshedAt }} · 页面可见时每 30 秒自动刷新
       </div>
       <Alert
         class="mb-3"
@@ -1239,4 +1327,25 @@ onMounted(load);
       </div>
     </template>
   </Card>
+
+  <Modal v-model:open="orderDetailOpen" :footer="null" title="订单详情（只读）">
+    <div v-if="selectedOrder" class="grid grid-cols-[110px_1fr] gap-3 text-sm">
+      <span class="text-muted-foreground">展示编号</span>
+      <span class="break-all font-mono">{{ orderDisplayId(selectedOrder) }}</span>
+      <span class="text-muted-foreground">原始订单号</span>
+      <span class="break-all font-mono">{{ value(selectedOrder.order_id) }}</span>
+      <span class="text-muted-foreground">订单时间（北京）</span>
+      <span>{{ fullOrderTime(selectedOrder.order_date) }}</span>
+      <span class="text-muted-foreground">币对 / 方向</span>
+      <span>{{ value(selectedOrder.pair) }} / {{ value(selectedOrder.side) }}</span>
+      <span class="text-muted-foreground">状态</span>
+      <span>{{ value(selectedOrder.status) }}</span>
+      <span class="text-muted-foreground">数量 / 成交</span>
+      <span>{{ value(selectedOrder.amount) }} / {{ value(selectedOrder.filled) }}</span>
+      <span class="text-muted-foreground">价格</span>
+      <span>{{ value(selectedOrder.price) }}</span>
+      <span class="text-muted-foreground">交易关联</span>
+      <span>{{ value(selectedOrder.trade_id) }}</span>
+    </div>
+  </Modal>
 </template>

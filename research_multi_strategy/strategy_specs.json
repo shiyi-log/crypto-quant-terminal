@@ -1,0 +1,4719 @@
+{
+  "schema": "multi-strategy-spec-v1",
+  "frozen_at_utc": "2026-10-11T03:10:00Z",
+  "author": "DSH (research side)",
+  "scope_note": "本文件只定义【研究规格】。执行层（独立账户/订单/持仓/资金账/常驻执行/API/前端标签）由 Codex 负责。现有 TrendFollowing 模拟盘保持独立，不属于这 30 项。",
+  "capital": {
+    "initial_usdt_per_account": 10000,
+    "note": "每个策略一个独立账户；用户可调整。账户之间不得共享资金、订单或持仓。"
+  },
+  "global_rules": {
+    "causality": "所有信号只能使用【截至当根已收盘】的数据。滚动基准必须 shift(1) 之后再 rolling；禁止全样本分位、禁止未来函数。",
+    "fill_model": "信号在 D 根收盘成立，成交在 D+1 根开盘。跳空时按 D+1 实际开盘价成交，禁止回填目标价。",
+    "cost_model": {
+      "taker_fee_per_side": 0.0005,
+      "maker_fee_per_side": 0.0002,
+      "slippage": "unknown",
+      "funding": "unknown",
+      "note": "滑点与资金费未知时不宣称净收益；资金费可正可负，0 不是上界。",
+      "applied_fee_per_side": 0.0002,
+      "applied_round_trip": 0.0004,
+      "fee_source": "实测主交易（Freqtrade）成交记录：fee_open=0.0002，且 order_types={entry:limit,exit:limit,stoploss:limit} → maker 费率",
+      "correction": {
+        "date": "2026-10-11",
+        "caught_by": "用户质疑「手续费应该没这么高」",
+        "wrong": "规格原写 taker 0.05%/边（往返 0.100%）",
+        "truth": "真实往返 0.040%（maker 0.02%/边），实测 5 笔全部为 0.0200%",
+        "why": "主交易用【限价单】，Freqtrade get_fee 默认 taker_or_maker='maker'，故按 maker 计费；我误按 taker 假设",
+        "impact": "成本高估 2.5 倍。用 0.04% 重算，最优止损止盈组合由【净 −1.58/笔】转为【净 +2.92/笔】——符号翻转",
+        "added_caveat": "maker 费率要求限价单成交。当前 next-open 代理成交假设【必定成交】，配 maker 费率偏乐观；若要严谨，必须建模限价单未成交风险（或改用 taker 费率作为保守边界）"
+      }
+    },
+    "pnl_separation": "已平仓收益 / 浮盈 / 未成熟标签 三类必须分开；未成熟结果绝不进胜率与期望。",
+    "reporting_duty": "任何结论必须同时给出【毛优势】与【成本】，只报 IC/胜率/夏普视同未完成。",
+    "no_synthetic_fills": "禁止补造历史模拟成交。历史只用于实现正确性校验；收益结论必须来自前向记录。",
+    "distinctness_rule": "10 项必须是不同【交易机制】。同一机制换周期、换参数、加止盈止损或加过滤器都不算新策略。",
+    "exit_policy": {
+      "principle": "用户 2026-10-11 指令：「关键不在于止盈，关键在于策略，抓到做空信号，做多就应该平仓」",
+      "rule": "任何策略在持仓期间，若其【自身的入场条件在反方向成立】，必须立即平掉当前仓位（收盘确认、下一根开盘代理成交），不得等到固定持有期结束。",
+      "rationale": "实测证据：82 笔中 74% 曾出现浮盈（MFE 中位 +0.048%），但只有 40% 最终盈利；峰值回吐中位 63%。逐策略回吐占比 s09 84% / s02 73% / s07 60%。这是「走得太晚」的直接证据。",
+      "ceiling_warning": "但同时实测天花板：完美离场（吃到峰值）也只有 +0.0156% 净/笔，捕获 75% 峰值仅 +0.0017%。所以本规则能把策略从明确亏损拉到大致的打平，【不足以造出盈利策略】。不要把它当成盈利来源。",
+      "holding_period_role": "固定持有 H 根从【主离场】降级为【保险丝】（防止信号长期不变时无限持仓）；主离场永远是反向信号。",
+      "tp_sl_role": "止盈止损降级为【风险边界】——其上界由用户设定的每笔最大亏损约束决定，不作为主要获利手段。"
+    },
+    "tf_change_20261011": {
+      "from": "5m",
+      "to": "15m",
+      "evidence": "MFE 由【持有时间】决定：30min 0.095% / 1h 0.162% / 4h 0.417% / 8h 0.652%（成本 0.040%）。只改离场（峰值回撤）最好也只有 −0.0131% 净，仍为负 —— 因为可捕获幅度太小。改变周期本身不增加 MFE，但 15m 的噪声更少 → 反向信号离场不会被噪声频繁触发 → 有效持有时间更长。",
+      "threshold_tightening": "各策略强度阈值收紧约 1.3~1.5 倍（如 s02 k 0.5→0.8、s05 Z 2.0→2.2、s06 VR 8→10、s07 I 0.2→0.3、s10 R 0.004→0.006）",
+      "sample_reset": "⚠️ 改周期会重置全部样本（现有 82 笔作废为 5m 口径）。旧样本保留存档，不与新样本合并统计。",
+      "status": "UNVALIDATED_GUESS",
+      "honest_note": "用户指出「不能靠猜，一切以数据说话」。本条改动（5m→15m、阈值收紧1.3~1.5倍、根数÷3）【没有任何回测支撑】，是我基于 MFE 随持有时间增长的观察所做的推断。MFE 观察本身有数据，但「选 15m」与「收紧多少」是拍的。在新参数扫描完成前，这些值不得视为已验证，也不得据此判定策略优劣。"
+    }
+  },
+  "strategies": [
+    {
+      "strategy_id": "s01_orb_breakout",
+      "name": "开盘区间突破",
+      "family": "breakout / session-range",
+      "mechanism": "以每个 UTC 日固定前 N 根 5m K 线构造「开盘区间」，价格突破区间上/下沿即顺势入场。区间来自当日固定时段，与滚动通道无关。",
+      "distinct_from": "与现有 1d Donchian 20/20【机制不同】：Donchian 用滚动 N 根价格的最高/最低；本项用【当日固定前 N 根】构成的会话区间。也与 s02 不同：s02 用前收±波幅的对称轨。",
+      "entry_formula": "日首 N 根后计算 hi=max(high[0..N-1]), lo=min(low[0..N-1])；之后 close>hi→多，close<lo→空；每 UTC 日只取首个突破",
+      "exit_formula": "当日结束（UTC 24:00）强制平仓；或反向突破区间另一侧　【新增·主离场】反向信号：反向突破开盘区间另一侧（多→价格跌破区间下沿即平；空→升破上沿即平）",
+      "params_frozen": {
+        "N_bars": 8,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 9,
+      "required_data": [
+        "BTC/ETH 5m futures OHLCV，已收盘"
+      ],
+      "data_ready": true,
+      "unknown_limits": [
+        "滑点",
+        "资金费",
+        "日界效应"
+      ],
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "position_budget": {
+        "target_exposure": 0.3,
+        "max_positions": 2,
+        "max_per_coin": 1,
+        "sizing": "剩余预算 / 剩余槽位",
+        "leverage": 100,
+        "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
+      },
+      "hypothesis_status": "hypothesis",
+      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "btc_eth_priority": {
+        "tier1": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "note": "两项即全部币池，天然最高优先级",
+        "leverage": 100
+      },
+      "opposite_signal_exit": "反向突破开盘区间另一侧（多→价格跌破区间下沿即平；空→升破上沿即平）",
+      "exit_priority": "1) 反向信号（主） 2) 风险边界 TP/SL  3) 固定持有 H 根（保险丝）",
+      "timeframe": "15m",
+      "tf_change_note": "2026-10-11 由 5m 改为 15m：K线根数参数按 1/3 缩放，强度阈值收紧。依据：MFE 随【持有时间】增长而非随周期；5m 下单笔平均峰值 0.056% 仅略高于成本 0.040%，而 1~4 小时持有的 MFE 达 0.16~0.42%，给成本留出空间。同时实测策略入场 MFE(0.056%) 劣于随机入场(0.095%)，故收紧阈值。",
+      "spec_gap_fixed": "实现有额外参数 one_entry_per_day / force_flat_at_day_end，我规格只写了 N_bars=8。两者都是【限制性】的（减少交易），不是缺陷；已记录为规格与实现的差异。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 60,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s02_dual_thrust",
+      "name": "双推力突破",
+      "family": "breakout / range-scaled",
+      "mechanism": "用【当前根 open ± k × 前 range_window 根真实波幅均值】构造对称上下轨，突破即入场。中心参照是【当前 open】，不是前收 —— 与 entry_formula 完全一致。",
+      "distinct_from": "s01 用当日固定前 N 根的会话极值；本项用【当前 open 为中心的波动率缩放对称轨】，不含任何极值统计，也不使用前收。",
+      "entry_formula": "rng[t-1] = mean( true_range[t-1-i], i=0..19 )  其中 true_range = max(high,prev_close) - min(low,prev_close); upper[t] = open[t] + k * rng[t-1];  lower[t] = open[t] - k * rng[t-1]; close[t] > upper[t] → 做多；close[t] < lower[t] → 做空",
+      "exit_formula": "反向穿越对侧轨，或持有 H=48 根后离场　【新增·主离场】反向信号：价格反向穿越对侧轨（多→跌破 lower 轨即平；空→升破 upper 轨即平）",
+      "params_frozen": {
+        "range_window": 20,
+        "k": 0.8,
+        "H": 24,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 22,
+      "required_data": [
+        "BTC/ETH 5m futures OHLCV，已收盘"
+      ],
+      "data_ready": true,
+      "unknown_limits": [
+        "滑点",
+        "资金费"
+      ],
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "position_budget": {
+        "target_exposure": 0.3,
+        "max_positions": 2,
+        "max_per_coin": 1,
+        "sizing": "剩余预算 / 剩余槽位",
+        "leverage": 100,
+        "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
+      },
+      "hypothesis_status": "hypothesis",
+      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "btc_eth_priority": {
+        "tier1": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "note": "两项即全部币池，天然最高优先级",
+        "leverage": 100
+      },
+      "center_reference": "当前 open（t 根的 open），不是前收 —— 已与 README 统一",
+      "opposite_signal_exit": "价格反向穿越对侧轨（多→跌破 lower 轨即平；空→升破 upper 轨即平）",
+      "exit_priority": "1) 反向信号（主） 2) 风险边界 TP/SL  3) 固定持有 H 根（保险丝）",
+      "timeframe": "15m",
+      "tf_change_note": "2026-10-11 由 5m 改为 15m：K线根数参数按 1/3 缩放，强度阈值收紧。依据：MFE 随【持有时间】增长而非随周期；5m 下单笔平均峰值 0.056% 仅略高于成本 0.040%，而 1~4 小时持有的 MFE 达 0.16~0.42%，给成本留出空间。同时实测策略入场 MFE(0.056%) 劣于随机入场(0.095%)，故收紧阈值。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 60,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s03_tsmom_vol_target",
+      "name": "时序动量（波动率目标）",
+      "family": "momentum / time-series",
+      "mechanism": "过去 L 根收益为正则持多、为负则持空，仓位按已实现波动率倒数缩放。状态驱动，不等突破事件。",
+      "distinct_from": "s01/s02 是事件驱动（突破才动）；本项只要动量为正就持有，且仓位随波动率变化。",
+      "entry_formula": "sig = sign( close[t]/close[t-L] - 1 );  rv = std(returns, W)[t-1];  size_multiplier = min( target_vol / rv, 1.0 )  → 只在【建立新仓或换向】时使用；已持有的同方向仓位【不逐根 rebalance】",
+      "exit_formula": "sig 变号即换向/平仓　【新增·主离场】反向信号：动量变号（sig 由 +1 转 −1 或反之）时立即平仓并换向",
+      "params_frozen": {
+        "L": 96,
+        "W": 96,
+        "target_vol_annual": 0.2,
+        "size_multiplier_max": 1.0,
+        "rebalance": "entry_or_flip_only",
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 98,
+      "required_data": [
+        "BTC/ETH 5m futures OHLCV，已收盘"
+      ],
+      "data_ready": true,
+      "unknown_limits": [
+        "滑点",
+        "资金费",
+        "波动率估计滞后"
+      ],
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "position_budget": {
+        "target_exposure": 0.3,
+        "max_positions": 2,
+        "max_per_coin": 1,
+        "sizing": "剩余预算 / 剩余槽位",
+        "leverage": 100,
+        "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
+      },
+      "hypothesis_status": "hypothesis",
+      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "btc_eth_priority": {
+        "tier1": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "note": "两项即全部币池，天然最高优先级",
+        "leverage": 100
+      },
+      "execution_limits": {
+        "size_multiplier_cap": 1.0,
+        "rebalance_policy": "no_per_bar_rebalance",
+        "rationale": "逐根按波动率调整仓位会隐性放大换手与成本。只在开仓/换向时定尺，持有期不再调整。",
+        "frontend_note": "前端与规则文件需明确此限制，避免被误读为连续再平衡策略"
+      },
+      "opposite_signal_exit": "动量变号（sig 由 +1 转 −1 或反之）时立即平仓并换向",
+      "exit_priority": "1) 反向信号（主） 2) 风险边界 TP/SL  3) 固定持有 H 根（保险丝）",
+      "timeframe": "15m",
+      "tf_change_note": "2026-10-11 由 5m 改为 15m：K线根数参数按 1/3 缩放，强度阈值收紧。依据：MFE 随【持有时间】增长而非随周期；5m 下单笔平均峰值 0.056% 仅略高于成本 0.040%，而 1~4 小时持有的 MFE 达 0.16~0.42%，给成本留出空间。同时实测策略入场 MFE(0.056%) 劣于随机入场(0.095%)，故收紧阈值。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 600,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s04_btc_eth_pairs",
+      "name": "BTC-ETH 相对强弱配对",
+      "family": "cross-sectional / pairs (both legs)",
+      "mechanism": "按过去 L 根收益比较 BTC 与 ETH 的相对强弱，做多强者、做空弱者，等名义对冲。横截面机制在 2 币上退化为经典配对交易。",
+      "distinct_from": "其余 9 项都是单腿方向性；本项【必然双腿同时持有】，收益来自相对强弱而非市场方向。",
+      "pair_constraint": {
+        "both_legs_required": true,
+        "atomicity": "两腿必须同轮成交；若任一腿未成交，另一腿不得保留（整笔撤销或重试）",
+        "equal_notional": true,
+        "data_readiness": "需要 BTC 与 ETH 的 5m 时间戳【严格逐根对齐】；缺席任一方则该轮不交易",
+        "slot_usage": "恰好占用全部 2 个槽位（每币 1 个）"
+      },
+      "entry_formula": "r_i=close_i[t]/close_i[t-L]-1；diff=r_BTC-r_ETH；diff>=T→多BTC/空ETH；diff<=-T→空BTC/多ETH",
+      "exit_formula": "diff 回归至 |diff|<exit_band，或持有 H 根　【新增·主离场】反向信号：相对强弱差 diff 变号（BTC 由强转弱或反之）时平掉双腿并换向",
+      "params_frozen": {
+        "L": 32,
+        "T": 0.005,
+        "exit_band": 0.0015,
+        "H": 32
+      },
+      "min_warmup_bars": 33,
+      "required_data": [
+        "BTC/ETH 5m futures OHLCV，已收盘且时间戳严格对齐"
+      ],
+      "data_ready": true,
+      "unknown_limits": [
+        "滑点（两腿）",
+        "资金费（两腿可对冲但费率不同）",
+        "两腿成交异步"
+      ],
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "position_budget": {
+        "target_exposure": 0.3,
+        "max_positions": 2,
+        "max_per_coin": 1,
+        "sizing": "剩余预算 / 剩余槽位",
+        "leverage": 100,
+        "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
+      },
+      "hypothesis_status": "hypothesis",
+      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "btc_eth_priority": {
+        "tier1": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "note": "两项即全部币池，天然最高优先级",
+        "leverage": 100
+      },
+      "opposite_signal_exit": "相对强弱差 diff 变号（BTC 由强转弱或反之）时平掉双腿并换向",
+      "exit_priority": "1) 反向信号（主） 2) 风险边界 TP/SL  3) 固定持有 H 根（保险丝）",
+      "timeframe": "15m",
+      "tf_change_note": "2026-10-11 由 5m 改为 15m：K线根数参数按 1/3 缩放，强度阈值收紧。依据：MFE 随【持有时间】增长而非随周期；5m 下单笔平均峰值 0.056% 仅略高于成本 0.040%，而 1~4 小时持有的 MFE 达 0.16~0.42%，给成本留出空间。同时实测策略入场 MFE(0.056%) 劣于随机入场(0.095%)，故收紧阈值。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 300,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。"
+    },
+    {
+      "strategy_id": "s05_bollinger_fade",
+      "name": "布林带偏离回归",
+      "family": "mean-reversion / statistical",
+      "mechanism": "价格偏离 N 根均线超过 z 倍标准差时做反向，回到均线附近离场。",
+      "distinct_from": "s01/s02 顺势；本项逆势，触发条件是统计偏离。",
+      "entry_formula": "ma=mean(close,N)[t-1]；sd=std(close,N)[t-1]；z=(close-ma)/sd；z<=-Z→多，z>=+Z→空",
+      "exit_formula": "z 穿越 0，或持有达 H 根　【新增·主离场】反向信号：反向极端出现（持多时 z ≥ +Z；持空时 z ≤ −Z）即平仓——反向极端即本策略的反向入场信号",
+      "params_frozen": {
+        "N": 32,
+        "Z": 2.2,
+        "H": 32,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 33,
+      "required_data": [
+        "BTC/ETH 5m futures OHLCV，已收盘"
+      ],
+      "data_ready": true,
+      "unknown_limits": [
+        "滑点",
+        "资金费",
+        "趋势期的持续偏离（左尾）"
+      ],
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "position_budget": {
+        "target_exposure": 0.3,
+        "max_positions": 2,
+        "max_per_coin": 1,
+        "sizing": "剩余预算 / 剩余槽位",
+        "leverage": 100,
+        "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
+      },
+      "hypothesis_status": "hypothesis",
+      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "btc_eth_priority": {
+        "tier1": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "note": "两项即全部币池，天然最高优先级",
+        "leverage": 100
+      },
+      "opposite_signal_exit": "反向极端出现（持多时 z ≥ +Z；持空时 z ≤ −Z）即平仓——反向极端即本策略的反向入场信号",
+      "exit_priority": "1) 反向信号（主） 2) 风险边界 TP/SL  3) 固定持有 H 根（保险丝）",
+      "timeframe": "15m",
+      "tf_change_note": "2026-10-11 由 5m 改为 15m：K线根数参数按 1/3 缩放，强度阈值收紧。依据：MFE 随【持有时间】增长而非随周期；5m 下单笔平均峰值 0.056% 仅略高于成本 0.040%，而 1~4 小时持有的 MFE 达 0.16~0.42%，给成本留出空间。同时实测策略入场 MFE(0.056%) 劣于随机入场(0.095%)，故收紧阈值。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 300,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s06_volume_climax_reversal",
+      "name": "量能高潮反转",
+      "family": "mean-reversion / volume-extreme",
+      "mechanism": "成交量相对历史基准极端放大、且价格在【最近 3 根 5m（15 分钟）】出现极端单边位移时，视为情绪高潮，做反向。位移窗口是 3 根，不是单根。",
+      "distinct_from": "s05 只看价格统计偏离；本项核心条件是【成交量极端】，价格位移仅作确认。",
+      "entry_formula": "vr[t] = volume[t] / median(volume, 288)[t-1]  ;  mv3[t] = close[t]/close[t-1-3] - 1   ← 【3 根窗口】（我第三轮研究的事件口径）;  vr[t] >= VR 且 |mv3[t]| >= MV3 → 反向（mv3>0 则空，mv3<0 则多）",
+      "exit_formula": "固定持有 H 根，或回到入场价　【新增·主离场】反向信号：反向高潮出现（持多时出现「跌 + 量比≥VR」；持空时出现「涨 + 量比≥VR」）即平仓",
+      "params_frozen": {
+        "VR": 10.0,
+        "MV3": 0.012,
+        "mv_window": 3,
+        "volume_window": 96,
+        "H": 8,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 97,
+      "required_data": [
+        "BTC/ETH 5m futures OHLCV + volume，已收盘"
+      ],
+      "data_ready": true,
+      "unknown_limits": [
+        "滑点",
+        "资金费",
+        "量能基准的时段敏感性"
+      ],
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "position_budget": {
+        "target_exposure": 0.3,
+        "max_positions": 2,
+        "max_per_coin": 1,
+        "sizing": "剩余预算 / 剩余槽位",
+        "leverage": 100,
+        "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
+      },
+      "hypothesis_status": "hypothesis",
+      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "btc_eth_priority": {
+        "tier1": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "note": "两项即全部币池，天然最高优先级",
+        "leverage": 100
+      },
+      "spec_correction": {
+        "date": "2026-10-11",
+        "caught_by": "DSH 自检（核实四个零成交策略时发现）",
+        "wrong": "原写 MV=0.01 作用于【单根】5m 位移",
+        "why_wrong": "我第三轮研究的事件定义是「3 根内 |收益| ≥ 1.5%」，写规格时错写成单根。单根口径在当前波动下不可达：单根 5m |位移| 中位 0.042%、99分位 0.365%、最大仅 1.162%，与 VR≥8 组合后 2997 根里只剩 1 根 → s06 几乎永不触发。",
+        "fix": "恢复 3 根窗口（mv_window=3），并把阈值设为 1.0%（实测 2997 根中 10 根，约每天 1 次，可支撑前向样本累积）",
+        "evidence": "3000 根 5m（2026-09-29→10-11）：单根最大 1.162% / 3根最大 1.740%；VR≥8 且 3根|mv|≥1.0% → 10 根"
+      },
+      "opposite_signal_exit": "反向高潮出现（持多时出现「跌 + 量比≥VR」；持空时出现「涨 + 量比≥VR」）即平仓",
+      "exit_priority": "1) 反向信号（主） 2) 风险边界 TP/SL  3) 固定持有 H 根（保险丝）",
+      "timeframe": "15m",
+      "tf_change_note": "2026-10-11 由 5m 改为 15m：K线根数参数按 1/3 缩放，强度阈值收紧。依据：MFE 随【持有时间】增长而非随周期；5m 下单笔平均峰值 0.056% 仅略高于成本 0.040%，而 1~4 小时持有的 MFE 达 0.16~0.42%，给成本留出空间。同时实测策略入场 MFE(0.056%) 劣于随机入场(0.095%)，故收紧阈值。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 400,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s07_surge_continuation",
+      "name": "订单流失衡延续",
+      "family": "order-flow / continuation",
+      "mechanism": "主动买卖失衡达极端时，假设力量延续，顺失衡方向入场。",
+      "distinct_from": "s06 用量能总量+价格位移做反转；本项用【主动买卖方向失衡】做延续，自变量与方向都不同。",
+      "entry_formula": "imb = 2*taker_buy_base/volume - 1（取自实时已收盘 5m futures K 线的 extras）; imb>=I → 多；imb<=-I → 空",
+      "exit_formula": "固定持有 H 根，或 imb 反向穿越 0　【新增·主离场】反向信号：失衡反向穿越 0（imb 由正转负或反之）时立即平仓并换向",
+      "params_frozen": {
+        "I": 0.3,
+        "H": 4,
+        "volume_window": 20,
+        "min_volume_multiple": 0.6,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 21,
+      "required_data": [
+        "实时已收盘 BTC/ETH 5m futures K 线的 extras：taker_buy_base、volume",
+        "（DB 实测：BTC 291,584 行 / ETH 291,585 行 全部带 extras；extras 内已含 flow_imbal）"
+      ],
+      "data_ready": true,
+      "unknown_limits": [
+        "滑点",
+        "资金费",
+        "imb 在低量 K 线上不稳定（建议要求 volume 高于基准最小值）"
+      ],
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "position_budget": {
+        "target_exposure": 0.3,
+        "max_positions": 2,
+        "max_per_coin": 1,
+        "sizing": "剩余预算 / 剩余槽位",
+        "leverage": 100,
+        "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
+      },
+      "hypothesis_status": "hypothesis",
+      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "btc_eth_priority": {
+        "tier1": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "note": "两项即全部币池，天然最高优先级",
+        "leverage": 100
+      },
+      "data_source_detail": {
+        "table": "quant.candles",
+        "exchange": "binance",
+        "market": "futures",
+        "candle_type": "futures",
+        "timeframe": "5m",
+        "fields": [
+          "extras.taker_buy_base",
+          "volume",
+          "extras.flow_imbal",
+          "extras.num_trades",
+          "extras.quote_volume",
+          "extras.closed"
+        ],
+        "formula": "flow_imbal = 2 * taker_buy_base / volume - 1",
+        "precision_note": "DB 存储的 extras.flow_imbal 与公式结果差异约 5e-5（因 volume/taker_buy_base 被四舍五入到 3 位）。阈值 0.2 下两者等价；执行层可任选，但必须【固定一种】并在规则哈希中体现。",
+        "why_not_archive": "原用 orderflow 归档（止于 2026-10-08），不能驱动今天的实时模拟。实时 5m K 线的 extras 覆盖到最新且逐根对齐。",
+        "orderflow_archive_status": "不再作为 s07/s08 的数据源；可留作历史交叉校验"
+      },
+      "flow_imbal_convention": {
+        "mode": "recompute",
+        "formula": "flow_imbal = 2 * taker_buy_base / volume - 1",
+        "inputs": "quant.candles 存储字段 (volume, extras.taker_buy_base) —— 不使用 extras.flow_imbal 存档值",
+        "hash_note": "此实现口径必须进入 rule_hash；若改为直接读 extras.flow_imbal，即为不同实现，必须换 variant 身份",
+        "rationale": "由存储字段重算可让外部独立复现；存档值虽精度略高（~5e-5），但依赖采集层内部计算"
+      },
+      "volume_filter": {
+        "rule": "volume[t] >= min_volume_multiple * median(volume, volume_window)[t-1]",
+        "volume_window": 60,
+        "min_volume_multiple": 0.5,
+        "warmup_note": "volume_window=60 且全套预热带 100 根，满足 60 根中位数的窗口需求（基准必须 shift(1) 后再 rolling）"
+      },
+      "opposite_signal_exit": "失衡反向穿越 0（imb 由正转负或反之）时立即平仓并换向",
+      "exit_priority": "1) 反向信号（主） 2) 风险边界 TP/SL  3) 固定持有 H 根（保险丝）",
+      "timeframe": "15m",
+      "tf_change_note": "2026-10-11 由 5m 改为 15m：K线根数参数按 1/3 缩放，强度阈值收紧。依据：MFE 随【持有时间】增长而非随周期；5m 下单笔平均峰值 0.056% 仅略高于成本 0.040%，而 1~4 小时持有的 MFE 达 0.16~0.42%，给成本留出空间。同时实测策略入场 MFE(0.056%) 劣于随机入场(0.095%)，故收紧阈值。",
+      "mechanism_full": "【量能过滤 + 订单流方向】两步：① 量能必须 ≥ min_volume_multiple × 前 volume_window 根量能中位数（我规格有写）② 方向由订单流不平衡决定: imbalance = 2×taker_buy_base/volume − 1，imbalance ≥ I 做多 / ≤ −I 做空（我规格漏写了这一步）",
+      "spec_gap_fixed": "我的 mechanism 字段只写了『量能突增延续』，漏了订单流方向成分。已补。",
+      "caveat": "⚠️ 订单流方向属项目已证伪族（research_summary.json: 『下单量预测方向』IC≤0.05 < 成本 0.10%，且 1h 主动买卖失衡甚至是反向的）。s07 用 I 做阈值前向重测该机制 —— 前向数据是裁判，但记录在案。",
+      "data_dependency": "依赖 extras.taker_buy_base。DB 里该字段覆盖率极低（BTC 5m 291,586 行中仅 89 行有）；实验室走 Binance REST 直连才拿得到。⚠️ 若改为从 DB 喂数，s07 会因 taker_volume_unavailable 永不交易。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "archive_recommendation": {
+        "verdict": "PENDING_JOINT_CONFIRMATION",
+        "dsh_proposal": "ARCHIVE_MECHANISM_FALSIFIED",
+        "status": "待 Codex 独立复核；双方一致前不归档",
+        "by": "DSH 2026-10-12（按用户要求改为共同确认制）"
+      },
+      "min_warmup_bars_previous": 100,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s08_wick_rejection",
+      "name": "影线拒绝（蜡烛形态）",
+      "family": "candle-structure / rejection",
+      "mechanism": "用单根 K 线的【形状】判定拒绝：长下影线且收阳=下方被拒绝（做多）；长上影线且收阴=上方被拒绝（做空）。自变量是蜡烛几何，不是价格水平或统计量。",
+      "distinct_from": "与 s05（均线±zσ 统计偏离）、s06（成交量极端）、s07（主动买卖失衡）都不同：前者的自变量是价格/量能/失衡的数值水平，本项是【单根 K 线的影线/实体比例】，属形态类。",
+      "entry_formula": "rng=high[t]-low[t]; uw=(high[t]-max(open[t],close[t]))/rng; lw=(min(open[t],close[t])-low[t])/rng; 若 lw>=W 且 close[t]>open[t] → 做多；若 uw>=W 且 close[t]<open[t] → 做空",
+      "exit_formula": "入场时冻结 atr（前 14 根 TR 均值）：多头在 close[t] <= entry - 1.0*atr 或 close[t] >= entry + 1.5*atr 时判定离场；成交在 next-open。　【新增·主离场】反向信号：反向形态出现（持多时出现「上影≥W 且收阴」；持空时出现「下影≥W 且收阳」）即平仓",
+      "params_frozen": {
+        "W": 0.65,
+        "H": 8,
+        "atr_window": 14,
+        "stop_atr_mult": 1.0,
+        "tp_atr_mult": 1.5
+      },
+      "min_warmup_bars": 16,
+      "required_data": [
+        "BTC/ETH 5m futures OHLCV（已收盘；影线比例需要 high/low/open/close）"
+      ],
+      "data_ready": true,
+      "unknown_limits": [
+        "滑点",
+        "资金费",
+        "影线形态在极端放量时的可靠度"
+      ],
+      "notes": "W=0.6 表示影线占整根振幅的 60% 以上；rng=0 的 K 线必须跳过（除零保护）。",
+      "fill_convention": {
+        "trigger_reference": "已收盘 close（不是盘中 high/low 触及）",
+        "fill": "next-open 代理成交（t+1 根开盘价）",
+        "gap": "若 t+1 开盘已越过阈值，按实际开盘价成交，绝不回填阈值价",
+        "explicitly_not": "不模拟交易所盘内止损单；不假设能按阈值精确成交"
+      },
+      "atr_convention": {
+        "definition": "atr = mean( true_range[entry-1-i], i=0..atr_window-1 ) —— 取自【入场信号根之前的 14 根】",
+        "frozen_at_entry": true,
+        "no_drift": "建仓后 ATR 值【固定不漂移】；止损/止盈阈值一经确定即不再随新 K 线变化",
+        "trigger_reference": "已收盘 close",
+        "fill": "next-open 代理成交（t+1 根开盘）；跳空按实际开盘价，绝不回填阈值价",
+        "explicitly_not": "不模拟交易所盘内止损单；不把 K 线 high/low 触及阈值当作阈值价成交"
+      },
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "position_budget": {
+        "target_exposure": 0.3,
+        "max_positions": 2,
+        "max_per_coin": 1,
+        "sizing": "剩余预算 / 剩余槽位",
+        "leverage": 100,
+        "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
+      },
+      "hypothesis_status": "hypothesis",
+      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "btc_eth_priority": {
+        "tier1": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "note": "两项即全部币池，天然最高优先级",
+        "leverage": 100
+      },
+      "opposite_signal_exit": "反向形态出现（持多时出现「上影≥W 且收阴」；持空时出现「下影≥W 且收阳」）即平仓",
+      "exit_priority": "1) 反向信号（主） 2) 风险边界 TP/SL  3) 固定持有 H 根（保险丝）",
+      "timeframe": "15m",
+      "tf_change_note": "2026-10-11 由 5m 改为 15m：K线根数参数按 1/3 缩放，强度阈值收紧。依据：MFE 随【持有时间】增长而非随周期；5m 下单笔平均峰值 0.056% 仅略高于成本 0.040%，而 1~4 小时持有的 MFE 达 0.16~0.42%，给成本留出空间。同时实测策略入场 MFE(0.056%) 劣于随机入场(0.095%)，故收紧阈值。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "existing_implementation": "stop_loss_close_confirmed + take_profit_close_confirmed（ATR 倍数，已实现）",
+        "action": "已实现，核对通过；仅需按风险档反解名义"
+      },
+      "min_warmup_bars_previous": 100,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。"
+    },
+    {
+      "strategy_id": "s09_trend_pullback",
+      "name": "趋势回踩入场",
+      "family": "trend-following / pullback-entry",
+      "mechanism": "先判定趋势方向（长期均线斜率或价格相对长期均线位置），再等价格回踩到短期均线附近才入场。",
+      "distinct_from": "s01/s02 在突破瞬间追入；本项【等回踩】才进，入场时机机制完全不同；与 s05 的区别是方向由趋势决定、不做逆势。",
+      "entry_formula": "trend = sign( ma_slow[t-1] - ma_slow[t-1-S] );  atr = mean( true_range[t-1-i], i=0..atr_window-1 );  pullback = |close[t] - ma_fast[t-1]| <= band * atr;  若 trend>0 且 pullback → 做多；若 trend<0 且 pullback → 做空",
+      "exit_formula": "跌破 ma_slow（多）或涨破 ma_slow（空），或持有 H=288 根　【新增·主离场】反向信号：跌破 ma_slow（多）或涨破 ma_slow（空）即平仓；此即趋势方向反转",
+      "params_frozen": {
+        "ma_fast": 8,
+        "ma_slow": 96,
+        "S": 16,
+        "band": 0.4,
+        "atr_window": 14,
+        "H": 96,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 113,
+      "required_data": [
+        "BTC/ETH 5m futures OHLCV，已收盘"
+      ],
+      "data_ready": true,
+      "unknown_limits": [
+        "滑点",
+        "资金费",
+        "回踩条件可能长期不触发"
+      ],
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "position_budget": {
+        "target_exposure": 0.3,
+        "max_positions": 2,
+        "max_per_coin": 1,
+        "sizing": "剩余预算 / 剩余槽位",
+        "leverage": 100,
+        "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
+      },
+      "hypothesis_status": "hypothesis",
+      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "btc_eth_priority": {
+        "tier1": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "note": "两项即全部币池，天然最高优先级",
+        "leverage": 100
+      },
+      "opposite_signal_exit": "跌破 ma_slow（多）或涨破 ma_slow（空）即平仓；此即趋势方向反转",
+      "exit_priority": "1) 反向信号（主） 2) 风险边界 TP/SL  3) 固定持有 H 根（保险丝）",
+      "timeframe": "15m",
+      "tf_change_note": "2026-10-11 由 5m 改为 15m：K线根数参数按 1/3 缩放，强度阈值收紧。依据：MFE 随【持有时间】增长而非随周期；5m 下单笔平均峰值 0.056% 仅略高于成本 0.040%，而 1~4 小时持有的 MFE 达 0.16~0.42%，给成本留出空间。同时实测策略入场 MFE(0.056%) 劣于随机入场(0.095%)，故收紧阈值。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 600,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s10_lead_lag_btc_eth",
+      "name": "BTC→ETH 领先滞后",
+      "family": "cross-asset / information-diffusion",
+      "mechanism": "假设 BTC 的价格变动领先 ETH 若干根，用 BTC 近期收益预测 ETH 下一根方向，只交易 ETH。",
+      "distinct_from": "其余 9 项的自变量都来自被交易标的自身；本项自变量来自【另一个标的】。",
+      "entry_formula": "r_btc=close_btc[t]/close_btc[t-1]-1；r_btc>=R→ETH 做多；r_btc<=-R→ETH 做空",
+      "exit_formula": "固定持有 H 根　【新增·主离场】反向信号：BTC 收益反向（持多时 r_btc ≤ −R；持空时 r_btc ≥ +R）即平仓",
+      "params_frozen": {
+        "R": 0.006,
+        "H": 2
+      },
+      "min_warmup_bars": 2,
+      "required_data": [
+        "BTC/ETH 5m futures OHLCV，时间戳严格对齐（BTC 为信号源，ETH 为交易标的）"
+      ],
+      "data_ready": true,
+      "unknown_limits": [
+        "滑点",
+        "资金费",
+        "领先关系可能已消失"
+      ],
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "position_budget": {
+        "target_exposure": 0.3,
+        "max_positions": 2,
+        "max_per_coin": 1,
+        "sizing": "剩余预算 / 剩余槽位",
+        "leverage": 100,
+        "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
+      },
+      "hypothesis_status": "hypothesis",
+      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "btc_eth_priority": {
+        "tier1": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "note": "两项即全部币池，天然最高优先级",
+        "leverage": 100
+      },
+      "opposite_signal_exit": "BTC 收益反向（持多时 r_btc ≤ −R；持空时 r_btc ≥ +R）即平仓",
+      "exit_priority": "1) 反向信号（主） 2) 风险边界 TP/SL  3) 固定持有 H 根（保险丝）",
+      "timeframe": "15m",
+      "tf_change_note": "2026-10-11 由 5m 改为 15m：K线根数参数按 1/3 缩放，强度阈值收紧。依据：MFE 随【持有时间】增长而非随周期；5m 下单笔平均峰值 0.056% 仅略高于成本 0.040%，而 1~4 小时持有的 MFE 达 0.16~0.42%，给成本留出空间。同时实测策略入场 MFE(0.056%) 劣于随机入场(0.095%)，故收紧阈值。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 100,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。"
+    },
+    {
+      "strategy_id": "s11_tsmom_bollinger_pullback",
+      "name": "时序动量 × 布林回归组合",
+      "family": "hybrid / trend-filtered mean-reversion",
+      "mechanism": "用 L 根时序动量确定交易方向，再等待价格向趋势相反方向偏离 N 根布林带 Z 倍标准差后入场；这是趋势方向过滤与回撤入场的组合机制。",
+      "distinct_from": "不是 s03 的无条件动量持有，也不是 s05 的无方向逆势回归：只有长期动量方向与布林回撤方向同时满足才开仓。",
+      "entry_formula": "momentum=close[t]/close[t-L]-1；rv=std(returns,W)[t-1]×sqrt(365×288)；ma=mean(close,N)[t-1]；sd=std(close,N)[t-1]；z=(close[t]-ma)/sd；momentum>0 且 z≤−Z→多，momentum<0 且 z≥+Z→空；size_multiplier=min(target_vol_annual/rv,size_multiplier_max)，仅开仓/换向时使用。",
+      "exit_formula": "动量变号、z 穿越 0（回到均线侧）或持有达 H 根；仍按收盘确认、下一根开盘代理成交。",
+      "params_frozen": {
+        "L": 288,
+        "W": 288,
+        "target_vol_annual": 0.2,
+        "size_multiplier_max": 1.0,
+        "rebalance": "entry_or_flip_only",
+        "N": 96,
+        "Z": 2.0,
+        "H": 96,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 290,
+      "required_data": [
+        "BTC/ETH 5m futures OHLCV，已收盘"
+      ],
+      "data_ready": true,
+      "unknown_limits": [
+        "滑点",
+        "资金费",
+        "趋势延续导致布林偏离不回归"
+      ],
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "position_budget": {
+        "target_exposure": 0.3,
+        "max_positions": 2,
+        "max_per_coin": 1,
+        "sizing": "剩余预算 / 剩余槽位",
+        "leverage": 100,
+        "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
+      },
+      "hypothesis_status": "hypothesis",
+      "observation_priority": "重点观察",
+      "evaluation": "只基于新增前向样本评估；同时报告组合毛优势、手续费、滑点与资金费未知项。不得把 s03/s05 历史收益直接拼接为组合收益。",
+      "btc_eth_priority": {
+        "tier1": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "note": "两项即全部币池，天然最高优先级",
+        "leverage": 100
+      },
+      "components": [
+        "s03_tsmom_vol_target",
+        "s05_bollinger_fade"
+      ],
+      "timeframe": "15m",
+      "tf_change_note": "2026-10-11 由 5m 改为 15m：K线根数参数按 1/3 缩放，强度阈值收紧。依据：MFE 随【持有时间】增长而非随周期；5m 下单笔平均峰值 0.056% 仅略高于成本 0.040%，而 1~4 小时持有的 MFE 达 0.16~0.42%，给成本留出空间。同时实测策略入场 MFE(0.056%) 劣于随机入场(0.095%)，故收紧阈值。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 600,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s12_surge_expansion_breakout",
+      "name": "量能突增后的波动扩张突破",
+      "family": "volatility-regime / breakout",
+      "mechanism": "先用【量能突增】判定进入高波动区制，再等价格突破突增根的高/低点入场，目标吃 0.5%+ 的扩张移动。这是把「量突增预测波动率」这条已验证信号变成方向交易。",
+      "why_different": "第 1 代 s06 是「量突增后做反转」—— 已被数据否证（样本内毛 −0.54%）。本项只把突增当【区制开关】，方向由突破决定，不预设反转。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "15m",
+      "entry_formula": "vr = volume[t] / median(volume,96)[t-1]; 触发根 t0 = 首个 vr>=VR 的根; 之后 24 根内，若 close > high[t0] → 多；close < low[t0] → 空",
+      "exit_formula": "反向信号（跌破突增根 low / 涨破 high）或持有 H 根",
+      "params_frozen": {
+        "VR": 10.0,
+        "window": 96,
+        "valid_bars": 24,
+        "H": 48,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 121,
+      "target_move": "≥0.5%",
+      "required_data": [
+        "BTC/ETH 15m futures OHLCV"
+      ],
+      "data_ready": true,
+      "hypothesis_status": "hypothesis",
+      "feasibility_verified": {
+        "触发": 1148,
+        "每币每年": 213,
+        "结论": "可达"
+      },
+      "warmup_note": "实现 _required_bars = 121（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 200（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 121,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 200,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s13_daily_trend_multi_horizon",
+      "name": "多周期日线趋势共识",
+      "family": "trend / multi-horizon",
+      "mechanism": "用 3 个不同长度的日线通道（10/20/40）判定趋势共识，三者同向才入场，目标吃日线级别的 5%+ 移动。",
+      "why_different": "现有主交易只用单一 20 日通道。本项要求多周期共识 —— 这是【筛选条件更强的趋势策略】，不是换参数。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT",
+        "SOL/USDT:USDT",
+        "BNB/USDT:USDT"
+      ],
+      "timeframe": "1d",
+      "entry_formula": "state_k = 突破 Nk 日通道的方向（有状态，突破后持有到反向突破）; 三者同为正 → 多；同为负 → 空",
+      "exit_formula": "任一通道反向突破即减仓；三者全部反向则平仓",
+      "params_frozen": {
+        "channels": [
+          10,
+          20,
+          40
+        ],
+        "H": 120,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 42,
+      "target_move": "日线级别 5%+",
+      "required_data": [
+        "1d futures OHLCV"
+      ],
+      "data_ready": true,
+      "hypothesis_status": "hypothesis",
+      "evidence": "1d 单通道毛/成本 = 43（唯一远超成本的家族）",
+      "warmup_note": "实现 _required_bars = 42（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 200（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 42,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 200,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s14_vol_compression_release",
+      "name": "波动压缩后的释放",
+      "family": "volatility / squeeze",
+      "mechanism": "当 ATR 压缩到过去 100 根的 20 分位以下（低波动区），等待价格突破压缩区间，押注波动率均值回归带来的扩张。",
+      "why_different": "与 s12 的区别：s12 用【量能】判区制，本项用【波动率压缩】判区制。两者是独立的区制指标。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "1h",
+      "entry_formula": "atr_pct = atr(14)/close; 若 atr_pct 在过去 100 根的 20 分位以下 → 记压缩区间 [hi,lo]（压缩期最高/最低）; close>hi → 多；close<lo → 空",
+      "exit_formula": "反向突破或持有 H 根，或以 ATR 倍数止盈",
+      "params_frozen": {
+        "atr_window": 14,
+        "compression_lookback": 100,
+        "pctile": 0.2,
+        "H": 72,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 116,
+      "target_move": "≥1%",
+      "required_data": [
+        "BTC/ETH 1h futures OHLCV"
+      ],
+      "data_ready": true,
+      "hypothesis_status": "hypothesis",
+      "feasibility_verified": {
+        "触发": 908,
+        "每币每年": 168,
+        "结论": "可达"
+      },
+      "warmup_note": "实现 _required_bars = 116（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 300（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 116,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 300,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s16_weekly_seasonality",
+      "name": "星期几与时段效应",
+      "family": "calendar / seasonality",
+      "mechanism": "纯粹依赖日历（UTC 星期几 + 小时），不依赖任何价格形态。检验加密市场是否存在稳定的时段效应。",
+      "why_different": "第 1 代全部基于价格/成交量/订单流；本项自变量是【日历】，与价格无关。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "1h",
+      "entry_formula": "在预设的 (星期, 小时) 集合内开仓，方向取过去 N 根收益符号（时段动量）或固定方向（时段偏置）",
+      "exit_formula": "固定持有 H 小时",
+      "params_frozen": {
+        "entry_hours_utc": [
+          0,
+          8,
+          16
+        ],
+        "H": 8,
+        "mode": "momentum",
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 3,
+      "target_move": "≥0.3%",
+      "required_data": [
+        "BTC/ETH 1h futures OHLCV"
+      ],
+      "data_ready": true,
+      "hypothesis_status": "hypothesis",
+      "caveat": "多重比较风险高（24×7=168 个时段），必须做校正，否则必然找到假信号",
+      "warmup_note": "实现 _required_bars = 3（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 100（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 3,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 100,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s17_overnight_range_fade",
+      "name": "隔夜区间边界的反转",
+      "family": "mean-reversion / range-boundary",
+      "mechanism": "把 UTC 00:00-08:00 视为「隔夜区间」，日内回到区间边界时做反向，押注日内均值回归。",
+      "why_different": "s01 是突破隔夜区间（顺势）；本项是在边界【做反向】，方向相反、假设相反。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "15m",
+      "entry_formula": "隔夜区间 [hi,lo]（00:00-08:00 UTC）; 日内 close >= hi → 空；close <= lo → 多",
+      "exit_formula": "回到区间中点，或持有 H 根，或 UTC 24:00 强制平",
+      "params_frozen": {
+        "H": 32,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 33,
+      "target_move": "≥0.3%",
+      "required_data": [
+        "BTC/ETH 15m futures OHLCV"
+      ],
+      "data_ready": true,
+      "hypothesis_status": "hypothesis",
+      "warmup_note": "实现 _required_bars = 33（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 100（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 33,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 100,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s18_drawdown_recovery",
+      "name": "回撤恢复买入",
+      "family": "path-dependent / drawdown",
+      "mechanism": "价格从近 N 根高点回撤 X% 后，若出现企稳（连续 2 根收阳）则做多，目标回到前高。路径依赖，非统计偏离。",
+      "why_different": "s05 用均线±zσ（统计偏离）；本项用【从滚动高点的回撤幅度】+【企稳确认】，是路径依赖型。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "1h",
+      "entry_formula": "dd = 1 - close/rolling_max(high,N); 若 dd >= X 且 close[t]>open[t] 且 close[t-1]>open[t-1] → 多",
+      "exit_formula": "回到 rolling_max，或 dd >= X*2（再跌一档）止损，或持有 H 根",
+      "params_frozen": {
+        "N": 168,
+        "X": 0.08,
+        "H": 72,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 170,
+      "target_move": "≥2%",
+      "required_data": [
+        "BTC/ETH 1h futures OHLCV"
+      ],
+      "data_ready": true,
+      "hypothesis_status": "hypothesis",
+      "warmup_note": "实现 _required_bars = 170（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 200（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 170,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "existing_soft_exit": "drawdown_stop（回撤达 2X 退出，基于滚动峰值，非固定距离）",
+        "action": "保留软退出，并【新增】硬止损作为兜底（用户明确不接受不设止损）"
+      },
+      "min_warmup_bars_previous": 200,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s19_multi_coin_breadth",
+      "name": "市场宽度择时",
+      "family": "breadth / market-regime",
+      "mechanism": "用白名单 20 币中「处于上升趋势的比例」作为市场宽度指标，宽度高时做多 BTC，宽度崩塌时做空。",
+      "why_different": "自变量不是被交易标的自身的价格，而是【全市场宽度】—— 第 1 代没有跨币宽度变量。",
+      "universe": [
+        "BTC/USDT:USDT"
+      ],
+      "timeframe": "1d",
+      "entry_formula": "breadth[t] = 白名单中 close > ma(20) 的币数 / 有效币数;  breadth >= 0.7 → BTC 多；breadth <= 0.3 → BTC 空",
+      "exit_formula": "breadth 回到 0.5，或持有 H 天",
+      "params_frozen": {
+        "ma": 20,
+        "hi": 0.7,
+        "lo": 0.3,
+        "H": 20
+      },
+      "min_warmup_bars": 21,
+      "target_move": "日线级别",
+      "required_data": [
+        "20 币 1d futures OHLCV"
+      ],
+      "data_ready": true,
+      "hypothesis_status": "hypothesis",
+      "feasibility_verified": {
+        "breadth_range": "0.000 ~ 1.000（极度双峰）",
+        "多信号次数": 949,
+        "空信号次数": 1086,
+        "结论": "可达"
+      },
+      "warmup_note": "实现 _required_bars = 21（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 60（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 21,
+      "implementation_status": "STUB_FAIL_CLOSED",
+      "implementation_note": "实现在 strategy_signals.py 里直接 return None, 'multi_asset_context_unavailable' —— 因为 legacy evaluate 契约只提供 BTC/ETH 单对，无法提供多币上下文。代码按 fail-closed 处理并写明原因（诚实），但后果是【该账户永不交易】。需要执行层提供多资产上下文后才能启用。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 60,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "research_universe_context": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT",
+        "SOL/USDT:USDT",
+        "BNB/USDT:USDT",
+        "XRP/USDT:USDT",
+        "DOGE/USDT:USDT",
+        "ADA/USDT:USDT",
+        "AVAX/USDT:USDT",
+        "LINK/USDT:USDT",
+        "DOT/USDT:USDT",
+        "LTC/USDT:USDT",
+        "TRX/USDT:USDT",
+        "NEAR/USDT:USDT",
+        "APT/USDT:USDT",
+        "SUI/USDT:USDT",
+        "UNI/USDT:USDT",
+        "AAVE/USDT:USDT",
+        "FIL/USDT:USDT",
+        "SAND/USDT:USDT",
+        "ZEC/USDT:USDT"
+      ],
+      "universe_fix_20261012": {
+        "old": [
+          "BTC/USDT:USDT（交易）",
+          "20 币（算宽度）"
+        ],
+        "new": [
+          "BTC/USDT:USDT"
+        ],
+        "why": "交易腿只有 BTC；research_universe 是算宽度的 20 币上下文（不交易）",
+        "bug": "我把人类可读描述写进了实现当作币对列表读取的 universe 字段",
+        "consequence": "s19/s24 因字段非法而 fail-closed（非设计如此）；修正后它们会开始交易 ⇒ 也需要止损"
+      }
+    },
+    {
+      "strategy_id": "s20_intraday_range_position",
+      "name": "日内位置动量",
+      "family": "intraday-position / momentum",
+      "mechanism": "用当前价在当日区间的相对位置（0=最低,1=最高）作为动量代理，位置高则顺势做多。",
+      "why_different": "s01/s02 用突破阈值；本项用【连续的位置指标】，无阈值突变。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "15m",
+      "entry_formula": "pos = (close - day_low) / (day_high - day_low); pos >= 0.9 → 多；pos <= 0.1 → 空",
+      "exit_formula": "pos 回到 0.5，或持有 H 根，或日界强制平",
+      "params_frozen": {
+        "H": 32,
+        "hi": 0.9,
+        "lo": 0.1,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 2,
+      "target_move": "≥0.3%",
+      "required_data": [
+        "BTC/ETH 15m futures OHLCV"
+      ],
+      "data_ready": true,
+      "hypothesis_status": "hypothesis",
+      "warmup_note": "实现 _required_bars = 2（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 100（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 2,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 100,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s21_liquidation_cascade_fade",
+      "name": "急跌急涨的衰竭反转",
+      "family": "mean-reversion / exhaustion",
+      "mechanism": "用「连续 K 根同向 + 累计幅度超阈值」识别疑似强平瀑布，在衰竭时做反向。",
+      "why_different": "s06 用单根量能高潮；本项用【连续同向 K 线的累计幅度】，识别的是瀑布/逼空形态，变量不同。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "15m",
+      "entry_formula": "连续 K 根同向且 |close[t]/close[t-k]-1| >= M 且最后一根出现反向影线 → 反向",
+      "exit_formula": "固定持有 H 根，或回到起点价",
+      "params_frozen": {
+        "k": 4,
+        "M": 0.02,
+        "H": 16,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 5,
+      "target_move": "≥1%",
+      "required_data": [
+        "BTC/ETH 15m futures OHLCV"
+      ],
+      "data_ready": true,
+      "hypothesis_status": "hypothesis",
+      "warmup_note": "实现 _required_bars = 5（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 100（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 5,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 100,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s22_dual_confirmation_trend",
+      "name": "双确认趋势（趋势+量能）",
+      "family": "confirmation / trend",
+      "axis": "A",
+      "mechanism": "要求【趋势方向】与【量能放大】两个独立条件同时成立才入场。趋势用 1d 通道方向，量能用当日量比。",
+      "why_different": "第 1、2 代全部是单条件触发。本项强制两条件同时成立 —— 直接针对「入场选坏时点」的证据。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "1d",
+      "entry_formula": "state = 有状态 1d 通道方向(20); vr = volume / median(volume,20)[t-1]; 若 state>0 且 vr>=1.5 → 多；state<0 且 vr>=1.5 → 空",
+      "exit_formula": "反向信号（state 反向）或持有 H 天",
+      "params_frozen": {
+        "channel": 20,
+        "vr_threshold": 1.5,
+        "H": 60,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 22,
+      "target_move": "日线级别 5%+",
+      "required_data": [
+        "1d futures OHLCV + volume"
+      ],
+      "data_ready": true,
+      "feasibility_verified": {
+        "触发次数_每币每年": 143,
+        "结论": "可达"
+      },
+      "warmup_note": "实现 _required_bars = 22（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 120（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 22,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 120,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s23_triple_confirmation_breakout",
+      "name": "三重确认突破",
+      "family": "confirmation / breakout",
+      "axis": "A",
+      "mechanism": "突破 1d 通道 + 量比放大 + 波动率上升（ATR 高于其 50 日均值）三者同时成立。",
+      "why_different": "三个独立维度（价格/量能/波动率）同时确认，入场门槛高于任何前代。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "1d",
+      "entry_formula": "突破 20 日通道 且 vr>=1.5 且 atr(14) > mean(atr(14),50) → 顺势入场",
+      "exit_formula": "反向突破或持有 H 天",
+      "params_frozen": {
+        "channel": 20,
+        "vr_threshold": 1.5,
+        "atr_window": 14,
+        "atr_ma": 50,
+        "H": 60,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 65,
+      "target_move": "日线级别 5%+",
+      "required_data": [
+        "1d futures OHLCV + volume"
+      ],
+      "data_ready": true,
+      "feasibility_verified": {
+        "触发次数_每币每年": 81,
+        "结论": "可达"
+      },
+      "warmup_note": "实现 _required_bars = 65（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 150（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 65,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 150,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s24_cross_sectional_lowvol",
+      "name": "横截面低波动优选",
+      "family": "cross-sectional / relative-value",
+      "axis": "B",
+      "mechanism": "在 20 币中做多【近期波动率最低且趋势为正】的 3 个，做空【波动率最高且趋势为负】的 3 个。市场中性。",
+      "why_different": "第 1 代 s04 只用 BTC/ETH 两币做相对强弱；本项用 20 币横截面 + 波动率维度，且多空各 3 币（分散）。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "1d",
+      "entry_formula": "rv_i = std(returns,20); 按 rv 排序; 多头 = rv 最低且 state>0 的 3 个; 空头 = rv 最高且 state<0 的 3 个",
+      "exit_formula": "每日重排，跌出榜单即平",
+      "params_frozen": {
+        "rv_window": 20,
+        "k": 3,
+        "channel": 20
+      },
+      "min_warmup_bars": 41,
+      "target_move": "相对收益",
+      "required_data": [
+        "20 币 1d futures OHLCV"
+      ],
+      "data_ready": true,
+      "caveat": "市场中性组合在纯多头模拟里需要能做空；若执行层只支持 BTC/ETH，本项暂缓",
+      "feasibility_verified": {
+        "结论": "每交易日重排，需 20 币 1d 数据"
+      },
+      "warmup_note": "实现 _required_bars = 41（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 120（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 41,
+      "implementation_status": "STUB_FAIL_CLOSED",
+      "implementation_note": "实现在 strategy_signals.py 里直接 return None, 'multi_asset_context_unavailable' —— 因为 legacy evaluate 契约只提供 BTC/ETH 单对，无法提供多币上下文。代码按 fail-closed 处理并写明原因（诚实），但后果是【该账户永不交易】。需要执行层提供多资产上下文后才能启用。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 120,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "research_universe_context": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT",
+        "SOL/USDT:USDT",
+        "BNB/USDT:USDT",
+        "XRP/USDT:USDT",
+        "DOGE/USDT:USDT",
+        "ADA/USDT:USDT",
+        "AVAX/USDT:USDT",
+        "LINK/USDT:USDT",
+        "DOT/USDT:USDT",
+        "LTC/USDT:USDT",
+        "TRX/USDT:USDT",
+        "NEAR/USDT:USDT",
+        "APT/USDT:USDT",
+        "SUI/USDT:USDT",
+        "UNI/USDT:USDT",
+        "AAVE/USDT:USDT",
+        "FIL/USDT:USDT",
+        "SAND/USDT:USDT",
+        "ZEC/USDT:USDT"
+      ],
+      "universe_fix_20261012": {
+        "old": [
+          "20 个白名单币"
+        ],
+        "new": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT"
+        ],
+        "why": "交易腿 BTC/ETH；research_universe 是横截面排名的 20 币",
+        "bug": "我把人类可读描述写进了实现当作币对列表读取的 universe 字段",
+        "consequence": "s19/s24 因字段非法而 fail-closed（非设计如此）；修正后它们会开始交易 ⇒ 也需要止损"
+      }
+    },
+    {
+      "strategy_id": "s25_vol_regime_momentum",
+      "name": "波动区制内的动量",
+      "family": "volatility-conditional / momentum",
+      "axis": "C",
+      "mechanism": "先用【已实现波动率是否高于其 60 日中位】判定高波动区制；只在高波动区制内做动量，低波动区制不做。",
+      "why_different": "第 1 代有 ADX 过滤（已证降低收益），但从未用【波动率区制】做过门；且本项是「门 + 动量」而非「门 + 突破」。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "1d",
+      "entry_formula": "rv20 = std(returns,20); 若 rv20 > median(rv20,60) → 允许多空；此区制内 state>0 做多、state<0 做空",
+      "exit_formula": "区制退出或 state 反向",
+      "params_frozen": {
+        "rv_window": 20,
+        "regime_window": 60,
+        "channel": 20,
+        "H": 40,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 81,
+      "target_move": "日线级别",
+      "required_data": [
+        "1d futures OHLCV"
+      ],
+      "data_ready": true,
+      "feasibility_verified": {
+        "触发次数_每币每年": 398,
+        "结论": "可达"
+      },
+      "warmup_note": "实现 _required_bars = 81（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 150（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 81,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 150,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s26_surge_gated_trend",
+      "name": "量突增门控的日线趋势",
+      "family": "volatility-conditional / trend",
+      "axis": "C",
+      "mechanism": "把已验证的「量突增预测波动率」搬到日线：只在【日线量比 ≥2】的窗口内做趋势，其余时间空仓。",
+      "why_different": "s12 把突增用于 15m 突破（微观）；本项把同一条已验证信号用于【日线择时门控】，周期与用法都不同。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "1d",
+      "entry_formula": "vr = volume/median(volume,20)[t-1]; 若过去 5 日内曾出现 vr>=2.0，则允许在 state>0 时做多、state<0 时做空",
+      "exit_formula": "state 反向，或距上次突增超过 10 日",
+      "params_frozen": {
+        "vr_threshold": 2.0,
+        "surge_window": 5,
+        "gate_valid_days": 10,
+        "channel": 20,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 31,
+      "target_move": "日线级别 5%+",
+      "required_data": [
+        "1d futures OHLCV + volume"
+      ],
+      "data_ready": true,
+      "feasibility_verified": {
+        "触发次数_每币每年": 181,
+        "结论": "可达"
+      },
+      "warmup_note": "实现 _required_bars = 31（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 120（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 31,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 120,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s27_long_horizon_mean_reversion",
+      "name": "长周期均值回归",
+      "family": "mean-reversion / long-horizon",
+      "axis": "D",
+      "mechanism": "价格偏离 60 日均线超过 2.5 个标准差时做反向，目标是回归。长周期均值回归在股票/商品有长期证据，加密未系统检验。",
+      "why_different": "第 1 代 s05 是 15m 短周期回归（已证无边际）；本项是【日线 60 日】尺度，且要求 2.5σ（更极端）。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT",
+        "SOL/USDT:USDT"
+      ],
+      "timeframe": "1d",
+      "entry_formula": "ma60 = mean(close,60); sd60 = std(close,60); z = (close-ma60)/sd60; z<=-2.5 → 多；z>=+2.5 → 空",
+      "exit_formula": "z 穿越 0，或持有 H 天，或 z 继续扩大到 4σ 止损",
+      "params_frozen": {
+        "N": 60,
+        "Z": 2.5,
+        "stop_z": 4.0,
+        "H": 60,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 61,
+      "target_move": "≥5%",
+      "required_data": [
+        "1d futures OHLCV"
+      ],
+      "data_ready": true,
+      "feasibility_verified": {
+        "触发次数_每币每年": 66,
+        "结论": "可达"
+      },
+      "warmup_note": "实现 _required_bars = 61（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 150（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 61,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "existing_soft_exit": "mean_reversion_stop（z-score 达 stop_z 退出）",
+        "action": "保留软退出，并【新增】硬止损作为兜底（用户明确不接受不设止损）"
+      },
+      "min_warmup_bars_previous": 150,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s28_weekly_breakout",
+      "name": "周线突破",
+      "family": "trend / weekly",
+      "axis": "D",
+      "mechanism": "用周线（4h×42 或 1d 聚合）的 12 周通道做突破，持仓以周计。",
+      "why_different": "第 1 代最长是 40 日通道；本项用【周线尺度】，目标吃 10%+ 的趋势段。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "1d",
+      "entry_formula": "hh = max(close, 84)[t-1]（≈12 周）; close>hh → 多；close < min(close,84)[t-1] → 空",
+      "exit_formula": "反向通道突破，或持有 H=120 天",
+      "params_frozen": {
+        "weekly_channel": 84,
+        "H": 120,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 85,
+      "target_move": "≥10%",
+      "required_data": [
+        "1d futures OHLCV（≥5 年历史）"
+      ],
+      "data_ready": true,
+      "caveat": "我原预估 <5 笔/年，实测 99 次/币/年（我的预估偏悲观，实测为准）",
+      "feasibility_verified": {
+        "触发次数_每币每年": 99,
+        "结论": "可达"
+      },
+      "warmup_note": "实现 _required_bars = 85（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 200（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 85,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 200,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s29_trend_with_trailing",
+      "name": "趋势跟踪 + 峰值回撤止盈",
+      "family": "trend + exit-rule",
+      "axis": "A",
+      "mechanism": "1d 通道顺势入场，但离场改为【从峰值回撤 x%】而非等反向突破。直接实现用户「抓到反向信号就平」的原则，用回撤代理。",
+      "why_different": "与主交易 TrendFollowing 的区别在离场：主交易等反向通道突破（慢），本项用回撤止盈（快）。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "1d",
+      "entry_formula": "state = 有状态 1d 通道方向(20)；state 转正做多、转负做空",
+      "exit_formula": "从持仓期最高价回撤 dd>=12% 即平仓；或 state 反向",
+      "params_frozen": {
+        "channel": 20,
+        "trail_dd": 0.12,
+        "atr_window": 14,
+        "risk_stop_atr_mult": 1.5
+      },
+      "min_warmup_bars": 21,
+      "target_move": "≥5%",
+      "required_data": [
+        "1d futures OHLCV"
+      ],
+      "data_ready": true,
+      "evidence": "实测: 现有 100× 样本 MFE 中位 0.048% vs 实际 −0.019%，峰值回吐 63% → 回撤止盈应有改善空间",
+      "feasibility_verified": {
+        "触发次数_每币每年": 830,
+        "结论": "可达"
+      },
+      "warmup_note": "实现 _required_bars = 21（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 120（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 21,
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "existing_soft_exit": "trailing_drawdown（峰值回撤 12% 退出）",
+        "action": "保留软退出，并【新增】硬止损作为兜底（用户明确不接受不设止损）"
+      },
+      "min_warmup_bars_previous": 120,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。",
+      "atr_risk_enabled_20261012": {
+        "why": "实现用 opt-in: 规格必须供给 risk_stop_atr_mult 才启用 ATR 硬止损（否则走 LEGACY_DEFAULTS）",
+        "consequence": "开启后 rule_hash 变化 → 账户需迁移/重建（备用3号已警告）",
+        "values": {
+          "atr_window": 14,
+          "risk_stop_atr_mult": 1.5
+        }
+      }
+    },
+    {
+      "strategy_id": "s30_dual_asset_confirmation",
+      "name": "双资产趋势确认",
+      "family": "cross-asset / confirmation",
+      "axis": "A",
+      "mechanism": "BTC 与 ETH 的 1d 趋势方向必须一致才入场（做多在两者都向上时，做空在两者都向下时），不一致则空仓。",
+      "why_different": "第 1 代 s04 用两币【相对强弱】做配对；本项用两币【绝对趋势一致性】做确认门。方向与用法都不同。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "timeframe": "1d",
+      "entry_formula": "stateBTC = 通道方向(20), stateETH = 通道方向(20); 两者同时>0 → 两个都做多；同时<0 → 两个都做空；否则空仓",
+      "exit_formula": "任一资产 state 反向即平该资产",
+      "params_frozen": {
+        "channel": 20,
+        "H": 60
+      },
+      "min_warmup_bars": 21,
+      "target_move": "日线级别",
+      "required_data": [
+        "BTC/ETH 1d futures OHLCV"
+      ],
+      "data_ready": true,
+      "feasibility_verified": {
+        "触发次数_每币每年": 742,
+        "结论": "可达"
+      },
+      "warmup_note": "实现 _required_bars = 21（由指标窗口推导，数学最小可算量）；我的规格原写 min_warmup_bars = 120（凭感觉的安全余量）。核对结论：实现在这一点上更严谨，我的值太粗。已记录，不视为缺陷。",
+      "min_warmup_bars_impl": 21,
+      "implementation_status": "STUB_FAIL_CLOSED",
+      "implementation_note": "实现在 strategy_signals.py 里直接 return None, 'multi_asset_context_unavailable' —— 因为 legacy evaluate 契约只提供 BTC/ETH 单对，无法提供多币上下文。代码按 fail-closed 处理并写明原因（诚实），但后果是【该账户永不交易】。需要执行层提供多资产上下文后才能启用。",
+      "stop_spec": {
+        "hard_stop": {
+          "formula": "stop_price = entry_price ∓ k × ATR(atr_window)",
+          "k_default": 1.5,
+          "k_overridable": "策略可在 params.risk_stop_atr_mult 覆盖",
+          "confirm": "close（收盘确认，与 s08 现有实现一致）",
+          "exit_reason": "stop_loss_close_confirmed",
+          "record_in_event": [
+            "stop_level",
+            "entry_atr",
+            "exit_reason"
+          ]
+        },
+        "notional_rule": {
+          "formula": "notional = max_loss_per_trade_usdt / (stop_distance_pct + round_trip_fee)",
+          "note": "不再固定 9,259 —— 9,259 只是『50 USDT + 0.5% 止损』的特例",
+          "round_trip_fee": 0.0004
+        },
+        "risk_buckets": [
+          {
+            "id": "R50",
+            "max_loss_per_trade_usdt": 50.0,
+            "source": "用户 2026-10-11 原始要求",
+            "role": "硬约束档"
+          },
+          {
+            "id": "R200",
+            "max_loss_per_trade_usdt": 200.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "让长周期有经济意义"
+          },
+          {
+            "id": "R1000",
+            "max_loss_per_trade_usdt": 1000.0,
+            "source": "DSH 决策 2026-10-12",
+            "role": "逼近 30% 预算上限，观测预算咬合"
+          }
+        ],
+        "why_three_buckets": "三档是可读出的对照：R200 优于 R50 → 过紧预算损害收益；R1000 与 R200 接近 → 30% 预算才是真瓶颈；三档相同 → 风险预算不是敏感变量",
+        "sample_labeling": "2026-10-12 之前的所有样本标注为『止损口径缺陷期』，不用于评估策略",
+        "action": "【新增】硬止损（当前无任何止损）"
+      },
+      "min_warmup_bars_previous": 120,
+      "min_warmup_note": "原值是我凭感觉写的保守余量，远高于实现推导的数学最小量，导致可用热身(27~113 根)不足时【永久阻塞】。已改为实现推导值。"
+    },
+    {
+      "strategy_id": "s31_delta_neutral_carry",
+      "arm_id": "E_carry_delta_neutral",
+      "arm_status": "REJECTED",
+      "execution_mode": "two_leg_atomic",
+      "name": "资金费率 Delta 中性 Carry",
+      "family": "carry / delta-neutral (two-leg)",
+      "mechanism": "在每个调仓日，选取【资金费率最高】的 N 个币，对每个币建立两腿对冲：买入现货 + 做空等名义永续。两腿价格风险相消，收益来自持续收取的正资金费。资金费为负的币排除（或反向：卖现货+做多永续，但现货做空在多数场景不可得）。",
+      "why_different": "前 30 项全部是【单腿方向性】策略；本项是【两腿对冲】，收益来源是资金费现金流，与价格方向完全无关。这是 research_summary.json 里唯一标为【推荐主攻】的方向。",
+      "universe": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT",
+        "TRX/USDT:USDT"
+      ],
+      "timeframe": "1h（资金费每 8h 结算；调仓按天/周）",
+      "entry_formula": "调仓日: 计算各币过去 24h 累计资金费; 取累计费率为正且最高的 N 个; 对每个币: 现货买入 notional · 永续做空等 notional（delta≈0）",
+      "exit_formula": "下一个调仓日重排；累计费率转负或跌出榜单即平掉双腿",
+      "params_frozen": {
+        "n_coins": 5,
+        "rebalance_days": 30,
+        "leverage": 1,
+        "min_cum_funding_24h": 0.0,
+        "exclude_negative_funding": true,
+        "leg": "long_spot_short_perp"
+      },
+      "min_warmup_bars": 200,
+      "risk_cap": {
+        "max_loss_per_trade_usdt": 50.0,
+        "note": "两腿对冲后单币价格风险≈0，风险来自强平与基差"
+      },
+      "capital_buffer": {
+        "required_pct": 20.7,
+        "basis": "research_summary.json buffers 段：仅大盘8币的中位数缓冲 20.7%",
+        "reason": "不留缓冲会在波动中触发强平；实测逐仓无备用金年化 −15.21%"
+      },
+      "required_data": [
+        "资金费率事件 —— quant.series_points 已有 57 币；实际结算间隔混合为 4h/8h",
+        "现货 1h OHLCV —— quant.candles 已有（1h spot · 15 币 · 2024-01-01 起）",
+        "永续 1h OHLCV —— 已有"
+      ],
+      "data_ready": false,
+      "data_status": "funding_series_loaded_rejected",
+      "data_inventory": {
+        "storage": "quant.series_points",
+        "source": "binance",
+        "metric": "funding_rate",
+        "assets": 57,
+        "rows": 236558,
+        "first_timestamp": "2019-12-19T00:00:00Z",
+        "last_timestamp": "2026-10-08T00:00:00Z",
+        "coverage_note": "实际结算间隔混合为4h/8h；按事件时间读取，禁止按1h插值"
+      },
+      "data_blocker": null,
+      "rejection_reason": "DSH 独立复核：两腿开平共 4 次成交，正确成本为 0.08%；2026 年 30d/7d 调仓年化为 −0.05%/−1.32%，14d 仅 +0.62%。近期优势衰减到 0 附近，已淘汰，不进入前向模拟。",
+      "known_evidence": {
+        "source": "bot/user_data/research_summary.json · carry 段（2026-10-11 生成）",
+        "periods": 33,
+        "funding_pct": 0.6331,
+        "basis_pct": -0.0002,
+        "cost_pct": 0.0424,
+        "net_pct": 0.5905,
+        "yearly": {
+          "2024": 6.61,
+          "2025": 2.04,
+          "2026": 1.14
+        },
+        "backtest_avg_annual": {
+          "lev1": 3.64,
+          "lev3": 5.5
+        },
+        "after_buffer_annual": {
+          "median_15coins": 2.74,
+          "p90": 1.8,
+          "worst": 1.02,
+          "median_largecap8": 2.98
+        },
+        "liquidation_violation_rate": {
+          "lev1": 0.12,
+          "lev2": 0.27,
+          "lev3": 0.48,
+          "lev5": 0.61
+        },
+        "isolated_no_buffer": {
+          "lev1": {
+            "liquidations": 5,
+            "annual_pct": -15.21
+          }
+        },
+        "dsh_verification_verdict": "已失效（2026 年不成立）"
+      },
+      "verdict_from_research": "结构性正期望 · 回撤极低 · 但强平风险决定成败 · 缓冲后年化约 1.0~3.0%",
+      "hypothesis_status": "rejected",
+      "honest_notes": [
+        "年化 1~3% 很低。这不是高收益策略，是【低波动、与价格无关】的收益源。",
+        "对 10,000 USDT 账户、50 USDT 单笔风险上限而言，年化 2.98% = 约 298 USDT/年。",
+        "执行层需要支持【两腿同时持有】（现货+永续），这是新能力。",
+        "基差侵蚀实测 −0.0002%（≈0），这是它成立的关键 —— 我此前的单腿版本正是因为忽略了对冲才失败。"
+      ],
+      "evaluation": "按 research_summary 的口径复现：期数、收资金费、基差侵蚀、成本、净额；并报缓冲后的真实年化",
+      "verification_by_dsh": {
+        "date": "2026-10-11",
+        "method": "用现货1h+永续1h+资金费feather独立复算，不采信项目结论",
+        "cost_correction": {
+          "wrong": "我初算用 0.04%（按单腿 2 次成交）",
+          "correct": "两腿 4 次成交 → 0.08%",
+          "impact": "30d/2026 由 +0.036% 转为 −0.004%（翻负）"
+        },
+        "results_annualized": {
+          "30d": {
+            "2024": 11.8,
+            "2025": 1.35,
+            "2026": -0.05
+          },
+          "14d": {
+            "2024": 11.51,
+            "2025": 1.75,
+            "2026": 0.62
+          },
+          "7d": {
+            "2024": 10.05,
+            "2025": 0.19,
+            "2026": -1.32
+          }
+        },
+        "two_leg_pnl": "+0.0042%（≈0）→ Delta 中性对冲有效 ✅",
+        "verdict": "【已失效】2026 年 30d/7d 调仓为负，14d 仅 +0.62%；优势从 2024 的 ~11% 衰减到 0 附近",
+        "caveat": "滑点未计；若计入滑点更差。项目原研究 forward_annual_1x=1.14% 与此同量级（我 30d/2026 略低是因为成本口径更严）"
+      },
+      "verdict": "rejected_on_20261011",
+      "universe_fix_20261012": {
+        "old": [
+          "按资金费率排序的前 N 个币（实测可用 15 币）"
+        ],
+        "new": [
+          "BTC/USDT:USDT",
+          "ETH/USDT:USDT",
+          "TRX/USDT:USDT"
+        ],
+        "why": "已失效（rejected），此字段仅作规范修正",
+        "bug": "我把人类可读描述写进了实现当作币对列表读取的 universe 字段",
+        "consequence": "s19/s24 因字段非法而 fail-closed（非设计如此）；修正后它们会开始交易 ⇒ 也需要止损"
+      }
+    }
+  ],
+  "data_requirements_summary": {
+    "by_timeframe": {
+      "15m": [
+        "s01",
+        "s02",
+        "s05",
+        "s06",
+        "s07",
+        "s08",
+        "s09",
+        "s10",
+        "s11",
+        "s12",
+        "s17",
+        "s20",
+        "s21"
+      ],
+      "1h": [
+        "s14",
+        "s16",
+        "s18",
+        "s31"
+      ],
+      "1d": [
+        "s03",
+        "s04",
+        "s13",
+        "s19",
+        "s22",
+        "s23",
+        "s24",
+        "s25",
+        "s26",
+        "s27",
+        "s28",
+        "s29",
+        "s30"
+      ]
+    },
+    "by_universe": {
+      "BTC/ETH only": "除 s13/s19/s24/s27/s31 外全部",
+      "多币(20)": [
+        "s13",
+        "s19",
+        "s24"
+      ],
+      "多币(15)": [
+        "s31"
+      ],
+      "s27 auxiliary SOL": [
+        "s27"
+      ]
+    },
+    "blocked": {},
+    "rejected": {
+      "s31_delta_neutral_carry": "DSH 复核修正两腿 4 次成交成本为 0.08%；2026 年优势衰减，已淘汰，不进入前向模拟。资金费数据已入 quant.series_points。"
+    },
+    "shared_prerequisite": "各周期已收盘 K 线的准时投递；maker 费率要求执行侧下限价单（未成交风险未建模）。"
+  },
+  "honesty_statement": "本文件 10 项全部为【前向研究假设】，无一有已验证收益，不得标注盈利/通过/可用。已有实测证据多为负向：5m 同族突破机制毛/成本=0.61（结构性必亏）；订单流失衡 IC 符号为负且量级仅为成本 1~5%；量突增只预测波动不预测方向（P(涨)≈P(跌)）。禁止把任何数字当作收益预期，禁止补造历史模拟成交。",
+  "btc_eth_priority": {
+    "principle": "BTC 与 ETH 是最高优先级标的。",
+    "note": "用户要求把 BTC/ETH 优先级拉到最高；结合 Codex 的 max_positions=2 与 max_per_coin=1，币池【就等于 BTC/ETH】——两者天然占满全部槽位，优先级问题不复存在。",
+    "rules": [
+      "R1 币池固定为 BTC/ETH，不得增删",
+      "R2 每轮信号中 BTC/ETH 各最多 1 仓，合计最多 2 仓",
+      "R3 若 BTC 或 ETH 的已收盘数据缺失，当轮拒绝开新仓并记录原因，不得用其他币替代",
+      "R4 组合名义预算 30%，按剩余预算/剩余槽位定仓"
+    ]
+  },
+  "execution_contract": {
+    "universe": {
+      "tier1": [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT"
+      ],
+      "tier2": "仅 s13/s19 需要（多币宽度/多周期），其余仅 BTC/ETH"
+    },
+    "timeframe": "逐策略不同：s01~s11=15m · s12/s17/s20/s21=15m · s14/s16/s18=1h · s13/s19=1d",
+    "fee_model": {
+      "maker_per_side": 0.0002,
+      "taker_per_side": 0.0005,
+      "applied_per_side": 0.0002,
+      "round_trip": 0.0004,
+      "basis": "实测主交易成交记录 fee_open=0.0002，且 order_types 全为 limit → maker 计费",
+      "non_fill_risk": "未建模。限价单可能不成交；maker+必成交偏乐观。建议同时输出 taker 0.05% 敏感性。"
+    },
+    "risk_cap": {
+      "max_loss_per_trade_usdt": 50.0,
+      "requested_by": "用户 2026-10-11",
+      "constraint": "notional × (stop_pct + round_trip_fee) <= 50",
+      "solved": {
+        "stop_pct": 0.005,
+        "round_trip": 0.0004,
+        "notional": 9259,
+        "margin_at_100x": 92.6,
+        "margin_pct_of_10000": 0.00926
+      },
+      "two_positions_margin": 185.2,
+      "two_positions_margin_pct": 0.0185,
+      "consequence": "每笔盈亏 ±1~3 USDT 量级 → 结论积累慢（到 297 笔/策略需数月）。这是 50 USDT 上限的必然代价。",
+      "alternative_if_faster": "若希望更快积累，应提高单笔风险上限或降低每策略资金占用，而不是在 100× 大仓上用紧止损硬撑。",
+      "DESIGN_FLAW_found_20261012": {
+        "what": "stop_pct 被固定为 0.005，未随周期波动率缩放",
+        "who": "根因在 DSH 的规格：解 notional×(stop+fee)<=50 时把 stop 随手定为 0.5%",
+        "evidence": {
+          "atr_pct_median": {
+            "5m": 0.00185,
+            "15m": 0.00347,
+            "1h": 0.01061,
+            "4h": 0.02221,
+            "1d": 0.07537
+          },
+          "stop_in_atr": {
+            "5m": 2.7,
+            "15m": 1.44,
+            "1h": 0.47,
+            "4h": 0.23,
+            "1d": 0.07
+          },
+          "prob_touch_0.5pct_in_one_bar": {
+            "15m": 0.162,
+            "1h": 0.427,
+            "4h": 0.69,
+            "1d": 0.905
+          }
+        },
+        "impact": "约 15 个账户（11×1d + 3×1h）入场后第一根 K 线就高概率被止损打掉，每笔近似固定亏 50",
+        "affected_samples_note": "2026-10-12 之前的 1d/1h 样本受此缺陷影响，不能用于评估策略本身",
+        "corrected": {
+          "formula": "stop_pct = k × ATR%(tf); notional = 50/(stop_pct + fee)",
+          "k_1.5": {
+            "5m": {
+              "stop": 0.00278,
+              "notional": 15740
+            },
+            "15m": {
+              "stop": 0.00521,
+              "notional": 8916
+            },
+            "1h": {
+              "stop": 0.01591,
+              "notional": 3066
+            },
+            "4h": {
+              "stop": 0.03332,
+              "notional": 1483
+            },
+            "1d": {
+              "stop": 0.11305,
+              "notional": 441
+            }
+          }
+        },
+        "needs_user_decision": [
+          "A 严格保 50 上限（接受 1d 仓位极小）",
+          "B 按周期给不同的最大亏损",
+          "C 只在 5m/15m 跑"
+        ]
+      },
+      "DEFECT_20261012_no_hard_stop": {
+        "summary": "29 项策略里只有 s08 有硬止损；28 项无止损，单笔亏损不受 50 USDT 约束",
+        "evidence": "逐项提取 strategy_signals.py 各分支的离场原因：仅 s08 含 stop_loss_close_confirmed",
+        "mechanism": "risk_stop_pct=0.005 仅作为【仓位公式的输入】(risk_cap_margin=50/(100×0.0054)=92.6)，并非被实现的止损",
+        "actual_risk_bound": "保证金 92.6 USDT 全损（强平在 1% 逆向）= 50 上限的 1.85 倍；在此之前无硬约束",
+        "root_cause_my_spec": [
+          "缺陷A: 我从未写明『实现中必须存在 entry±0.5% 的硬止损』，只把它当作仓位公式的参数",
+          "缺陷B: 28 项策略规格里根本没有止损参数（只写了入场/离场公式）"
+        ],
+        "not_affected": "记账正确性（引擎算术/费率/强平价 已手算核验通过）；受影响的是『风险被控制到什么程度』这个声明",
+        "needs_user_decision": [
+          "止损口径: 固定百分比 / ATR 倍数 / 不设止损",
+          "50 USDT 是硬约束还是设计目标",
+          "是否接受部分策略不设止损"
+        ],
+        "empirical_check_20261012": {
+          "split_by_account_cap": {
+            "no_cap_armA": {
+              "trades": 131,
+              "mean": -93.92,
+              "worst": -645.84,
+              "over_50": 86,
+              "max_over_ratio": 12.9,
+              "margin_mean": 1247.0,
+              "note": "arm A 当时无 risk_cap，保证金是当前的 13 倍 → 超标属正常，不能证明当前设计失效"
+            },
+            "has_cap_v2": {
+              "trades": 2,
+              "mean": -34.89,
+              "worst": -35.46,
+              "over_50": 0,
+              "margin_mean": 92.6,
+              "note": "当前口径样本仅 2 笔，未观察到突破"
+            }
+          },
+          "correct_statement": {
+            "structural": "28/29 策略无硬止损 → 50 上限无法被保证（已由代码结构确证）",
+            "empirical": "v2 口径 2 笔样本未突破 → 不能声称上限已被突破",
+            "both_needed": "两句话都要说，不能只用其中一句"
+          },
+          "new_verification_task": "在 v2 账户积累样本后，专门核对单笔亏损分布是否守住 50；在此之前任何『每笔最多亏 50』的声明应标为【未经验证的设计目标】",
+          "my_error_avoided": "我一度准备用 86/131 笔超标来证明当前设计失效，但先按『账户是否配了 risk_cap』拆分后发现那 131 笔全部来自 arm A，与当前口径无关。"
+        }
+      }
+    },
+    "leverage": {
+      "value": 100,
+      "requested_by": "用户 2026-10-11",
+      "effective_exposure": "0.93×（名义 9,259 / 本金 10,000）",
+      "honest_note": "在「每笔最多亏 50」约束下 100× 只剩数值意义：保证金仅 92.6 USDT，实际敞口小于 1 倍。用户的两个要求（100× 与 50 上限）数学上不能同时产生高敞口。我选择【优先满足 50 上限】，因为它是对风险的硬约束；杠杆保留 100× 仅为与用户指令一致。"
+    },
+    "max_positions": 2,
+    "max_per_coin": 1,
+    "warmup_policy": "历史只用于指标预热，启动前不产生任何订单或信号。逐策略独立计数，未满预热拒绝开新仓。",
+    "status_labeling": "全部标【前向研究假设】。禁止标盈利/通过/可用。",
+    "excluded": "现有 TrendFollowing (Donchian 20/20, 1d) 继续独立运行，不计入任一 arm。"
+  },
+  "deferred": {
+    "s11_funding_carry": {
+      "name": "资金费拥挤度（反向）",
+      "family": "carry",
+      "blocker": null,
+      "needed": "资金费率已入 quant.series_points；本条仅保留初稿候选的历史记录，不构成当前数据阻塞。",
+      "status": "历史候选已归档；单腿资金费版本被否证，后续两腿 s31 也经成本与近期表现复核淘汰。"
+    }
+  },
+  "final_adjustments": {
+    "from": "codex-multi-strategy-final-adjust-20261011",
+    "applied": [
+      "① s08 由「同 s07 触发、方向相反」换成【s08_wick_rejection 影线拒绝】——独立机制（蜡烛几何）",
+      "② s07 数据源由归档 orderflow（止于 10-08）换成【实时已收盘 5m futures K 线 extras.taker_buy_base/volume】",
+      "③ s02 冻结为【当前 open ± 0.5 × 前 20 根 mean true range】，README 与 JSON 已统一",
+      "④ data_requirements_summary 已清理，本轮 10 项 blocked 为空"
+    ],
+    "s04_status": "保留，不减为 9 项；执行层按双腿同时间戳、等名义、原子成交实现",
+    "round5": {
+      "from": "codex-multi-strategy-implementation-policy-20261011",
+      "applied": [
+        "s07 flow_imbal 固定为 recompute = 2*taker_buy_base/volume-1（由存储字段算），口径进 rule_hash",
+        "s07 新增 volume_window=60（前 60 根中位数），100 根预热满足",
+        "s09 新增显式 atr_window=14",
+        "s08 离场口径统一为【已收盘 close 确认 + next-open 成交】，明确不做盘内止损单仿真",
+        "s03 size_multiplier ≤ 1，且只在开仓/换向时定尺，不逐根 rebalance",
+        "全局新增 warmup_policy：历史只作预热，启动前无订单/无信号"
+      ]
+    }
+  },
+  "data_audit_correction": {
+    "date": "2026-10-11",
+    "raised_by": "Codex（codex-multi-strategy-data-audit-20261011），我已独立复核确认其成立",
+    "my_errors": [
+      {
+        "claim": "extras 覆盖率 100%（BTC 291,584 行 / ETH 291,585 行）",
+        "why_wrong": "我用的是 count(extras) —— 那只说明 extras 列非 NULL，没有检查里面是否含所需字段。",
+        "truth": "BTC: 总 291,586 行 · extras.closed=true 仅 328 · 有 taker_buy_base 仅 89。ETH 同。",
+        "lesson": "检验对象必须对准被测字段（extras ? 'taker_buy_base'），不能停在列级非空计数。"
+      },
+      {
+        "claim": "存档 flow_imbal 与 base 重算的差异只是舍入（~5e-5）",
+        "why_wrong": "两者是【不同公式】，不是精度差异。",
+        "truth": "market_stream 写入的 extras.flow_imbal 是 QUOTE-based：2*taker_buy_quote/quote_volume - 1。实测 6/6 行吻合 quote 公式，仅 2/6 巧合吻合 base 公式。",
+        "lesson": "容差内相等要同时验证【另一候选公式】，否则会把公式差异误判为舍入。"
+      }
+    ],
+    "verified_facts": {
+      "db_5m_futures_BTC": {
+        "total_rows": 291586,
+        "extras_non_null": 291586,
+        "extras_closed_true": 328,
+        "has_taker_buy_base": 89,
+        "has_taker_buy_quote": 89,
+        "has_flow_imbal": 89
+      },
+      "db_5m_futures_ETH": {
+        "total_rows": 291587,
+        "extras_non_null": 291587,
+        "extras_closed_true": 328,
+        "has_taker_buy_base": 89,
+        "has_taker_buy_quote": 89,
+        "has_flow_imbal": 89
+      },
+      "raw_available": "extras.raw.k 存在官方 kline 数组（键 B/L/Q/T/V/c/f/h/i/l/n/o/q/s），V=taker buy base、Q=taker buy quote —— 但同样只存在于那 89 行",
+      "quote_based_field": "extras.flow_imbal = 2*taker_buy_quote/quote_volume - 1（QUOTE-based）"
+    },
+    "implication_for_this_round": [
+      "s07 依我的确认【固定为 base recompute】：flow_imbal = 2*taker_buy_base/volume - 1，不使用存档值。",
+      "该口径必须进 rule_hash；若改为读存档值（quote-based）即为不同实现，须换 variant 身份。"
+    ],
+    "data_supply_plan_by_codex": {
+      "source": "官方 REST 已核验 BTC/ETH 各 750 根连续 closed K 线，可用于独立模拟的指标预热",
+      "storage": "Codex 以独立 documents 保留快照与指纹",
+      "boundary": "【不写入 shared candles】【不改变在线 orderflow 基线】",
+      "research_impact": "10 项策略的预热与信号数据不依赖 quant.candles 的 5m extras 覆盖；因此我先前基于 extras 覆盖率的『数据齐备』结论需改由该独立供给支撑。"
+    }
+  },
+  "spec_corrections": [
+    {
+      "date": "2026-10-11",
+      "strategy_id": "s06_volume_climax_reversal",
+      "issue": "位移窗口错写为单根，导致阈值不可达、策略永不触发",
+      "caught": "DSH 在核实四个零成交策略时自检发现",
+      "fix": "MV3=0.010 作用于 3 根窗口（mv_window=3）",
+      "not_a_bug": "s01/s04/s10 零成交不是缺陷（见下）"
+    },
+    {
+      "date": "2026-10-11",
+      "strategy_id": "all",
+      "change": "杠杆 1 → 100",
+      "requested_by": "用户",
+      "convention": "A（保证金不变、名义 ×100）+ 逐根强平",
+      "impact": "盈亏与爆仓风险均放大约 100 倍；盈亏平衡点不变（0.10%）；旧样本（杠杆1）与新样本不可直接比较"
+    },
+    {
+      "date": "2026-10-11",
+      "strategy_id": "all",
+      "change": "费率 0.05%/边(taker) → 0.02%/边(maker)",
+      "requested_by": "用户质疑",
+      "impact": "成本高估 2.5 倍；最优组合符号由负转正"
+    },
+    {
+      "date": "2026-10-11",
+      "strategy_id": "all",
+      "change": "新增【反向信号强制离场】为各策略主离场",
+      "requested_by": "用户指令：抓到做空信号，做多就应该平仓",
+      "evidence": "74% 交易曾有浮盈但仅 40% 盈利；峰值回吐中位 63%（s09 84%/s02 73%/s07 60%）",
+      "ceiling": "完美离场净 +0.0156%/笔；捕获 75% 峰值净 +0.0017% —— 能把亏损拉到大致的打平，不足以盈利"
+    },
+    {
+      "date": "2026-10-11",
+      "strategy_id": "all",
+      "change": "周期 5m → 15m + 阈值收紧",
+      "requested_by": "用户批准 (A)+(B) 方案",
+      "impact": "样本重置；旧 82 笔（5m 口径）单独存档"
+    },
+    {
+      "date": "2026-10-11",
+      "strategy_id": "all",
+      "change": "重构 execution_contract / data_requirements_summary 并引入 arms 概念",
+      "reason": "Codex 指出 s01~s11 已切 15m 但执行契约与数据摘要仍是旧口径（我改周期时未同步）",
+      "resolution": "逐策略明确周期；执行契约改为逐项显式；arms 隔离样本 A/B/C 永不合并；并自行拍板风险上限与杠杆"
+    }
+  ],
+  "zero_trade_diagnosis": {
+    "date": "2026-10-11",
+    "s01_orb_breakout": "非缺陷。ORB 需当日 UTC 前 12 根（00:00~00:55）构造开盘区间，而服务 02:58 UTC 才启动，今日前 12 根已过。实测 5/5 天都有突破，预计次日 00:00 UTC（北京 08:00）起可正常触发。",
+    "s04_btc_eth_pairs": "非缺陷。需双腿同时满足且时间戳严格对齐，尚未出现。",
+    "s06_volume_climax_reversal": "【是我的规格错误】位移窗口写成单根导致阈值不可达，已修正为 3 根 + 1.0%。",
+    "s10_lead_lag_btc_eth": "非缺陷，属低频。BTC 单根 |收益| ≥0.4% 占 0.7%（5/699），约每天 2 次。若长期仍零成交，再考虑下调 R。"
+  },
+  "generation_2": {
+    "rationale": "用户 2026-10-11：历史回测意义不大，不征求同意，尝试各种可能。第 1 代（s01-s11）在 5m/15m 上经约 50 组合数万笔扫描，无任何正样本外净收益。第 2 代改为【大目标 + 机制各异 + 前向验证】。",
+    "design_principles": [
+      "1. 目标单笔价格移动 ≥0.5%（成本的 12 倍以上）；不接受靠 0.05% 移动赚钱的机制",
+      "2. 优先使用【已被我验证的信号】—— 尤其是「量能突增预测波动率（13~21倍提升）」这条",
+      "3. 机制必须彼此不同源；不把同一机制换周期/换阈值算两项",
+      "4. 用历史只做【可实现性检查】（信号触发频率、是否可算），不用历史收益选策略",
+      "5. 每项都要能在前向模拟里独立证伪"
+    ],
+    "verified_hooks": {
+      "volume_surge_predicts_volatility": "量比≥20x 时 ±1.5%/15min 条件概率提升 13~21 倍；P(涨)≈P(跌)",
+      "daily_trend_has_gross_edge": "1d Donchian 毛/成本 = 43（唯一毛优势远超成本的家族），但 t=1.49 p=0.137 未确立",
+      "cost_floor_maker": "往返 0.04%（实测 maker 0.02%/边）"
+    }
+  },
+  "rejected": [
+    {
+      "strategy_id": "s15_gap_open_reversion",
+      "rejected_on": "2026-10-11",
+      "reason": "可实现性检查不可达：加密 24/7，UTC 日界跳空中位仅 0.0001%、90分位 0.0044%；G=0.5% 触发 1 次/币/年，即使降到 0.05% 也只有 2 次/年。信号无样本可积累。"
+    }
+  ],
+  "feasibility_check": {
+    "date": "2026-10-11",
+    "purpose": "唯一允许用历史做的事：确认信号可达、频率足够。不用于选策略、不看收益。",
+    "results": {
+      "s12": 213,
+      "s13": 482,
+      "s14": 168,
+      "s16": 406,
+      "s17": "未单独测",
+      "s18": 416,
+      "s19": "949多/1086空",
+      "s20": 1499,
+      "s21": 509,
+      "s15": "淘汰"
+    },
+    "unit": "次/币/年（1d 项为次/年）",
+    "my_error": "s19 首次检查我用 (c>ma).mean()（平均占比 0.52）误判不可达；正确的是逐日横截面宽度，实际 0~1 双峰分布。",
+    "gen3_results": {
+      "s22_dual_confirmation_trend": 143,
+      "s23_triple_confirmation_breakout": 81,
+      "s25_vol_regime_momentum": 398,
+      "s26_surge_gated_trend": 181,
+      "s27_long_horizon_mean_reversion": 66,
+      "s28_weekly_breakout": 99,
+      "s29_trend_with_trailing": 830,
+      "s30_dual_asset_confirmation": 742
+    },
+    "my_errors": [
+      "s28 周线突破我预估「<5 笔/年」，实测 99/年 —— 我的频率直觉不可靠，必须实测"
+    ]
+  },
+  "arms": {
+    "definition": "一个 arm = 一组【口径完全一致】的策略副本（周期/费率/杠杆/风险上限相同）。不同 arm 的样本永不合并统计。",
+    "list": [
+      {
+        "arm_id": "A_5m_100x_taker",
+        "status": "ARCHIVED",
+        "content": "s01~s10 的 5m 版本 · 杠杆100× · 往返费 0.100%（taker 假设）",
+        "samples": "82 笔已平仓，已归档，不再新增",
+        "note": "费率假设已被证伪（真实为 maker 0.02%/边），本 arm 的价值仅作历史对照"
+      },
+      {
+        "arm_id": "B_15m_maker",
+        "status": "PENDING_VALIDATION",
+        "content": "s01~s11 的 15m 版本 · maker 0.02%/边",
+        "caveat": "15m 这个选择是我的【未验证猜测】（tf_change_20261011.status=UNVALIDATED_GUESS）。我在 15m 上跑过同样的参数扫描，结果与 5m 相同（零个正样本外净收益），所以 15m 既无证据支持也无证据反对。作为独立 arm 试跑，不与 A 混样。"
+      },
+      {
+        "arm_id": "C_gen2_multitf",
+        "status": "PENDING_IMPLEMENTATION",
+        "content": "s12~s21（第 2 代）· 周期各异（15m/1h/1d）· 多币 · maker 0.02%/边",
+        "note": "按用户「尝试各种可能」产出，机制全部不同源，先做可实现性检查再前向验证"
+      },
+      {
+        "arm_id": "D_gen3_multitf",
+        "status": "PENDING_IMPLEMENTATION",
+        "content": "s22~s30（第 3 代）· 以【提高入场门槛】为核心 · 多为 1d 大目标 · maker 0.02%/边",
+        "note": "针对实测「策略入场 MFE 劣于随机」设计；四类轴：多信号确认/横截面/波动条件/长周期"
+      },
+      {
+        "arm_id": "E_carry_delta_neutral",
+        "status": "REJECTED",
+        "content": "s31 资金费 Delta 中性 Carry",
+        "reason": "DSH 独立复算：用正确两腿成本 0.08% 后，2026 年 30d/7d 调仓年化转负（−0.05%/−1.32%），14d 仅 +0.62%。优势从 2024 的 ~11% 衰减到 0 附近。"
+      }
+    ]
+  },
+  "generation_3": {
+    "rationale": "第 1 代（5m/15m 单信号）经扫描全灭；第 2 代转向大目标。第 3 代针对本轮最硬的证据设计：实测策略入场 MFE(0.0556%) 劣于随机入场 MFE(0.0954%)，说明【入场信号本身在选坏时点】。所以第 3 代的核心不是换离场、不是调阈值，而是【提高入场的证据门槛】。",
+    "design_axes": [
+      "A. 多信号确认 —— 要求 2 个以上独立条件同时成立（提高入场质量）",
+      "B. 横截面相对价值 —— 剥掉市场 beta，只留信号本身（隔离检验）",
+      "C. 波动率条件准入 —— 只在移动幅度可达的区制交易",
+      "D. 长周期大目标 —— 1d 以上，目标 5%+"
+    ]
+  },
+  "explored_and_rejected": [
+    {
+      "direction": "funding_rate_carry（资金费 carry）",
+      "date": "2026-10-11",
+      "hypothesis": "极端资金费时收资金费（正费做空/负费做多），一次结算超过往返成本",
+      "initial_result": "看起来极强：阈值0.10% 净+0.29%/8h t=6.56 胜率95%",
+      "why_wrong": [
+        "bug1: 用 px.loc 取最近K线，可能取到 t 之后的K线 → 价格边虚高为 +0.50%（应约 −0.01%）",
+        "bug2: 未检查价格数据覆盖。资金费文件 57 币自 2020 起（236,558 条），但 DB 1h 价格仅 20 币自 2024-01-01 起；FIL 的 1h 数据只有 9 天。2020 年的事件取到同一根K线 → 价格边=0 → 胜率 100% 假象"
+      ],
+      "corrected_result": {
+        "0.03%": {
+          "n": 2347,
+          "net": -0.000357,
+          "t": -0.5
+        },
+        "0.05%": {
+          "n": 997,
+          "net": -9.5e-05,
+          "t": -0.09
+        },
+        "0.10%": {
+          "n": 118,
+          "net": 0.007267,
+          "t": 1.96,
+          "note": "n 太小，不显著"
+        },
+        "0.20%": {
+          "n": 20,
+          "net": 0.018179,
+          "t": 1.3,
+          "note": "n 太小，不显著"
+        }
+      },
+      "verdict": "不成立（低阈值净额为负、高阈值样本不足且 t<2）",
+      "data_gap": "初次探索时未确认资金费率存储位置、且价格与资金费历史覆盖区间不匹配。现已确认 funding_rate 在 quant.series_points（57币/236558行）；本条保留当时覆盖检查错误的复核记录，不构成当前阻塞。",
+      "lesson": "看起来越好的结果越要先假设自己有 bug。本轮两个 bug 均在 10 分钟内自查发现。"
+    },
+    {
+      "direction": "funding_carry_单腿（我本轮的错误尝试）",
+      "date": "2026-10-11",
+      "why_wrong": "我测的是【单腿做空永续】，带完整价格风险；正确版本是【两腿 Delta 中性】。",
+      "resolution": "项目已有正确版本的研究结论（research_summary.json carry 段），已转为 s31 规格。",
+      "lesson": "我差点重复发现一个已被研究过的方向 —— 做新方向前应先读 research_summary.json 的 routes 地图。"
+    },
+    {
+      "direction": "资金费率 Delta 中性 Carry（项目标为【推荐主攻】的唯一 good 方向）",
+      "date": "2026-10-11",
+      "who": "DSH 独立复核",
+      "found": "机制成立（两腿对冲后价格 P&L ≈ +0.004%）但【成本口径被低估】+【优势快速衰减】",
+      "cost_error": "项目与我都曾按 0.04% 计（单腿 2 次成交）；两腿实为 4 次成交 = 0.08%",
+      "result_by_year": {
+        "2024": "+11~12%",
+        "2025": "+0.2~1.8%",
+        "2026": "−1.3% ~ +0.6%"
+      },
+      "verdict": "当前市场已不可行",
+      "lesson": "引用项目已有结论时，也必须独立复算【成本口径】与【最近一年】表现，不能只看历史平均。趋势/套利类策略的优势会衰减，2024 的数据不能代表 2026。"
+    },
+    {
+      "direction": "1d 趋势家族（原本唯一有正面毛优势证据的方向）",
+      "date": "2026-10-11",
+      "who": "DSH",
+      "found": "全样本 t=4.26 看似确立，但逐年拆解后：2022/2023 为负、2025/2026 t<2 不显著；2021 单年 +47.9% 主导整体",
+      "verdict": "近年不成立（边缘依赖 2020-2021 牛市与极少数巨赢单）",
+      "note": "主交易 TrendFollowing 就是这一族，因此也解释了它 11 笔样本无法验证的困局"
+    },
+    {
+      "direction": "交叉交易所价差套利（Binance vs OKX）",
+      "date": "2026-10-11",
+      "who": "DSH",
+      "data_found": "DB 里确有 OKX 数据（116 币 · 176,171 行 · 仅 1d futures）",
+      "blocker": "① 会话边界不同：binance 日线 00:00 UTC，okx 日线 16:00 UTC（=UTC+8 午夜）→ '收盘价'相差 8 小时，价差被 8 小时价格波动主导，不是交易所溢价",
+      "blocker2": "② 归一化后仅 6 币重叠（BCH/BTC/ETH/FIL/LTC/XRP），且无 ≥50 个同时点",
+      "blocker3": "③ OKX 只有 1d 一个周期，没有分钟级数据可对齐",
+      "verdict": "数据不支持（机制本身未被否证，但当前无法检验）",
+      "what_would_unblock": "若 Codex 能将 OKX 的 1h/5m 数据入 DB，并统一会话边界（或用同时刻快照），此项才可检验"
+    },
+    {
+      "direction": "1d 趋势家族 · 组合层面（补充复核）",
+      "date": "2026-10-11",
+      "who": "DSH",
+      "question": "趋势边缘弱，是否因为 max_positions=2 无法捕获多币分散的收益？",
+      "method": "用同一批 2,068 笔信号，按时间顺序在 MP 个并发槽位内等权建仓，毛收益未扣费",
+      "result": {
+        "recent_sample_corrected": {
+          "note": "按【入场日】而非【离场年】归类",
+          "n": 789,
+          "mean_per_trade": 0.00437,
+          "median_per_trade": -0.05436
+        },
+        "portfolio_gross": {
+          "max_pos_2": {
+            "ann": -0.11,
+            "mdd": -0.434
+          },
+          "max_pos_3": {
+            "ann": 0.0315,
+            "mdd": -0.429
+          },
+          "max_pos_5": {
+            "ann": 0.0518,
+            "mdd": -0.384
+          },
+          "max_pos_10": {
+            "ann": 0.0013,
+            "mdd": -0.264
+          },
+          "max_pos_50": {
+            "ann": 0.0296,
+            "mdd": -0.287
+          }
+        }
+      },
+      "verdict": "不成立（补充）：即使放宽并发到 5-50，毛年化最好也只有 +5.18%，而最大回撤 −38%；收益/回撤 = 0.14。且这是【未扣费】的毛收益。",
+      "my_error": "我上一次把 2025 报成 +1.51%、2026 报成 +1.95%，是把 2024 入场/2025 离场的大赢单算进了 2025（按离场年归类）。按入场日应为 +0.437% 总体。",
+      "lesson": "逐年统计必须明确【按入场日还是离场年】归类；跨越年界的交易会系统性污染当年结果。这是本会话我自查出的第 8 处错误。"
+    },
+    {
+      "direction": "趋势 + 波动率目标（我提出的组合，本会话新方向）",
+      "date": "2026-10-11",
+      "who": "DSH（提出并自行否证）",
+      "hypothesis": "1d 趋势毛/笔 +0.437% 是成本 11 倍（成本不是问题），问题是组合波动（+4.74% 回撤 −38.4%）；项目研究称波动率可预测(IC 0.351) → 用 vol 倒数定仓应改善 Calmar",
+      "my_initial_result": {
+        "等权": {
+          "ann": 0.0474,
+          "mdd": -0.384,
+          "calmar": 0.12
+        },
+        "vol倒数": {
+          "ann": 0.1462,
+          "mdd": -0.274,
+          "calmar": 0.53
+        },
+        "vol倒数_cap1": {
+          "ann": 0.1183,
+          "mdd": -0.286,
+          "calmar": 0.41
+        }
+      },
+      "why_invalid": [
+        "① 隐性杠杆: w=0.02/vol 归一化到 mean=1 后，最大权重 5.29 倍（原始分布 max/mean=28.5）→ 不是风险管理，是把资金集中到少数交易",
+        "② 关键因果假设不成立: corr(vol,ret) = −0.0496 不显著；按 vol 五分位的收益 −3.69%~+4.53% 完全无单调规律",
+        "③ 所以 +14.62% 来自「杠杆集中在随机幸运的低波动交易」+ 少数巨赢单，不是可复现的效应"
+      ],
+      "verdict": "【已否证】不成立",
+      "verified_by": "DSH 自查（这正是用户改分工后我承担的核对职责：不重跑策略代码，而查输入假设与不变量）",
+      "my_errors": [
+        "第9处: 核对脚本里 '归一化' in name 把「不归一化」也匹配了，导致该变体被错误归一化"
+      ],
+      "lesson": "【仅改变权重却大幅提升收益】的结果，必须先查 (a) 权重分布是否右偏导致隐性杠杆 (b) 权重与收益的相关性是否显著。两者都不成立时，提升就是噪声。",
+      "method_value": "用户改分工为「Codex 计算 / DSH 核对」后的第一个完整核对案例：我提出的假发现在一轮内被自己的核对杀掉，没有流到 Codex。"
+    }
+  ],
+  "trend_edge_settlement": {
+    "date": "2026-10-11",
+    "who": "DSH 独立复核（用 DB 全部 57 币，非仅 20 币白名单）",
+    "question": "1d 有状态 Donchian 20/20 的趋势边缘是否真实？此前 20 币测出 t=1.49 p=0.137 未确立，怀疑是样本不足。",
+    "result_all": {
+      "coins": 55,
+      "trades": 2068,
+      "gross_per_trade": 0.066462,
+      "net_per_trade": 0.066062,
+      "t_stat": 4.259,
+      "gross_over_cost": 166.15,
+      "split": {
+        "first_half": {
+          "n": 1034,
+          "gross": 0.072681,
+          "t": 3.23
+        },
+        "second_half": {
+          "n": 1034,
+          "gross": 0.060243,
+          "t": 2.79
+        }
+      },
+      "bootstrap_95ci": [
+        0.038437,
+        0.096909
+      ]
+    },
+    "but_robustness_kills_it": {
+      "median": "−5.3947%（均值 +6.65% 而中位为负 → 极度右偏）",
+      "outlier_concentration": {
+        "top5": 0.381,
+        "top10": 0.568,
+        "top20": 0.815,
+        "top50": 1.15
+      },
+      "drop_top20_mean": 0.012424,
+      "by_year": {
+        "2020": {
+          "gross": 0.11442,
+          "t": 2.2
+        },
+        "2021": {
+          "gross": 0.47887,
+          "t": 3.33
+        },
+        "2022": {
+          "gross": -0.00655,
+          "t": -0.4
+        },
+        "2023": {
+          "gross": -0.01231,
+          "t": -1.0
+        },
+        "2024": {
+          "gross": 0.06647,
+          "t": 2.87
+        },
+        "2025": {
+          "gross": 0.01513,
+          "t": 0.58
+        },
+        "2026": {
+          "gross": 0.01949,
+          "t": 1.52
+        }
+      }
+    },
+    "verdict": "整体 t=4.26 由 2020-2021 牛市撑起（2021 单年 +47.9%）；最近两年 2025 +1.51%(t=0.58) / 2026 +1.95%(t=1.52) 均【不显著】；2,068 笔中最大 20 笔贡献 81.5% 收益。→ 【趋势边缘在近年不成立】，此前 t=1.49 的判断经扩样后仍成立（扩样只把 2020-21 拉进来）。",
+    "lesson": "扩样本可以提升 t 值，但如果提升来自【很久以前的行情】，那不是证据、是历史包袱。逐年拆开是必须的。"
+  },
+  "verification_log": [
+    {
+      "date": "2026-10-11",
+      "by": "DSH（核对职责）",
+      "scope": "gen2/gen3 共 18 项实现 vs 规格",
+      "checked": [
+        "① definition 的 timeframe/params/universe 与规格逐项比对 → 18/18 一致 ✅",
+        "② entry_formula/exit_formula 文本比对 → 18/18 逐字相同 ✅（但文本相同不等于代码实现，见下）",
+        "③ 核心辅助函数无前视纪律：_channel_state 用 rows[i-channel:i]、_volume_ratio 用 rows[-w-1:-1]、_atr_at 用 range(i-w,i) → 全部不含当前根 ✅",
+        "④ s12 实现逐行读：baseline 排除当前根、候选只在 valid 窗口、突破用 root 的 high/low → 无前视 ✅",
+        "⑤ 热身期：18/18 实现短于我的规格，但实现值由指标窗口推导，我的值是拍的 → 【我的规格粗，非实现错】"
+      ],
+      "my_error_found": "核对脚本里 '公式' 一列我写成 '✅' if True else ''（恒真），是一处假检查；发现后改为真实文本比对，结果 18/18 相同。这是我的第 10 处自查错误，且是【核对工具本身出错】这一类，最危险。",
+      "verdict": "18 项实现与规格一致；未发现实现缺陷；发现我自己的规格在热身期上过于保守与一处假检查",
+      "remaining_unverified": [
+        "策略专属逻辑（_single 里各分支的完整语义）只逐行读了 s12，其余 17 项未逐行读",
+        "s24 横截面/ s19 宽度等多币逻辑未验证（需多币数据路径）",
+        "首批开仓时的仓位口径（预算 vs 风险上限取 min）需实证"
+      ]
+    },
+    {
+      "date": "2026-10-11",
+      "by": "DSH（核对职责）",
+      "scope": "gen2/gen3 全部 18 项策略逻辑逐行读",
+      "method": "逐行读 strategy_signals.py 的 _single() 各分支（594~1140 行），比对规格的入场/离场公式与无前视纪律",
+      "result": {
+        "functional": 15,
+        "stubs_never_trade": [
+          "s19_multi_coin_breadth",
+          "s24_cross_sectional_lowvol",
+          "s30_dual_asset_confirmation"
+        ],
+        "stub_reason": "legacy evaluate 契约只提供 BTC/ETH 单对；多币机制（宽度/横截面/双资产）无法取得上下文",
+        "look_ahead_found": 0,
+        "formula_mismatch_found": 0,
+        "notable_correct_patterns": [
+          "s14 用 _percentile(values[:-1]) 显式排除当前值",
+          "s13/s18/s27 用 rows[-n-1:-1] 或 rows[index-channel:index] 排除当前根",
+          "s23 的 atr_values 用 range(..., index) 排除当前根",
+          "s26 的 baseline 用 rows[j-channel:j]"
+        ]
+      },
+      "verdict": "15 项逻辑正确、无前视；3 项为 fail-closed 空壳（诚实标注但永不交易）",
+      "impact": "我此前对 s19 做的可实现性检查（949多/1086空）基于多币分析，但实现无法取得多币上下文 → s19 当前不可用",
+      "action_for_codex": "若要启用 s19/s24/s30，执行层需要把多资产上下文（4 对的通道状态 或 20 币宽度快照）传进 evaluate 契约"
+    },
+    {
+      "date": "2026-10-11",
+      "by": "DSH（核对职责）",
+      "scope": "引擎算术手算核验（strategy_simulation.py 的输出）",
+      "method": "取 2 笔已平仓交易，用原始字段（entry/exit/quantity/side/fees）手算并与记录值逐项比对",
+      "trades_checked": [
+        {
+          "seq": 189,
+          "strategy": "s08_wick_rejection",
+          "side": "short",
+          "leverage": 1,
+          "notional": 1499.89,
+          "gross_hand": 1.43521,
+          "gross_record": 1.435207490849043,
+          "match": true,
+          "fees_hand": 1.499181,
+          "fees_record": 1.4991699046914428,
+          "net_hand": -0.06397,
+          "net_record": -0.06396241384239976,
+          "return_hand": -4.2645e-05,
+          "return_record": -4.264480734895863e-05
+        },
+        {
+          "seq": 240,
+          "strategy": "s09_trend_pullback",
+          "side": "long",
+          "leverage": 1,
+          "gross_hand": -2.723,
+          "gross_record": -2.7230043058309734,
+          "match": true,
+          "fees_hand": 1.49853,
+          "fees_record": 1.4985260062839516,
+          "net_hand": -4.22153,
+          "net_record": -4.2215303121149255,
+          "return_hand": -0.0028146,
+          "return_record": -0.002814564617925556
+        }
+      ],
+      "formulas_confirmed": [
+        "gross_pnl = quantity × (exit − entry) × (空头取反)",
+        "fees = 开仓名义×fee_rate + 平仓名义×fee_rate （按【名义】而非保证金计费）",
+        "net_pnl = gross_pnl − fees",
+        "return_ratio = net_pnl / margin，杠杆1时 margin = 名义",
+        "quantity = margin / price（杠杆1）"
+      ],
+      "verdict": "引擎算术正确 ✅（两笔逐项一致，误差仅尾数舍入）",
+      "my_near_miss": "我一度以为 return_ratio 差 100 倍，因为先假设了杠杆 100；实际这两笔属于 v1 arm（无 _100x 后缀）= 杠杆 1。先怀疑自己再下结论，避免了第 12 处误报。"
+    },
+    {
+      "date": "2026-10-12",
+      "by": "DSH（核对职责）",
+      "scope": "策略实验室的数据新鲜度与 data_stale 状态",
+      "finding": {
+        "bug": "strategy_lab_service.py:394 的 15m/1h 状态判定顺序反了",
+        "detail": "先判 `now - (latest+interval) > 90s` → data_stale → continue，导致【已处理】的 K 线也永远被判 stale，`native_last_processed == latest` 那一支（observing）走不到",
+        "reference": "同文件 553 行 5m 路径是正确的：已处理的收盘用 `interval + 90s` 期限，注释写明『A close stays current until its successor is due』",
+        "measured": "now=16:05:19 时 15m latest=15:45 / 1h latest=15:00，距其收盘均 319s > 90s → 误报 stale。15m 约 93% 时间、1h 约 98% 时间被误报",
+        "impact_assessed": "我判断为【状态误报】而非漏单（K 线仍在 [收盘,收盘+90s] 窗口内被处理），但已请 Codex 确认两点：REST 晚于 90s 到达时能否补上；overall status 是否被其他逻辑依赖"
+      },
+      "my_near_miss": "我先从 DB 发现 15m/1h 滞后 13 小时，差点报『7 个策略无法出信号』；随后查数据源发现实验室 15m/1h 走 Binance REST 直连（141/467 行），与 DB 滞后无关，遂撤回报警。这是第 12 处自查错误 —— 报告前先查了数据源，未造成误报。",
+      "lesson": "从【数据现象】跳到【影响结论】之前，必须先确认【哪条路径在读这份数据】。"
+    },
+    {
+      "date": "2026-10-12",
+      "by": "DSH（核对职责）",
+      "scope": "首批 100x 交易的仓位口径与盈亏手算核验（挂了两轮的悬案）",
+      "first_100x_trades": [
+        {
+          "strategy": "s07_surge_continuation_B15m_100x_maker",
+          "pair": "BTC/USDT:USDT",
+          "side": "short",
+          "notional": 9259.259259259257,
+          "margin": 92.59259259259258,
+          "leverage": 100.0,
+          "entry": 83101.0,
+          "exit": 83375.8,
+          "exit_reason": "orderflow_direction_reversed",
+          "liquidation_price": 83932.01,
+          "net_pnl": -34.32852570745047,
+          "return_ratio": -0.3707480776404651
+        },
+        {
+          "strategy": "s08_wick_rejection_B15m_100x_maker",
+          "pair": "BTC/USDT:USDT",
+          "side": "short",
+          "notional": 9259.259259259257,
+          "margin": 92.59259259259258,
+          "leverage": 100.0,
+          "entry": 83090.9,
+          "exit": 83375.8,
+          "exit_reason": "stop_loss_close_confirmed",
+          "liquidation_price": 83921.809,
+          "net_pnl": -35.45796988153588,
+          "return_ratio": -0.38294607472058756
+        }
+      ],
+      "verdicts": {
+        "预算vs风险上限": "【已解决】实现取 min → 采用风险约束。名义 9,259.259259259257 = 50/(0.005+0.0004) 精确一致；保证金 92.59259259259258 = 名义/100 精确一致。不是预算约束的 300,000 名义。",
+        "引擎算术": "【两笔手算全部一致】毛盈亏用 quantity×(entry−exit)（空头取反）；手续费按【名义】×fee_rate 两腿相加；净=毛−费；收益/保证金=净/margin",
+        "强平价": "【精确】空头 liq = 83101 × 1.01 = 83932.01（规格 price×(1+1/leverage)）",
+        "费率": "maker 0.02% 按名义计：9,259.26×0.0002 = 1.85185 ✅",
+        "50 USDT 上限": "实测 −34.33 / −35.46，都在上限内 ✅"
+      },
+      "important_caveat": "【50 USDT 是设计目标，不是数学硬顶】离场原因为 stop_loss_close_confirmed —— 止损按【收盘价确认】而非盘中触发。s08 在 +0.343%（未到 0.5%）就离场，因为那是收盘价。若某根 K 线【收盘】超过 0.5% 或发生跳空，实际亏损会 > 50。跳空风险未建模。→ 用户要的『每笔最大亏损 50 USDT』在正常收盘情形下成立（通常更小），跳空时会超出。",
+      "spec_vs_reality": "我规格写的是 min_warmup_bars 那种粗值，但 risk_sizing 公式与 Codex 实现一致；本轮证明 Codex 在风险上限上比我规格更严谨（写成了可执行公式）。"
+    },
+    {
+      "date": "2026-10-12",
+      "by": "DSH（核对职责）",
+      "scope": "补核 s01~s11（B15m）参数与实现 —— 我此前只核过 s12~s30",
+      "result": {
+        "params_match_spec": "10/11",
+        "only_mismatch": "s01_orb_breakout（实现多 2 个限制性参数，N_bars 一致）",
+        "key_finding_1": "10/11 的实现 params 不等于模块 DEFAULTS、而等于我的规格 → Codex 按规格建账户，参数化正确",
+        "key_finding_2": "s07 的真实机制是【量能过滤 + 订单流方向】；我的 mechanism 描述漏了订单流成分。而订单流方向属项目已证伪族 → s07 是在前向重测一个历史已证伪的机制",
+        "key_finding_3": "s07 依赖 extras.taker_buy_base；DB 覆盖率极低（BTC 5m 291,586 行仅 89 行），实验室因走 REST 直连才能交易。若改从 DB 喂数，s07 将永不触发"
+      },
+      "my_gap": "我上一轮声称『18 项 definition vs 规格全一致』，但那只覆盖 s12~s30，【s01~s11 从未核对】。我报出的覆盖率不完整，属我的第 13 处自查问题（已在本轮补齐）。",
+      "lesson": "报『全一致』前必须确认【全】的边界：我当时核的是 gen2/gen3，却用『18 项』这种像全量的措辞。"
+    },
+    {
+      "date": "2026-10-12",
+      "by": "DSH（核对职责）",
+      "scope": "补齐 s01~s11 的实现逻辑逐行读 —— 至此 29 项策略实现逻辑全部核完",
+      "coverage": {
+        "single_path": 26,
+        "cross_asset_path": 2,
+        "fail_closed_stubs": 3,
+        "total": 29
+      },
+      "findings": {
+        "look_ahead_defects": 0,
+        "formula_mismatches": 0,
+        "no_current_bar_patterns": [
+          "s01 session[:count] + first 只取当日首次突破",
+          "s05 prior = rows[-N-1:-1]",
+          "s06 baseline = rows[-vol_win-1:-1]，anchor = rows[-1-mv_window]",
+          "s07 baseline = rows[-vol_win-1:-1]",
+          "s08 atr 用 _atr_at（不含当前）",
+          "s09 slow_now = rows[-slow-1:-1]；slow_before = rows[-slow-shift-1:-shift-1]（滞后正确）",
+          "s04/s10 跨资产分支用 btc/eth[-1] 与 [-1-L]，均为已收盘根"
+        ],
+        "cross_asset_path": "s04_btc_eth_pairs / s10_lead_lag_btc_eth 在 _single 末尾 raise，实际由 evaluate() 的独立分支处理：s10 用 BTC 单根收益触发 ETH 同向；s04 用 L 根相对收益差配对，含原子腿校验（opened_candle_ms 相同、方向相反）与收敛离场",
+        "stubs": [
+          "s19_multi_coin_breadth",
+          "s24_cross_sectional_lowvol",
+          "s30_dual_asset_confirmation"
+        ]
+      },
+      "s07_mechanism_correction": "s07 真实机制 = 量能过滤 + 订单流方向（imbalance = 2×taker_buy_base/volume − 1）；我规格的 mechanism 描述漏了订单流成分，已补。且订单流方向属项目已证伪族，前向重测中。",
+      "verdict": "29 项实现逻辑全部核完：0 前视缺陷、0 公式不符、3 项 fail-closed 空壳（诚实标注）"
+    },
+    {
+      "date": "2026-10-12",
+      "by": "DSH（核对职责）",
+      "scope": "实验室前向样本积累能力与账户间相关性",
+      "findings": {
+        "never_traded": "24/29 账户从未开仓（<1 天，多数策略规格本就挑剔，属预期）",
+        "current_positions": "5 个（BTC多×2 · ETH多×1 · BTC空×1 · ETH空×1）",
+        "opened_total": "7 笔 · BTC 5 (71%) · ETH 2 (29%)",
+        "two_closed": "s07/s08 都是 BTC 空头，在【同一根 K 线】被同一波 +0.34% 上涨打掉（−34.33 / −35.46）",
+        "core_problem": "账户高度相关：只做 BTC/ETH，且方向逻辑相近。『29 个策略』的有效独立样本数远小于 29，接近 1~2 个独立实验。→ 加快样本积累要靠【扩展币池】，而不是增加策略数。"
+      },
+      "data_stale_recheck": "我此前说『data_stale 只是标签问题、不影响交易』，复查后精确化：实测 observed_at 是收盘后 8.8 秒 → 在 90 秒窗口内 → 会被正常处理，不丢单 ✅。但若某次 REST 数据到达晚于收盘+90 秒，那一根会被【永久跳过】——残留风险，尚未观测到发生。",
+      "my_errors": [
+        "第14处: 用 min/max(created_at) 算账户时长，但 29 个账户在同一秒建立 → 跨度 0 → 速率外推成 2200 万笔/天（垃圾）。应使用『建仓时刻到现在』的墙钟时间。"
+      ],
+      "lesson": "用 min/max 差算时长前，先确认两个极值不是同一时刻；对『同批建立』的对象，min/max 差恒为 0。"
+    },
+    {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "scope": "建立事前登记（非核对，属研究设计）",
+      "deliverable": "research_multi_strategy/PREREGISTRATION.md",
+      "content": "三条决策规则（KILL/KEEP/UNDECIDED）+ N_min=100 + 多重比较处理 + 复核节奏 + 已证伪方向边界 + 记账可信度前置条件",
+      "rationale": "29 个策略在跑但没有任何事先定义的裁定规则 → 结果出来时可以合理化任何结论。事前登记堵住三个漏洞：①样本不足就下结论 ②从 29 个里挑最好的 ③用历史回测补强前向不显著"
+    },
+    {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "scope": "止损口径 vs 各周期波动率",
+      "finding": "固定 0.5% 止损在 1h/4h/1d 上窄于一根 K 线的典型波动（0.47/0.23/0.07 ATR）；1d 单根 K 线触及 ±0.5% 的概率 90.5%/91.7%",
+      "root_cause": "我的规格把 stop_pct 固定为 0.005 作为方程的解，未与周期波动率挂钩",
+      "impact": "约 15 个账户每笔近似固定亏 50；2026-10-12 前的 1d/1h 样本不可用于评估策略",
+      "my_errors": [
+        "第15处: 检查『是否存在按周期不同的止损值』时用 (stop,tf) 组合数判断，但 stop 全为 0.005 → 假 ✅。核对脚本本身出错，比无检查更危险",
+        "第16处: 解 risk_cap 方程时把 stop_pct 随手定为 0.5%，未检查其对各周期的适用性"
+      ],
+      "lesson": "含两个未知量的约束方程，不能把一个未知量『随手定死』再解另一个；被定死的那个参数必须有其自身的依据（这里是 ATR）。"
+    },
+    {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "scope": "止损是否被真正实现",
+      "finding_pivot": "我上一轮说『0.5% 止损在 1d 上太紧』→ 读代码后更正：risk_stop_pct 只用于算仓位，真实的止损是 ATR 驱动且只在 s08 里。28/29 策略【没有硬止损】。",
+      "the_real_defect": "仓位按假设的 0.5% 止损计算，但 28/29 策略没有该止损 → 单笔亏损不受 50 USDT 约束，下界是保证金全损 92.6（1.85×上限）",
+      "my_errors": [
+        "第17处: 上一轮用『单根 K 线触及 0.5%』的盘中口径评估止损，而实现是收盘确认；口径错配",
+        "第18处: 断言『0.5% 止损太紧会被打掉』时，未先确认这个止损是否存在于实现中 —— 它只存在于仓位公式里"
+      ],
+      "lesson": "评估一个参数的影响前，必须先确认该参数在实现中【被用在什么地方】。我把『仓位公式的输入』误当成『被实现的止损』。",
+      "cross_check_done": "已核 s08 实盘离场：入场 83090.9 · ATR 70.571 · 离场 83375.8（距离 0.343%）→ 证实止损是 ATR 倍数而非固定 0.5%"
+    },
+    {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "scope": "我自己的信号频率测试为何全 0",
+      "root_cause": "strategy_signals._history() 要求 extras.closed is True；DB 里该标记仅 328/291,586 行存在",
+      "correction": "不是我的脚本 bug，是数据缺标记。修复方式: 回放历史时手动补 closed=True",
+      "my_errors": [
+        "第22处: 我最初把『29/29 全 0』称为『我的脚本 bug』，未先确认 _history 的输入要求。结论对了一半（确实是我的测试方式问题），但归因不准 —— 真正原因是数据契约不匹配，不是逻辑写错。"
+      ],
+      "lesson": "脚本跑出『全 0』这类退化结果时，先查输入契约（前置条件），再怀疑逻辑。"
+    },
+    {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "scope": "用已核对实现回放历史，统计 28 项策略的信号频率",
+      "method": "从 DB 读历史并补 extras.closed=True（历史 K 线按定义已收盘），调 strategy_signals.evaluate()",
+      "results_usable": {
+        "1h": true,
+        "1d": true,
+        "15m": false
+      },
+      "why_15m_unusable": "单根 18 小时缺口使连续后缀只剩 200 根",
+      "1d_trigger_rates_per_year_sampled": {
+        "s28_weekly_breakout": 8,
+        "s29_trend_with_trailing": 8,
+        "s13_daily_trend_multi_horizon": 8,
+        "s30_dual_asset_confirmation": 6,
+        "s19_multi_coin_breadth": 5,
+        "s25_vol_regime_momentum": 4,
+        "s26_surge_gated_trend": 2,
+        "s27_long_horizon_mean_reversion": 0,
+        "s22_dual_confirmation_trend": 0,
+        "s23_triple_confirmation_breakout": 0,
+        "s24_cross_sectional_lowvol": 0
+      },
+      "1h_trigger_rates_per_year_sampled": {
+        "s16_weekly_seasonality": 5,
+        "s18_drawdown_recovery": 3,
+        "s14_vol_compression_release": "仅 3 个回放点，不可用"
+      },
+      "caveat": "我的采样很稀（每币 60~185 个回放点），所以点估计噪声大；但【数量级】可信: 1d 策略在 3 币上每年只触发几次",
+      "design_consequence": "⚠️ 若 1d 策略每年只触发 0~8 次，达到 N_min=100 需要 12~100+ 年 → 【1d 策略在 BTC/ETH/TRX 三币上永远无法被裁定】",
+      "lesson": "设计实验时要先算【样本积累速度能否在可接受时间内达到裁定门槛】——这一步我之前漏了"
+    },
+    {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "scope": "裁定门槛与实际可达样本的对齐",
+      "finding": "N_min=100 在 15m 可达（0.1~0.2 年），但 1h 需 6.7~11.1 年、1d 需 4.2~66.7 年",
+      "action": "PREREGISTRATION.md 新增 §2b 分层裁定；1h 降为描述性、1d 仅机制验证",
+      "my_gap": "我定 N_min 时只考虑了『效应量→样本量』，没考虑『触发频率→样本积累速度』。这是实验设计的必要一步",
+      "lesson": "设计裁定门槛必须双向校验: ①效应量需要多少样本 ②当前触发频率多久能积累到那么多"
+    },
+    {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "scope": "前向数据的描述性观察（样本极小，不下结论）",
+      "observations": {
+        "direction_split_153_openings": {
+          "long": 90,
+          "short": 63,
+          "verdict": "无系统性偏空 —— 我原先『7 笔里 5 笔 BTC 空』的判断是小样本假象，已撤回"
+        },
+        "asset_drift": {
+          "BTC_2019_2026": "+705.8%",
+          "ETH_2019_2026": "+1559.8%",
+          "BTC_last_30d": "+7.71%",
+          "ETH_last_30d": "+2.08%",
+          "note": "策略略偏多 + 资产强正漂移 → 『构造性做空』假设不成立"
+        },
+        "opposite_positions_at_same_price": {
+          "detail": "s17 做空 BTC@83,375.80 与 s02/s20 做多 BTC@83,375.80 【同一时刻同一价】；ETH 同样。5 个持仓合计浮盈 −39.27 USDT，等于纯手续费与价差损耗",
+          "implication": "28 个策略可同时持相反方向 → 账户间盈亏互相抵消。所以『28 个里有几个赚钱』【不是】边际的有效度量；正确度量是【每个策略 vs 它自己的零假设】"
+        },
+        "same_entry_price_across_strategies": "说明它们都锚定同一根 15m 边界 → 时间上高度同步"
+      },
+      "caveat": "新账户样本仅 2 笔平仓 + 5 个持仓，远不足以下任何统计结论",
+      "my_retraction": "第24处: 我基于 7 笔开仓判断『系统性偏空』，扩到 153 笔后不成立。样本量不足时不该下方向性判断"
+    }
+  ],
+  "preregistration": {
+    "file": "research_multi_strategy/PREREGISTRATION.md",
+    "created": "2026-10-12",
+    "by": "DSH",
+    "why": "目标要求『前向验证…用实盘数据裁定』。裁定必须有事先定义的规则，否则结果好就说再跑跑、结果差就说样本不够、29 个里挑最好的报。",
+    "decision_rules": {
+      "insufficient": "平仓 < N_min → 禁止下任何结论",
+      "KILL": "样本 ≥ N_min 且净均值 ≤ 0 → 淘汰并记入 explored_and_rejected",
+      "KEEP": "样本 ≥ N_min 且均值 > 0 且 bootstrap 95% CI 下界 > 0 → 保留观察，仍标 hypothesis，不等于可用",
+      "UNDECIDED": "样本 ≥ N_min 且均值 > 0 但 CI 含 0 → 记不显著，禁止声称有边缘"
+    },
+    "n_min": 100,
+    "n_min_rationale": "对应约 0.28% 单笔效应（≈26 USDT/笔）；这是『值得占用资金与注意力』的最小经济意义阈值",
+    "multiple_comparison": "29 策略同时跑，即使全无效也预期约 1.5 个偶然『显著』。必须报全部、并给 Bonferroni 阈值 α/29≈0.0017；任何单一显著在独立复现前标 provisional",
+    "anti_practices": [
+      "禁止在样本 < N_min 时声称有/无信号",
+      "禁止只报事后表现最好的那个",
+      "禁止用历史回测补强前向不显著的结果",
+      "禁止把 KEEP 表述为盈利/可用/通过"
+    ],
+    "revision_rule": "§1 决策规则与 §2 N_min 不得事后放宽；若需修改，必须在尚未观察到该策略结果时修改并记录",
+    "tiered_adjudication_20261012": {
+      "why": "我定 N_min=100 时【漏算了样本积累速度能否达到它】。实测触发频率后必须分层。",
+      "achievable_samples": {
+        "15m": {
+          "coins": 2,
+          "triggers_per_coin_year": "228~987",
+          "total_per_year": "456~1974",
+          "years_to_100": "0.1~0.2",
+          "verdict": "可做统计裁定"
+        },
+        "1h": {
+          "coins": 3,
+          "triggers_per_coin_year": "3~5",
+          "total_per_year": "9~15",
+          "years_to_100": "6.7~11.1",
+          "verdict": "降为描述性观察"
+        },
+        "1d": {
+          "coins": 3,
+          "triggers_per_coin_year": "0.5~8",
+          "total_per_year": "2~24",
+          "years_to_100": "4.2~66.7",
+          "verdict": "仅机制验证"
+        }
+      },
+      "tiered_rule": {
+        "15m": "按 §1 三规则正常裁定（KILL/KEEP/UNDECIDED），N_min=100",
+        "1h": "不做显著性裁定；只报累计笔数/均值/方向命中率，标注『样本不足以裁定』",
+        "1d": "仅机制验证 —— 只答『信号方向是否与预期一致』，不答『是否显著为正』"
+      },
+      "caveat": "1h 的触发频率来自 60~185 个回放点的稀疏采样，噪声大，仅取数量级",
+      "real_dilemma": "唯一能在 1~3 个月内得出统计结论的周期是 15m，而早先参数扫描显示 15m 上【0 组正样本外净收益】；可能有边际的 1h/1d 在三币池下【无法在合理时间内裁定】",
+      "solutions_for_user": {
+        "A": "接受分层: 只对 15m 做统计裁定，1h/1d 做机制验证",
+        "B": "提高 1h/1d 触发频率（缩短持有期 H 或放宽阈值）—— 会改变机制本身",
+        "C": "放宽币池（1h/4h 有 15 币可用，触发频率约 ×5）—— 与『只研究三币』冲突"
+      }
+    }
+  },
+  "risk_budget_design": {
+    "decided_by": "DSH (用户 2026-10-12 授权「你自己决策，可以和 codex 讨论」+「或者所有方向都做」)",
+    "decision": "止损 = 1.5×ATR 收盘确认；风险预算三档 R50/R200/R1000 并行；29 策略 × 3 档 = 87 账户",
+    "file": "research_multi_strategy/STOP_DECISION.md",
+    "expected_grid": {
+      "R50": {
+        "15m": {
+          "stop": 0.0052,
+          "notional": 8921,
+          "margin": 89.2
+        },
+        "1h": {
+          "stop": 0.01591,
+          "notional": 3065,
+          "margin": 30.6
+        },
+        "1d": {
+          "stop": 0.11306,
+          "notional": 441,
+          "margin": 4.4
+        }
+      },
+      "R200": {
+        "15m": {
+          "stop": 0.0052,
+          "notional": 35682,
+          "margin": 356.8
+        },
+        "1h": {
+          "stop": 0.01591,
+          "notional": 12259,
+          "margin": 122.6
+        },
+        "1d": {
+          "stop": 0.11306,
+          "notional": 1763,
+          "margin": 17.6
+        }
+      },
+      "R1000": {
+        "15m": {
+          "stop": 0.0052,
+          "notional": 178412,
+          "margin": 1784.1,
+          "budget_bites": true,
+          "actual_margin": 1500
+        },
+        "1h": {
+          "stop": 0.01591,
+          "notional": 61293,
+          "margin": 612.9
+        },
+        "1d": {
+          "stop": 0.11306,
+          "notional": 8814,
+          "margin": 88.1
+        }
+      }
+    },
+    "naming": "s{NN}_{name}_{arm}_{R档}_100x_maker（例 s07_..._B15m_R50_100x_maker）",
+    "existing_29_accounts": "建议保留为对照（代表『无止损』口径）—— 无止损 vs 有止损本身是有价值的对照",
+    "pending": "等 Codex 回可行范围（全量 87 或其子集）",
+    "user_directives_20261012": {
+      "accounts_no_limit": "用户 2026-10-12「账户数不设上限」→ 解除我此前对 87 账户的顾虑",
+      "falsified_archived": "用户 2026-10-12「证伪的归档」"
+    },
+    "full_factorial": {
+      "axes": {
+        "strategy": {
+          "levels": 29,
+          "note": "s01~s30 去掉 s15（已淘汰）与 s31（已复核失效）"
+        },
+        "risk_budget": {
+          "levels": [
+            "R50",
+            "R200",
+            "R1000"
+          ],
+          "max_loss_usdt": {
+            "R50": 50,
+            "R200": 200,
+            "R1000": 1000
+          }
+        },
+        "stop_width_k": {
+          "levels": [
+            1.0,
+            1.5,
+            2.5
+          ],
+          "note": "stop = k × ATR(周期)，收盘确认"
+        }
+      },
+      "total_accounts": 261,
+      "why_k_matters": "固定风险 R 时: k 大 → 止损远、名义小；k 小 → 止损近、名义大。两者风险相同，差别在【被打掉的频率 vs 单次亏损】。直接检验用户要求『横盘不能强行止损』——紧止损在横盘被反复打掉，宽止损能活。",
+      "caveat": "261 个账户测的是【参数敏感性】，不是更多市场信息 —— 因为全部只做 BTC/ETH，有效独立样本仍 ≈1~2 个实验。所以 261 个账户的价值是告诉我【R 与 k 哪个方向更好】，而不是【策略能否赚钱】。后者需要扩展币池。",
+      "grid_examples": {
+        "R50_k1.0_15m": {
+          "stop": 0.00347,
+          "notional": 12915,
+          "margin": 129.2
+        },
+        "R50_k1.5_15m": {
+          "stop": 0.0052,
+          "notional": 8921,
+          "margin": 89.2
+        },
+        "R50_k2.5_15m": {
+          "stop": 0.00868,
+          "notional": 5509,
+          "margin": 55.1
+        },
+        "R200_k1.5_1d": {
+          "stop": 0.11306,
+          "notional": 1763,
+          "margin": 17.6
+        },
+        "R1000_k1.5_1d": {
+          "stop": 0.11306,
+          "notional": 8814,
+          "margin": 88.1
+        }
+      }
+    }
+  },
+  "archive_policy": {
+    "user_directive": "证伪的归档",
+    "triggers": [
+      {
+        "type": "mechanism",
+        "rule": "该机制已被前序研究证伪",
+        "action": "立即归档",
+        "example": "s07 的方向成分属『下单量预测方向』族（项目已证伪）"
+      },
+      {
+        "type": "statistical",
+        "rule": "样本 ≥ N_min(100) 且净收益均值 ≤ 0",
+        "action": "归档",
+        "ref": "PREREGISTRATION.md §1 的 KILL 规则"
+      }
+    ],
+    "archive_means": [
+      "status 置 archived",
+      "停止该账户交易",
+      "【保留全部数据】（不删除）",
+      "记录 archived_reason 与归档时的统计量"
+    ],
+    "not_archived": "样本 < N_min 时不下任何结论、不归档（避免因早期噪声误杀）",
+    "already_rejected": {
+      "s15_gap_continuation": "跳空不可达",
+      "s31_delta_neutral_carry": "两腿成本口径 0.08% + 2026 年失效"
+    },
+    "application_20261012": {
+      "principle": "【证伪 ≠ 未证实】—— 只有【机制核心与前序已证伪族相同】才归档；未证实（t 不显著）不归档，交前向数据裁定",
+      "audited": 29,
+      "archived": [],
+      "not_archived_with_reason": [
+        {
+          "strategy": "s14_vol_compression_release",
+          "reason": "与『去偏置(滚动分位替代绝对阈值)』不同机制。被证伪的那个是【把绝对阈值换成滚动分位作为信号本身】；s14 用分位只是定义『压缩』门槛，信号是【压缩区突破】，分位是手段不是信号"
+        },
+        {
+          "strategy": "s22_dual_confirmation_trend",
+          "reason": "1d 趋势家族经我复核是【近年 t<2 未确立】，不是【已证伪】。且 s22 的设计目的正是『加量能确认能否改善入场质量』—— 归档会毁掉这个检验"
+        },
+        {
+          "strategy": "s23_triple_confirmation_breakout",
+          "reason": "同 s22。三重确认是对方程式的新增检验"
+        },
+        {
+          "strategy": "s29_trend_with_trailing",
+          "reason": "同 s22。离场改为峰值回撤是新的检验维度"
+        }
+      ],
+      "why_not_archive_unproven": "若把『未证实』也归档，等于因为赌不起就不赌 —— 与用户『大胆假设、小心求证、不要怕出错』的方向相反。归档的门槛必须是【机制相同】而非【结果不利】",
+      "next_archive_trigger": "统计性归档仍按 PREREGISTRATION §1: 样本 ≥ N_min(100) 且净均值 ≤ 0",
+      "pending_joint_confirmation": [
+        {
+          "strategy": "s07_surge_continuation",
+          "dsh_proposal": "建议归档",
+          "dsh_evidence": "方向来自 imbalance = 2×taker_buy_base/volume − 1，与项目已证伪的『下单量预测方向』族同一机制核心；该族证据: 方向 IC ≤0.05 < 双边成本 0.10%",
+          "status": "【待 Codex 独立复核】—— 在双方一致前【不归档】",
+          "note": "我上一条单方建议归档，做法不符合用户要求；已改降级"
+        }
+      ]
+    },
+    "user_directive_20261012_joint": {
+      "directive": "用户 2026-10-12：『要你和 codex 共同确认证伪，不能误把有可能实现盈利的方向也误归档』",
+      "rule": "归档需要 DSH 与 Codex 【双方一致】确认；任何一方反对则不归档",
+      "process": [
+        "1. DSH 提出归档建议 + 完整证据（机制相同性 / 统计量 / 样本量）",
+        "2. Codex 独立复核该证据，可反对",
+        "3. 双方一致 → 执行归档（保留全部数据）",
+        "4. 有分歧 → 【不归档】，保留并继续积累样本"
+      ],
+      "burden_of_proof": "举证责任在【主张归档】一方；举证不足则不归档",
+      "default": "默认保留（KEEP）—— 存疑不归档",
+      "forbidden": [
+        "DSH 单方归档",
+        "Codex 单方归档",
+        "以『未证实(t 不显著)』为由归档 —— 那只是样本不足",
+        "以『机制族相似』这一条推断就归档 —— 必须证明【机制核心相同】，不是族名相同"
+      ]
+    }
+  },
+  "universe_policy_20261012": {
+    "user_directive": "用户 2026-10-12：『我们现在只研究 比特币 以太坊，trx。其他币线暂停研究』",
+    "target_universe": [
+      "BTC/USDT:USDT",
+      "ETH/USDT:USDT",
+      "TRX/USDT:USDT"
+    ],
+    "priority": "BTC/ETH 保持最高优先级；TRX 作为第三币补充",
+    "paused": "其余所有币线（含之前 15 币扩池方案）暂停 —— 撤回扩池建议",
+    "data_constraint": {
+      "TRX": {
+        "5m": {
+          "bars": 440,
+          "usable": false
+        },
+        "15m": {
+          "bars": 200,
+          "usable": false
+        },
+        "1h": {
+          "bars": 24340,
+          "usable": true
+        },
+        "4h": {
+          "bars": 6085,
+          "usable": true
+        },
+        "1d": {
+          "bars": 2462,
+          "usable": true
+        }
+      },
+      "implication": "15m/5m 周期【只能 BTC/ETH】；1h/4h/1d 可使用三币",
+      "action_for_codex": "若要 15m 也纳入 TRX，需要回补 TRX 的 5m/15m 历史（2024-01-01 起）"
+    },
+    "effective_samples": {
+      "three_coin_1h": {
+        "mean_corr": 0.545,
+        "effective_n": 1.44
+      },
+      "two_coin": {
+        "btc_eth_corr": 0.817,
+        "effective_n": 1.1
+      },
+      "note": "扩到三币把有效独立数从 ~1.1 提到 1.44，提升有限（加密同涨同跌）"
+    }
+  },
+  "data_pipeline_findings": {
+    "closed_marker_requirement": {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "finding": "strategy_signals._history() 第 395-400 行会【跳过所有 extras.closed 不为 True 的 K 线】。DB 里 extras.closed 极度稀疏（BTC 5m 291,586 行中仅 328 行有）→ 直接把 DB 的 candles 喂给 evaluate() 会得到【空历史】→ 不 ready → 0 信号。",
+      "implication": [
+        "实验室【不是】从 DB 读信号 —— 它用 fetch_warmup(Binance REST) + merge_closed_history 自己构造 closed 标记",
+        "任何想【离线回放历史信号】的人必须自己补 closed=True（历史 K 线按定义已收盘）",
+        "⚠️ 我最初把『29/29 全 0 触发』当成自己的脚本 bug；实际是【数据缺 closed 标记】的正确行为"
+      ],
+      "operational_note": "若将来要从 DB 回放信号做研究，需要一个『历史 K 线补 closed 标记』的适配层",
+      "verified_by": "读取 strategy_signals.py:387-433 的 _history 实现"
+    },
+    "15m_single_gap_truncates_history": {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "finding": "15m BTC 系列有【一个】18 小时缺口（2026-10-08 07:15 → 2026-10-09 01:15，缺 72 根）。strategy_signals._history() 只保留【连续后缀】，所以缺口之后只剩 200 根（49.8 小时）。",
+      "impact": [
+        "任何【从 DB 离线回放 15m 信号】的尝试都只能看到 200 根 → 不足 750 根 warmup 需求",
+        "这解释了实验室为何用 Binance REST + merge_closed_history 而不是 DB",
+        "15m 的离线信号频率估计【不可用】（我原先那批 15m 数字作废）"
+      ],
+      "timestamps_verified": "SQL 直验: 15m 97,286 行全部 15 分钟对齐；1h/1d 同样全部对齐 → 缺口是唯一问题",
+      "to_codex": "若要让 DB 支持 15m 离线回放，需要回补 2026-10-08 07:15→2026-10-09 01:15 这 72 根",
+      "my_error": "第23处: 我用 pandas 检查时间戳对齐，得出『97,286 行全部错位』的结论，与 _history 接受 200 行的事实矛盾。SQL 直验后发现【全部对齐】——我的 pandas 检查写错了。⚠️ 教训: 当两个检查结果互相矛盾时，先用【最原始的方式】重验，而不是采信其中一个"
+    },
+    "closed_marker_coverage_ROOT_CAUSE": {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "severity": "ROOT_CAUSE",
+      "summary": "DB 数据 95~100% 完整，但 extras.closed 标记只有 7~28%（5m/15m/1h），导致实验室原生周期输入被砍",
+      "measured_30d_btc": {
+        "5m": {
+          "exp": 8640,
+          "marked": 602,
+          "pct": 7.0,
+          "last": "10-11 16:35"
+        },
+        "15m": {
+          "exp": 2880,
+          "marked": 199,
+          "pct": 6.9,
+          "last": "10-11 02:45"
+        },
+        "1h": {
+          "exp": 720,
+          "marked": 199,
+          "pct": 27.6,
+          "last": "10-11 02:00"
+        },
+        "1d": {
+          "exp": 30,
+          "marked": 29,
+          "pct": 96.7,
+          "last": "10-10 00:00"
+        }
+      },
+      "data_completeness_ignoring_markers": {
+        "5m": "95.6%",
+        "15m": "95.6%",
+        "1h": "98.2%",
+        "1d": "100%"
+      },
+      "mechanism": "strategy_data._closed_row() 要求 extras.closed is True，否则丢弃该行；实验室原生周期路径读 DB → 输入被砍到带标记的子集",
+      "consequences": [
+        "warmup 只有 113(15m)/27(1h) 根而非 750",
+        "15m/1h 的 data_stale 是【输入确实陈旧】的症状（标记停在 13 小时前），不只是标签问题",
+        "我降 min_warmup_bars 后仅解开 6/10 个，剩 4 个是供给不足",
+        "s14(需116)/s18(需170) 永远等不到足够热身"
+      ],
+      "fix_owner": "Codex（数据写入侧）：让所有已收盘 K 线写入时带 extras.closed=true",
+      "note_1d_high": "1d 标记完整度 96.7% 而 5m/15m/1h 极低 → 不同周期写入路径不一致",
+      "my_correction": "我此前说『data_stale 是状态误报、不影响交易』—— 现更正: 它是更深问题的症状，输入确实陈旧。判定顺序问题仍存在，但重要性低于标记缺失。",
+      "fix_point": {
+        "file": "data_sync.py",
+        "line": "398-404（K 线写入路径）",
+        "bug": "extras 只装源文件里除 OHLCV 之外的剩余列 → 纯 OHLCV 源为空 dict → 无 closed 标记",
+        "suggested_fix": "extras[\"closed\"] = True（历史 K 线按定义已收盘）",
+        "not_affected": "data_sync.py:369/389 是 upsert_series 的 funding_rate/oi 路径，不是 K 线",
+        "evidence": {
+          "marked_199": "extras=('closed','live_snapshot_timestamp') ← market_stream 实时流",
+          "unmarked_majority": "extras=('avg_trade_sz','buy_ratio','flow_imbal','flow_imbal_q','num_trades','quote_volume','sell_volume','taker_buy_base','taker_buy_quote') ← data_sync 的 orderflow 导入"
+        },
+        "expected_gain": "15m 可用行数 199 → ~194,000；warmup 立刻达 750+；10 个被阻塞策略全部可启动；data_stale 消失；样本积累恢复设计速度",
+        "bonus": "无标记行含 taker_buy_base 与 flow_imbal → 修好后 s07 的数据依赖也解决",
+        "my_correction_2": "我此前说『DB 里 taker_buy_base 只有 89 行』—— 那只查了带标记的行。事实是它存在于 orderflow 导入的行里，那些行缺的是 closed 标记。",
+        "priority_note": "此修复应排在 261 账户因子设计【之前】，否则新账户会以不足的 warmup 启动"
+      },
+      "fix_is_two_steps_corrected_20261012": {
+        "correction": "我原先说『修标记即可恢复 194,000 行』【不对】。模拟验证显示连续后缀被缺口截断。",
+        "simulation_after_adding_marker": {
+          "15m": "1200 行 → 仅 200 根连续",
+          "1h": "1200 行 → 1200 根连续",
+          "5m": "1200 行 → 363 根连续"
+        },
+        "ohlcv_validation": "15m/1h 各 800 行 → 全部通过（0 剔除）→ 标记修复对合法性无问题",
+        "gaps_truncating_suffix": {
+          "5m": [
+            {
+              "from": "2026-10-09 07:40 UTC",
+              "to": "2026-10-10 10:25 UTC",
+              "bars": 321
+            },
+            {
+              "from": "2026-10-08 07:20 UTC",
+              "to": "2026-10-08 11:45 UTC",
+              "bars": 53
+            }
+          ],
+          "15m": [
+            {
+              "from": "2026-10-08 07:15 UTC",
+              "to": "2026-10-09 01:15 UTC",
+              "bars": 72
+            }
+          ],
+          "1h": "无缺口 · 24,340 根全连续"
+        },
+        "step1": "data_sync.py:403 extras 加 closed: True → 1h 直接解决；15m/5m 连续段不变",
+        "step2": "回补缺口: 15m 72 根 · 5m 321+53 根 → 补后 15m/5m 可用连续段可超 750",
+        "alternative": "让 _history 允许缺口 → 会改变信号语义（跨缺口算指标），不建议擅自改",
+        "my_error": "第28处: 只做行数算术就断言修复收益，未用修复后的条件实际验证。报『修复收益』前必须实跑。"
+      }
+    },
+    "consolidated_report": {
+      "file": "research_multi_strategy/DATA_PIPELINE_DIAGNOSIS.md",
+      "created": "2026-10-12",
+      "by": "DSH",
+      "one_line": "实验室看到的有效历史只有设计值的 ~15%（120/750 根），根因在数据层",
+      "four_rings": [
+        "① market_stream 只订阅 BTC/ETH 且只产 5m → TRX 与 15m/1h 无实时流",
+        "② extras.closed 覆盖仅 7~28%（data_sync.py:403 不设标记）",
+        "③ 5m 有 321 根缺口、15m 有 72 根缺口 → _history 连续段仅 363/200 根",
+        "④ load_spec_candles 回退 5m 重采样 → 363 根 5m = 120 根 15m / 29 根 1h"
+      ],
+      "verification": "模拟值（120/29）与实测 valid_bars（113/27）几乎完全吻合 → 诊断确认",
+      "fix_priority": [
+        "补 5m 缺口(321+53)",
+        "修 data_sync.py:403 加 closed",
+        "15m/1h 直接历史(可选)",
+        "TRX 加入实时流",
+        "恢复 15m/1h 摄取"
+      ],
+      "blocking_note": "修复前不要重建 261 账户，否则以不足 warmup 启动",
+      "why_it_matters": "即使策略真有边际，在 warmup 不足/数据陈旧/只覆盖 BTC/ETH 的条件下也无法在合理时间积累到可裁定样本"
+    },
+    "gap_backfill_cost": {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "finding": "缺口正好落在 feather 文件的终点，本地无源数据 → 回补必须重新下载",
+      "feather_ranges": {
+        "5m_BTC": "2024-01-01 → 2026-10-08 07:20（291,257 行）",
+        "5m_ETH": "2024-01-01 → 2026-10-08 07:25",
+        "15m_BTC": "2024-01-01 → 2026-10-08 07:15（97,086 行）",
+        "15m_ETH": "2024-01-01 → 2026-10-08 07:15"
+      },
+      "gap_nature": {
+        "gap1": "2026-10-08 07:20 → 11:45（53 根）= feather 结束 → 实时流开始的接缝",
+        "gap2": "2026-10-09 07:40 → 2026-10-10 10:25（321 根 = 26.8h）= 实时流运行期间的长时间中断"
+      },
+      "verification": "缺口窗口内 20 个币各仅 1~2 根（窗口边界）→ 本地无覆盖",
+      "backfill_suggestion": {
+        "5m": "重新下载 2026-10-08 07:20 → 现在",
+        "15m": "重新下载 2026-10-08 07:15 → 现在",
+        "1h": "重新下载 2026-10-02 20:00 → 现在（直接表也陈旧）"
+      },
+      "possible_channels": [
+        "Freqtrade download-data",
+        "manage.py 的 market/market-live",
+        "直接调 Binance REST klines"
+      ],
+      "must_also_fix": "data_sync.py:403 的 closed 标记，否则补回的数据仍被过滤",
+      "cheaper_path": "先修标记 → 检查 1h 是否恢复（1h 直接表无缺口，只是标记只有 27.6%）→ 若恢复则可先不做昂贵的 15m/5m 回补",
+      "my_verification_plan": [
+        "带标记行数恢复",
+        "_history 连续后缀 ≥750",
+        "5m 重采样后 ≥750",
+        "缺口窗口逐根比对",
+        "10 个阻塞策略转 ready"
+      ]
+    }
+  },
+  "warmup_correction_20261012": {
+    "why": "10 个策略因我的 min_warmup_bars 过高而永久阻塞（可用热身仅 27~113 根）",
+    "evidence": {
+      "blocked": [
+        "s03",
+        "s04",
+        "s05",
+        "s06",
+        "s09",
+        "s11",
+        "s12",
+        "s14",
+        "s16",
+        "s18"
+      ],
+      "available_warmup_bars": {
+        "15m": 113,
+        "1h": 27
+      },
+      "my_values": "100~600",
+      "impl_derived": "3~290"
+    },
+    "action": "已把 29 项的 min_warmup_bars 全部改为实现推导值 _required_bars",
+    "to_codex": "重建账户时请以 min_warmup_bars 为准（现已修正）；或直接使用 _required_bars",
+    "my_error": "第25处: 我早先已发现『我的热身值比实现粗』并记入规格，但【只记录了没修改】→ 导致 10 个策略被卡住。发现差异后应当立即修正，而不是记录后放着。"
+  },
+  "multi_session_dispatch": {
+    "standby_verification_20261012": {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "why": "我连续 3 轮修正同一现象的归因（第27/28/29处），诊断需要独立复核",
+      "sessions": {
+        "main": "quant → 01a11fbf（主会话，正在修数据）",
+        "standby": "quant-standby → 01a12bd8（备用会话，承接只读任务）"
+      },
+      "task_dispatched": {
+        "id": "dsh-standby-verify-diagnosis-20261012",
+        "type": "只读独立复核",
+        "scope": "复核 5 条数据流诊断结论，逐条给『复现/不成立/无法判断』+ 实测数字",
+        "constraints": [
+          "不修改任何文件",
+          "DB 只 select",
+          "不重启进程"
+        ],
+        "why_disjoint": "主会话改 data_sync.py 等；备用会话仅读取，写入范围不重叠",
+        "acceptance": "5 条结论各一行判定 + 实测值；若有错，指出错在哪"
+      },
+      "five_claims_to_verify": [
+        "① closed 标记覆盖 5m 7.0% / 15m 6.9% / 1h 27.6% / 1d 96.7%",
+        "② 缺口: 5m 连续 363 根 · 15m 连续 200 根 · 1h 无缺口 24,340 根",
+        "③ 5m 重采样是绑定约束（363 根 5m → 120 根 15m / 29 根 1h，与实测 valid_bars 113/27 吻合）",
+        "④ 修复点 data_sync.py:403 缺 closed（market_stream.py:253 有）",
+        "⑤ feather 终点 = 缺口起点 → 回补必须重新下载"
+      ],
+      "principle": "用户要求『证伪要共同确认』→ 我的诊断本身也应被独立复核，而不只是我去复核别人"
+    },
+    "three_sessions_20261012": {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "sessions": {
+        "main": {
+          "link": "quant",
+          "thread": "01a11fbf",
+          "doing": "数据修复（data_sync closed 标记已改，待重跑导入）→ 止损 → 261 账户",
+          "write_scope": "data_sync.py / data_store.py / strategy_*.py / DB 写入"
+        },
+        "standby1": {
+          "link": "quant-standby",
+          "thread": "01a12bd8",
+          "doing": "独立复核我的 5 条数据流诊断",
+          "write_scope": "只读"
+        },
+        "standby2": {
+          "link": "quant-standby-2",
+          "thread": "01a12bda",
+          "doing": "买入持有 vs 主动策略的对照分析",
+          "write_scope": "只读（脚本写 /tmp）"
+        },
+        "dsh": {
+          "doing": "规格 / 核对 / 裁定规则 / 诊断",
+          "write_scope": "research_multi_strategy/*"
+        },
+        "standby3": {
+          "link": "quant-standby-3",
+          "thread": "01a12bdd-bffd-7d21-8e56-6d74f18d8bd8",
+          "doing": "实现 23 项硬止损（20 新增 + s18/s27/s29 兜底）",
+          "write_scope": "strategy_signals.py（仅此一个文件）",
+          "task_id": "dsh-standby3-stop-implementation-20261012",
+          "enable_order": "主 → 1号 → 2号 → 3号（当前前三者均忙，故启用）"
+        }
+      },
+      "why_this_split": "用户要求避免与主会话同时修改同一文件；两个备用会话都是只读任务，三方写入范围互不重叠",
+      "standby2_task": {
+        "id": "dsh-standby2-bh-vs-active-20261012",
+        "question": "在 BTC/ETH/TRX 三币上，买入持有是否打败 1d 趋势策略？",
+        "why": "我测过的所有主动策略都不好（Calmar 0.14），而项目历史记录称 20币基准 Calmar 0.97。若那是买入持有，则问题性质变为『别把 beta 亏掉』",
+        "my_failed_attempt": "我自己算过但结果自相矛盾（端点 −3.20% vs 日频 +17.43%），根因是两个口径用了不同币集（54 币 vs 20 币）",
+        "requirements": [
+          "两区间(2024起/2025起)",
+          "端点法与日频必须同币集",
+          "报告幸存者偏差",
+          "极值敏感性(去掉某一币)",
+          "单独报告 TRX"
+        ]
+      },
+      "why_four_ok": {
+        "principle": "按【文件】分派，不按任务分派 —— 四会话写入范围互不重叠",
+        "scopes": {
+          "main": "data_*.py + strategy_simulation.py + DB 写入",
+          "standby1": "只读",
+          "standby2": "只读（脚本写 /tmp）",
+          "standby3": "strategy_signals.py（仅此一个）",
+          "dsh": "research_multi_strategy/*"
+        },
+        "stop_rule": "若 standby3 需要改 strategy_simulation.py（主会话范围），必须先问我"
+      }
+    }
+  },
+  "spec_errors_20261012": {
+    "universe_field_malformed": {
+      "date": "2026-10-12",
+      "by": "DSH（由 Codex 备用3号的复核触发）",
+      "what": "s19/s24/s31 的 universe 字段是中文描述，而实现（strategy_lab_service:94 → evaluate:1183/1226/1286）把它当币对列表",
+      "impact": [
+        "s19: 'BTC/USDT:USDT（交易）' 含 / → 被当币对 → candles_by_pair 取不到 → fail-closed",
+        "s24: '20 个白名单币' 不含 / → context 为空 → fail-closed",
+        "⇒ s19/s24 是【意外】fail-closed，不是设计如此"
+      ],
+      "fix": "已把 s19/s24/s31 的 universe 改为真实币对列表；并新增 research_universe_context（20 币上下文）",
+      "remaining_for_codex": [
+        "账户 definition 里的 research_universe 需重建（现有的是旧的描述文字）",
+        "若重建，s19/s24 会开始交易 ⇒ 需把止损范围从 23 项扩到 25 项",
+        "或：明确让 s19/s24 保持 fail-closed（那就应在规格里写明，而非依赖字段错误）"
+      ],
+      "lesson": "给实现读取的字段必须机器可解析；人类可读说明应放在单独的注记字段"
+    },
+    "warmup_fix_was_ineffective": {
+      "date": "2026-10-12",
+      "by": "DSH",
+      "what": "我第 46 轮把 29 项的 min_warmup_bars 改为实现推导值，以为能解开 10 个阻塞策略",
+      "why_ineffective": "strategy_signals.py:329-330 是三层 max(): max(DEFAULTS_minimum, spec.min_warmup_bars, _required_bars)。DEFAULTS 的第二元素是【地板】，规格无法把它调低。",
+      "evidence": {
+        "s01": {
+          "spec": 9,
+          "defaults_floor": 60,
+          "normalize": 60
+        },
+        "s03": {
+          "spec": 98,
+          "defaults_floor": 600,
+          "normalize": 600
+        },
+        "s11": {
+          "spec": 290,
+          "defaults_floor": 600,
+          "normalize": 600
+        },
+        "s13": {
+          "spec": 42,
+          "defaults_floor": 200,
+          "normalize": 200
+        }
+      },
+      "consequence": "10 个被阻塞的策略【仍然被阻塞】。我上一条给主会话的『已修正热身值』是不实陈述。",
+      "real_fix": "需要 Codex 把 strategy_signals.py 的 DEFAULTS 第二元素（地板值）降下来，或改为不再与 DEFAULTS 取 max。这属 Codex 的文件，我不动。",
+      "lesson": "改规格前先确认【实现是否还有别的来源会覆盖规格值】。max()/floor 会把规格修改静默吃掉。"
+    }
+  },
+  "spec_findings_20261012": {
+    "utc_day_window_guard_missing": {
+      "date": "2026-10-12",
+      "found_by": "Codex 备用3号（我独立确证机制）",
+      "what": "s17_overnight_range_fade 与 s20_intraday_range_position 计算当天 range 前，未校验当天窗口是否完整",
+      "mechanism": "strategy_signals._history 只保留连续后缀；缺口会让后缀从【当天中间】开始 → 不完整窗口被当完整 range",
+      "my_reproduction": "8/10-8/11 完整 + 8/12 从 04:00 起（4 小时缺口）→ 输入 225 根，_history 输出 33 根，首根 04:00 ⇒ 机制成立",
+      "existing_convention": "s01_orb 的 _orb 已有同型 guard（expected 时间戳序列比对 → session_range_not_ready）",
+      "proposed_fix": "s17 要求 session 首根 == UTC day → 否则 overnight_range_not_ready；s20 同理 → intraday_range_not_ready",
+      "nature": "⚠️ 不是降地板引入的 bug，而是【降地板移除了偶然保护】—— 高 warmup 让策略到不了该逻辑，偶然掩盖了它",
+      "status": "待主会话确认文件归属后由备用3号落地（它已暂停编辑）",
+      "also_check": "s16_weekly_seasonality 是否也有同类当天窗口假设"
+    },
+    "offbyone_sample_window_s23_s25": {
+      "date": "2026-10-12",
+      "found_by": "Codex 备用3号",
+      "verified_by": "DSH（精确数字）",
+      "what": "s23/s25 在最低 warmup 下取不到完整窗口的样本数（各差 1）",
+      "s23": {
+        "expr": "range(max(atr_window+1, index-atr_ma), index)",
+        "A": 15,
+        "B": 50,
+        "index": 64,
+        "actual_samples": 49,
+        "expected": 50,
+        "gap": 1,
+        "fix": "warmup 65 → 66"
+      },
+      "s25": {
+        "expr": "range(max(rv_window+1, index-regime_window), index)",
+        "A": 21,
+        "B": 60,
+        "index": 80,
+        "actual_samples": 59,
+        "expected": 60,
+        "gap": 1,
+        "fix": "warmup 81 → 82"
+      },
+      "why_masked": "实现容许半窗口: s23 len>=max(2,atr_ma//2)=25 · s25 len>=max(2,regime_window//2)=30 → 49>=25 / 59>=30 静默通过，所以非零值仍能算出",
+      "library_scan": "全代码库使用该取样式（range(max(X+1, index-Y), index)）的【只有这 2 处】→ 无遗漏",
+      "principle": "lower floor 不应依赖偶然的超额历史 —— 最低值应恰好满足完整窗口",
+      "status": "待主会话确认 strategy_signals.py 文件归属后由备用3号落地"
+    },
+    "s29_state_persistence_known_defect": {
+      "date": "2026-10-12",
+      "found_by": "Codex 备用3号",
+      "what": "s29 的持仓峰值/channel 状态若加载历史被截断可能丢失既有状态",
+      "classification": "【已知缺陷·另案】——备用3号建议本次不扩大范围，我同意",
+      "owner": "主会话（历史持久化问题）",
+      "note": "待备用3号给最小复现后转交主会话"
+    },
+    "s16_no_midnight_guard_needed": {
+      "date": "2026-10-12",
+      "by": "Codex 备用3号（DSH 核对同意）",
+      "reason": "s16 只取末两根 close 差 + 当前 UTC hour 判断 entry_hours，不累计当天/session range",
+      "precondition": "evaluate 的连续后缀保证末两根相邻（DSH 核过 _history 实现，成立）"
+    }
+  }
+}

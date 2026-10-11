@@ -80,11 +80,19 @@ export function orderDisplayId(
     ? `${p.year}${p.month}${p.day}-${p.hour}${p.minute}${p.second}`
     : '时间未知';
   const coin = baseCoin(order.pair ?? trade.pair, trade.base_currency);
-  // 原始交易所号始终参与展示编号；不可用 trade_id、数组序号或当前时间代替。
-  return `${stamp}-${coin}-${sourceId(order.order_id) ?? '原号未知'}`;
+  // 列表短号只用于展示；实际交易 / 订单标识仍保留在原始记录中。
+  return `${stamp}-${coin}`;
 }
 
-export function tradeDisplayId(trade: RecordData): string {
+/** 详情完整号保留原始交易所号；不以交易 ID、序号或当前时间替代。 */
+export function fullOrderDisplayId(
+  order: RecordData,
+  trade: RecordData = {},
+): string {
+  return `${orderDisplayId(order, trade)}-${sourceId(order.order_id) ?? '原号未知'}`;
+}
+
+function firstEntryOrder(trade: RecordData): RecordData | undefined {
   const entrySide =
     trade.is_short === true ? 'sell' : trade.is_short === false ? 'buy' : null;
   const entries = Array.isArray(trade.orders)
@@ -110,10 +118,22 @@ export function tradeDisplayId(trade: RecordData): string {
       String(a.order_id ?? '').localeCompare(String(b.order_id ?? ''))
     );
   });
-  if (entries[0]) return orderDisplayId(entries[0], trade);
+  return entries[0];
+}
+
+export function tradeDisplayId(trade: RecordData): string {
+  const entry = firstEntryOrder(trade);
+  if (entry) return orderDisplayId(entry, trade);
   const p = timeParts(trade.open_timestamp, trade.open_date);
   const stamp = p
     ? `${p.year}${p.month}${p.day}-${p.hour}${p.minute}${p.second}`
     : '时间未知';
-  return `${stamp}-${baseCoin(trade.pair, trade.base_currency)}-原号未知`;
+  return `${stamp}-${baseCoin(trade.pair, trade.base_currency)}`;
+}
+
+export function fullTradeDisplayId(trade: RecordData): string {
+  const entry = firstEntryOrder(trade);
+  return entry
+    ? fullOrderDisplayId(entry, trade)
+    : `${tradeDisplayId(trade)}-原号未知`;
 }

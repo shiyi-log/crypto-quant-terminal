@@ -28,6 +28,7 @@ import argparse
 import base64
 import hashlib
 import hmac
+import inspect
 import json
 import math
 import os
@@ -418,6 +419,18 @@ class Handler(BaseHTTPRequestHandler):
         self._read_body()
         if self.path.startswith("/auth/"):
             return self._auth_get()
+        # Order-flow endpoints are local, authenticated database views.  Keep
+        # this before the generic database dispatcher so the compatibility
+        # aliases below cannot be swallowed by ``/api/locals/database/``.
+        orderflow_path = urllib.parse.urlsplit(self.path).path
+        if (orderflow_path == "/api/locals/orderflow/surges"
+                or orderflow_path.startswith("/api/locals/orderflow/surges/")
+                or orderflow_path == "/api/locals/orderflow/surge-stats"
+                or orderflow_path == "/api/locals/orderflow/price-spikes"
+                or orderflow_path == "/api/locals/database/orderflow-surges"
+                or orderflow_path.startswith("/api/locals/database/orderflow-surges/")
+                or orderflow_path == "/api/locals/database/orderflow-surges/stats"):
+            return self._local_orderflow_route(orderflow_path)
         if self.path.startswith("/api/locals/database/"):
             return self._local_database()
         if urllib.parse.urlsplit(self.path).path == "/api/locals/market-stream-info":
@@ -437,6 +450,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._local_research_status()
         if urllib.parse.urlsplit(self.path).path == "/api/locals/forward-paper":
             return self._local_forward_paper()
+        if urllib.parse.urlsplit(self.path).path == "/api/locals/strategy-lab":
+            return self._local_strategy_lab()
         if urllib.parse.urlsplit(self.path).path == "/api/locals/research-ledger":
             return self._local_research_ledger()
         if self.path.startswith("/api/locals/research"):
@@ -492,6 +507,435 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/locals/database/orderbooks":
             return self._send(200, {"items": store.get_orderbooks(exchange, market, pair, limit=min(limit, 50))})
         return self._send(404, {"detail": "数据查询接口不存在"})
+
+    def _local_orderflow_surges(self):
+        """Return authenticated, immutable BTC/ETH 5m volume-surge evidence."""
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+
+        query = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(self.path).query, keep_blank_values=True
+        )
+        for name in ("pair", "market", "timeframe", "status", "limit", "start", "end"):
+            if len(query.get(name, [])) > 1:
+                return self._send(400, {"detail": f"{name} 只能指定一次"})
+
+        market = (query.get("market") or ["futures"])[0].strip().lower()
+        if market != "futures":
+            return self._send(400, {"detail": "market 仅支持 futures"})
+        pair = (query.get("pair") or [None])[0]
+        if pair is not None:
+            pair = pair.strip().upper()
+            if pair not in {"BTC/USDT:USDT", "ETH/USDT:USDT"}:
+                return self._send(400, {"detail": "pair 仅支持 BTC/USDT:USDT 或 ETH/USDT:USDT"})
+
+        timeframe = (query.get("timeframe") or ["5m"])[0]
+        if timeframe != "5m":
+            return self._send(400, {"detail": "timeframe 仅支持 5m"})
+
+        status = (query.get("status") or [None])[0]
+        if status is not None and status not in {"unknown", "matured", "invalid"}:
+            return self._send(400, {"detail": "status 仅支持 unknown、matured 或 invalid"})
+
+        try:
+            limit_text = (query.get("limit") or ["100"])[0]
+            if not re.fullmatch(r"[0-9]+", limit_text):
+                raise ValueError
+            limit = int(limit_text)
+        except ValueError:
+            return self._send(400, {"detail": "limit 必须是 1 到 500 之间的整数"})
+        if not 1 <= limit <= 500:
+            return self._send(400, {"detail": "limit 必须是 1 到 500 之间的整数"})
+
+        def parse_bound(name):
+            values = query.get(name)
+            if not values:
+                return None
+            value = values[0]
+            if not re.fullmatch(r"[0-9]+", value):
+                raise ValueError
+            timestamp = int(value)
+            if timestamp > 9007199254740991:
+                raise ValueError
+            return timestamp
+
+        try:
+            start = parse_bound("start")
+            end = parse_bound("end")
+        except ValueError:
+            return self._send(400, {"detail": "start 和 end 必须是有效的非负整数毫秒时间戳"})
+        if start is not None and end is not None and start > end:
+            return self._send(400, {"detail": "start 不能晚于 end"})
+
+        store = get_store()
+        read_revisions = getattr(store, "read_orderflow_surges", None)
+        if callable(read_revisions):
+            read_kwargs = {
+                "market": "futures", "pair": pair, "timeframe": "5m",
+                "status": status, "limit": limit, "include_revisions": False,
+            }
+            if start is not None:
+                read_kwargs["start"] = start
+            if end is not None:
+                read_kwargs["end"] = end
+            bound_names = [name for name in ("start", "end") if name in read_kwargs]
+            if not self._orderflow_accepts_keywords(read_revisions, *bound_names):
+                # Compatibility with a pre-bounds DataStore. Fetch a broad
+                # page and apply the bounds before the public response limit.
+                read_kwargs.pop("start", None)
+                read_kwargs.pop("end", None)
+                read_kwargs["limit"] = None
+            items = read_revisions(**read_kwargs)
+        elif callable(getattr(store, "list_surge_observations", None)):
+            # Old flat stores can apply their time bounds after SQL limiting.
+            # Request all rows when bounded, then enforce the public limit.
+            list_observations = store.list_surge_observations
+            read_kwargs = {"pair": pair, "timeframe": "5m", "status": status,
+                           "limit": None if start is not None or end is not None else limit}
+            if start is not None and self._orderflow_accepts_keywords(list_observations, "start"):
+                read_kwargs["start"] = start
+            if end is not None and self._orderflow_accepts_keywords(list_observations, "end"):
+                read_kwargs["end"] = end
+            items = list_observations(**read_kwargs)
+        else:
+            return self._send(503, {"detail": "订单流突增数据接口暂时不可用"})
+
+        # The canonical query applies these predicates before its SQL LIMIT;
+        # enforce them again for older stores and adapter implementations.
+        if start is not None:
+            items = [item for item in items if int(item.get("timestamp", -1)) >= start]
+        if end is not None:
+            items = [item for item in items if int(item.get("timestamp", -1)) <= end]
+        items = items[:limit]
+
+        return self._send(200, {
+            "items": items,
+            "pair": pair,
+            "timeframe": "5m",
+            "limit": limit,
+            "maturity": {
+                "unknown_is_unmatured": True,
+                "unknown_excluded_from_performance_statistics": True,
+                "performance_statistics_status_scope": "horizon",
+                "overall_maturity_requires_all_horizons": True,
+            },
+        })
+
+    @staticmethod
+    def _orderflow_accepts_keywords(method, *names):
+        """Adapt older store signatures without retrying internal TypeErrors."""
+        try:
+            parameters = inspect.signature(method).parameters
+        except (TypeError, ValueError):
+            return True
+        return any(parameter.kind == inspect.Parameter.VAR_KEYWORD
+                   for parameter in parameters.values()) or all(name in parameters for name in names)
+
+    @staticmethod
+    def _orderflow_event_id(value):
+        """Accept only opaque event identifiers, never path-like values."""
+        value = urllib.parse.unquote(str(value or ""))
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:._-]{0,255}", value):
+            raise ValueError("event_id 非法")
+        return value
+
+    def _orderflow_query(self, *, allow_status=True, allow_limit=True):
+        """Parse the shared, deliberately narrow order-flow query contract."""
+        query = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(self.path).query, keep_blank_values=True
+        )
+        names = ["pair", "market", "timeframe"]
+        if allow_status:
+            names.append("status")
+        if allow_limit:
+            names.append("limit")
+        for name in names:
+            if len(query.get(name, [])) > 1:
+                raise ValueError(f"{name} 只能指定一次")
+
+        market = (query.get("market") or ["futures"])[0].strip().lower()
+        if market != "futures":
+            raise ValueError("market 仅支持 futures")
+        pair = (query.get("pair") or [None])[0]
+        if pair is not None:
+            pair = pair.strip().upper()
+            if pair not in {"BTC/USDT:USDT", "ETH/USDT:USDT"}:
+                raise ValueError("pair 仅支持 BTC/USDT:USDT 或 ETH/USDT:USDT")
+        timeframe = (query.get("timeframe") or ["5m"])[0]
+        if timeframe != "5m":
+            raise ValueError("timeframe 仅支持 5m")
+        status = None
+        if allow_status:
+            status = (query.get("status") or [None])[0]
+            if status is not None and status not in {"unknown", "matured", "invalid"}:
+                raise ValueError("status 仅支持 unknown、matured 或 invalid")
+        limit = None
+        if allow_limit:
+            text = (query.get("limit") or ["100"])[0]
+            if not re.fullmatch(r"[0-9]+", text):
+                raise ValueError("limit 必须是 1 到 500 之间的整数")
+            limit = int(text)
+            if not 1 <= limit <= 500:
+                raise ValueError("limit 必须是 1 到 500 之间的整数")
+        return market, pair, timeframe, status, limit
+
+    def _local_orderflow_detail(self, event_id):
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+        try:
+            event_id = self._orderflow_event_id(event_id)
+            market, pair, timeframe, _status, _limit = self._orderflow_query(
+                allow_status=False, allow_limit=False
+            )
+        except ValueError as exc:
+            return self._send(400, {"detail": str(exc)})
+
+        store = get_store()
+        get_observation = getattr(store, "get_surge_observation", None)
+        if callable(get_observation):
+            item = get_observation(event_id)
+            if isinstance(item, dict):
+                # Prefer the store's current observation projection: a single
+                # mature horizon does not make the overall sample mature.
+                item = dict(item)
+                revisions = item.pop("revisions", item.pop("events", []))
+                if (item.get("market", "futures") != market
+                        or item.get("timeframe", "5m") != timeframe
+                        or (pair is not None and item.get("pair") != pair)):
+                    return self._send(404, {"detail": "未找到指定的订单流突增事件"})
+                if not isinstance(revisions, list):
+                    revisions = []
+                return self._send(200, {
+                    "observation": item, "events": revisions,
+                    "item": item, "revisions": revisions,
+                })
+        read_revisions = getattr(store, "read_orderflow_surges", None)
+        if callable(read_revisions):
+            read_kwargs = {"market": market, "pair": pair, "timeframe": timeframe,
+                           "limit": None, "include_revisions": True}
+            if self._orderflow_accepts_keywords(read_revisions, "event_id"):
+                read_kwargs["event_id"] = event_id
+            rows = read_revisions(**read_kwargs)
+            if isinstance(rows, list):
+                revisions = [row for row in rows if isinstance(row, dict)
+                             and row.get("event_id") == event_id]
+                if revisions:
+                    revisions.sort(key=lambda row: (row.get("revision_no", 0), row.get("created_at") or ""))
+                    latest = revisions[-1]
+                    # Older stores may expose revisions without the canonical
+                    # detail projection.  When maturity evidence is present,
+                    # reconstruct the same four-horizon overall status while
+                    # preserving the immutable observed row as the identity.
+                    required = ["5m", "30m", "1h", "4h"]
+                    horizon_revisions = {}
+                    for revision in revisions:
+                        result = revision.get("result")
+                        if revision.get("revision_kind") != "maturity" or not isinstance(result, dict):
+                            continue
+                        horizon = result.get("horizon")
+                        if horizon in required:
+                            horizon_revisions[horizon] = revision
+                    # Rebuild the overall observation projection even when an
+                    # older adapter omits horizon metadata.  A raw latest
+                    # maturity revision is per-horizon evidence and must not
+                    # make the detail endpoint disagree with list reads.
+                    item = dict(next(
+                        (revision for revision in revisions
+                         if revision.get("revision_kind") == "observed"),
+                        latest,
+                    ))
+                    completed = []
+                    for horizon in required:
+                        revision = horizon_revisions.get(horizon)
+                        if (revision is not None
+                                and revision.get("status") == "matured"
+                                and (revision.get("result") or {}).get(
+                                    "status", "matured") == "matured"):
+                            completed.append(horizon)
+                    item["completed_horizons"] = completed
+                    item["required_horizons"] = required
+                    latest_status = str(latest.get("status") or "unknown")
+                    item["status"] = (
+                        "matured" if len(completed) == len(required)
+                        else "invalid" if latest_status == "invalid"
+                        else "unknown"
+                    )
+                    return self._send(200, {
+                        "observation": item, "events": revisions,
+                        "item": item, "revisions": revisions,
+                    })
+        return self._send(404, {"detail": "未找到指定的订单流突增事件"})
+
+    @staticmethod
+    def _orderflow_zero_stats(pair=None):
+        """A missing online sample has a known count and unknown performance."""
+        def metrics():
+            return {"sample_count": 0, "gross_return_mean": None,
+                    "win_rate": None, "mfe_mean": None, "mae_mean": None,
+                    "required_fee_rate": None, "actual_fee_rate": None}
+
+        return {
+            **({"pair": pair} if pair is not None else {}),
+            "total": 0, "unknown": 0, "matured": 0, "invalid": 0, "known": 0,
+            **metrics(), "statistics_horizon": "1h",
+            "horizons": {horizon: metrics() for horizon in ("5m", "30m", "1h", "4h")},
+        }
+
+    def _local_orderflow_stats(self):
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+        try:
+            market, pair, timeframe, _status, _limit = self._orderflow_query(
+                allow_status=False, allow_limit=False
+            )
+        except ValueError as exc:
+            return self._send(400, {"detail": str(exc)})
+
+        store = get_store()
+        raw = None
+        stats_method = getattr(store, "surge_stats", None)
+        if not callable(stats_method):
+            stats_method = getattr(store, "get_surge_stats", None)
+        if callable(stats_method):
+            stats_kwargs = {"pair": pair, "timeframe": timeframe}
+            if not self._orderflow_accepts_keywords(stats_method, "timeframe"):
+                stats_kwargs.pop("timeframe")
+            raw = stats_method(**stats_kwargs)
+        if not isinstance(raw, dict):
+            read_revisions = getattr(store, "read_orderflow_surges", None)
+            if not callable(read_revisions):
+                return self._send(503, {"detail": "订单流突增统计接口暂时不可用"})
+            rows = read_revisions(
+                market=market, pair=pair, timeframe=timeframe,
+                limit=None, include_revisions=False,
+            )
+            by_pair = {}
+            for row in rows:
+                key = row.get("pair") or "unknown"
+                bucket = by_pair.setdefault(key, {"total": 0, "unknown": 0, "matured": 0, "invalid": 0, "known": 0})
+                bucket["total"] += 1
+                status = row.get("status") or "unknown"
+                bucket[status] = bucket.get(status, 0) + 1
+                if status == "matured":
+                    bucket["known"] += 1
+            summary = {"total": sum(item["total"] for item in by_pair.values()),
+                       "unknown": sum(item["unknown"] for item in by_pair.values()),
+                       "matured": sum(item["matured"] for item in by_pair.values()),
+                       "invalid": sum(item["invalid"] for item in by_pair.values()),
+                       "known": sum(item["known"] for item in by_pair.values())}
+            raw = {**summary, "by_pair": by_pair}
+
+        raw = dict(raw)
+        by_pair = raw.get("by_pair", raw.get("pairs", {}))
+        pairs = ({str(row.get("pair")): row for row in by_pair if isinstance(row, dict)}
+                 if isinstance(by_pair, list) else dict(by_pair) if isinstance(by_pair, dict) else {})
+        selected_pairs = [pair] if pair is not None else ["BTC/USDT:USDT", "ETH/USDT:USDT"]
+        if pair is not None:
+            pairs = {key: value for key, value in pairs.items() if key == pair}
+        for pair_name in selected_pairs:
+            bucket = pairs.get(pair_name)
+            if not isinstance(bucket, dict) or not bucket.get("total"):
+                zero = self._orderflow_zero_stats(pair_name)
+                bucket = {**zero, **(bucket or {})}
+                bucket["horizons"] = {**zero["horizons"], **(bucket.get("horizons") or {})}
+                pairs[pair_name] = bucket
+        by_pair = list(pairs.values()) if isinstance(by_pair, list) else pairs
+        summary = {key: value for key, value in raw.items() if key not in {"by_pair", "pairs"}}
+        if not summary.get("total"):
+            zero = self._orderflow_zero_stats()
+            summary = {**zero, **summary}
+            summary["horizons"] = {**zero["horizons"], **(summary.get("horizons") or {})}
+        read_status = getattr(store, "get_document", None)
+        stream_status = (read_status("market_stream_status.json", {})
+                         if callable(read_status) else {})
+        warmup_by_pair = (stream_status.get("surge_warmup", {})
+                          if isinstance(stream_status, dict) else {})
+        if not isinstance(warmup_by_pair, dict):
+            warmup_by_pair = {}
+        warmup = ({pair: warmup_by_pair[pair]} if pair in warmup_by_pair
+                  else {} if pair else warmup_by_pair)
+        # Keep the maturity semantics explicit for callers that display
+        # performance metrics alongside the sample counts.
+        return self._send(200, {
+            **summary,
+            "summary": summary,
+            "by_pair": by_pair,
+            "pairs": pairs,
+            "warmup": warmup,
+            "market": market,
+            "timeframe": timeframe,
+            "limitations": ["各窗口 unknown 结果不计入该窗口表现；整体状态待四窗口完成，已成熟窗口即时统计"],
+        })
+
+    def _local_price_spikes(self):
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+        try:
+            market, pair, timeframe, _status, limit = self._orderflow_query(
+                allow_status=False, allow_limit=True
+            )
+        except ValueError as exc:
+            return self._send(400, {"detail": str(exc)})
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query,
+                                      keep_blank_values=True)
+        if len(query.get("direction", [])) > 1:
+            return self._send(400, {"detail": "direction 只能指定一次"})
+        direction = (query.get("direction") or ["any"])[0]
+        if direction not in {"any", "up", "down"}:
+            return self._send(400, {"detail": "direction 仅支持 any、up 或 down"})
+        store = get_store()
+        read = getattr(store, "read_price_candidates", None)
+        summary = getattr(store, "price_spike_stats", None)
+        if not callable(read) or not callable(summary):
+            return self._send(503, {"detail": "价格爆发观测接口暂时不可用"})
+        try:
+            # Keep not-yet-matured trials visible in the recent list; the stats
+            # projection independently excludes unknown and invalid outcomes.
+            items = read(pair=pair, direction=direction, status=None, limit=limit)
+            stats = summary(pair=pair)
+            read_status = getattr(store, "get_document", None)
+            stream_status = (read_status("market_stream_status.json", {})
+                             if callable(read_status) else {})
+            warmup_by_pair = (stream_status.get("surge_warmup", {})
+                              if isinstance(stream_status, dict) else {})
+            if not isinstance(warmup_by_pair, dict):
+                warmup_by_pair = {}
+            warmup = ({pair: warmup_by_pair[pair]} if pair in warmup_by_pair
+                      else {} if pair else warmup_by_pair)
+        except Exception:
+            return self._send(503, {"detail": "价格爆发数据暂时不可用"})
+        return self._send(200, {
+            "items": items, "stats": stats, "market": market,
+            "timeframe": timeframe, "direction": direction,
+            "warmup": warmup,
+            "sample_scope": "live_online_only",
+            "limitations": [
+                "只记录基线就绪后的在线收盘 K 线，不导入研究历史标签",
+                "基线只使用采集器自身记录的连续收盘 K 线；首次预热需要 288 根",
+                "事件定义为候选根收盘至第 3 根后续 K 线收盘的绝对收益达到 1.5%",
+                "量比预测波动而非方向，不是单独入场信号",
+                "未成熟和无效窗口不计入概率；剖面需完整的 t-12 至 t+12 数据",
+            ],
+        })
+
+    def _local_orderflow_route(self, path):
+        if path == "/api/locals/orderflow/price-spikes":
+            return self._local_price_spikes()
+        if path in {"/api/locals/orderflow/surge-stats", "/api/locals/database/orderflow-surges/stats"}:
+            return self._local_orderflow_stats()
+        if path == "/api/locals/orderflow/surges" or path == "/api/locals/database/orderflow-surges":
+            return self._local_orderflow_surges()
+        prefix = "/api/locals/orderflow/surges/"
+        legacy_prefix = "/api/locals/database/orderflow-surges/"
+        if path.startswith(prefix):
+            event_id = path[len(prefix):]
+        elif path.startswith(legacy_prefix):
+            event_id = path[len(legacy_prefix):]
+        else:
+            return self._send(404, {"detail": "订单流突增接口不存在"})
+        # The legacy ``/stats`` route is handled above; all other suffixes are
+        # event IDs and go through strict validation in the detail handler.
+        return self._local_orderflow_detail(event_id)
 
     # ---------- WebSocket 凭据 ----------
     def _ws_token(self):
@@ -550,6 +994,84 @@ class Handler(BaseHTTPRequestHandler):
         if data is None:
             return self._send(404, {"detail": f"数据库尚未同步 {ident} 的交易明细"})
         return self._send(200, data)
+
+    def _local_strategy_lab(self):
+        """Authenticated projections only; HTTP requests never advance simulations."""
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+        if set(qs) - {"strategy_id", "limit"} or any(len(v) != 1 for v in qs.values()):
+            return self._send(400, {"detail": "查询参数非法"})
+        strategy_id = (qs.get("strategy_id") or [None])[0]
+        # Account IDs retain the frozen B/C/D arm suffix; preserve their
+        # case when querying the ledger rather than rejecting generated IDs.
+        if strategy_id is not None and not re.fullmatch(r"[A-Za-z0-9_]{1,80}", strategy_id):
+            return self._send(400, {"detail": "strategy_id 非法"})
+        try:
+            limit = int((qs.get("limit") or ["100"])[0])
+            if not 1 <= limit <= 500:
+                raise ValueError
+        except ValueError:
+            return self._send(400, {"detail": "limit 必须为 1 到 500 的整数"})
+        from strategy_simulation import ACTIVE_VARIANT_SUFFIX, EXECUTION_MODEL, StrategySimulation
+        from strategy_lab_service import read_service_status
+        engine = StrategySimulation(get_store())
+        if strategy_id is None:
+            payload = engine.overview()
+        else:
+            payload = engine.account_detail(strategy_id, limit=limit)
+            if payload is None:
+                return self._send(404, {"detail": "策略账户不存在"})
+        payload = dict(payload)
+        # The simulation ledger only contains accounts whose execution
+        # contract is implemented. Keep blocked hypotheses and rejected
+        # research candidates visible as separate read-only projections.
+        # Rejection takes precedence over data readiness: rejected research
+        # must not be presented as waiting to start after a data repair.
+        if strategy_id is None:
+            blocked = []
+            rejected = []
+            try:
+                specs_path = Path(ROOT) / "research_multi_strategy" / "strategy_specs.json"
+                specs = json.loads(specs_path.read_text(encoding="utf-8")).get("strategies", [])
+                for spec in specs:
+                    if not isinstance(spec, dict):
+                        continue
+                    is_rejected = (
+                        str(spec.get("hypothesis_status", "")).lower() == "rejected"
+                        or str(spec.get("arm_status", "")).upper() == "REJECTED"
+                    )
+                    if not is_rejected and spec.get("data_ready") is not False:
+                        continue
+                    item = {
+                        "strategy_id": str(spec.get("strategy_id", "")),
+                        "label": str(spec.get("name") or spec.get("strategy_id") or "未知策略"),
+                        "arm_id": spec.get("arm_id"),
+                        "timeframe": spec.get("timeframe"),
+                        "status": "rejected" if is_rejected else "data_blocked",
+                        "reason": (
+                            spec.get("rejection_reason") or "研究复核已淘汰，不进入前向模拟"
+                        ) if is_rejected else spec.get("data_blocker") or "所需数据尚未就绪",
+                        "required_data": spec.get("required_data", []),
+                    }
+                    (rejected if is_rejected else blocked).append(item)
+            except (OSError, ValueError, TypeError):
+                # A missing research document must not make the account API
+                # fail; the account ledger remains the source of truth.
+                blocked = []
+                rejected = []
+            payload["blocked_strategies"] = blocked
+            payload["rejected_strategies"] = rejected
+        # Keep the HTTP projection on the same immutable execution contract as
+        # the simulation engine.  This used to hard-code the retired taker
+        # fee and ``_100x`` identity, so the API contradicted the active
+        # maker-priced ``_100x_maker`` accounts after the fee-model change.
+        execution = dict(EXECUTION_MODEL)
+        execution.update(payload.get("execution") or {})
+        execution["active_variant_suffix"] = ACTIVE_VARIANT_SUFFIX
+        payload.update(service=read_service_status(), scope="forward_research",
+                       execution=execution)
+        return self._send(200, payload)
 
     # ---------- 策略研究汇总（模型对比 + 路线结论 + Carry 回测） ----------
     def _local_research(self):

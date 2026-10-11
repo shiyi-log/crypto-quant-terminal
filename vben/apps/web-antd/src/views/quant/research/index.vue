@@ -9,13 +9,27 @@
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 
-import { Card, Col, Row, Spin, Table, Tag, Tooltip } from 'ant-design-vue';
+import {
+  Alert,
+  Button,
+  Card,
+  Col,
+  Empty,
+  Row,
+  Spin,
+  Table,
+  Tag,
+  Tooltip,
+} from 'ant-design-vue';
 
 import { getResearch, getResearchStatus } from '#/api/freqtrade';
 
 const data = ref<any>(null);
 const rstatus = ref<any>(null);
 const loading = ref(false);
+const refreshing = ref(false);
+const loadError = ref('');
+const statusError = ref('');
 
 /* ══════════ 板块清单：跳转标签与卡片标题的唯一来源 ══════════
  * 之前标签写死 7 个、卡片标题各自写死，跳转还靠
@@ -173,16 +187,38 @@ const liqCols = computed(() => [
 ]);
 
 async function load() {
+  if (refreshing.value) return;
+  refreshing.value = true;
   if (!data.value) loading.value = true;
   try {
-    const [d, s] = await Promise.all([
-      getResearch(),
-      getResearchStatus().catch(() => null),
+    const [researchResult, statusResult] = await Promise.allSettled([
+      getResearch().then((snapshot) => {
+        if (
+          !snapshot ||
+          !Array.isArray(snapshot.routes) ||
+          !Array.isArray(snapshot.models)
+        ) {
+          throw new Error('研究汇总格式不完整，无法展示');
+        }
+        return snapshot;
+      }),
+      getResearchStatus(),
     ]);
-    data.value = d;
-    rstatus.value = s;
+    if (researchResult.status === 'fulfilled') {
+      data.value = researchResult.value;
+      loadError.value = '';
+    } else {
+      loadError.value = researchResult.reason?.message || '研究汇总读取失败';
+    }
+    if (statusResult.status === 'fulfilled') {
+      rstatus.value = statusResult.value;
+      statusError.value = '';
+    } else {
+      statusError.value = statusResult.reason?.message || '刷新状态读取失败';
+    }
   } finally {
     loading.value = false;
+    refreshing.value = false;
   }
 }
 
@@ -197,12 +233,29 @@ onUnmounted(() => clearInterval(timer));
 
 <template>
   <div class="p-4">
+    <div class="mb-3 flex justify-end">
+      <Button :loading="refreshing" size="small" @click="load">刷新研究数据</Button>
+    </div>
+    <Alert
+      v-if="loadError"
+      class="mb-3"
+      :type="data ? 'warning' : 'error'"
+      show-icon
+      :message="loadError"
+      :description="data ? '本次刷新失败，以下保留上一次成功读取的研究快照。' : '研究汇总暂时无法读取，请重试。'"
+    />
+    <Alert
+      v-if="statusError"
+      class="mb-3"
+      type="warning"
+      show-icon
+      :message="statusError"
+      description="刷新任务的当前状态未知；研究内容以已显示的快照和生成时间为准。"
+    />
     <Spin :spinning="loading">
-      <div v-if="!data" class="py-16 text-center text-muted-foreground">
-        暂无研究汇总 —— 运行 <code class="mx-1">python build_research.py</code> 生成
-      </div>
+      <Empty v-if="!data && !loading && !loadError" description="暂无研究汇总记录" />
 
-      <template v-else>
+      <template v-if="data">
         <!-- 结论横幅 -->
         <Card :bordered="false" class="shadow-sm">
           <div class="flex flex-wrap items-center gap-3">
@@ -218,7 +271,8 @@ onUnmounted(() => clearInterval(timer));
               <Tag v-if="staleness" :color="staleness.stale ? 'orange' : 'default'">
                 数据更新于 {{ staleness.label }}
               </Tag>
-              <Tag v-if="rstatus?.ok === false" color="red">最近刷新失败</Tag>
+              <Tag v-if="statusError" color="orange">刷新任务状态未知</Tag>
+              <Tag v-else-if="rstatus?.ok === false" color="red">最近刷新失败</Tag>
               <Tag v-else-if="rstatus?.refresh_running" color="blue">刷新守护运行中</Tag>
               <span>生成于 {{ data.generated_at }}</span>
             </span>
@@ -269,6 +323,9 @@ onUnmounted(() => clearInterval(timer));
                   {{ LEVEL[record.level]?.label }}
                 </Tag>
               </template>
+            </template>
+            <template #emptyText>
+              <div class="py-6 text-center text-xs text-gray-400">暂无已记录的研究路线</div>
             </template>
           </Table>
         </Card>
@@ -321,6 +378,9 @@ onUnmounted(() => clearInterval(timer));
               <template v-else-if="column.key === 'verdict'">
                 <Tag color="red">{{ record.verdict }}</Tag>
               </template>
+            </template>
+            <template #emptyText>
+              <div class="py-6 text-center text-xs text-gray-400">暂无模型对比数据</div>
             </template>
           </Table>
         </Card>
@@ -448,6 +508,9 @@ onUnmounted(() => clearInterval(timer));
                     </span>
                   </template>
                 </template>
+                <template #emptyText>
+                  <div class="py-6 text-center text-xs text-gray-400">暂无强平统计数据</div>
+                </template>
               </Table>
             </Card>
           </Col>
@@ -465,7 +528,7 @@ onUnmounted(() => clearInterval(timer));
                 :columns="sweepCols"
                 :data-source="carry?.sweep ?? []"
                 :pagination="false"
-                row-key="cfg"
+                :row-key="(record: any) => `${record.rebalance_days}-${record.topn}-${record.leverage}`"
                 size="small"
               >
                 <template #bodyCell="{ column, record }">
@@ -487,6 +550,9 @@ onUnmounted(() => clearInterval(timer));
                   <template v-else-if="column.key === 'win_rate'">
                     {{ fmt(record.win_rate, 1) }}%
                   </template>
+                </template>
+                <template #emptyText>
+                  <div class="py-6 text-center text-xs text-gray-400">暂无参数扫描数据</div>
                 </template>
               </Table>
               <div class="mt-2 text-xs text-orange-500">
@@ -529,6 +595,9 @@ onUnmounted(() => clearInterval(timer));
                   <template v-else-if="column.key === 'annual_pct'">
                     <span class="font-semibold text-red-500">+{{ fmt(record.annual_pct) }}%</span>
                   </template>
+                </template>
+                <template #emptyText>
+                  <div class="py-6 text-center text-xs text-gray-400">暂无保证金缓冲数据</div>
                 </template>
               </Table>
               <div class="mt-2 text-xs text-muted-foreground">
@@ -597,6 +666,9 @@ onUnmounted(() => clearInterval(timer));
               <template v-else-if="column.key === 'max_drawdown_pct'">
                 <span class="text-emerald-500">{{ fmt(record.max_drawdown_pct) }}%</span>
               </template>
+            </template>
+            <template #emptyText>
+              <div class="py-6 text-center text-xs text-gray-400">暂无保证金方案模拟数据</div>
             </template>
           </Table>
           <div class="mt-3 rounded-lg bg-orange-50/60 p-3 text-xs dark:bg-orange-950/20">

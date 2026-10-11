@@ -19,7 +19,8 @@ import unittest
 from unittest.mock import patch
 
 from data_sync import (
-    DataSynchronizer, candle_identity, exclusive_sync, main, sqlite_snapshot, timestamp_ms,
+    DataSynchronizer, candle_close_timestamp, candle_identity, exclusive_sync, main,
+    sqlite_snapshot, timestamp_ms,
 )
 
 
@@ -190,6 +191,71 @@ class DataSyncTests(unittest.TestCase):
             dates = pd.Series(pd.to_datetime(["2019-09-08"], utc=True)).astype(f"datetime64[{unit}, UTC]")
             self.assertEqual(timestamp_ms(dates).iloc[0], 1567900800000)
 
+    def test_candle_close_boundary_uses_actual_timeframe_and_calendar_months(self):
+        opened = int(pd.Timestamp("2026-01-01T00:00:00Z").timestamp() * 1000)
+        for timeframe, duration in (("1s", 1000), ("5m", 300_000),
+                                    ("15m", 900_000), ("1h", 3_600_000),
+                                    ("4h", 14_400_000), ("1d", 86_400_000),
+                                    ("1w", 604_800_000)):
+            with self.subTest(timeframe=timeframe):
+                self.assertEqual(candle_close_timestamp(opened, timeframe), opened + duration)
+        february = int(pd.Timestamp("2024-02-01T00:00:00Z").timestamp() * 1000)
+        self.assertEqual(candle_close_timestamp(february, "1M"),
+                         int(pd.Timestamp("2024-03-01T00:00:00Z").timestamp() * 1000))
+        self.assertEqual(candle_close_timestamp(opened, "2M"),
+                         int(pd.Timestamp("2026-03-01T00:00:00Z").timestamp() * 1000))
+        with self.assertRaises(ValueError):
+            candle_close_timestamp(opened, "0m")
+
+    def test_feather_closed_flags_preserve_partial_rows_and_current_candle(self):
+        directory = self.project / "bot/user_data/data/binance/futures"
+        directory.mkdir(parents=True)
+        path = directory / "BTC_USDT_USDT-15m-futures.feather"
+        frame = candle_frame(pd.to_datetime(["2026-10-12T15:15:00Z", "2026-10-12T15:30:00Z",
+                                            "2026-10-12T15:45:00Z", "2026-10-12T16:00:00Z"]))
+        frame["closed"] = [False, None, None, True]
+        frame["quote_volume"] = [100., 101., 102., 103.]
+        frame.to_feather(path)
+        observed = pd.Timestamp("2026-10-12T16:05:19Z").timestamp()
+        os.utime(path, (observed, observed))
+        store = MemoryStore()
+        with patch("data_sync.time.time", return_value=observed):
+            result = DataSynchronizer(store, self.project).run()
+        self.assertEqual(result["errors"], 0)
+        rows = list(store.candles.values())
+        self.assertEqual([row["extras"]["closed"] for row in rows], [False, True, True, False])
+        self.assertEqual([row["extras"]["quote_volume"] for row in rows], [100., 101., 102., 103.])
+
+    def test_static_feather_tail_stays_partial_after_its_close_boundary(self):
+        directory = self.project / "bot/user_data/data/binance"
+        directory.mkdir(parents=True)
+        path = directory / "BTC_USDT-1h.feather"
+        candle_frame(pd.to_datetime(["2026-10-12T14:00:00Z", "2026-10-12T15:00:00Z"])).to_feather(path)
+        captured = pd.Timestamp("2026-10-12T15:30:00Z").timestamp()
+        os.utime(path, (captured, captured))
+        store = MemoryStore()
+        sync = DataSynchronizer(store, self.project)
+        # Even a forced import after 16:00 must respect the file's 15:30 snapshot.
+        with patch("data_sync.time.time", return_value=captured + 7200):
+            result = sync.run()
+            self.assertEqual(result["rows"], 2)
+            self.assertEqual([row["extras"]["closed"] for row in store.candles.values()], [True, False])
+            self.assertEqual(sync.run()["skipped"], 1)
+            self.assertEqual(sync.run(force=True)["rows"], 2)
+            self.assertEqual([row["extras"]["closed"] for row in store.candles.values()], [True, False])
+
+    def test_feather_close_boundary_cannot_be_newer_than_current_utc_time(self):
+        directory = self.project / "bot/user_data/data/binance"
+        directory.mkdir(parents=True)
+        path = directory / "BTC_USDT-1h.feather"
+        candle_frame(pd.to_datetime(["2026-10-12T15:00:00Z"])).to_feather(path)
+        observed = pd.Timestamp("2026-10-12T15:30:00Z").timestamp()
+        os.utime(path, (observed + 7200, observed + 7200))
+        store = MemoryStore()
+        with patch("data_sync.time.time", return_value=observed):
+            self.assertEqual(DataSynchronizer(store, self.project).run()["errors"], 0)
+        self.assertIs(next(iter(store.candles.values()))["extras"]["closed"], False)
+
     def test_json_incremental_nested_docs_exclusions_and_event_retry(self):
         project = self.project
         store = MemoryStore()
@@ -223,6 +289,132 @@ class DataSyncTests(unittest.TestCase):
         assert len(store.events["iteration_history.jsonl"]) == 2
         assert store.sync["running"] is False
 
+    def test_database_write_failure_does_not_escape_and_failed_source_retries(self):
+        path = write_json(self.project, "research_summary.json", {"round": 1})
+        store = MemoryStore()
+        sync = DataSynchronizer(store, self.project)
+        original_record_source = store.record_source
+        writes = 0
+
+        def fail_source_record(key, source_path, kind, mtime_ns, size, row_count, error=None):
+            nonlocal writes
+            writes += 1
+            if writes <= 2:
+                raise OSError("disk full")
+            original_record_source(key, source_path, kind, mtime_ns, size, row_count, error)
+
+        store.record_source = fail_source_record
+        with redirect_stdout(StringIO()):
+            failed = sync.run(fast=True, force=True)
+        self.assertEqual(failed["errors"], 1)
+        self.assertEqual(failed["storage_errors"], 1)
+        self.assertEqual(failed["status"], "error")
+        self.assertEqual(store.documents["research_summary.json"], {"round": 1})
+
+        store.record_source = original_record_source
+        path.write_text('{"round": 2}', encoding="utf-8")
+        with redirect_stdout(StringIO()):
+            recovered = sync.run(fast=True)
+        self.assertEqual(recovered["errors"], 0)
+        self.assertEqual(recovered["rows"], 1)
+        self.assertEqual(store.documents["research_summary.json"], {"round": 2})
+        self.assertEqual(store.sync["running"], False)
+
+    def test_sync_state_write_failure_is_reported_without_aborting_scan(self):
+        write_json(self.project, "research_summary.json", {"round": 1})
+        store = MemoryStore()
+        original_set_sync_state = store.set_sync_state
+        attempts = 0
+
+        def fail_first_state_write(state):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("disk full")
+            original_set_sync_state(state)
+
+        store.set_sync_state = fail_first_state_write
+        with redirect_stdout(StringIO()):
+            result = DataSynchronizer(store, self.project).run(fast=True)
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(result["storage_errors"], 1)
+        self.assertEqual(result["status"], "error")
+        self.assertFalse(result["running"])
+        self.assertEqual(store.documents["research_summary.json"], {"round": 1})
+        self.assertFalse(store.sync.get("running", True))
+
+    def test_final_sync_state_write_failure_clears_success_timestamp(self):
+        write_json(self.project, "research_summary.json", {"round": 1})
+        store = MemoryStore()
+        original_set_sync_state = store.set_sync_state
+
+        def fail_final_state_write(state):
+            if state.get("running") is False:
+                raise OSError("disk full")
+            original_set_sync_state(state)
+
+        store.set_sync_state = fail_final_state_write
+        with redirect_stdout(StringIO()):
+            result = DataSynchronizer(store, self.project).run(fast=True)
+        self.assertEqual(result["status"], "error")
+        self.assertGreaterEqual(result["storage_errors"], 1)
+        self.assertNotIn("last_success_at", result)
+
+    def test_failed_source_is_retried_when_old_success_fingerprint_is_unchanged(self):
+        path = write_json(self.project, "research_summary.json", {"round": 1})
+        key = "bot/user_data/research_summary.json"
+        store = MemoryStore()
+        sync = DataSynchronizer(store, self.project)
+        with redirect_stdout(StringIO()):
+            sync.run(fast=True)
+        successful_stamp = (store.sources[key]["mtime_ns"], store.sources[key]["size"])
+
+        with patch.object(store, "record_source", side_effect=OSError("disk full")):
+            with redirect_stdout(StringIO()):
+                failed = sync.run(fast=True, force=True)
+        self.assertEqual(failed["errors"], 1)
+        self.assertEqual(failed["storage_errors"], 1)
+        self.assertEqual((store.sources[key]["mtime_ns"], store.sources[key]["size"]), successful_stamp)
+        self.assertIsNone(store.sources[key].get("error"))
+
+        with patch.object(store, "put_document", wraps=store.put_document) as write:
+            with redirect_stdout(StringIO()):
+                recovered = sync.run(fast=True)
+        write.assert_called_once()
+        self.assertEqual(recovered["errors"], 0)
+        self.assertEqual(recovered["files"], 1)
+        self.assertEqual(recovered["skipped"], 0)
+        self.assertEqual(path.stat().st_mtime_ns, successful_stamp[0])
+
+        with redirect_stdout(StringIO()):
+            settled = sync.run(fast=True)
+        self.assertEqual(settled["errors"], 0)
+        self.assertEqual(settled["files"], 0)
+        self.assertEqual(settled["skipped"], 1)
+
+    def test_source_callback_write_failure_is_isolated(self):
+        write_json(self.project, "research_summary.json", {"round": 1})
+        store = MemoryStore()
+        original_put_document = store.put_document
+
+        def fail_document_write(*args, **kwargs):
+            raise OSError("disk full")
+
+        store.put_document = fail_document_write
+        with redirect_stdout(StringIO()):
+            result = DataSynchronizer(store, self.project).run(fast=True)
+        key = "bot/user_data/research_summary.json"
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(result["storage_errors"], 0)
+        self.assertEqual(store.sources[key]["error"], "OSError")
+        self.assertFalse(result["running"])
+
+        store.put_document = original_put_document
+        with redirect_stdout(StringIO()):
+            recovered = DataSynchronizer(store, self.project).run(fast=True)
+        self.assertEqual(recovered["errors"], 0)
+        self.assertEqual(store.documents["research_summary.json"], {"round": 1})
+
     def test_batch_counts_nonfinite_extras_and_idempotence(self):
         project = self.project
         directory = project / "bot/user_data/data/orderflow"
@@ -248,6 +440,110 @@ class DataSyncTests(unittest.TestCase):
         assert sync.run()["rows"] == 0
         assert sync.run(force=True)["rows"] == 6
         assert len(store.candles) == 6
+
+    def test_second_candle_batch_failure_retries_unchanged_source_idempotently(self):
+        directory = self.project / "bot/user_data/data/binance"
+        directory.mkdir(parents=True)
+        path = directory / "BTC_USDT-1h.feather"
+        candle_frame(pd.date_range("2026-01-01", periods=4, tz="UTC")).to_feather(path)
+        stamp = (path.stat().st_mtime_ns, path.stat().st_size)
+        source_key = "bot/user_data/data/binance/BTC_USDT-1h.feather"
+        store = MemoryStore()
+        sync = DataSynchronizer(store, self.project, batch_size=2)
+        original_upsert = store.upsert_candles
+        attempts = 0
+
+        def fail_second_batch(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 2:
+                raise OSError("disk full")
+            return original_upsert(*args, **kwargs)
+
+        with patch.object(store, "upsert_candles", side_effect=fail_second_batch), \
+             redirect_stdout(StringIO()):
+            failed = sync.run()
+            self.assertEqual(failed["status"], "error")
+            self.assertEqual(failed["errors"], 1)
+            self.assertEqual(failed["files"], 0)
+            self.assertEqual(failed["rows"], 0)
+            self.assertNotIn("last_success_at", failed)
+            self.assertEqual(attempts, 2)
+            self.assertEqual(len(store.candles), 2)
+            self.assertEqual(store.sources[source_key]["error"], "OSError")
+            self.assertEqual(store.sources[source_key].get("row_count", 0), 0)
+
+            # Retry the identical file, including the already committed batch.
+            recovered = sync.run()
+            self.assertEqual(recovered["status"], "completed")
+            self.assertEqual(recovered["errors"], 0)
+            self.assertEqual(recovered["files"], 1)
+            self.assertEqual(recovered["rows"], 4)
+            self.assertEqual(attempts, 4)
+            self.assertEqual(len(store.candles), 4)
+            self.assertIsNone(store.sources[source_key]["error"])
+            self.assertEqual(store.sources[source_key]["row_count"], 4)
+            self.assertEqual(store.batch_lengths, [2, 2, 2])
+
+            unchanged = sync.run()
+            self.assertEqual(unchanged["rows"], 0)
+            self.assertEqual(unchanged["skipped"], 1)
+            self.assertEqual(attempts, 4)
+            self.assertEqual(len(store.candles), 4)
+            self.assertEqual(store.sources[source_key]["row_count"], 4)
+        self.assertEqual((path.stat().st_mtime_ns, path.stat().st_size), stamp)
+
+    def test_tabular_artifact_failure_preserves_events_and_retries_unchanged_source(self):
+        path = self.project / "bot/user_data/cross_sectional.csv"
+        path.write_text("time,net,longs\n2026-01-01,0.25,BTC\n2026-01-02,,ETH\n", encoding="utf-8")
+        stamp = (path.stat().st_mtime_ns, path.stat().st_size)
+        source_key = "bot/user_data/cross_sectional.csv"
+        expected = [
+            {"time": "2026-01-01", "net": .25, "longs": "BTC"},
+            {"time": "2026-01-02", "net": None, "longs": "ETH"},
+        ]
+        store = MemoryStore()
+        sync = DataSynchronizer(store, self.project)
+        original_save_artifact = store.save_artifact
+        attempts = 0
+
+        def fail_first_artifact(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("disk full")
+            return original_save_artifact(*args, **kwargs)
+
+        with patch.object(store, "save_artifact", side_effect=fail_first_artifact), \
+             redirect_stdout(StringIO()):
+            failed = sync.run()
+            self.assertEqual(failed["status"], "error")
+            self.assertEqual(failed["errors"], 1)
+            self.assertEqual(failed["files"], 0)
+            self.assertEqual(failed["rows"], 0)
+            self.assertNotIn("last_success_at", failed)
+            self.assertEqual(store.events["cross_sectional.csv"], expected)
+            self.assertNotIn(source_key, store.artifacts)
+            self.assertEqual(store.sources[source_key]["error"], "OSError")
+
+            recovered = sync.run()
+            self.assertEqual(recovered["status"], "completed")
+            self.assertEqual(recovered["errors"], 0)
+            self.assertEqual(recovered["files"], 1)
+            self.assertEqual(recovered["rows"], 2)
+            self.assertEqual(store.events, {"cross_sectional.csv": expected})
+            self.assertEqual(store.artifacts[source_key]["metadata"],
+                             {"rows": 2, "columns": ["time", "net", "longs"]})
+            self.assertIsNone(store.sources[source_key]["error"])
+            self.assertEqual(store.sources[source_key]["row_count"], 2)
+            self.assertEqual(attempts, 2)
+
+            unchanged = sync.run()
+            self.assertEqual(unchanged["rows"], 0)
+            self.assertEqual(unchanged["skipped"], 1)
+            self.assertEqual(attempts, 2)
+            self.assertEqual(store.events, {"cross_sectional.csv": expected})
+        self.assertEqual((path.stat().st_mtime_ns, path.stat().st_size), stamp)
 
     def test_funding_can_be_negative_and_spot_not_overwritten(self):
         project = self.project
@@ -297,6 +593,141 @@ class DataSyncTests(unittest.TestCase):
         assert len(store.series) == 4
         assert {key[1] for key in store.series} == {"open_interest", "open_interest_value", "dvol", "funding_rate_archive"}
         assert store.artifacts["bot/user_data/cache/features.npy"]["metadata"]["shape"] == [2, 3]
+
+    def test_second_pickle_series_batch_failure_retries_unchanged_source_idempotently(self):
+        directory = self.project / "bot/user_data/newsrc"
+        directory.mkdir()
+        path = directory / "dvol_btc.pkl"
+        pd.Series([65., 66., 67., 68.],
+                  index=pd.date_range("2026-01-01", periods=4, tz="UTC")).to_pickle(path)
+        stamp = (path.stat().st_mtime_ns, path.stat().st_size)
+        source_key = "bot/user_data/newsrc/dvol_btc.pkl"
+        store = MemoryStore()
+        sync = DataSynchronizer(store, self.project, batch_size=2)
+        original_upsert = store.upsert_series
+        attempts = 0
+
+        def fail_second_batch(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 2:
+                raise OSError("disk full")
+            return original_upsert(*args, **kwargs)
+
+        with patch.object(store, "upsert_series", side_effect=fail_second_batch), \
+             redirect_stdout(StringIO()):
+            failed = sync.run()
+            self.assertEqual(failed["status"], "error")
+            self.assertEqual(failed["errors"], 1)
+            self.assertEqual(failed["storage_errors"], 0)
+            self.assertEqual(failed["rows"], 0)
+            self.assertEqual(failed["files"], 0)
+            self.assertNotIn("last_success_at", failed)
+            self.assertEqual(len(store.series), 2)
+            self.assertEqual(attempts, 2)
+            self.assertEqual(store.sources[source_key]["error"], "OSError")
+
+            recovered = sync.run()
+            self.assertEqual(recovered["status"], "completed")
+            self.assertEqual(recovered["errors"], 0)
+            self.assertEqual(recovered["rows"], 4)
+            self.assertEqual(recovered["files"], 1)
+            self.assertEqual(attempts, 4)
+            self.assertEqual(len(store.series), 4)
+            self.assertEqual([row["value"] for row in store.series.values()],
+                             [65., 66., 67., 68.])
+            self.assertTrue(all(key[:3] == ("deribit", "dvol", "BTC")
+                                for key in store.series))
+            self.assertIsNone(store.sources[source_key]["error"])
+            self.assertEqual(store.sources[source_key]["row_count"], 4)
+
+            unchanged = sync.run()
+            self.assertEqual(unchanged["rows"], 0)
+            self.assertEqual(unchanged["skipped"], 1)
+            self.assertEqual(attempts, 4)
+            self.assertEqual(len(store.series), 4)
+            self.assertEqual(store.sources[source_key]["row_count"], 4)
+        self.assertEqual((path.stat().st_mtime_ns, path.stat().st_size), stamp)
+
+    def test_sqlite_snapshot_write_failure_retries_unchanged_database(self):
+        path = self.project / "bot/tradesv3.dryrun.sqlite"
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("CREATE TABLE trades (id INTEGER PRIMARY KEY, pair TEXT)")
+            connection.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, trade_id INTEGER)")
+            connection.execute("INSERT INTO trades VALUES (1,'BTC/USDT')")
+            connection.execute("INSERT INTO orders VALUES (1,1)")
+            connection.commit()
+        finally:
+            connection.close()
+        original_bytes = path.read_bytes()
+        stamp = (path.stat().st_mtime_ns, path.stat().st_size)
+        source_key = "bot/tradesv3.dryrun.sqlite"
+        store = MemoryStore()
+        sync = DataSynchronizer(store, self.project)
+        original_replace = store.replace_external_snapshot
+        attempts = 0
+
+        def fail_first_snapshot(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("disk full")
+            return original_replace(*args, **kwargs)
+
+        with patch.object(store, "replace_external_snapshot", side_effect=fail_first_snapshot), \
+             redirect_stdout(StringIO()):
+            failed = sync.run(fast=True)
+            self.assertEqual(failed["status"], "error")
+            self.assertEqual(failed["errors"], 1)
+            self.assertEqual(failed["storage_errors"], 0)
+            self.assertEqual(failed["rows"], 0)
+            self.assertEqual(failed["files"], 0)
+            self.assertNotIn("last_success_at", failed)
+            self.assertEqual(store.external, {})
+            self.assertEqual(store.sources[source_key]["error"], "OSError")
+
+            recovered = sync.run(fast=True)
+            self.assertEqual(recovered["status"], "completed")
+            self.assertEqual(recovered["errors"], 0)
+            self.assertEqual(recovered["rows"], 2)
+            self.assertEqual(recovered["files"], 1)
+            self.assertEqual(store.external, {
+                (source_key, "trades"): [{"id": 1, "pair": "BTC/USDT"}],
+                (source_key, "orders"): [{"id": 1, "trade_id": 1}],
+            })
+            self.assertIsNone(store.sources[source_key]["error"])
+            self.assertEqual(store.sources[source_key]["row_count"], 2)
+            self.assertEqual(attempts, 2)
+
+            unchanged = sync.run(fast=True)
+            self.assertEqual(unchanged["rows"], 0)
+            self.assertEqual(unchanged["skipped"], 1)
+            self.assertEqual(attempts, 2)
+        self.assertEqual(path.read_bytes(), original_bytes)
+        self.assertEqual((path.stat().st_mtime_ns, path.stat().st_size), stamp)
+
+    def test_once_cli_returns_nonzero_for_sync_state_write_failure(self):
+        write_json(self.project, "research_summary.json", {"round": 1})
+        store = MemoryStore()
+        output = StringIO()
+        with patch("data_sync.exclusive_sync", return_value=nullcontext()), \
+             patch("data_store.DataStore", return_value=store), \
+             patch.object(store, "initialize", create=True) as initialize, \
+             patch.object(store, "set_sync_state", side_effect=OSError("disk full")), \
+             patch("data_sync.signal.signal"), \
+             redirect_stdout(output):
+            result = main(["--once", "--fast", "--root", str(self.project)])
+
+        self.assertEqual(result, 1)
+        initialize.assert_called_once()
+        summary = json.loads(output.getvalue().splitlines()[-1])
+        self.assertEqual(summary["status"], "error")
+        self.assertEqual(summary["errors"], 0)
+        self.assertEqual(summary["storage_errors"], 2)
+        self.assertFalse(summary["running"])
+        self.assertNotIn("last_success_at", summary)
+        self.assertEqual(store.documents["research_summary.json"], {"round": 1})
 
     def test_sqlite_consistent_readonly_wal_and_users_preserved(self):
         project = self.project

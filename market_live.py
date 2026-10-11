@@ -25,6 +25,8 @@ from typing import Any, Callable
 import aiohttp
 from aiohttp import web
 
+from orderflow_detector import VolumeSurgeDetector
+
 LOG = logging.getLogger("market_live")
 DEFAULT_INTERVALS = frozenset({
     "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h",
@@ -121,6 +123,15 @@ def _positive_integer(value: Any) -> int:
     return number
 
 
+def _nonnegative_integer(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("invalid integer")
+    number = int(value)
+    if number < 0 or str(number) != str(value):
+        raise ValueError("invalid integer")
+    return number
+
+
 def _number(value: Any, *, positive: bool = False) -> float:
     if isinstance(value, bool):
         raise ValueError("invalid candle number")
@@ -170,6 +181,24 @@ def normalize_kline(
         "volume": _number(raw.get("v")),
         "closed": raw["x"],
     }
+    # Binance kline payloads carry order-flow fields alongside OHLCV.  They are
+    # optional for compatibility with fixtures and older upstream snapshots,
+    # but retained whenever supplied so the live detector sees authoritative
+    # quote volume and taker-flow data.
+    if raw.get("q") is not None:
+        candle["quote_volume"] = _number(raw["q"])
+    if raw.get("n") is not None:
+        candle["num_trades"] = _nonnegative_integer(raw["n"])
+    if raw.get("V") is not None:
+        candle["taker_buy_base"] = _number(raw["V"])
+    if raw.get("Q") is not None:
+        candle["taker_buy_quote"] = _number(raw["Q"])
+    quote_volume = candle.get("quote_volume")
+    taker_buy_quote = candle.get("taker_buy_quote")
+    if quote_volume and taker_buy_quote is not None:
+        if taker_buy_quote > quote_volume:
+            raise ValueError("invalid taker buy quote volume")
+        candle["flow_imbal"] = 2 * taker_buy_quote / quote_volume - 1
     if candle["low"] > min(candle["open"], candle["close"]) or candle["high"] < max(
         candle["open"], candle["close"], candle["low"],
     ):
@@ -253,6 +282,8 @@ class MarketLiveService:
         self, *, verifier: Callable[[str], Any], allowed_origins: set[str] | frozenset[str],
         intervals: frozenset[str] = DEFAULT_INTERVALS,
         upstream_connector: Callable[[str], Any] | None = None, archive: Any = None,
+        surge_detector: VolumeSurgeDetector | None = None,
+        surge_sink: Callable[[dict[str, Any]], Any] | None = None,
         auth_timeout: float = 10, auth_check_interval: float = 1, flush_interval: float = .025,
         send_timeout: float = 3, retry_initial: float = 1, retry_max: float = 30,
         max_subscriptions: int = 100,
@@ -263,6 +294,11 @@ class MarketLiveService:
         self.verifier, self.allowed_origins = verifier, frozenset(allowed_origins)
         self.intervals = frozenset(intervals)
         self.upstream_connector, self.archive = upstream_connector, archive
+        self.surge_sink = surge_sink
+        self.surge_detector = surge_detector or VolumeSurgeDetector(on_surge=surge_sink)
+        if surge_detector is not None and surge_sink is not None:
+            surge_detector.on_surge = surge_sink
+        self.surge_events: deque[dict[str, Any]] = deque(maxlen=4096)
         self.auth_timeout, self.auth_check_interval = auth_timeout, auth_check_interval
         self.flush_interval, self.send_timeout = flush_interval, send_timeout
         self.retry_initial, self.retry_max = retry_initial, retry_max
@@ -610,14 +646,36 @@ class MarketLiveService:
         self.receive_latency.append(delay)
         if delay < 0:
             self.exchange_clock_ahead_samples += 1
+        # Surge observations are emitted only from authoritative closed 5m
+        # candles.  The detector is intentionally after version checks so a
+        # reconnect replay or stale duplicate cannot generate an event.
+        if candle.get("closed") is True and item.timeframe == "5m":
+            try:
+                surge = self.surge_detector.process(
+                    item.pair, item.timeframe, candle, market=state.market,
+                    source_timestamp=payload["received_timestamp"],
+                )
+                if surge is not None:
+                    self.surge_events.append(surge)
+            except Exception:
+                # A sink must never interrupt market fan-out.  Keep detector
+                # failures observable through logging without exposing payloads.
+                LOG.exception("order-flow surge detector failed")
         for client in self.clients:
             if item in client.subscriptions:
                 client.offer(payload, received_monotonic)
         if self.archive is not None:
-            row = {**candle, "extras": {
+            row = {key: candle[key] for key in (
+                "timestamp", "open", "high", "low", "close", "volume",
+            )}
+            row["extras"] = {
                 "closed": candle["closed"], "live_event_timestamp": event_ms,
                 "received_timestamp": payload["received_timestamp"],
-            }}
+                **{key: candle[key] for key in (
+                    "quote_volume", "num_trades", "taker_buy_base",
+                    "taker_buy_quote", "flow_imbal",
+                ) if key in candle},
+            }
             try:
                 if not self.archive.offer(
                     "binance", state.market, item.pair, item.timeframe, state.market, [row],

@@ -67,6 +67,8 @@ def services(root: Path = ROOT) -> dict[str, Service]:
                 "--port", os.getenv("QUANT_LIVE_PORT", "8892")), root,
                 root / "market_live.py", port=int(os.getenv("QUANT_LIVE_PORT", "8892")),
                 health_path="/health"),
+        Service("strategy-lab", "十策略独立模拟", (python, "-u", str(root / "strategy_lab_service.py")),
+                root, root / "strategy_lab_service.py"),
     ]
     return {spec.name: spec for spec in specs}
 

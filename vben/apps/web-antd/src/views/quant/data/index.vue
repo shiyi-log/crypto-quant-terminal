@@ -133,6 +133,59 @@ const collectorError = computed(() => {
   if (!value) return '';
   return typeof value === 'string' ? value : JSON.stringify(value);
 });
+const collectorDiskLevel = computed(() => {
+  const value = collector.value?.disk_alert_level;
+  return typeof value === 'string' ? value : '';
+});
+const collectorDiskFreeBytes = computed(() =>
+  finiteNumber(collector.value?.disk_free_bytes),
+);
+const collectorDiskFreePct = computed(() =>
+  finiteNumber(collector.value?.disk_free_pct),
+);
+const collectorDiskReason = computed(() => {
+  const value = collector.value?.disk_alert_reason;
+  return typeof value === 'string' ? value : '';
+});
+const hasCollectorDisk = computed(
+  () =>
+    Boolean(collector.value) &&
+    ('disk_alert_level' in (collector.value ?? {}) ||
+      'disk_free_bytes' in (collector.value ?? {}) ||
+      'disk_free_pct' in (collector.value ?? {})),
+);
+const collectorDiskLabel = computed(() => {
+  switch (collectorDiskLevel.value) {
+    case 'ok':
+      return '磁盘正常';
+    case 'warning':
+      return '磁盘告警';
+    case 'critical':
+      return '磁盘临界';
+    case 'unknown':
+      return '磁盘状态未知';
+    default:
+      return '磁盘容量';
+  }
+});
+const collectorDiskTagColor = computed(() => {
+  switch (collectorDiskLevel.value) {
+    case 'ok':
+      return 'success';
+    case 'warning':
+      return 'warning';
+    case 'critical':
+      return 'error';
+    default:
+      return 'default';
+  }
+});
+const collectorDiskAlertType = computed(() =>
+  collectorDiskLevel.value === 'critical' ||
+  collectorDiskLevel.value === 'unknown'
+    ? 'error'
+    : 'warning',
+);
 const latestOrderbook = computed(() => {
   // 同毫秒的多个快照再按更新编号比较，编号使用 BigInt 保留完整精度。
   return [...orderbooks.value].sort((left, right) => {
@@ -208,14 +261,21 @@ function formatCount(value: number | undefined) {
   return value === undefined ? '—' : Number(value).toLocaleString('zh-CN');
 }
 
-function formatBytes(value: number | undefined) {
-  if (value === undefined || !Number.isFinite(value)) return '—';
+function finiteNumber(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === '') return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function formatBytes(value: number | string | undefined) {
+  const numeric = finiteNumber(value);
+  if (numeric === undefined) return '—';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const level = Math.min(
-    Math.floor(Math.log(Math.max(value, 1)) / Math.log(1024)),
+    Math.floor(Math.log(Math.max(numeric, 1)) / Math.log(1024)),
     units.length - 1,
   );
-  return `${(value / 1024 ** level).toFixed(level === 0 ? 0 : 2)} ${units[level]}`;
+  return `${(numeric / 1024 ** level).toFixed(level === 0 ? 0 : 2)} ${units[level]}`;
 }
 
 function formatNumber(value: number | string | undefined) {
@@ -449,7 +509,11 @@ onUnmounted(() => {
           <div v-if="collector" class="mt-5 border-t border-border pt-4">
             <div class="mb-3 text-sm font-medium">实时采集</div>
             <div class="flex flex-wrap items-center gap-3 text-sm">
-              <Tag :color="collector.state === 'running' ? 'processing' : 'default'">
+              <Tag
+                :color="
+                  collector.state === 'running' ? 'processing' : 'default'
+                "
+              >
                 {{
                   collector.state === 'running'
                     ? '采集中'
@@ -464,6 +528,33 @@ onUnmounted(() => {
                 {{ localTime(collector.updated_at ?? collector.last_at) }}
               </span>
             </div>
+            <div
+              v-if="hasCollectorDisk"
+              class="mt-3 flex flex-wrap items-center gap-3 text-sm"
+            >
+              <Tag :color="collectorDiskTagColor">{{ collectorDiskLabel }}</Tag>
+              <span>
+                暂存分区剩余 {{ formatBytes(collectorDiskFreeBytes) }}
+                <template v-if="collectorDiskFreePct !== undefined">
+                  （{{ collectorDiskFreePct.toFixed(2) }}%）
+                </template>
+              </span>
+              <span class="text-xs text-muted-foreground">
+                检查时间 {{ localTime(collector.disk_checked_at) }}
+              </span>
+            </div>
+            <Alert
+              v-if="
+                collectorDiskLevel === 'warning' ||
+                collectorDiskLevel === 'critical' ||
+                collectorDiskLevel === 'unknown'
+              "
+              class="mt-3"
+              :description="collectorDiskReason || '暂时无法读取暂存分区容量。'"
+              :message="collectorDiskLabel"
+              show-icon
+              :type="collectorDiskAlertType"
+            />
             <Alert
               v-if="collectorError"
               class="mt-3"
@@ -483,7 +574,9 @@ onUnmounted(() => {
               </div>
               <div
                 class="grid grid-cols-1 gap-3 sm:grid-cols-2"
-                :class="group.items.length === 4 ? 'xl:grid-cols-4' : 'xl:grid-cols-5'"
+                :class="
+                  group.items.length === 4 ? 'xl:grid-cols-4' : 'xl:grid-cols-5'
+                "
               >
                 <div
                   v-for="metric in group.items"
@@ -502,8 +595,6 @@ onUnmounted(() => {
             </section>
           </div>
         </Card>
-
-
       </div>
     </Spin>
 
@@ -583,16 +674,14 @@ onUnmounted(() => {
           <template v-else-if="column.key === 'side'">
             <Tag
               v-if="
-                buyerMaker(record.buyer_maker, record.is_buyer_maker) ===
-                true
+                buyerMaker(record.buyer_maker, record.is_buyer_maker) === true
               "
               color="red"
               >主动卖出</Tag
             >
             <Tag
               v-else-if="
-                buyerMaker(record.buyer_maker, record.is_buyer_maker) ===
-                false
+                buyerMaker(record.buyer_maker, record.is_buyer_maker) === false
               "
               color="green"
               >主动买入</Tag
@@ -611,9 +700,7 @@ onUnmounted(() => {
         <span class="text-xs text-muted-foreground"
           >{{ localTime(latestOrderbook?.timestamp) }} · 更新 ID
           {{
-            latestOrderbook?.last_update_id ??
-            latestOrderbook?.update_id ??
-            '—'
+            latestOrderbook?.last_update_id ?? latestOrderbook?.update_id ?? '—'
           }}</span
         >
       </template>
@@ -646,11 +733,9 @@ onUnmounted(() => {
             size="small"
           >
             <template #bodyCell="{ column, record }">
-              <span
-                v-if="column.key === 'price'"
-                class="text-emerald-500"
-                >{{ formatNumber(record.price) }}</span
-              >
+              <span v-if="column.key === 'price'" class="text-emerald-500">{{
+                formatNumber(record.price)
+              }}</span>
               <template v-else-if="column.key === 'quantity'">{{
                 formatNumber(record.quantity)
               }}</template>
@@ -685,8 +770,8 @@ onUnmounted(() => {
     <Card v-if="status" :bordered="false" title="行情数据集">
       <template #extra>
         <span class="text-xs text-muted-foreground"
-          >筛选结果 {{ datasets.length }} 组 ·
-          {{ formatCount(datasetRows) }} 条 K 线</span
+          >筛选结果 {{ datasets.length }} 组 · {{ formatCount(datasetRows) }} 条
+          K 线</span
         >
       </template>
       <Input

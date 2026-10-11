@@ -1,0 +1,201 @@
+{
+  "generated_utc": "2026-10-10T13:00:00Z",
+  "question": "同一「毛优势/成本」检验用在 1d（实盘同族配置）上是什么结果？",
+  "scope_1d": {
+    "symbols": 20,
+    "timeframe": "1d",
+    "period": "2023-05-03 → 2026-10-09",
+    "bars_per_symbol": 1256,
+    "capital": 10000.0,
+    "cost_model": {
+      "taker_per_side": 0.0005,
+      "slippage": "unknown",
+      "funding": "unknown"
+    },
+    "data_source": "quant.candles exchange=binance market=futures candle_type=futures"
+  },
+  "scope_1h": {
+    "symbols": [
+      "BTC",
+      "ETH"
+    ],
+    "timeframe": "1h",
+    "period": "2024-01-01 → 2026-10-08 05:00",
+    "bars": 24270,
+    "capital": 10000.0
+  },
+  "variants_1d": {
+    "trend-20-20": {
+      "trades": 371,
+      "ending_equity": 19933.087996047332,
+      "net_pnl": 9933.087996047332,
+      "gross_mean": 23.46435187290755,
+      "gross_t": 1.491984763420583,
+      "gross_p": 0.1365552519526103,
+      "gross_over_cost": 43.008107140933994
+    },
+    "trend-adx-25": {
+      "trades": 328,
+      "ending_equity": 16221.12295386488,
+      "net_pnl": 6221.12295386488,
+      "gross_mean": 16.81977285856411,
+      "gross_t": 1.2669856130620172,
+      "gross_p": 0.20606205438481817,
+      "gross_over_cost": 33.81151788499487
+    },
+    "trend-atr-2-1": {
+      "trades": 1794,
+      "ending_equity": 11527.979802827847,
+      "net_pnl": 1527.9798028278474,
+      "gross_mean": 1.2172801464258265,
+      "gross_t": 1.140160467740943,
+      "gross_p": 0.25437173233571486,
+      "gross_over_cost": 3.003655011204935
+    },
+    "trend-rvol-0.3": {
+      "trades": 371,
+      "ending_equity": 19933.087996047332,
+      "net_pnl": 9933.087996047332,
+      "gross_mean": 23.46435187290755,
+      "gross_t": 1.491984763420583,
+      "gross_p": 0.1365552519526103,
+      "gross_over_cost": 43.008107140933994
+    },
+    "trend-sl-0.3": {
+      "trades": 4264,
+      "ending_equity": 12713.494925687715,
+      "net_pnl": 2713.4949256877153,
+      "gross_mean": 1.0043629113225112,
+      "gross_t": 1.5202788395861893,
+      "gross_p": 0.12851507160264664,
+      "gross_over_cost": 2.37257223538205
+    },
+    "trend-sl-0.5": {
+      "trades": 3326,
+      "ending_equity": 14256.908700497741,
+      "net_pnl": 4256.908700497741,
+      "gross_mean": 1.6274483357539722,
+      "gross_t": 1.793073484074598,
+      "gross_p": 0.07305203082998757,
+      "gross_over_cost": 3.701043819565342
+    },
+    "trend-tp-0.5": {
+      "trades": 4661,
+      "ending_equity": 10110.056159408672,
+      "net_pnl": 110.0561594086721,
+      "gross_mean": 0.4403706976662925,
+      "gross_t": 1.3168634873603111,
+      "gross_p": 0.18794914160361453,
+      "gross_over_cost": 1.1273043472676645
+    },
+    "trend-tp-1-sl-0.5-adx": {
+      "trades": 3344,
+      "ending_equity": 11983.000937288582,
+      "net_pnl": 1983.0009372885816,
+      "gross_mean": 0.9947366643861892,
+      "gross_t": 2.40891157852119,
+      "gross_p": 0.016053930917060866,
+      "gross_over_cost": 2.369694154219953
+    },
+    "trend-tp-1-sl-0.5": {
+      "trades": 5722,
+      "ending_equity": 10618.83090258228,
+      "net_pnl": 618.83090258228,
+      "gross_mean": 0.4902503523099395,
+      "gross_t": 1.840607339046225,
+      "gross_p": 0.06573087885910023,
+      "gross_over_cost": 1.252416124990383
+    },
+    "trend-tp-1": {
+      "trades": 3864,
+      "ending_equity": 11624.232145717058,
+      "net_pnl": 1624.2321457170583,
+      "gross_mean": 0.8883088003086199,
+      "gross_t": 2.0464671428109615,
+      "gross_p": 0.0407779796219343,
+      "gross_over_cost": 2.1212883218113077
+    },
+    "trend-tp-2": {
+      "trades": 2888,
+      "ending_equity": 11460.568341901744,
+      "net_pnl": 1460.5683419017441,
+      "gross_mean": 0.9435155652385594,
+      "gross_t": 1.660414799996779,
+      "gross_p": 0.09693962898246777,
+      "gross_over_cost": 2.3319296541454375
+    },
+    "trend-trailing-1-sl-0.5": {
+      "trades": 5611,
+      "ending_equity": 11384.58314764885,
+      "net_pnl": 1384.5831476488493,
+      "gross_mean": 0.6421263722174163,
+      "gross_t": 2.2621648021449126,
+      "gross_p": 0.023725319205465167,
+      "gross_over_cost": 1.5840978731709
+    },
+    "trend-width-0.5": {
+      "trades": 371,
+      "ending_equity": 19933.087996047332,
+      "net_pnl": 9933.087996047332,
+      "gross_mean": 23.46435187290755,
+      "gross_t": 1.491984763420583,
+      "gross_p": 0.1365552519526103,
+      "gross_over_cost": 43.008107140933994
+    }
+  },
+  "benchmarks": [
+    {
+      "label": "strategy trend-20-20",
+      "total": 0.9933087996047332,
+      "cagr": 0.22232570716503997,
+      "mdd": -0.23024543130872632,
+      "calmar": 0.965603121422778,
+      "sharpe": 0.979429828872548
+    },
+    {
+      "label": "20coin equal-weight",
+      "total": 2.197113360827136,
+      "cagr": 0.40249940991443234,
+      "mdd": -0.5904040607812564,
+      "calmar": 0.6817355039560908,
+      "sharpe": 0.8424617988058485
+    },
+    {
+      "label": "BTC buy-hold",
+      "total": 1.8457289168251867,
+      "cagr": 0.3557718181486962,
+      "mdd": -0.5297592444745785,
+      "calmar": 0.6715726471211558,
+      "sharpe": 0.8934096953440336
+    },
+    {
+      "label": "ETH buy-hold",
+      "total": 0.3053802618730115,
+      "cagr": 0.08064644484944972,
+      "mdd": -0.6756004198436144,
+      "calmar": 0.11937003364816953,
+      "sharpe": 0.4370495538291109
+    }
+  ],
+  "verdict": {
+    "1h_structurally_dead": true,
+    "1h_gross_over_cost": 0.61,
+    "1d_structurally_viable": true,
+    "1d_gross_over_cost": 43.008107140933994,
+    "1d_edge_statistically_established": false,
+    "tp_sl_vs_baseline_at_1d": {
+      "trend-atr-2-1": -8405.108193219485,
+      "trend-sl-0.3": -7219.593070359617,
+      "trend-sl-0.5": -5676.179295549591,
+      "trend-tp-0.5": -9823.03183663866,
+      "trend-tp-1-sl-0.5-adx": -7950.087058758751,
+      "trend-tp-1-sl-0.5": -9314.257093465052,
+      "trend-tp-1": -8308.855850330274,
+      "trend-tp-2": -8472.519654145588,
+      "trend-trailing-1-sl-0.5": -8548.504848398483
+    },
+    "tp_sl_helps_at_1d": true,
+    "range_filter_helps_at_1d": false,
+    "decision": "回到 1d，继续现有干跑；放弃「1h 高频 + 止盈止损」方向。依据：1h 毛/成本=0.61（结构性必亏），1d 毛/成本=43.01（成本可忽略）；且 1d 上全部止盈止损变体都劣于基线，横盘过滤要么从不触发(width/rvol)、要么降低收益(ADX)。但 1d 的逐笔毛优势 t=1.49/p=0.137 统计上未确立，滑点与资金费仍 unknown。"
+  }
+}

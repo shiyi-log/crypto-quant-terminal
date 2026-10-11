@@ -11,6 +11,7 @@ import {
   Card,
   Divider,
   Drawer,
+  Empty,
   InputNumber,
   Spin,
   Switch,
@@ -713,6 +714,9 @@ async function fetchKlines(requestPair: string, requestTf: string, fresh = false
     /* 落到本地 */
   }
   const local = await getLocalOhlcv(requestPair, requestTf, 200);
+  if (!Array.isArray(local?.data) || !local.data.length) {
+    throw new Error('暂无可显示的 K 线');
+  }
   sourceKind.value = 'local';
   return local;
 }
@@ -1117,9 +1121,9 @@ onMounted(() => {
   }
   freshnessTimer = setInterval(() => {
     freshnessTick.value = Date.now();
-    // A quiet stream is reconciled from the authoritative REST snapshot without
-    // adding a normal polling load while the stream is healthy.
-    if (isStale.value && !loading.value && Date.now() - lastRecoveryAt >= 15_000) {
+    // Recover both a quiet stream and a failed initial history request.  A
+    // healthy socket alone cannot populate a chart without its first snapshot.
+    if ((isStale.value || !chartData.value) && !loading.value && Date.now() - lastRecoveryAt >= 15_000) {
       lastRecoveryAt = Date.now();
       void load(true);
     }
@@ -1159,6 +1163,13 @@ onUnmounted(() => {
           ref="chartRef"
           :height="chartHeight + 'px'"
         />
+        <Empty
+          v-if="!chartData && !loading"
+          class="py-12"
+          :description="`${pair} · ${tf} 暂无可显示的 K 线，正在自动重试`"
+        >
+          <Button size="small" @click="load(true)">重试行情</Button>
+        </Empty>
       </Spin>
       <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">
         <Tag

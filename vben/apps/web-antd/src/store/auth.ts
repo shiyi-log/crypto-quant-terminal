@@ -11,6 +11,7 @@ import { notification } from 'ant-design-vue';
 import { defineStore } from 'pinia';
 
 import { getAccessCodesApi, getUserInfoApi, loginApi, logoutApi } from '#/api';
+import { clearExpiredSession } from '#/api/session';
 import { $t } from '#/locales';
 
 export const useAuthStore = defineStore('auth', () => {
@@ -77,12 +78,8 @@ export const useAuthStore = defineStore('auth', () => {
     };
   }
 
-  async function logout(redirect: boolean = true) {
-    try {
-      await logoutApi();
-    } catch {
-      // 不做任何处理
-    }
+  async function redirectToLogin(redirect: boolean = true) {
+    accessStore.setAccessToken(null);
     resetAllStores();
     accessStore.setLoginExpired(false);
 
@@ -104,6 +101,21 @@ export const useAuthStore = defineStore('auth', () => {
     });
   }
 
+  /** Clear both token stores immediately; no failing logout request can block it. */
+  async function expireSession() {
+    clearExpiredSession();
+    await redirectToLogin();
+  }
+
+  async function logout(redirect: boolean = true) {
+    try {
+      await logoutApi();
+    } catch {
+      // 本地退出不依赖服务可达。
+    }
+    await redirectToLogin(redirect);
+  }
+
   async function fetchUserInfo() {
     const userInfo = await getUserInfoApi();
     userStore.setUserInfo(userInfo);
@@ -117,6 +129,7 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     $reset,
     authLogin,
+    expireSession,
     fetchUserInfo,
     loginLoading,
     logout,

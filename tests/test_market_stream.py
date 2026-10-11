@@ -1,5 +1,6 @@
 """行情采集回归测试：使用固定消息和内存存储，不连接交易所、不启动交易。"""
 
+import asyncio
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -9,7 +10,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from market_stream import CollectorAlreadyRunning, CollectorInstanceLock, FileSpool, MarketCollector, StreamConfig, normalize_message, normalize_pair, parse_config
+from market_stream import (CollectorAlreadyRunning, CollectorInstanceLock, FileSpool, MarketCollector,
+                           StreamConfig, _disk_capacity, normalize_message, normalize_pair, parse_config)
 
 
 def trade(trade_id=42):
@@ -128,11 +130,39 @@ class NormalizationTests(unittest.TestCase):
             normalize_message(message, StreamConfig(), 100)
 
     def test_cli_and_environment(self):
-        with patch.dict("os.environ", {"QUANT_STREAM_ENABLED": "false", "QUANT_STREAM_PAIRS": "SOL/USDT,ETHUSDT"}):
+        with patch.dict("os.environ", {"QUANT_STREAM_ENABLED": "false", "QUANT_STREAM_PAIRS": "SOL/USDT,ETHUSDT",
+                                        "QUANT_STREAM_DISK_WARNING_PCT": "20",
+                                        "QUANT_STREAM_DISK_CRITICAL_PCT": "7",
+                                        "QUANT_STREAM_DISK_WARNING_BYTES": "1000",
+                                        "QUANT_STREAM_DISK_CRITICAL_BYTES": "100"}):
             config = parse_config([])
             self.assertFalse(config.enabled)
             self.assertEqual(config.pairs, ("SOL/USDT:USDT", "ETH/USDT:USDT"))
+            self.assertEqual((config.disk_warning_pct, config.disk_critical_pct), (20, 7))
+            self.assertEqual((config.disk_warning_bytes, config.disk_critical_bytes), (1000, 100))
             self.assertEqual(parse_config(["--pairs", "BTCUSDT", "--market", "spot"]).pairs, ("BTC/USDT",))
+
+    def test_disk_threshold_validation(self):
+        with self.assertRaises(ValueError):
+            StreamConfig(disk_warning_pct=5, disk_critical_pct=5)
+        with self.assertRaises(ValueError):
+            StreamConfig(disk_warning_bytes=100, disk_critical_bytes=101)
+
+    def test_disk_capacity_classifies_percent_and_byte_thresholds(self):
+        config = StreamConfig(disk_warning_pct=20, disk_critical_pct=10,
+                              disk_warning_bytes=300, disk_critical_bytes=200)
+        usage = type("Usage", (), {"total": 1_000, "used": 850, "free": 150})()
+        with patch("market_stream.shutil.disk_usage", return_value=usage):
+            result = _disk_capacity(Path("/tmp"), config)
+        self.assertEqual(result["disk_alert_level"], "critical")
+        self.assertEqual(result["disk_free_pct"], 15.0)
+        self.assertIn("剩余 150 bytes", result["disk_alert_reason"])
+
+    def test_disk_capacity_reports_unknown_when_check_fails(self):
+        with patch("market_stream.shutil.disk_usage", side_effect=OSError("不可用")):
+            result = _disk_capacity(Path("/tmp"), StreamConfig())
+        self.assertEqual(result["disk_alert_level"], "unknown")
+        self.assertIsNone(result["disk_free_bytes"])
 
 
 class SpoolTests(unittest.TestCase):
@@ -304,14 +334,53 @@ class CollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.collector.queue.qsize(), 0)
         self.assertEqual(self.collector.status["dropped"], 0)
 
+    async def test_writer_acknowledges_queue_items_when_persistence_fails(self):
+        await self.collector.receive(trade())
+        self.collector.stop.set()
+        with patch.object(self.collector, "persist_batch", side_effect=[OSError("磁盘已满"), ValueError("重试失败")]):
+            with self.assertRaisesRegex(OSError, "磁盘已满"):
+                await self.collector.writer()
+        await asyncio.wait_for(self.collector.queue.join(), timeout=1)
+        self.assertEqual(self.collector.queue.qsize(), 0)
+        self.assertEqual(self.collector.status["dropped"], 1)
+
+    async def test_writer_final_retry_preserves_batch_and_drained_queue(self):
+        collector = MarketCollector(replace(self.config, batch_size=1), self.store)
+        await collector.receive(trade(1))
+        await collector.receive(trade(2))
+        collector.stop.set()
+        persist = collector.spool.persist
+        calls = 0
+
+        def fail_first(events):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("磁盘暂时不可用")
+            return persist(events)
+
+        with patch.object(collector.spool, "persist", side_effect=fail_first):
+            with self.assertRaisesRegex(OSError, "磁盘暂时不可用"):
+                await collector.writer()
+        await asyncio.wait_for(collector.queue.join(), timeout=1)
+        events = collector.spool.load(collector.spool.pending()[0])
+        self.assertEqual([event["row"]["trade_id"] for event in events], ["1", "2"])
+        self.assertEqual(collector.status["dropped"], 0)
+        self.assertTrue(collector.stop.is_set())
+        self.assertEqual(collector.status["state"], "storage_error")
+
     async def test_status_remains_readable_without_database(self):
         self.store.fail = True
         await self.collector.receive(trade())
-        await self.collector.publish_status()
+        usage = type("Usage", (), {"total": 1_000, "used": 700, "free": 300})()
+        with patch("market_stream.shutil.disk_usage", return_value=usage):
+            await self.collector.publish_status()
         payload = json.loads((self.config.spool_dir.parent / "market_stream_status.json").read_text())
         self.assertEqual(payload["queue_length"], 1)
         self.assertEqual(payload["trade_type"], "aggregated")
         self.assertEqual(payload["book_type"], "partial_snapshot")
+        self.assertEqual(payload["disk_free_bytes"], 300)
+        self.assertEqual(payload["disk_alert_level"], "ok")
 
     async def test_corrupt_tmp_is_preserved_and_next_batch_is_replayed(self):
         damaged = self.config.spool_dir / "0000-interrupted.tmp"

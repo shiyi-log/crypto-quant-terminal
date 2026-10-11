@@ -8,7 +8,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 try:
     import pandas as pd
@@ -467,6 +467,106 @@ class TrendFollowingEntryTests(unittest.TestCase):
 
         self.assertAlmostEqual(stake, 237.5)
         self.assertLessEqual(800.0 + stake, 9_000.0 * 0.30)
+
+    def stake_inputs(self):
+        inputs = SimpleNamespace(wallet=9_000.0, open_stake=3_300.0, open_count=10)
+        wallet = Mock(side_effect=lambda: inputs.wallet)
+        self.strategy.wallets = SimpleNamespace(get_total_stake_amount=wallet)
+        self.strategy.config["max_open_trades"] = -1
+        stake_query = self.enterContext(patch(
+            "freqtrade.persistence.Trade.total_open_trades_stakes",
+            side_effect=lambda: inputs.open_stake,
+        ))
+        count_query = self.enterContext(patch(
+            "freqtrade.persistence.Trade.get_open_trade_count",
+            side_effect=lambda: inputs.open_count,
+        ))
+        return inputs, wallet, stake_query, count_query
+
+    def size_stake(self, pair=PAIR, min_stake=None):
+        return self.strategy.custom_stake_amount(
+            pair, NOW, 100.0, 100.0, min_stake, 10_000.0, 1.0, None, "long"
+        )
+
+    def test_denial_logs_every_five_minutes_without_caching_budget(self):
+        _inputs, wallet, stake_query, count_query = self.stake_inputs()
+        with patch.object(self.module.logger, "info") as log:
+            for offset in (0, 5, 299):
+                self.clock.return_value = 130.0 + offset
+                self.assertEqual(self.size_stake(), 0.0)
+            self.assertEqual(log.call_count, 1)
+            self.clock.return_value = 430.0
+            self.assertEqual(self.size_stake(), 0.0)
+            self.assertEqual(log.call_count, 2)
+            messages = [call.args[0] % call.args[1:] for call in log.call_args_list]
+        self.assertIn("reason=budget_exhausted", messages[0])
+        self.assertIn("remaining_budget=-600.00000000", messages[0])
+        self.assertIn("repeated_denials_suppressed=2", messages[1])
+        self.assertEqual(wallet.call_count, 4)
+        self.assertEqual(stake_query.call_count, 4)
+        self.assertEqual(count_query.call_count, 4)
+
+    def test_denial_logs_are_independent_for_each_pair(self):
+        self.stake_inputs()
+        with patch.object(self.module.logger, "info") as log:
+            for pair in (PAIR, OTHER, PAIR, OTHER):
+                self.assertEqual(self.size_stake(pair), 0.0)
+        self.assertEqual(log.call_count, 2)
+
+    def test_position_changes_immediately_log_budget_denial(self):
+        inputs, *_queries = self.stake_inputs()
+        with patch.object(self.module.logger, "info") as log:
+            self.assertEqual(self.size_stake(), 0.0)
+            inputs.open_count = 9
+            self.assertEqual(self.size_stake(), 0.0)
+            inputs.open_stake = 3_200.0
+            self.assertEqual(self.size_stake(), 0.0)
+            self.assertEqual(self.size_stake(), 0.0)
+        self.assertEqual(log.call_count, 3)
+
+    def test_wallet_drift_does_not_bypass_limit_and_recovery_resets_it(self):
+        inputs, *_queries = self.stake_inputs()
+        with patch.object(self.module.logger, "info") as log:
+            self.assertEqual(self.size_stake(), 0.0)
+            inputs.wallet = 8_990.0
+            self.assertEqual(self.size_stake(), 0.0)
+            self.assertEqual(log.call_count, 1)
+            inputs.wallet = 12_000.0
+            self.assertAlmostEqual(self.size_stake(), 37.5)
+            inputs.wallet = 9_000.0
+            self.assertEqual(self.size_stake(), 0.0)
+        self.assertEqual(log.call_count, 2)
+
+    def test_denial_reason_changes_are_immediately_logged(self):
+        self.stake_inputs()
+        with patch.object(self.module.logger, "info") as log:
+            for slots in (-1, 10, -1):
+                self.strategy.config["max_open_trades"] = slots
+                self.assertEqual(self.size_stake(), 0.0)
+            messages = [call.args[0] % call.args[1:] for call in log.call_args_list]
+        self.assertEqual(len(messages), 3)
+        self.assertIn("reason=budget_exhausted", messages[0])
+        self.assertIn("reason=slots_exhausted", messages[1])
+        self.assertIn("reason=budget_exhausted", messages[2])
+
+    def test_minimum_stake_denial_is_rate_limited(self):
+        inputs, *_queries = self.stake_inputs()
+        inputs.open_stake = 2_600.0
+        with patch.object(self.module.logger, "info") as log:
+            self.assertEqual(self.size_stake(min_stake=20.0), 0.0)
+            self.assertEqual(self.size_stake(min_stake=20.0), 0.0)
+            self.assertEqual(log.call_count, 1)
+            self.assertEqual(self.size_stake(min_stake=25.0), 0.0)
+            self.assertEqual(log.call_count, 2)
+        self.assertIn("reason=below_exchange_minimum", log.call_args.args[0] % log.call_args.args[1:])
+
+    def test_position_query_errors_are_not_hidden_by_log_limit(self):
+        _inputs, _wallet, stake_query, _count_query = self.stake_inputs()
+        stake_query.side_effect = RuntimeError("unavailable")
+        with patch.object(self.module.logger, "exception") as log:
+            self.assertEqual(self.size_stake(), 0.0)
+            self.assertEqual(self.size_stake(), 0.0)
+        self.assertEqual(log.call_count, 2)
 
 
 if __name__ == "__main__":

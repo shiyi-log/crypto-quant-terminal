@@ -3445,6 +3445,20 @@
       ],
       "note": "全部标前向研究假设；禁止标盈利/通过/可用；禁止补造历史模拟成交",
       "status": "【候选提案】未实现 —— 由 Codex 决定是否落地"
+    },
+    "definition_20261012_correction": {
+      "old_definition": "一个 arm = 一组【口径完全一致】的策略副本（周期/费率/杠杆/风险上限相同）",
+      "problem": "Cgen2 (s12-s21) 实际跨 3 个周期（15m/1h/1d），与我自己的定义矛盾；arm 命名实际是【代次】",
+      "observed_mapping": {
+        "B15m(110)": "全部 15m",
+        "Cgen2(90)": "40×15m + 30×1h + 20×1d",
+        "Dgen3(90)": "全部 1d",
+        "5m_100x(10)": "5m",
+        "old(10)": "5m"
+      },
+      "corrected_definition": "arm = 【代次】（生成批次），不是周期。同一代次内可跨周期。样本合并规则: 只能在同一 (代次, 周期, 费率, 杠杆, 风险上限) 层内合并；跨层永不合并。",
+      "impact": "不影响已冻结账户；仅修正口径表述，避免将来误合并跨周期样本",
+      "my_error_number": 40
     }
   },
   "generation_3": {
@@ -5159,5 +5173,41 @@
       "note": "统计字段在 r['warmup']；真实回放须用原生周期、BTC/ETH 窗口对齐、每根目标K线收盘时调用；evaluate 不重采样"
     },
     "interruption_cause": "logs/market.log 有 WS 断开/PONG 超时/连接超时/无法连 fstream；但不足以证明 26.8h 中断的唯一原因"
+  },
+  "forward_sim_diagnosis_20261012": {
+    "date": "2026-10-12",
+    "by": "DSH",
+    "trigger": "用户提出「很多策略都没有建仓」",
+    "answer": {
+      "1d_all_zero": "⚠️ Dgen3 的 decision 事件=0，从未被评估；账户建于 10-11 17:25 UTC，而 10-11 日线已在那之前收盘 → 等 10-12 00:00 UTC（约 5 小时）→ 【正常，非缺陷】",
+      "31_blocked_legitimately": [
+        "9 个 s04: paired_atr_stop_policy_unimplemented（原子双腿止损未实现）",
+        "22 个: paused_research_context_required（依赖20币宽度，用户已暂停其他币线）"
+      ],
+      "real_coverage": {
+        "5m": {
+          "accounts": 10,
+          "with_position": 5,
+          "closed": 101
+        },
+        "15m": {
+          "accounts": 110,
+          "with_position": 50,
+          "closed": 16
+        },
+        "1h": {
+          "accounts": 90,
+          "with_position": 24,
+          "closed": 7
+        },
+        "1d": {
+          "accounts": 110,
+          "with_position": 0,
+          "closed": 0
+        }
+      }
+    },
+    "real_observation": "真正值得注意的是【平仓极少】（15m 16 笔 · 1h 7 笔），而非「没建仓」——信号在触发、仓位在开，但平仓慢（持有期未到/未触发离场）",
+    "next_check": "1d 在 10-12 00:00 UTC 后应首次出现 decision 事件与建仓；届时我会核对"
   }
 }

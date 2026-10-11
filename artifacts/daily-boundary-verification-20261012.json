@@ -1,0 +1,148 @@
+{
+  "snapshotAt": "2026-10-12T02:44:39.631438+08:00",
+  "snapshotMode": "postgresql_repeatable_read_read_only_no_datastore_initialize",
+  "activeAccountCount": 290,
+  "byArmAndTimeframe": [
+    {
+      "arm": "B_15m_maker",
+      "timeframe": "15m",
+      "count": 110
+    },
+    {
+      "arm": "C_gen2_multitf",
+      "timeframe": "15m",
+      "count": 40
+    },
+    {
+      "arm": "C_gen2_multitf",
+      "timeframe": "1d",
+      "count": 20
+    },
+    {
+      "arm": "C_gen2_multitf",
+      "timeframe": "1h",
+      "count": 30
+    },
+    {
+      "arm": "D_gen3_multitf",
+      "timeframe": "1d",
+      "count": 90
+    }
+  ],
+  "timeframeMismatchCount": 0,
+  "dailyWarmup": [
+    {
+      "ready": false,
+      "reason": "paused_research_context_required",
+      "count": 22
+    },
+    {
+      "ready": true,
+      "reason": "ready",
+      "count": 88
+    }
+  ],
+  "eventCounts": [
+    {
+      "timeframe": "15m",
+      "event_type": "decision",
+      "count": 799
+    },
+    {
+      "timeframe": "15m",
+      "event_type": "trade_closed",
+      "count": 23
+    },
+    {
+      "timeframe": "1h",
+      "event_type": "decision",
+      "count": 30
+    }
+  ],
+  "nativeAccountStats": [
+    {
+      "timeframe": "15m",
+      "accounts": 150,
+      "accountsWithPositions": 74,
+      "positionLegs": 96,
+      "closedTradeEvents": 23,
+      "pendingOrders": 10
+    },
+    {
+      "timeframe": "1h",
+      "accounts": 30,
+      "accountsWithPositions": 0,
+      "positionLegs": 0,
+      "closedTradeEvents": 0,
+      "pendingOrders": 20
+    },
+    {
+      "timeframe": "1d",
+      "accounts": 110,
+      "accountsWithPositions": 0,
+      "positionLegs": 0,
+      "closedTradeEvents": 0,
+      "pendingOrders": 0
+    }
+  ],
+  "closed15mReasons": [
+    {
+      "reason": "liquidation",
+      "count": 1
+    },
+    {
+      "reason": "opposite_range_breakout",
+      "count": 8
+    },
+    {
+      "reason": "orderflow_direction_reversed",
+      "count": 1
+    },
+    {
+      "reason": "stop_loss_close_confirmed",
+      "count": 13
+    }
+  ],
+  "service": {
+    "running": true,
+    "status": "observing",
+    "last_error": null,
+    "session_boundaries_ms": {
+      "5m": 1791739500000,
+      "15m": 1791738900000,
+      "1d": 1791676800000,
+      "1h": 1791738000000
+    },
+    "native_timeframes": {
+      "15m": {
+        "latest_closed_at": 1791742500000,
+        "session_boundary_ms": 1791738900000,
+        "strategy_count": 150,
+        "status": "observing"
+      },
+      "1d": {
+        "latest_closed_at": 1791590400000,
+        "session_boundary_ms": 1791676800000,
+        "strategy_count": 110,
+        "status": "waiting_new_closed_candle"
+      },
+      "1h": {
+        "latest_closed_at": 1791738000000,
+        "session_boundary_ms": 1791738000000,
+        "strategy_count": 30,
+        "status": "observing"
+      }
+    }
+  },
+  "dailyExpectedDecisionBoundaryBeijing": "2026-10-12T08:00:00+08:00",
+  "acceptanceDeadlineMs": 90000,
+  "decisionDoesNotGuaranteeEntry": true,
+  "dailyEntryProxyPersistenceEarliestNextCloseBeijing": "2026-10-13T08:00:00+08:00",
+  "testResults": {
+    "dailyNativeFactorialTotal": 19,
+    "failures": 0,
+    "errors": 0
+  },
+  "syntheticDailyTests": "in_memory_only_no_future_candles_written_to_database",
+  "runtimeCodeChanged": false
+}

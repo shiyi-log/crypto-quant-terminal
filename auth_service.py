@@ -139,6 +139,8 @@ _kline_cache: dict = {}
 # 一个服务实例共享连接池，连接由数据层按请求借出并在事务结束后归还。
 _store = None
 _store_lock = threading.Lock()
+_demo_api = None
+_demo_api_lock = threading.Lock()
 
 
 def get_store():
@@ -150,6 +152,16 @@ def get_store():
                 candidate.initialize()
                 _store = candidate
     return _store
+
+
+def get_demo_api():
+    global _demo_api
+    if _demo_api is None:
+        with _demo_api_lock:
+            if _demo_api is None:
+                from demo_api import create_demo_api
+                _demo_api = create_demo_api(get_store(), auth_dir=Path(AUTH_DIR))
+    return _demo_api
 
 
 # REST 初始化与 WebSocket 增量都先返回行情，由独立线程归档。
@@ -391,12 +403,28 @@ class Handler(BaseHTTPRequestHandler):
         return self.client_address[0] in LOCAL_ADDRS
 
     def log_message(self, fmt, *args):
+        if getattr(self, "path", "").startswith("/api/locals/binance-demo"):
+            # Never write Demo request paths, query strings or credential bodies.
+            status = str(args[1]) if len(args) > 1 and str(args[1]).isdigit() else "unknown"
+            if status.startswith(("4", "5")):
+                sys.stderr.write(f"[auth] Demo HTTP status={status}\n")
+            return
         msg = fmt % args
         if any(code in msg for code in (" 4", " 5")):
             sys.stderr.write("[auth] %s\n" % msg)
 
     # ---------- 路由 ----------
     def do_OPTIONS(self):
+        if self._is_demo_path():
+            # Browser preflight has no Demo credential body. Do not consume an
+            # unbounded Content-Length on this otherwise unauthenticated route.
+            self.close_connection = True
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self._cors()
+            self.end_headers()
+            return
         self._read_body()
         self.send_response(204)
         self.send_header("Content-Length", "0")
@@ -416,6 +444,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(503, {"detail": "数据库暂时不可用，请检查 PostgreSQL 服务"})
 
     def _get_routes(self):
+        if self._is_demo_path():
+            return self._local_binance_demo("GET")
         self._read_body()
         if self.path.startswith("/auth/"):
             return self._auth_get()
@@ -480,6 +510,19 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/"):
             return self._proxy()
         return self._send(404, {"detail": "Not Found"})
+
+    def _is_demo_path(self):
+        path = urllib.parse.urlsplit(self.path).path
+        return path == "/api/locals/binance-demo" or path.startswith("/api/locals/binance-demo/")
+
+    def _local_binance_demo(self, method):
+        from demo_api import handle_demo_request
+        return handle_demo_request(self, method=method, verify_token=verify_token,
+                                   allowed_origins=ALLOWED_ORIGINS, api_provider=get_demo_api)
+
+    def _unsupported_demo_method(self):
+        self.close_connection = True
+        return self._send(405, {"detail": "demo_method_not_allowed"})
 
     def _local_database(self):
         """数据中心只提供受认证保护的查询，不接受任意 SQL 或文件路径。"""
@@ -2008,6 +2051,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._database_safe(self._post_routes)
 
     def _post_routes(self):
+        if self._is_demo_path():
+            return self._local_binance_demo("POST")
         self._read_body()
         if self.path.startswith("/auth/"):
             return self._auth_post()
@@ -2020,6 +2065,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"detail": "Not Found"})
 
     def do_PUT(self):
+        if self._is_demo_path():
+            return self._unsupported_demo_method()
         self._read_body()
         if self.path.startswith(FT_WEB_PREFIX + "/"):
             return self._proxy_web()
@@ -2035,6 +2082,8 @@ class Handler(BaseHTTPRequestHandler):
         请求会直接得到 501，且响应体不是 JSON —— 前端「编辑回测备注」
         （PATCH /backtest/history/{file}）就是这么静默失效的。
         """
+        if self._is_demo_path():
+            return self._unsupported_demo_method()
         self._read_body()
         if self.path.startswith(FT_WEB_PREFIX + "/"):
             return self._proxy_web()
@@ -2043,6 +2092,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {})
 
     def do_DELETE(self):
+        if self._is_demo_path():
+            return self._unsupported_demo_method()
         self._read_body()
         if self.path.startswith(FT_WEB_PREFIX + "/"):
             return self._proxy_web()
@@ -2292,6 +2343,13 @@ def main():
     FT_WEB_BASE = args.freqtrade_web.rstrip("/")
 
     load_users()
+
+    # Restart recovery only reconciles and protects an already bound Demo
+    # session; it never enables new entries. GET status remains exchange-free.
+    try:
+        get_demo_api().controller.resume_protection()
+    except Exception as exc:
+        print(f"[auth] Demo 保护恢复不可用: {type(exc).__name__}", file=sys.stderr)
 
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     def stop(_signum, _frame):

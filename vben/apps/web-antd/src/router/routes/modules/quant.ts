@@ -127,6 +127,15 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        name: 'QuantBinanceDemo',
+        path: 'binance-demo',
+        component: () => import('#/views/quant/binance-demo/index.vue'),
+        meta: {
+          icon: 'lucide:landmark',
+          title: '币安 Demo',
+        },
+      },
+      {
         name: 'QuantStrategyFocus',
         path: 'strategy-focus',
         component: () => import('#/views/quant/strategy-lab/index.vue'),

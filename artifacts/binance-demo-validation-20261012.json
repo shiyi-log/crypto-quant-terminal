@@ -1,0 +1,72 @@
+{
+  "unauthorizedHttpStatus": 401,
+  "statusHttpStatus": 200,
+  "environment": "binance_demo",
+  "endpoint": "demo-fapi.binance.com",
+  "credentialsConfigured": false,
+  "runnerState": "not_started",
+  "workerRunning": false,
+  "tradingEnabled": false,
+  "paperAccountCount": 310,
+  "demoEligibleCount": 234,
+  "ledger": {
+    "orders": {
+      "httpStatus": 200,
+      "rows": 0
+    },
+    "fills": {
+      "httpStatus": 200,
+      "rows": 0
+    },
+    "positions": {
+      "httpStatus": 200,
+      "rows": 0
+    },
+    "account": {
+      "httpStatus": 200,
+      "rows": 0
+    },
+    "comparisons": {
+      "httpStatus": 200,
+      "rows": 0
+    }
+  },
+  "signedExchangeRequestsInThisCheck": 0,
+  "actualDemoTradesVerified": false,
+  "backendTests": {
+    "total": 1164,
+    "failures": 0,
+    "errors": 0,
+    "skips": 0
+  },
+  "finalTargetedTests": {
+    "total": 57,
+    "failures": 0,
+    "errors": 0,
+    "skips": 0
+  },
+  "independentFinalReview": {
+    "targetedTests": 43,
+    "blockingFindings": 0
+  },
+  "frontendTargetedTests": {
+    "total": 34,
+    "failures": 0
+  },
+  "frontendTypecheckPassed": true,
+  "frontendBuildTasks": {
+    "successful": 11,
+    "total": 11
+  },
+  "browserVerified": {
+    "route": "http://127.0.0.1:8888/#/quant/binance-demo",
+    "credentialsState": "not_configured",
+    "demoControlsIsolated": true,
+    "binanceFillColumnsPresent": true,
+    "noSampleDataWritten": true
+  },
+  "screenshots": [
+    "artifacts/binance-demo-20261012.png",
+    "artifacts/binance-demo-fills-20261012.png"
+  ]
+}

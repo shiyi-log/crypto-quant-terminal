@@ -16,6 +16,9 @@ import LoginForm from '#/views/_core/authentication/login.vue';
 import BotControls from '#/views/quant/components/BotControls.vue';
 
 const router = useRouter();
+const showBotControls = computed(
+  () => router.currentRoute.value.name !== 'QuantBinanceDemo',
+);
 const userStore = useUserStore();
 const authStore = useAuthStore();
 const accessStore = useAccessStore();
@@ -103,7 +106,7 @@ watch(
   >
     <template #content-top>
       <!-- 交易状态与操作作为正文卡片展示，窄屏时自动换行。 -->
-      <Card class="mx-4 mt-4" :bordered="false" title="交易状态与操作">
+      <Card v-if="showBotControls" class="mx-4 mt-4" :bordered="false" title="交易状态与操作">
         <BotControls />
       </Card>
     </template>

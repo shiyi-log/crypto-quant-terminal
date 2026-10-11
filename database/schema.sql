@@ -182,6 +182,10 @@ CREATE TABLE IF NOT EXISTS orderflow_price_candidates (
     source_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Earlier deployments created this table before provenance was added. CREATE
+-- TABLE IF NOT EXISTS does not upgrade that shape; the collector retries the
+-- oldest spooled batch until this nullable column exists.
+ALTER TABLE orderflow_price_candidates ADD COLUMN IF NOT EXISTS source_id TEXT;
 CREATE INDEX IF NOT EXISTS orderflow_price_candidates_query
     ON orderflow_price_candidates (market, pair, timeframe, timestamp DESC);
 CREATE TABLE IF NOT EXISTS orderflow_price_candidate_results (

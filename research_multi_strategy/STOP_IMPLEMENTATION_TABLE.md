@@ -37,7 +37,7 @@ if (close - stop) * pos["side"] <= 0:
 | `s07_surge_continuation` | 14* | 1055 | 无任何止损 | 新增硬止损 |
 | `s08_wick_rejection` | 14 | 1076 | 已有硬止损 | 仅按风险档反解名义（不改退出逻辑） |
 | `s09_trend_pullback` | 14 | 1113 | 无任何止损 | 新增硬止损 |
-| `s10_lead_lag_btc_eth` | 14* | — | 无法定位 | 需人工定位 |
+| `s10_lead_lag_btc_eth` | 14* | 1381 | **单腿跨资产**（BTC 仅信号源，只交易 ETH） | 给 ETH 腿加硬止损（**不是**原子腿） |
 | `s11_tsmom_bollinger_pullback` | 14* | 981 | 无任何止损 | 新增硬止损 |
 | `s12_surge_expansion_breakout` | 14* | 617 | 无任何止损 | 新增硬止损 |
 | `s13_daily_trend_multi_horizon` | 14* | 643 | 无任何止损 | 新增硬止损 |
@@ -45,12 +45,12 @@ if (close - stop) * pos["side"] <= 0:
 | `s16_weekly_seasonality` | 14* | 701 | 无任何止损 | 新增硬止损 |
 | `s17_overnight_range_fade` | 14* | 712 | 无任何止损 | 新增硬止损 |
 | `s18_drawdown_recovery` | 14* | 733 | 有软退出 | 保留软退出 + 新增硬止损作兜底 |
-| `s19_multi_coin_breadth` | 14* | 959 | 空壳(永不交易) | 无需加（本就永不交易） |
+| `s19_multi_coin_breadth` | 14* | 1223 | **evaluate 有可交易实现**，因我规格 universe 字段非法而 fail-closed | 若修正 universe 则需加；当前按 blocked |
 | `s20_intraday_range_position` | 14* | 751 | 无任何止损 | 新增硬止损 |
 | `s21_liquidation_cascade_fade` | 14* | 772 | 无任何止损 | 新增硬止损 |
 | `s22_dual_confirmation_trend` | 14* | 801 | 无任何止损 | 新增硬止损 |
 | `s23_triple_confirmation_breakout` | 14 | 818 | 无任何止损 | 新增硬止损 |
-| `s24_cross_sectional_lowvol` | 14* | 841 | 空壳(永不交易) | 无需加（本就永不交易） |
+| `s24_cross_sectional_lowvol` | 14* | 1282 | 同上（需 ≥20 币上下文，暂停币线） | 当前按 blocked |
 | `s25_vol_regime_momentum` | 14* | 843 | 无任何止损 | 新增硬止损 |
 | `s26_surge_gated_trend` | 14* | 872 | 无任何止损 | 新增硬止损 |
 | `s27_long_horizon_mean_reversion` | 14* | 907 | 有软退出 | 保留软退出 + 新增硬止损作兜底 |
@@ -60,7 +60,7 @@ if (close - stop) * pos["side"] <= 0:
 
 * 该策略 params 无 `atr_window`，统一用 14；这是设计选择，请在 definition 里显式记录。
 
-## ⚠️ s04 / s10 的特殊处理（跨资产原子腿）
+## ⚠️ s04（原子双腿）与 s10（单腿跨资产）的区别处理
 
 `s04_btc_eth_pairs` 与 `s10_lead_lag_btc_eth` 的实现**不在** `_single()` 里，
 而在 `evaluate()` 的跨资产分支。它们的两个腿是**原子**的：
@@ -106,7 +106,7 @@ notional = max_loss_per_trade_usdt / (stop_distance_pct + 0.0004)
 |---|---|---|
 | 已在实现里定位、需新增硬止损 | 20 | 待做 |
 | 有软退出、需加硬止损兜底 | 3 (s18/s27/s29) | 待做 |
-| 跨资产原子腿（s04/s10） | 2 | **方案未定**（见上） |
+| **原子双腿（仅 s04）** | 1 | **方案未定**（见上） |
 | ⚠️ **被我误判为空壳**（s19/s24） | 2 | 实为 `evaluate` 有可交易实现，因我规格的 `universe` 字段非法而 fail-closed |
 | 空壳（真永不交易） | 1 (s30) | 见 s30 分支，需人工确认 |
 | 已有硬止损 | 1 (s08) | 仅需名义反解 |

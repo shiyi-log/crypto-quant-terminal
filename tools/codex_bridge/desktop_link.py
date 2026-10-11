@@ -248,11 +248,17 @@ def resolve_config(link=None, destination="codex", dsh_session=None):
         _entries = _entries or {}
         if destination == "deepseek" and len(_entries) > 1:
             names = sorted(_entries.keys())
-            raise LinkError(
+            message = (
                 "存在多个命名 link（" + ", ".join(names) + "），发往 DeepSeek 必须显式传 "
                 "link=…；省略会投给默认绑定并造成串台。"
                 "请在 Codex 侧 send_to_dsh 调用中补上 link 参数。"
             )
+            # 2026-10-11 事故复盘：这条守卫在写账本【之前】抛错，导致被拒的发送
+            # 完全不留痕迹 —— 发送方只看到一句错误，接收方只看到沉默，`history`
+            # 里查不到任何东西，排查时无法区分「没发」和「发了被拒」。
+            # 现在先落一条 status='rejected' 记录，再抛错。
+            record_rejection(destination, message)
+            raise LinkError(message)
         return load_config()
     config = entry_config(entry)
     if destination == "deepseek" and not config["dsh_session_id"]:
@@ -276,6 +282,33 @@ def journal():
         created_at REAL NOT NULL, updated_at REAL NOT NULL, error TEXT)""")
     db.commit()
     return db
+
+
+def record_rejection(destination, error, target="-", text=""):
+    """把被守卫拒绝的发送落成一条 status='rejected' 记录。
+
+    2026-10-11 事故：防串台守卫在多 link 并存且未传 `link` 时抛错，
+    而抛错发生在任何账本写入之前。结果是【被拒的发送完全不可见】：
+    发送方（Codex 侧）只拿到一句错误，接收方（DSH）只看到沉默，
+    `history` 里既没有 accepted 也没有 unconfirmed 记录，
+    排查时无法区分「根本没发」与「发了但被拒」。
+
+    这条函数只做记录，不改变任何投递语义：调用方仍然会拿到 LinkError。
+    记录失败本身也不得掩盖原始错误，因此整体吞掉异常。
+    """
+    try:
+        message_id = "rejected-" + uuid.uuid4().hex[:12]
+        with closing(journal()) as db:
+            stamp = time.time()
+            db.execute(
+                "INSERT OR REPLACE INTO messages VALUES (?,?,?,?,?,?,?,?,?)",
+                (message_id, destination, target or "-", (text or "")[:2000],
+                 None, "rejected", stamp, stamp, error),
+            )
+            db.commit()
+        return message_id
+    except Exception:
+        return None
 
 
 def send(config, destination, text, message_id=None, reply_to=None, mode="steer", retry=False):

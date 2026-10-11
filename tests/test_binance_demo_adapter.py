@@ -47,6 +47,12 @@ def fill(**updates):
             "realizedPnl": "0", **updates}
 
 
+def book_ticker(**updates):
+    return {"symbol": "BTCUSDT", "bidPrice": "60000.10000000", "bidQty": "0.01000000",
+            "askPrice": "60000.20000000", "askQty": "0.02000000",
+            "time": 123456789, **updates}
+
+
 def empty_test_order():
     return {
         "orderId": 0, "symbol": "", "status": "", "clientOrderId": "",
@@ -122,6 +128,65 @@ class DemoAdapterTests(unittest.TestCase):
             adapter.submit_limit_order(BTC, "buy", "0.01", "60000.1", ORDER_ID)
         with self.assertRaisesRegex(DemoSafetyError, "read-only"):
             adapter.cancel_order(BTC, client_order_id=ORDER_ID)
+        self.assertEqual(self.client.calls, [])
+
+    def test_book_ticker_is_public_symbol_scoped_and_preserves_native_decimal_text(self):
+        adapter = BinanceDemoAdapter(client=self.client)  # No credentials or trading permission.
+        raw = book_ticker(lastUpdateId=123, bidQty="1.0000000000000000001")
+        self.client.responses[("ticker/bookTicker", "GET")] = raw
+        result = adapter.fetch_book_ticker(BTC)
+        self.assertEqual(result["bid_price"], "60000.10000000")
+        self.assertEqual(result["ask_price"], "60000.20000000")
+        self.assertEqual(result["bid_qty"], "1.0000000000000000001")
+        self.assertEqual(result["ask_qty"], "0.02000000")
+        self.assertEqual(result["timestamp_ms"], 123456789)
+        self.assertEqual(result["raw"], raw)
+        self.assertEqual(result["pair"], BTC)
+        self.assertEqual(result["symbol"], "BTCUSDT")
+        self.assertGreaterEqual(result["request_latency_ms"], 0)
+        self.assertEqual(self.client.calls, [("ticker/bookTicker", "fapiPublic", "GET",
+                                             {"symbol": "BTCUSDT"})])
+        self.assertEqual(self.client.configs, [{"cost": 2, "noSymbol": 5}])
+        self.assertEqual(adapter.last_call["rate_limit_cost"], 2)
+        self.assertEqual(adapter._attempts, {})
+
+    def test_book_ticker_missing_exchange_time_remains_unknown(self):
+        raw = book_ticker()
+        del raw["time"]
+        self.client.responses[("ticker/bookTicker", "GET")] = raw
+        result = self.adapter.fetch_book_ticker(BTC)
+        self.assertIsNone(result["timestamp_ms"])
+        self.assertNotIn("time", result["raw"])
+        self.assertEqual(len(self.client.calls), 1)  # No server clock/other quote proxy.
+
+    def test_book_ticker_rejects_malformed_decimal_identity_timestamp_and_crossed_book(self):
+        valid = book_ticker()
+        invalid = [None, [], {}, {**valid, "symbol": "ETHUSDT"}]
+        invalid.extend({**valid, field: value}
+                       for field in ("bidPrice", "askPrice", "bidQty", "askQty")
+                       for value in (None, "", "NaN", "Infinity", "-1", "0", True, 1.0))
+        invalid.extend({**valid, "time": value} for value in (None, -1, True, "123", 123.0))
+        invalid.extend(({**valid, "bidPrice": valid["askPrice"]},
+                        {**valid, "bidPrice": "60001"}))
+        for raw in invalid:
+            with self.subTest(raw=raw), patch.object(self.client, "request", return_value=raw):
+                with self.assertRaises(DemoSafetyError):
+                    self.adapter.fetch_book_ticker(BTC)
+
+    def test_book_ticker_rejects_unpermitted_pairs_and_environment_drift_before_request(self):
+        for pair in ("BTC/USDT", "SOL/USDT:USDT"):
+            with self.subTest(pair=pair), self.assertRaises(DemoSafetyError):
+                self.adapter.fetch_book_ticker(pair)
+        for drift in ("live", "testnet", "sandbox"):
+            with self.subTest(drift=drift):
+                self.client.urls["api"]["fapiPublic"] = "https://demo-fapi.binance.com/fapi/v1"
+                self.client.isSandboxModeEnabled = drift == "sandbox"
+                if drift == "live":
+                    self.client.urls["api"]["fapiPublic"] = "https://fapi.binance.com/fapi/v1"
+                elif drift == "testnet":
+                    self.client.urls["api"]["fapiPublic"] = "https://testnet.binancefuture.com/fapi/v1"
+                with self.assertRaises(DemoSafetyError):
+                    self.adapter.fetch_book_ticker(BTC)
         self.assertEqual(self.client.calls, [])
 
     def test_order_test_is_allowed_read_only_and_never_claims_or_creates_an_order(self):
@@ -280,6 +345,82 @@ class DemoAdapterTests(unittest.TestCase):
                                   "newClientOrderId": ORDER_ID, "newOrderRespType": "RESULT",
                                   "reduceOnly": "false"})
         self.assertGreaterEqual(result["request_latency_ms"], 0)
+
+    def test_ioc_entry_uses_bounded_limit_and_preserves_partial_or_terminal_status(self):
+        for status, filled in (("PARTIALLY_FILLED", "0.002"), ("EXPIRED", "0.002"),
+                               ("EXPIRED", "0"), ("CANCELED", "0"), ("FILLED", "0.010")):
+            with self.subTest(status=status, filled=filled):
+                client_id = stable_client_order_id("ioc", status + filled, BTC, "buy")
+                raw = order(clientOrderId=client_id, status=status, executedQty=filled,
+                            timeInForce="IOC")
+                self.client.responses[("order", "POST")] = raw
+                result = self.adapter.submit_ioc_entry(BTC, "buy", "0.010", "60000.10", client_id)
+                self.assertEqual(result["status"], status)
+                self.assertEqual(result["filled_qty"], filled)
+                self.assertEqual(result["raw"], raw)
+                self.assertEqual(self.client.calls[-1], ("order", "fapiPrivate", "POST", {
+                    "symbol": "BTCUSDT", "side": "BUY", "quantity": "0.010",
+                    "price": "60000.10", "type": "LIMIT", "timeInForce": "IOC",
+                    "newClientOrderId": client_id, "newOrderRespType": "RESULT",
+                    "reduceOnly": "false"}))
+                self.assertEqual(self.client.configs[-1], {"cost": 4})
+                self.assertNotIn("is_maker", result)  # Submission cannot classify the actual fee.
+        actual_taker = normalize_fill(fill(maker=False), BTC)
+        self.assertIs(actual_taker["is_maker"], False)
+        self.assertEqual(actual_taker["commission"], "0.02400004")
+        self.assertIsNone(normalize_fill(fill(maker=None), BTC)["is_maker"])
+
+    def test_ioc_entry_checks_read_only_and_grid_before_claim_or_post(self):
+        adapter = BinanceDemoAdapter(client=self.client, api_key="offline-key",
+                                     api_secret="offline-secret")
+        with self.assertRaisesRegex(DemoSafetyError, "read-only"):
+            adapter.submit_ioc_entry(BTC, "buy", "0.010", "60000.10", ORDER_ID)
+        self.assertEqual(self.client.calls, [])
+        for qty, price in (("0.0015", "60000.10"), ("0.01", "60000.11"),
+                           ("0.001", "0.1"), ("Infinity", "60000.1")):
+            with self.subTest(qty=qty, price=price), self.assertRaises(DemoSafetyError):
+                self.adapter.submit_ioc_entry(BTC, "buy", qty, price, ORDER_ID)
+        self.assertEqual(self.adapter._attempts, {})
+        self.assertFalse(any(call[2] == "POST" for call in self.client.calls))
+
+    def test_ioc_timeout_or_definite_rejection_never_allows_a_second_attempt(self):
+        for exception, expected in ((ccxt.RequestTimeout("signed private"), DemoSubmissionUnknown),
+                                   (ccxt.InvalidOrder('{"code":-4003}'), DemoExchangeRejected)):
+            with self.subTest(exception=type(exception).__name__):
+                client_id = stable_client_order_id("ioc", type(exception).__name__, BTC, "buy")
+                self.client.responses[("order", "POST")] = exception
+                with self.assertRaises(expected):
+                    self.adapter.submit_ioc_entry(BTC, "buy", "0.010", "60000.10", client_id)
+                self.client.responses[("order", "GET")] = ccxt.OrderNotFound("-2013")
+                self.assertIsNone(self.adapter.fetch_order_by_client_id(BTC, client_id))
+                with self.assertRaisesRegex(DemoSafetyError, "already attempted"):
+                    self.adapter.submit_ioc_entry(BTC, "buy", "0.010", "60000.10", client_id)
+                self.assertEqual(sum(call[2] == "POST" and call[3].get("newClientOrderId") == client_id
+                                     for call in self.client.calls), 1)
+
+    def test_ioc_conflicts_fail_before_network_and_normal_limit_defaults_stay_gtx_or_gtc(self):
+        for market, post_only, time_in_force in ((False, True, "IOC"), (False, True, "GTC"),
+                                                (False, False, "GTX"), (True, False, "IOC"),
+                                                (False, False, "FOK")):
+            with self.subTest(market=market, post_only=post_only, time_in_force=time_in_force):
+                with self.assertRaises(DemoSafetyError):
+                    self.adapter._submit(BTC, "buy", "0.010", "60000.10", ORDER_ID,
+                                         market=market, post_only=post_only,
+                                         time_in_force=time_in_force)
+        self.assertEqual(self.client.calls, [])
+        self.assertEqual(self.adapter._attempts, {})
+        self.submit(post_only=False)
+        self.assertEqual(self.client.calls[-1][3]["timeInForce"], "GTC")
+        self.assertEqual(self.client.calls[-1][3]["type"], "LIMIT")
+
+    def test_ioc_malformed_submission_response_stays_unknown_and_cannot_repost(self):
+        self.client.responses[("order", "POST")] = order(clientOrderId="foreign", timeInForce="IOC")
+        with self.assertRaises(DemoSubmissionUnknown):
+            self.adapter.submit_ioc_entry(BTC, "buy", "0.010", "60000.10", ORDER_ID)
+        self.assertEqual(self.adapter._attempts[ORDER_ID], "unknown")
+        with self.assertRaisesRegex(DemoSafetyError, "already attempted"):
+            self.adapter.submit_ioc_entry(BTC, "buy", "0.010", "60000.10", ORDER_ID)
+        self.assertEqual(sum(call[2] == "POST" for call in self.client.calls), 1)
 
     def test_off_grid_and_nonfinite_size_or_price_never_submit(self):
         for qty, price in [("0.0005", "60000.1"), ("0.0015", "60000.1"),
@@ -626,6 +767,30 @@ class DemoAdapterTests(unittest.TestCase):
 
 
 class RealClientOfflineGuards(unittest.TestCase):
+    def test_book_ticker_signs_only_reviewed_demo_public_get_and_path_without_network(self):
+        with patch("requests.sessions.Session.request", side_effect=AssertionError("network")):
+            client = _build_client(None, None)
+            signed = client.sign("ticker/bookTicker", "fapiPublic", "GET", {"symbol": "BTCUSDT"})
+        self.assertEqual(signed["url"],
+                         "https://demo-fapi.binance.com/fapi/v1/ticker/bookTicker?symbol=BTCUSDT")
+        for path, api, method in (("ticker/bookTicker", "fapiPublic", "POST"),
+                                  ("ticker/bookTicker", "fapiPrivate", "GET"),
+                                  ("ticker/bookTicker", "fapiPublicV2", "GET"),
+                                  ("ticker/bookTicker/extra", "fapiPublic", "GET"),
+                                  ("ticker/../bookTicker", "fapiPublic", "GET")):
+            with self.subTest(path=path, api=api, method=method), self.assertRaises(DemoSafetyError):
+                client.sign(path, api, method, {})
+
+    def test_book_ticker_reviewed_ccxt_cost_is_enforced_against_zero_override(self):
+        client = _build_client(None, None)
+        declared = ccxt.binance().describe()["api"]["fapiPublic"]["get"]["ticker/bookTicker"]
+        self.assertEqual(declared, {"cost": 2, "noSymbol": 5})
+        for params, weight in (({"symbol": "BTCUSDT"}, 2), ({}, 5)):
+            with self.subTest(params=params), patch.object(client, "throttle") as throttle, patch.object(
+                    client, "fetch", return_value=book_ticker()):
+                client.request("ticker/bookTicker", "fapiPublic", "GET", params, config={"cost": 0})
+            throttle.assert_called_once_with(weight)
+
     def test_order_test_signs_only_exact_demo_post_endpoint_without_network(self):
         with patch("requests.sessions.Session.request", side_effect=AssertionError("network")):
             client = _build_client("offline-key", "offline-secret")

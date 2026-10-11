@@ -40,6 +40,7 @@ REQUEST_COSTS = {
     ("fapiPublic", "GET", "exchangeInfo"): {"cost": 1},
     ("fapiPublic", "GET", "time"): {"cost": 1},
     ("fapiPublic", "GET", "premiumIndex"): {"cost": 1, "noSymbol": 10},
+    ("fapiPublic", "GET", "ticker/bookTicker"): {"cost": 2, "noSymbol": 5},
     ("fapiPrivate", "GET", "order"): {"cost": 1},
     ("fapiPrivate", "GET", "allOrders"): {"cost": 5},
     ("fapiPrivate", "GET", "openOrders"): {"cost": 1, "noSymbol": 40},
@@ -161,7 +162,7 @@ def _assert_api_base(api: str, url: str):
 
 def _request_allowed(path: str, api: str, method: str) -> None:
     permitted = ((api == "fapiPublic" and method == "GET"
-                  and path in {"exchangeInfo", "time", "premiumIndex"})
+                  and path in {"exchangeInfo", "time", "premiumIndex", "ticker/bookTicker"})
                  or (method == "GET" and (api, path) in _PRIVATE_GET)
                  or (api == "fapiPrivate" and path == "order/test"
                      and method == "POST")
@@ -404,6 +405,35 @@ class BinanceDemoAdapter:
                                      if isinstance(rate_limits, list) else None)
         return sanitize_response(raw)
 
+    def fetch_book_ticker(self, pair: str) -> dict:
+        """Read a single Demo top of book, preserving native decimal strings.
+
+        The optional Binance ``time`` is the exchange timestamp.  Its absence
+        stays unknown; request latency never substitutes for quote freshness.
+        """
+        symbol = _symbol(pair)
+        raw = self._call("ticker/bookTicker", "fapiPublic", "GET", {"symbol": symbol})
+        if not isinstance(raw, dict) or raw.get("symbol") != symbol:
+            raise DemoSafetyError("Demo book-ticker response identity mismatch")
+        fields = ("bidPrice", "askPrice", "bidQty", "askQty")
+        values = {}
+        for field in fields:
+            value = raw.get(field)
+            if not isinstance(value, str):
+                raise DemoSafetyError("Demo book-ticker response is incomplete or invalid")
+            values[field] = _decimal(value, positive=True)
+        if values["bidPrice"] >= values["askPrice"]:
+            raise DemoSafetyError("Demo book-ticker response is crossed or locked")
+        timestamp = _timestamp(raw["time"]) if "time" in raw else None
+        return {
+            "pair": pair, "symbol": symbol,
+            "bid_price": raw["bidPrice"], "ask_price": raw["askPrice"],
+            "bid_qty": raw["bidQty"], "ask_qty": raw["askQty"],
+            "timestamp_ms": timestamp,
+            "request_latency_ms": self.last_call["latency_ms"],
+            "raw": sanitize_response(raw),
+        }
+
     def validate_order(self, pair: str, quantity: Any, price: Any = None,
                        *, market: bool = False) -> tuple[str, str | None]:
         symbol, qty = _symbol(pair), _decimal(quantity, positive=True)
@@ -627,7 +657,7 @@ class BinanceDemoAdapter:
         return sanitize_response(raw)
 
     def _submit(self, pair, side, quantity, price, client_order_id, *, market,
-                post_only=True, reduce_only=False):
+                post_only=True, reduce_only=False, time_in_force=None):
         self._guard_client()
         if not self.allow_trading:
             raise DemoSafetyError("Demo adapter is read-only")
@@ -635,6 +665,12 @@ class BinanceDemoAdapter:
             raise DemoSafetyError("explicit Demo credentials are required")
         if side not in {"buy", "sell"}:
             raise DemoSafetyError("invalid order side")
+        if time_in_force not in (None, "GTX", "GTC", "IOC"):
+            raise DemoSafetyError("unsupported Demo time in force")
+        if ((market and time_in_force is not None)
+                or (not market and post_only and time_in_force not in (None, "GTX"))
+                or (not market and not post_only and time_in_force == "GTX")):
+            raise DemoSafetyError("Demo time in force conflicts with order semantics")
         _check_client_id(client_order_id)
         with self._attempt_lock:
             if client_order_id in self._attempts:
@@ -645,7 +681,7 @@ class BinanceDemoAdapter:
                   "newClientOrderId": client_order_id, "newOrderRespType": "RESULT",
                   "reduceOnly": "true" if reduce_only else "false"}
         if not market:
-            params.update(price=px, timeInForce="GTX" if post_only else "GTC")
+            params.update(price=px, timeInForce=time_in_force or ("GTX" if post_only else "GTC"))
         with self._attempt_lock:
             # Repeat the test after rule validation, which can issue a public
             # request and let another thread reach the same client ID first.
@@ -679,6 +715,18 @@ class BinanceDemoAdapter:
                            reduce_only: bool = False) -> dict:
         return self._submit(pair, side, quantity, price, client_order_id,
                             market=False, post_only=post_only, reduce_only=reduce_only)
+
+    def submit_ioc_entry(self, pair: str, side: str, quantity: Any, limit_price: Any,
+                         client_order_id: str) -> dict:
+        """Submit a price-bounded LIMIT/IOC entry, possibly partial or unfilled.
+
+        A crossing limit is a taker probe; this is not an unlimited MARKET
+        order.  Actual user-trade flags determine maker/taker classification.
+        The runner must durably claim the client ID before this single attempt.
+        """
+        return self._submit(pair, side, quantity, limit_price, client_order_id,
+                            market=False, post_only=False, reduce_only=False,
+                            time_in_force="IOC")
 
     def submit_market_order(self, pair: str, side: str, quantity: Any,
                             client_order_id: str, *, reduce_only: bool = True) -> dict:

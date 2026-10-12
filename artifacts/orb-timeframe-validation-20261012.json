@@ -1,0 +1,55 @@
+{
+  "canonical_before_after_identical": 116,
+  "factorial_before_after_identical": 261,
+  "frozen_database_definitions_checked": 310,
+  "frozen_rule_execution_digest": "8f78cbf8c18c8b320a0fad027c34dd08f4a5623e0446154dc7fe4e852304b26c",
+  "requires_lab_process_restart_to_load_fix": true,
+  "runtime_deployment": "not_performed",
+  "tests": {
+    "orb_timeframe_regression": 8,
+    "combined_signal_suite": 150
+  },
+  "existing_unrelated_worktree_edits": "preserved_unstaged",
+  "orb_induced_stored_identity_differences": [],
+  "requested_active_definitions_checked": 290,
+  "requested_active_identity_mismatches": [],
+  "preexisting_unselected_legacy_identity_incompatibilities": [
+    "s01_orb_breakout",
+    "s01_orb_breakout_100x",
+    "s02_dual_thrust",
+    "s02_dual_thrust_100x",
+    "s03_tsmom_vol_target",
+    "s03_tsmom_vol_target_100x",
+    "s04_btc_eth_pairs",
+    "s04_btc_eth_pairs_100x",
+    "s05_bollinger_fade",
+    "s05_bollinger_fade_100x",
+    "s06_volume_climax_reversal",
+    "s06_volume_climax_reversal_100x",
+    "s07_surge_continuation",
+    "s07_surge_continuation_100x",
+    "s08_wick_rejection",
+    "s08_wick_rejection_100x",
+    "s09_trend_pullback",
+    "s09_trend_pullback_100x",
+    "s10_lead_lag_btc_eth",
+    "s10_lead_lag_btc_eth_100x"
+  ],
+  "identity_comparison_scope": "same_frozen_rows_in_two_isolated_python_processes_before_and_after_ORB_only_patch",
+  "tested_worktree_source_sha256": "4cd28d535d498b0d05228a1c36af36cf4f71f55170d65c833a825a2eb4e7d961",
+  "before_fix_worktree_source_sha256": "5d25701b36949d31c6015caeb17dbdea7f6089f875f33a3aea35ef45446992dc",
+  "restart_pending_order_snapshot": {
+    "accounts": 290,
+    "pending_orders": 71
+  },
+  "running_lab_snapshot": {
+    "pid": 49682,
+    "running": true,
+    "status": "observing",
+    "account_count": 290,
+    "factorial_account_count": 261,
+    "last_error": null
+  },
+  "deployment_command": "uv run python manage.py restart strategy-lab",
+  "deployment_effect": "Only strategy-lab reload; startup boundary can cancel older unfilled paper intents under existing restart_cancel policy; auth/Demo/market-feed remain running"
+}

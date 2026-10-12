@@ -591,15 +591,16 @@ def _volume_ratio(rows: list[dict[str, Any]], window: int) -> tuple[float, float
 
 
 def _orb(rows: list[dict[str, Any]], params: dict[str, Any],
-         pos: dict[str, Any] | None) -> tuple[int | None, str, dict[str, Any]]:
+         pos: dict[str, Any] | None, *,
+         bar_ms: int = BAR_MS) -> tuple[int | None, str, dict[str, Any]]:
     current = rows[-1]
     day = current["timestamp"] // DAY_MS * DAY_MS
     evidence: dict[str, Any] = {"session_start_ms": day}
-    if pos and (pos["opened_candle_ms"] < day or current["timestamp"] + BAR_MS >= day + DAY_MS):
+    if pos and (pos["opened_candle_ms"] < day or current["timestamp"] + bar_ms >= day + DAY_MS):
         return 0, "session_day_end", evidence
     session = [row for row in rows if row["timestamp"] >= day]
     count = params["N_bars"]
-    expected = [day + index * BAR_MS for index in range(count)]
+    expected = [day + index * bar_ms for index in range(count)]
     if len(session) <= count or [row["timestamp"] for row in session[:count]] != expected:
         return None, "session_range_not_ready", evidence
     hi = max(row["high"] for row in session[:count])
@@ -615,7 +616,7 @@ def _orb(rows: list[dict[str, Any]], params: dict[str, Any],
     first = next((row for row in session[count:]
                   if row["close"] > hi or row["close"] < lo), None)
     evidence["first_breakout_ms"] = first["timestamp"] if first else None
-    if current["timestamp"] + BAR_MS >= day + DAY_MS:
+    if current["timestamp"] + bar_ms >= day + DAY_MS:
         return None, "session_day_end_no_entry", evidence
     if first is None:
         return None, "no_session_breakout", evidence
@@ -625,12 +626,13 @@ def _orb(rows: list[dict[str, Any]], params: dict[str, Any],
 
 
 def _single(strategy_id: str, rows: list[dict[str, Any]], params: dict[str, Any],
-            pos: dict[str, Any] | None) -> tuple[int | None, str, dict[str, Any], float]:
+            pos: dict[str, Any] | None, *,
+            bar_ms: int = BAR_MS) -> tuple[int | None, str, dict[str, Any], float]:
     """Check fixed risk before mechanism exits; attach ATR to entries/flips."""
     canonical_id = _canonical_strategy_id(strategy_id)
     if (canonical_id not in ATR_HARD_STOP_STRATEGIES
             or "risk_stop_atr_mult" not in params):
-        return _single_mechanism(strategy_id, rows, params, pos)
+        return _single_mechanism(strategy_id, rows, params, pos, bar_ms=bar_ms)
     close = rows[-1]["close"]
     window = _integer(params.get("atr_window", 14), "atr_window")
     multiplier = _number(params.get("risk_stop_atr_mult", 1.5),
@@ -655,7 +657,8 @@ def _single(strategy_id: str, rows: list[dict[str, Any]], params: dict[str, Any]
         risk_evidence.update(entry_atr=entry_atr, stop_level=float(stop))
         if (Decimal(str(close)) - stop) * pos["side"] <= 0:
             return 0, "stop_loss_close_confirmed", risk_evidence, 1.0
-    side, reason, evidence, size = _single_mechanism(strategy_id, rows, params, pos)
+    side, reason, evidence, size = _single_mechanism(strategy_id, rows, params, pos,
+                                                    bar_ms=bar_ms)
     # The simulation already deep-copies evidence.atr into each new position.
     # Reversals also need the latest causal ATR for their replacement entry.
     atr = _atr(rows, window) if len(rows) >= window + 2 else None
@@ -669,7 +672,7 @@ def _single(strategy_id: str, rows: list[dict[str, Any]], params: dict[str, Any]
 
 
 def _single_mechanism(strategy_id: str, rows: list[dict[str, Any]], params: dict[str, Any],
-                      pos: dict[str, Any] | None
+                      pos: dict[str, Any] | None, *, bar_ms: int = BAR_MS
                       ) -> tuple[int | None, str, dict[str, Any], float]:
     strategy_id = _canonical_strategy_id(strategy_id)
     current = rows[-1]
@@ -678,7 +681,7 @@ def _single_mechanism(strategy_id: str, rows: list[dict[str, Any]], params: dict
     if pos:
         evidence.update(held_bars=pos["held_bars"], entry_price=pos["entry_price"])
     if strategy_id == "s01_orb_breakout":
-        side, reason, orb_evidence = _orb(rows, params, pos)
+        side, reason, orb_evidence = _orb(rows, params, pos, bar_ms=bar_ms)
         return side, reason, {**evidence, **orb_evidence}, 1.0
     if pos and params.get("H") and pos["held_bars"] >= params["H"]:
         evidence["maximum_holding_bars"] = params["H"]
@@ -1502,7 +1505,7 @@ def evaluate(spec: Mapping[str, Any], candles_by_pair: Mapping[str, Any],
         return result
     for pair in pairs:
         side, reason, evidence, size = _single(strategy_id, histories[pair], params,
-                                               actual_positions[pair])
+                                               actual_positions[pair], bar_ms=bar_ms)
         signals[pair].update(target_side=side, reason=reason, size_multiplier=size,
                              evidence={**signals[pair]["evidence"], **evidence})
     return result

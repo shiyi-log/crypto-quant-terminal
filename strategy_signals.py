@@ -28,6 +28,17 @@ SCHEMA_VERSION = "multi-strategy-signal-v1"
 ALGORITHM_VERSION = "closed5m-prior-baseline-actual-position-v1"
 IMPLEMENTATION_REVISION = "decimal-threshold-correction-v2"
 
+# The focused leverage/stop experiment keeps execution identity in the
+# strategy ID while sharing the underlying signal mechanism.  These suffixes
+# are deliberately enumerated so an unsupported arm or leverage cannot be
+# silently treated as a supported base strategy.
+_TWO_BY_TWO_SUFFIXES = (
+    "_2x2_A_L100_close",
+    "_2x2_B_L30_close",
+    "_2x2_C_L100_intrabar",
+    "_2x2_D_L30_intrabar",
+)
+
 # Native bars for the later research arms.  The original arm remains 5m by
 # default for backwards compatibility; these identities are explicitly daily.
 NATIVE_TIMEFRAMES = {
@@ -142,6 +153,9 @@ def _canonical_strategy_id(strategy_id: Any) -> str:
     signal implementation is shared with the frozen research mechanism.
     """
     value = str(strategy_id)
+    for suffix in _TWO_BY_TWO_SUFFIXES:
+        if value.endswith(suffix):
+            return value[:-len(suffix)]
     for suffix in ("_B15m_100x_maker", "_Cgen2_100x_maker",
                    "_Dgen3_100x_maker", "_100x_maker", "_100x", "_v2"):
         if value.endswith(suffix):
@@ -255,6 +269,8 @@ def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("strategy spec must be a mapping")
     strategy_id = spec.get("strategy_id")
     canonical_id = _canonical_strategy_id(strategy_id)
+    is_2x2 = any(str(strategy_id).endswith(suffix) for suffix in _TWO_BY_TWO_SUFFIXES)
+    experimental_2x2 = is_2x2 and spec.get("execution_variant") == "risk-execution-2x2-v1"
     if canonical_id not in DEFAULTS:
         raise ValueError(f"unsupported strategy_id: {strategy_id}")
     supplied = spec.get("params", spec.get("params_frozen", {}))
@@ -327,7 +343,10 @@ def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(f"{key} must equal {expected}")
         budget[key] = expected
     leverage = _integer(budget["leverage"], "leverage")
-    if leverage not in (1, 100):
+    allowed_leverages = (1, 30, 100) if experimental_2x2 else (1, 100)
+    if leverage not in allowed_leverages:
+        if experimental_2x2:
+            raise ValueError("leverage must equal 1, 30, or 100 for experimental 2x2")
         raise ValueError("leverage must equal 1 or 100")
     if (str(strategy_id).endswith(("_100x", "_100x_maker")) and leverage != 100):
         raise ValueError("_100x strategy identities require leverage 100")
@@ -386,7 +405,25 @@ def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         if key in spec and spec[key] != expected:
             raise ValueError(f"unsupported {key}")
     rule_hash = _digest(normalized)
-    if spec.get("rule_hash") not in (None, rule_hash):
+    if is_2x2:
+        # 2x2 account IDs identify execution arms, while the signal rule hash
+        # must remain the canonical base-family hash for causal comparison.
+        # Recompute that hash from the normalized signal fields rather than
+        # trusting metadata supplied by a caller.
+        canonical_signal = dict(normalized, strategy_id=canonical_id)
+        # L30 arms change only the execution overlay.  The canonical signal
+        # identity uses the base family's 100x budget, matching the source
+        # definition that the factory normalized before applying an arm.
+        canonical_budget = dict(canonical_signal["position_budget"])
+        canonical_budget["leverage"] = 100
+        canonical_signal["position_budget"] = canonical_budget
+        canonical_hash = _digest(canonical_signal)
+        supplied_signal_hash = (spec.get("canonical_signal_rule_hash")
+                                or spec.get("signal_rule_hash"))
+        if supplied_signal_hash != canonical_hash:
+            raise ValueError("2x2 canonical signal rule hash mismatch")
+        rule_hash = canonical_hash
+    elif spec.get("rule_hash") not in (None, rule_hash):
         raise ValueError("rule hash mismatch requires a new strategy identity")
     normalized["rule_hash"] = rule_hash
     return normalized

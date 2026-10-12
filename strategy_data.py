@@ -45,6 +45,13 @@ BREADTH_PAIRS = (
     "NEAR/USDT:USDT", "APT/USDT:USDT", "DOT/USDT:USDT", "UNI/USDT:USDT",
 )
 
+_TWO_BY_TWO_SUFFIXES = (
+    "_2x2_A_L100_close",
+    "_2x2_B_L30_close",
+    "_2x2_C_L100_intrabar",
+    "_2x2_D_L30_intrabar",
+)
+
 
 def timeframe_milliseconds(timeframe: str) -> int:
     """Return the fixed UTC duration for a supported Binance interval."""
@@ -63,6 +70,10 @@ def strategy_timeframe(spec: Mapping[str, Any]) -> str:
 def strategy_pairs(spec: Mapping[str, Any]) -> tuple[str, ...]:
     """Resolve the frozen data universe, including the cross-sectional inputs."""
     strategy_id = str(spec.get("strategy_id", ""))
+    for suffix in _TWO_BY_TWO_SUFFIXES:
+        if strategy_id.endswith(suffix):
+            strategy_id = strategy_id[:-len(suffix)]
+            break
     for suffix in ("_B15m_100x_maker", "_Cgen2_100x_maker",
                    "_Dgen3_100x_maker", "_100x_maker", "_100x", "_v2"):
         if strategy_id.endswith(suffix):

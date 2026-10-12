@@ -332,6 +332,89 @@ class StrategySimulationWarmupDiagnosticTests(unittest.TestCase):
         self.assertEqual(self.conn.execute.call_count, 1)
 
 
+class StrategySimulation2x2ProjectionTests(unittest.TestCase):
+    """Database projections include enabled 2x2 arms without legacy leakage."""
+
+    def setUp(self):
+        self.patch = patch("strategy_simulation._rule_hash", side_effect=rule_hash)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        self.store = MagicMock()
+        self.conn = self.store._connection.return_value.__enter__.return_value
+        self.store._json.side_effect = copy.deepcopy
+        self.base = spec("s05_bollinger_fade")
+        self.base["position_budget"] = {"target_exposure": .30,
+                                        "max_positions": 2,
+                                        "leverage": 100}
+
+    def row(self, strategy_id, *, variant=None, leverage=100, enabled=True,
+            archived=False):
+        definition = copy.deepcopy(self.base)
+        definition["strategy_id"] = strategy_id
+        definition["position_budget"]["leverage"] = leverage
+        if variant is not None:
+            definition.update(execution_variant=variant,
+                              stop_execution_mode="intrabar",
+                              execution_enabled=enabled,
+                              signal_rule_hash=rule_hash(self.base))
+            if not enabled:
+                definition["blocked_execution_reason"] = "manual_activation_required"
+        identity = __import__("strategy_simulation").execution_identity(definition)
+        state = initial_state(definition, BAR_MS)
+        row = {"strategy_id": strategy_id, "rule_hash": identity["rule_hash"],
+               "execution_hash": identity["execution_hash"], "definition": definition,
+               "execution": identity["execution"], "initial_capital": 10_000.0,
+               "state": state}
+        if archived:
+            row["strategy_id"] = strategy_id + "_100x"
+        return row
+
+    def rows(self):
+        return [
+            self.row("s05_bollinger_fade_100x_maker"),
+            self.row("s05_bollinger_fade_2x2_B_L30_close", variant="risk-execution-2x2-v1",
+                     leverage=30),
+            self.row("s05_bollinger_fade_2x2_C_L100_intrabar", variant="risk-execution-2x2-v1",
+                     leverage=100),
+            self.row("s05_bollinger_fade_2x2_disabled_L30_close", variant="risk-execution-2x2-v1",
+                     leverage=30, enabled=False),
+            self.row("s05_bollinger_fade", archived=True),
+        ]
+
+    def test_positions_by_strategy_includes_enabled_2x2_arms(self):
+        self.conn.execute.return_value.fetchall.return_value = self.rows()
+        result = StrategySimulation(self.store).positions_by_strategy()
+        self.assertEqual(set(result), {
+            "s05_bollinger_fade_100x_maker",
+            "s05_bollinger_fade_2x2_B_L30_close",
+            "s05_bollinger_fade_2x2_C_L100_intrabar",
+        })
+
+    def test_overview_includes_2x2_and_marks_it_active(self):
+        self.conn.execute.return_value.fetchall.return_value = self.rows()
+        accounts = StrategySimulation(self.store).overview()["accounts"]
+        self.assertEqual({item["strategy_id"] for item in accounts}, {
+            "s05_bollinger_fade_100x_maker",
+            "s05_bollinger_fade_2x2_B_L30_close",
+            "s05_bollinger_fade_2x2_C_L100_intrabar",
+        })
+        arm = next(item for item in accounts if "_2x2_B_" in item["strategy_id"])
+        self.assertEqual(arm["status"], "warming_up")
+        self.assertEqual(arm["execution"]["leverage"], 30)
+
+    def test_preview_positions_projects_enabled_2x2_without_persisting(self):
+        rows = self.rows()
+        self.conn.execute.return_value.fetchall.return_value = rows
+        projected_state = copy.deepcopy(rows[1]["state"])
+        projected_state["positions"] = {PAIRS[0]: {"direction": 1, "quantity": 1.0}}
+        with patch("strategy_simulation.apply_closed_batch",
+                   return_value=(projected_state, [])):
+            result = StrategySimulation(self.store).preview_positions(
+                bars(BAR_MS), 2 * BAR_MS, BAR_MS)
+        self.assertIn("s05_bollinger_fade_2x2_B_L30_close", result)
+        self.assertIn(PAIRS[0], result["s05_bollinger_fade_2x2_B_L30_close"])
+        self.assertNotIn("s05_bollinger_fade_2x2_disabled_L30_close", result)
+
 @unittest.skipUnless(os.getenv("QUANT_TEST_DATABASE_URL"), "isolated PostgreSQL test database required")
 class StrategySimulationStorageTests(unittest.TestCase):
     @classmethod

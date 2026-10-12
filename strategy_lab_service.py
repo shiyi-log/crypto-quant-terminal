@@ -95,10 +95,15 @@ def evaluate_account(spec, candles, positions=None, as_of_utc=None):
     return evaluate(spec, candles, positions=positions, as_of_utc=as_of_utc)
 
 
+def _load_strategy_document(path=None):
+    """Read the strategy document without applying an execution variant."""
+    return json.loads(Path(path or ROOT / "research_multi_strategy/strategy_specs.json")
+                      .read_text(encoding="utf-8"))
+
+
 def load_specs(path=None):
     from strategy_signals import DEFAULTS, normalize_spec
-    data = json.loads(Path(path or ROOT / "research_multi_strategy/strategy_specs.json")
-                      .read_text(encoding="utf-8"))
+    data = _load_strategy_document(path)
     specs = []
     for item in data["strategies"]:
         # The original ids identify the archived 1x paper accounts.  A change
@@ -175,6 +180,36 @@ def load_specs(path=None):
             # ledger cannot express six simultaneous long/short legs.
             spec["data_status"] = "cross_sectional_execution_pending"
     return specs
+
+
+def load_2x2_specs(path=None, *, activate=False):
+    """Load the focused 2x2 execution population behind an explicit gate.
+
+    The source document is read as canonical signal definitions, then the
+    declarative factory derives four immutable execution identities per focus
+    family.  A normal call returns disabled, auditable candidates.  The lab
+    CLI passes ``activate=True`` only when ``--risk-execution-2x2`` is present;
+    even then existing persisted identities are protected by
+    :func:`resume_frozen_specs` and can never be upgraded in place.
+    """
+    from strategy_2x2_experiment import (build_2x2_candidates,
+                                         materialize_2x2_execution_spec)
+
+    data = _load_strategy_document(path)
+    source = data.get("strategies")
+    if not isinstance(source, list):
+        raise ValueError("strategy document must contain a strategies list")
+    candidates = build_2x2_candidates(source)
+    materialized = [materialize_2x2_execution_spec(candidate)
+                    for candidate in candidates]
+    if activate:
+        for spec in materialized:
+            # This is the only activation boundary.  The factory itself stays
+            # disabled so importing or inspecting the experiment cannot start
+            # paper execution accidentally.
+            spec["execution_enabled"] = True
+            spec.pop("blocked_execution_reason", None)
+    return materialized
 
 
 def resume_frozen_specs(store, requested_specs):
@@ -786,6 +821,9 @@ def main():
     parser.add_argument("--fnew-paired-execution", action=argparse.BooleanOptionalAction,
                         default=False,
                         help="显式启用 s32/s36 原子双腿账户；仅在配对执行通过独立验收后开启")
+    parser.add_argument("--risk-execution-2x2", action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help="显式启用重点策略 2x2 杠杆/止损对照账户（默认关闭）")
     args = parser.parse_args()
     if not 1 <= args.interval <= 60:
         parser.error("interval must be between 1 and 60 seconds")
@@ -806,6 +844,10 @@ def main():
     service = None
     try:
         requested = load_specs()
+        if args.risk_execution_2x2:
+            # The focus population is opt-in and gets distinct strategy IDs;
+            # resume_frozen_specs below protects any already persisted identity.
+            requested += load_2x2_specs(activate=True)
         if args.factorial:
             from strategy_factorial import load_factorial_specs
             requested += load_factorial_specs(normalizer=normalize_account_spec)

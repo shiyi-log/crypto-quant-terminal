@@ -627,6 +627,12 @@ def parser() -> argparse.ArgumentParser:
     for action in ("start", "stop", "restart", "status"):
         command = commands.add_parser(action)
         command.add_argument("services", nargs="*", choices=tuple(services()))
+        if action in {"start", "restart"}:
+            command.add_argument(
+                "--risk-execution-2x2",
+                action="store_true",
+                help="仅 strategy-lab：显式启用重点策略 2x2 账户人口",
+            )
     commands.add_parser("build", help="类型检查、构建并发布前端")
     commands.add_parser("init-config", help="从公开模板创建随机凭据的本地模拟盘配置")
     command = commands.add_parser("audit", help="后端测试与前端类型检查")
@@ -649,6 +655,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.action in {"start", "stop", "restart", "status"}:
             registered = services()
             selected = [registered[name] for name in (args.services or registered)]
+            if getattr(args, "risk_execution_2x2", False):
+                if args.action not in {"start", "restart"}:
+                    cli.error("--risk-execution-2x2 只支持 start/restart")
+                if any(spec.name != "strategy-lab" for spec in selected):
+                    cli.error("--risk-execution-2x2 只能与 strategy-lab 一起使用")
+                selected = [Service(**{**spec.__dict__,
+                                       "command": spec.command + ("--risk-execution-2x2",)})
+                            for spec in selected]
             if args.action == "status":
                 return status(selected)
             if args.action in {"stop", "restart"}:

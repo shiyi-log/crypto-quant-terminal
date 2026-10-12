@@ -114,6 +114,26 @@ def _is_archived_taker_account(strategy_id: str) -> bool:
     return str(strategy_id).startswith("s") and str(strategy_id).endswith(ARCHIVED_VARIANT_SUFFIX)
 
 
+def _is_active_execution_account(row: dict) -> bool:
+    """Whether a persisted account belongs to the live paper-evaluation view.
+
+    The historical view was limited to the current 100x maker contract.  The
+    focused 2x2 experiment deliberately adds a versioned execution contract
+    with both 30x and 100x arms; its variant marker, rather than leverage,
+    makes those arms eligible.  Disabled candidates remain queryable by ID
+    for audit but must not enter the active loop.
+    """
+    execution = row.get("execution") or {}
+    if _is_archived_taker_account(row.get("strategy_id", "")):
+        return False
+    if execution.get("execution_variant") == EXPERIMENTAL_EXECUTION_VARIANT:
+        return execution.get("execution_enabled") is not False
+    # Preserve the historical active-loop contract for all non-2x2 rows:
+    # legacy 100x accounts are selected by leverage, including definitions
+    # whose signal-side service marks execution as blocked for its own reason.
+    return execution.get("leverage") == EXECUTION_MODEL.get("leverage", 100)
+
+
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False, allow_nan=False)
@@ -1516,16 +1536,15 @@ class StrategySimulation:
         if timeframe not in TIMEFRAME_MS:
             raise ValueError(f"unsupported execution timeframe: {timeframe}")
         with self.store._connection() as conn:
-            # Archived 1x and superseded 100x accounts remain queryable for
-            # audit, but are not part of the active maker-priced 100x loop.
-            # Evaluating their old spec here would run it through the current
-            # identity and could mix fee contracts in one sample.
+            # Archived accounts remain queryable for audit, but the active
+            # projection also includes explicitly enabled 2x2 arms.  Filter
+            # in Python so the variant marker is handled consistently across
+            # PostgreSQL JSON implementations and test doubles.
             rows = conn.execute("""SELECT * FROM strategy_sim_accounts
-                WHERE (execution->>'leverage')::numeric=%s
-                  AND COALESCE(execution->>'timeframe', '5m')=%s
+                WHERE COALESCE(execution->>'timeframe', '5m')=%s
                 ORDER BY strategy_id""",
-                                (EXECUTION_MODEL["leverage"], timeframe)).fetchall()
-        rows = [row for row in rows if not _is_archived_taker_account(row["strategy_id"])]
+                                (timeframe,)).fetchall()
+        rows = [row for row in rows if _is_active_execution_account(row)]
         if strategy_ids is not None:
             selected = set(strategy_ids)
             rows = [row for row in rows if row["strategy_id"] in selected]
@@ -1562,12 +1581,11 @@ class StrategySimulation:
         if timeframe not in TIMEFRAME_MS:
             raise ValueError(f"unsupported execution timeframe: {timeframe}")
         with self.store._connection() as conn:
-            rows = conn.execute("""SELECT strategy_id,state FROM strategy_sim_accounts
-                WHERE (execution->>'leverage')::numeric=%s
-                  AND COALESCE(execution->>'timeframe', '5m')=%s
+            rows = conn.execute("""SELECT strategy_id,state,execution FROM strategy_sim_accounts
+                WHERE COALESCE(execution->>'timeframe', '5m')=%s
                 ORDER BY strategy_id""",
-                                (EXECUTION_MODEL["leverage"], timeframe)).fetchall()
-        rows = [row for row in rows if not _is_archived_taker_account(row["strategy_id"])]
+                                (timeframe,)).fetchall()
+        rows = [row for row in rows if _is_active_execution_account(row)]
         return {row["strategy_id"]: self._signal_positions(row["state"]) for row in rows}
 
     @staticmethod
@@ -1576,8 +1594,7 @@ class StrategySimulation:
         valuation = _mark(state)
         spec, capital = row["definition"], float(row["initial_capital"])
         execution = row["execution"]
-        active = (execution.get("leverage") == EXECUTION_MODEL.get("leverage", 100)
-                  and not str(row.get("strategy_id", "")).endswith(ARCHIVED_VARIANT_SUFFIX))
+        active = _is_active_execution_account(row)
         count = state["closed_trade_count"]
         positions = list(state["positions"].values())
         return {"strategy_id": row["strategy_id"], "label": spec.get("label", spec.get("name", row["strategy_id"])),
@@ -1612,11 +1629,8 @@ class StrategySimulation:
         with self.store._connection() as conn:
             rows = conn.execute("SELECT * FROM strategy_sim_accounts ORDER BY strategy_id").fetchall()
         # Keep superseded accounts in the append-only database for audit, while
-        # the active lab view exposes only the current maker-priced contract.
-        active_leverage = EXECUTION_MODEL.get("leverage", 100)
-        rows = [row for row in rows
-                if (row.get("execution") or {}).get("leverage") == active_leverage
-                and not _is_archived_taker_account(row.get("strategy_id", ""))]
+        # the active lab view also exposes explicitly enabled 2x2 arms.
+        rows = [row for row in rows if _is_active_execution_account(row)]
         return {"accounts": [self._account(row) for row in rows], "execution": dict(EXECUTION_MODEL),
                 "execution_model": dict(EXECUTION_MODEL),
                 "scope": "forward_research", "limitations": list(LIMITATIONS)}

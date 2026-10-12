@@ -46,6 +46,20 @@ class StrategyDataTests(unittest.TestCase):
         self.assertEqual(strategy_pairs({"strategy_id": "s24_cross_sectional_lowvol_Dgen3_100x_maker"}),
                          BREADTH_PAIRS)
 
+    def test_2x2_execution_ids_use_their_base_strategy_universe(self):
+        for arm in ("A_L100_close", "B_L30_close", "C_L100_intrabar", "D_L30_intrabar"):
+            with self.subTest(arm=arm):
+                self.assertEqual(
+                    strategy_pairs({"strategy_id": f"s24_cross_sectional_lowvol_2x2_{arm}"}),
+                    BREADTH_PAIRS,
+                )
+
+    def test_unknown_2x2_execution_id_keeps_normal_universe_fallback(self):
+        self.assertEqual(
+            strategy_pairs({"strategy_id": "s24_cross_sectional_lowvol_2x2_A_L30_close"}),
+            ("BTC/USDT:USDT", "ETH/USDT:USDT"),
+        )
+
     def test_resample_requires_complete_closed_source_bucket(self):
         rows = [candle(index * 300_000, 100 + index, extras={"quote_volume": 2,
                        "taker_buy_base": 3, "num_trades": 4}) for index in range(12)]

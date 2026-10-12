@@ -12,6 +12,7 @@ from strategy_signals import (
     LEGACY_DEFAULTS as DEFAULTS,
     ETH,
     _single,
+    _canonical_strategy_id,
     evaluate,
     normalize_spec,
     strategy_rule_hash,
@@ -55,6 +56,49 @@ def position(rows, side=1, entry=100.0, held=1, **kwargs):
 
 
 class StrategyRuleIdentityTests(unittest.TestCase):
+    def test_2x2_execution_ids_share_the_base_signal_mechanism(self):
+        base = "s05_bollinger_fade"
+        variants = (
+            f"{base}_2x2_A_L100_close",
+            f"{base}_2x2_B_L30_close",
+            f"{base}_2x2_C_L100_intrabar",
+            f"{base}_2x2_D_L30_intrabar",
+        )
+        for variant in variants:
+            with self.subTest(variant=variant):
+                self.assertEqual(_canonical_strategy_id(variant), base)
+
+    def test_unknown_2x2_execution_id_is_not_silently_canonicalized(self):
+        variant = "s05_bollinger_fade_2x2_A_L30_close"
+        self.assertEqual(_canonical_strategy_id(variant), variant)
+        with self.assertRaisesRegex(ValueError, "unsupported strategy_id"):
+            normalize_spec({"strategy_id": variant})
+
+    def test_2x2_signal_evaluation_accepts_all_declared_arms(self):
+        rows = candles(400)
+        rows = [dict(row, timestamp=START + index * 900_000)
+                for index, row in enumerate(rows)]
+        from strategy_2x2_experiment import (build_2x2_candidates,
+                                              materialize_2x2_execution_spec)
+        import json
+        from pathlib import Path
+        source = json.loads((Path(__file__).resolve().parents[1]
+                             / "research_multi_strategy" / "strategy_specs.json")
+                            .read_text(encoding="utf-8"))["strategies"]
+        candidates = build_2x2_candidates(source)
+        for arm in ("A_L100_close", "B_L30_close", "C_L100_intrabar", "D_L30_intrabar"):
+            strategy_id = f"s05_bollinger_fade_2x2_{arm}"
+            with self.subTest(strategy_id=strategy_id):
+                # Signal evaluation receives the canonicalized mechanism while
+                # retaining the variant ID in its result envelope.
+                spec = next(row for row in candidates if row["strategy_id"] == strategy_id)
+                spec = materialize_2x2_execution_spec(spec)
+                spec["execution_enabled"] = True
+                spec.pop("blocked_execution_reason", None)
+                result = evaluate(spec, {BTC: rows, ETH: copy.deepcopy(rows)})
+                self.assertEqual(result["strategy_id"], strategy_id)
+                self.assertTrue(result["warmup"]["ready"])
+
     def test_ten_distinct_supported_identities_and_normalization_idempotent(self):
         self.assertGreaterEqual(len(DEFAULTS), 20)
         hashes = set()

@@ -204,11 +204,26 @@ _orb` 传递，覆盖旧规则和 ATR 保护分支。开盘区间按账户实际
 ORB 引入的身份变化。当前请求恢复的 290 个账户全部与持久化 rule/execution hash
 兼容；其余二十个未选择的旧身份存在的兼容性问题在修复前后相同，未做迁移。
 
-当前长期运行的 `strategy-lab` 使用 Python 模块缓存，写入文件不会自动加载修复。
-所需部署动作是仅执行 `uv run python manage.py restart strategy-lab`，auth、Demo
-runner 和行情采集无需重启。重启会建立新的周期启动边界，旧的未成交纸面意图可能
-按既有 `restart_cancel` 规则取消；检查时共有 71 条这种意图。遵守此前“不自行
-重启/停止进程”的限制，本次只完成代码和验证，尚未执行该部署动作。
+`strategy-lab` 使用 Python 模块缓存，写入文件不会自动加载修复。2026-10-12
+北京时间 10:53:32，经用户明确授权执行 `uv run python manage.py restart strategy-lab`，
+实验室 PID 从 49682 更新为 94359。新进程已完成 bootstrap，恢复 290 个活动账户，
+其中 261 个为因子账户，心跳正常且 `last_error=null`。源文件 SHA-256 与此前已验证
+版本一致；启动前后全部 310 个账户的冻结定义及 rule/execution hash 逐值一致。
+
+启动后的独立快照核对确认 127 条持仓、现金、累计损益、费用和 49 条待执行意图
+均保留。重启建立新的周期启动边界，旧纸面意图在各自周期首次有效闭合线处理时
+按既有 `restart_cancel` 规则取消，bootstrap 本身不立即取消：此次有 6 个 15m 和
+3 个 1h 旧出场意图、38 个日线入场意图；另 2 个未选择旧账户的意图不由本服务处理。
+
+11:00 的首个新闭合线已被新进程处理。选定 s01 R1000 账户的真实 `decision`
+事件 sequence 16952 显示：BTC 为 `no_session_breakout`，ETH 为
+`daily_first_entry_already_consumed`，均不再错误返回 `session_range_not_ready`。
+该根未产生 s01 入场；已有历史首次突破不会补开。9 个上述旧 15m/1h 意图已逐单
+对应 `order_cancelled/restart_cancel` 事件，剩余 40 个旧意图保留，冻结定义仍全部一致。
+
+auth PID 81980 持续运行，Demo 入场仍开启。实验室持有 `strategy_lab.lock`，auth
+持有独立的 `binance_demo_runner.lock`；本次重启不会释放 Demo 账户锁，也无需再次
+点击“开始”。其他实验运行器应通过现有 `/yield-flat` 在线交接，而非停止 auth。
 
 ## 结论边界与验证
 

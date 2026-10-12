@@ -1,6 +1,7 @@
 """Fnew contracts separate hypotheses, markets, cost and frozen identities."""
 
 import copy
+import hashlib
 import json
 import math
 import unittest
@@ -12,6 +13,7 @@ from strategy_fnew import (
     STOP_WIDTHS, build_fnew_specs, fnew_rule_hash, load_fnew_specs,
     normalize_fnew_spec, parse_fnew_identity,
 )
+from strategy_fee_schedule import DEMO_FEE_MODEL_VERSION
 
 
 class FnewDefinitionTests(unittest.TestCase):
@@ -41,6 +43,8 @@ class FnewDefinitionTests(unittest.TestCase):
             with self.subTest(strategy=spec["strategy_id"]):
                 self.assertLessEqual(len(spec["strategy_id"]), 80)
                 self.assertEqual(spec["sample_population"], FNEW_DESIGN_VERSION)
+                self.assertIn("_Fnew_Demo_", spec["strategy_id"])
+                self.assertEqual(spec["fee_model_version"], DEMO_FEE_MODEL_VERSION)
                 self.assertNotIn("factorial_design_version", spec)
                 self.assertNotIn("factorial_factors", spec)
                 self.assertTrue(spec["forward_hypothesis"])
@@ -52,7 +56,8 @@ class FnewDefinitionTests(unittest.TestCase):
             identity = parse_fnew_identity(spec["strategy_id"])
             taker = spec["canonical_strategy_id"].startswith("s33_")
             self.assertEqual(identity["fee_convention"], "taker" if taker else "maker")
-            self.assertEqual(spec["fee_rate_per_side"], .0005 if taker else .0002)
+            self.assertEqual(spec["fee_rate_per_side"], .0004 if taker else .0002)
+            self.assertEqual(identity["fee_model_version"], DEMO_FEE_MODEL_VERSION)
             self.assertEqual(identity["max_loss_per_trade_usdt"], spec["max_loss_per_trade_usdt"])
             self.assertEqual(identity["risk_stop_atr_mult"], spec["params"]["risk_stop_atr_mult"])
         for number, fee in ((33, .0002), (34, .0005)):
@@ -205,7 +210,7 @@ class FnewDefinitionTests(unittest.TestCase):
             self.assertEqual(fnew_rule_hash(spec), spec["rule_hash"])
         sparse = normalize_fnew_spec({"strategy_id": self.spec(33, k=1.0)["strategy_id"]})
         self.assertEqual(sparse["params"]["risk_stop_atr_mult"], 1.0)
-        self.assertEqual(sparse["fee_rate_per_side"], .0005)
+        self.assertEqual(sparse["fee_rate_per_side"], .0004)
         self.assertEqual(len(load_fnew_specs()), 45)
         numeric_equivalent = self.spec(34)
         numeric_equivalent["position_budget"]["leverage"] = 100.0
@@ -226,6 +231,61 @@ class FnewDefinitionTests(unittest.TestCase):
                             "s32_unknown_Fnew_R50_k1.5_100x_maker"):
             with self.assertRaises(ValueError):
                 parse_fnew_identity(strategy_id)
+
+    def test_all_45_legacy_normalized_definitions_retain_original_values_and_hashes(self):
+        # Captured from the original normalizer before Demo-table support. This
+        # covers every emitted normalized field, not only the fee and rule hash.
+        legacy = []
+        for canonical in FNEW_CANONICAL_IDS:
+            fee_mode = "taker" if canonical.startswith("s33_") else "maker"
+            for risk, _ in RISK_BUDGETS:
+                for k in STOP_WIDTHS:
+                    strategy_id = f"{canonical}_Fnew_{risk}_k{k:.1f}_100x_{fee_mode}"
+                    spec = normalize_fnew_spec({"strategy_id": strategy_id})
+                    self.assertNotIn("fee_model_version", spec)
+                    self.assertEqual(spec["fee_rate_per_side"], .0005 if fee_mode == "taker" else .0002)
+                    self.assertEqual(normalize_fnew_spec(spec), spec)
+                    legacy.append(spec)
+        encoded = json.dumps(legacy, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False, allow_nan=False).encode()
+        self.assertEqual(hashlib.sha256(encoded).hexdigest(),
+                         "82b8a8cd12c035215c668cd2780d51fa3c648a84db0b84a4def1cc57331c4d5f")
+        s33 = next(spec for spec in legacy if spec["strategy_id"] ==
+                   "s33_basis_momentum_1h_Fnew_R50_k1.5_100x_taker")
+        self.assertEqual(s33["rule_hash"],
+                         "107f51b4a3c783fd04302da4605c7db2835768abfa80a82377a2393a553b08fa")
+
+    def test_fee_table_changes_require_demo_identity_even_for_unchanged_maker_rate(self):
+        for number in (33, 34):
+            demo = self.spec(number)
+            legacy_id = demo["strategy_id"].replace("_Fnew_Demo_", "_Fnew_")
+            legacy = normalize_fnew_spec({"strategy_id": legacy_id})
+            self.assertNotEqual(demo["strategy_id"], legacy["strategy_id"])
+            self.assertNotEqual(demo["rule_hash"], legacy["rule_hash"])
+            relabeled = copy.deepcopy(legacy)
+            relabeled["fee_model_version"] = DEMO_FEE_MODEL_VERSION
+            relabeled.pop("rule_hash")
+            with self.assertRaisesRegex(ValueError, "Demo-marked strategy identity"):
+                normalize_fnew_spec(relabeled)
+        changed_legacy_taker = normalize_fnew_spec({"strategy_id":
+            "s33_basis_momentum_1h_Fnew_R50_k1.5_100x_taker"})
+        changed_legacy_taker.update(fee_rate_per_side=.0004)
+        changed_legacy_taker.pop("rule_hash")
+        with self.assertRaisesRegex(ValueError, "risk budget or fee"):
+            normalize_fnew_spec(changed_legacy_taker)
+
+    def test_demo_fee_model_version_and_rate_are_frozen_together(self):
+        for version in (None, "future-fee-model", ""):
+            changed = self.spec(33)
+            changed.pop("rule_hash")
+            changed["fee_model_version"] = version
+            with self.assertRaisesRegex(ValueError, "fee_model_version"):
+                normalize_fnew_spec(changed)
+        changed = self.spec(33)
+        changed.pop("rule_hash")
+        changed["fee_rate_per_side"] = .0005
+        with self.assertRaisesRegex(ValueError, "risk budget or fee"):
+            normalize_fnew_spec(changed)
 
 
 if __name__ == "__main__":

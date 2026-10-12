@@ -61,7 +61,8 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 # 当前实盘 dry_run 的冻结参数（= 基线）
-BASE = dict(top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
+# Binance Demo taker fee, 0.04% per side (2026-10-12 verified commission).
+BASE = dict(top_n=8, max_open=10, exposure=0.30, cost_one=0.0004,
             start=None, universe=None,
             chan_entry=20, chan_exit=20)
 

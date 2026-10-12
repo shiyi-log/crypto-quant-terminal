@@ -12,7 +12,7 @@
 
 严格性要求（吸取之前教训）：
       1. 只用历史数据，无前视
-      2. 计入 0.10% 双边手续费 + 滑点
+      2. 计入 0.08% 双边 taker 手续费 + 滑点
       3. 分年检查符号一致性
       4. ATR 仓位管理，风险预算固定
       5. 与「买入持有」基准对比
@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 PERP_DIR = "user_data/data/binance/futures"
-TAKER = 0.0005
+TAKER = 0.0004      # Binance Demo taker 0.04%/边（2026-10-12）
 SLIPPAGE = 0.0002
 COST = TAKER + SLIPPAGE          # 单边
 ATR_WIN = 20
@@ -219,7 +219,7 @@ def main():
     args = ap.parse_args()
 
     print("=" * 104)
-    print("趋势跟踪（海龟/Donchian 突破）回测 —— 15 币种，日线，含双边 0.10% 成本")
+    print("趋势跟踪（海龟/Donchian 突破）回测 —— 15 币种，日线，含双边 0.08% taker 手续费 + 滑点")
     print("=" * 104)
 
     if args.sweep:

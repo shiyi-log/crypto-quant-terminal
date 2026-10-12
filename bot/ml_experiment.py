@@ -35,7 +35,7 @@ warnings.filterwarnings("ignore")
 import ml_lab as ml
 
 OUT = "user_data/ml_experiments.jsonl"
-COST = 0.001          # 往返成本（taker 0.05% × 2）
+COST = 0.0008         # Binance Demo taker 往返成本（0.04% × 2，2026-10-12）
 
 
 def load_dataset(use_xs=True, start=None, dense=False, side=None):

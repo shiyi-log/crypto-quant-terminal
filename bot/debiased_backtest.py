@@ -67,7 +67,7 @@ def build_panel(ident):
     return P.loc[idx], X.loc[idx]
 
 
-def run(P, X, pct, lookback, cost=0.0010, period=LABEL):
+def run(P, X, pct, lookback, cost=0.0008, period=LABEL):
     # 滚动百分位（只用历史，无前视）
     rank = P.rolling(lookback, min_periods=lookback // 4).rank(pct=True)
     hi = rank >= pct

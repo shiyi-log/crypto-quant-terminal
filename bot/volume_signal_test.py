@@ -168,7 +168,7 @@ def main():
     print("=" * 96)
     print("检验 C：换算成钱 —— 按信号排序取多空两端，扣手续费后还剩多少？")
     print("=" * 96)
-    COST = 0.0010  # 双边 taker 0.05% × 2
+    COST = 0.0008  # Binance Demo taker 往返 0.08%（2026-10-12）
     for key in ["ofi", "vol_z", "mom24"]:
         name = FEATURES[key]
         print(f"\n  【{name}】")

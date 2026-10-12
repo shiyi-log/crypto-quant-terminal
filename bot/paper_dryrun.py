@@ -431,7 +431,7 @@ def _write_immutable(path: Path, payload: bytes) -> None:
 def run_batch(data: dict[str, pd.DataFrame], variants: list[dict[str, Any]],
               output_dir: str | os.PathLike[str], *, start: str | None = None,
               top_n: int = 8, max_open: int = 10, exposure: float = 0.30,
-              cost_one: float = 0.0005, wallet: float = 10_000.0) -> dict[str, Any]:
+              cost_one: float = 0.0004, wallet: float = 10_000.0) -> dict[str, Any]:
     """Replay variants serially on one immutable input snapshot and persist evidence."""
     top_n = _integer(top_n, "top_n")
     max_open = _integer(max_open, "max_open")
@@ -583,7 +583,7 @@ def run_negative_control() -> dict[str, Any]:
     open_price[26] = 110.0
     fixture = {"LOSS/USDT:USDT": pd.DataFrame({"open": open_price, "close": close}, index=index)}
     trades, _, _, _ = engine.run_v2(fixture, top_n=1, max_open=1, exposure=0.30,
-                                    cost_one=0.0005, wallet=1_000.0,
+                                    cost_one=0.0004, wallet=1_000.0,
                                     chan_entry=20, chan_exit=20)
     pnl = float(trades["profit_abs"].sum()) if not trades.empty else None
     return {"control_id": "synthetic-breakout-reversal-loss-v1", "seed": None,

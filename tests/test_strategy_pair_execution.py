@@ -336,7 +336,7 @@ class PairExecutionTests(unittest.TestCase):
         spec = self.definition(canonical="s33")
         identity, state = execution_identity(spec), initial_state(spec, START)
         self.assertEqual(identity["rule_hash"], fnew_rule_hash(spec))
-        self.assertEqual(identity["execution"]["fee_rate_per_side"], .0005)
+        self.assertEqual(identity["execution"]["fee_rate_per_side"], .0004)
         row = {"strategy_id": spec["strategy_id"], "definition": spec, "state": state,
                "execution": identity["execution"], "initial_capital": 10000,
                "rule_hash": identity["rule_hash"], "execution_hash": identity["execution_hash"]}

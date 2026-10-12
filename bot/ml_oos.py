@@ -35,7 +35,8 @@ import ml_experiment as ex
 
 OUT = "user_data/ml_oos_results.jsonl"
 TRAIN_END = "2024-01-01"
-COST = 0.001
+# Demo taker fee is 0.04% per side, or 0.08% round trip (2026-10-12).
+COST = 0.0008
 
 
 def build(dense=True, embargo=30):
@@ -158,7 +159,7 @@ def portfolio(df_test, prob, thresh, label):
                 p = pos.pop(k)
                 fi = min(i + 1, T - 1)
                 val = p["stake"] + p["q"] * (opx[fi, k] - p["e"])
-                cash += val - p["stake"] * 0.0005
+                cash += val - p["stake"] * 0.0004
                 n_tr += 1
         if i > 0:
             allsig = [k for k in range(K) if state[i - 1, k] != 0]
@@ -178,7 +179,7 @@ def portfolio(df_test, prob, thresh, label):
                 if not np.isfinite(e) or e <= 0:
                     continue
                 q = stake / e * np.sign(state[i, k])
-                fee = stake * 0.0005
+                fee = stake * 0.0004
                 if cash < stake + fee:
                     continue
                 cash -= stake + fee

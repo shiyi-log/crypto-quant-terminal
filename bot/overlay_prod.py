@@ -35,8 +35,9 @@ warnings.filterwarnings("ignore")
 
 import event_backtest as E
 
-COST_PROD = 0.0005      # 生产策略单边 taker
-COST_M = 0.0005         # 横截面动量单边
+# 本回测的 Binance Demo 单边 taker：2026-10-12 签名报价及实际成交 commission 验证。
+COST_PROD = 0.0004
+COST_M = COST_PROD      # 横截面动量使用同一单边 taker 费率。
 START = "2021-07-01"
 
 
@@ -124,7 +125,7 @@ def main():
     print(f"  币种 {len(data)}")
 
     # ── 生产策略净值 ──
-    tr, eq_prod, ret_prod = E.run(data, start=args.start)
+    tr, eq_prod, ret_prod = E.run(data, start=args.start, cost_one=COST_PROD)
     print(f"  生产策略: {len(tr)} 笔 · {eq_prod.index[0].date()} ~ {eq_prod.index[-1].date()}")
 
     # ── 横截面动量净值 ──

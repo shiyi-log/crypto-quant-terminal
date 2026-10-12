@@ -15,13 +15,25 @@ import math
 import time
 from typing import Any
 
+from strategy_fee_schedule import (
+    DEMO_FEE_MODEL_VERSION,
+    FEE_BASIS,
+    LEGACY_FEE_MODEL_VERSION,
+    LEGACY_TAKER_FEE_PER_SIDE,
+    MAKER_FEE_PER_SIDE,
+    TAKER_FEE_PER_SIDE,
+)
+
 
 BAR_MS = 300_000
 PAIRS = ("BTC/USDT:USDT", "ETH/USDT:USDT")
 TIMEFRAME_MS = {"5m": 300_000, "15m": 900_000, "1h": 3_600_000,
                 "1d": 86_400_000}
 EXECUTION_VERSION = "independent-paper-next-close-open-100x-liquidation-v2"
-EXECUTION_MODEL = {
+# Every value in this historical model contributes to persisted execution
+# hashes, including the unused sensitivity rates. Keep it unchanged for any
+# definition that predates explicit fee-model versioning.
+LEGACY_EXECUTION_MODEL = {
     "version": EXECUTION_VERSION,
     "fill_model": "next_closed_bar_open_proxy",
     "signal_timing": "closed_5m_bar",
@@ -35,7 +47,7 @@ EXECUTION_MODEL = {
     "max_decision_lag_ms": 90_000,
     "fee_rate_per_side": 0.0002,
     "maker_fee_per_side": 0.0002,
-    "taker_fee_per_side": 0.0005,
+    "taker_fee_per_side": LEGACY_TAKER_FEE_PER_SIDE,
     "fee_basis": "maker_limit_orders_observed_in_live_trades",
     "non_fill_risk": "unknown_limit_order_non_fill; next_open_proxy_assumes_fill",
     "slippage": "unknown",
@@ -49,9 +61,16 @@ EXECUTION_MODEL = {
     },
     "simulation_fill_model": True,
 }
+EXECUTION_MODEL = {
+    **copy.deepcopy(LEGACY_EXECUTION_MODEL),
+    "fee_model_version": DEMO_FEE_MODEL_VERSION,
+    "maker_fee_per_side": MAKER_FEE_PER_SIDE,
+    "taker_fee_per_side": TAKER_FEE_PER_SIDE,
+    "fee_basis": FEE_BASIS,
+}
 LIMITATIONS = [
     "前向研究模拟，不向交易所发送订单；成交价是下一根已收盘 K 线开盘价代理。",
-    "主口径按实测限价单 maker 费率 0.02%/边扣费；taker 0.05%/边仅作为保守敏感性边界。",
+    "新手续费模型采用币安 Demo maker 报价 0.02%/边（尚无 maker 成交验证）和实际成交验证的 taker 0.04%/边；旧冻结账户保留原模型与费率。",
     "next-open 代理假设限价单必定成交，未建模限价单未成交风险；滑点与资金费 unknown，不代表真实可成交净收益。",
     "100 倍杠杆下 30% 是保证金预算，名义仓位为保证金乘杠杆；行情波动可能使已有保证金预算被动超标，超标期间拒绝新增仓位。",
     "强平逐根使用已收盘 K 线的 low/high 检查，按破产价结算并损失该仓保证金。",
@@ -281,10 +300,19 @@ def execution_pairs(spec: dict) -> tuple[str, ...]:
 
 
 def execution_identity(spec: dict) -> dict:
+    fee_version = spec.get("fee_model_version", LEGACY_FEE_MODEL_VERSION)
+    if fee_version == LEGACY_FEE_MODEL_VERSION:
+        base_model = LEGACY_EXECUTION_MODEL
+    elif fee_version == DEMO_FEE_MODEL_VERSION:
+        base_model = EXECUTION_MODEL
+    else:
+        raise ValueError("unsupported fee_model_version")
     initial = _number(spec.get("initial_capital", 10_000), "initial_capital", positive=True)
     fee = _number(spec.get("fee_rate_per_side", 0.0002), "fee_rate_per_side")
     if fee < 0 or fee >= 0.01:
         raise ValueError("fee_rate_per_side must be in [0, 0.01)")
+    if fee_version == DEMO_FEE_MODEL_VERSION and fee not in {MAKER_FEE_PER_SIDE, TAKER_FEE_PER_SIDE}:
+        raise ValueError("Demo fee_model_version requires the Demo maker or taker fee rate")
     timeframe = str(spec.get("timeframe", "5m"))
     if timeframe not in TIMEFRAME_MS:
         raise ValueError(f"unsupported execution timeframe: {timeframe}")
@@ -293,7 +321,7 @@ def execution_identity(spec: dict) -> dict:
     leverage = _number(risk.get("leverage", 100), "leverage", positive=True)
     if risk.get("target_exposure", .30) != .30 or risk.get("max_positions", 2) != 2 or leverage != 100:
         raise ValueError("this execution version requires 30% margin exposure, two slots and leverage 100")
-    model = dict(EXECUTION_MODEL, initial_capital=initial, fee_rate_per_side=fee,
+    model = dict(copy.deepcopy(base_model), initial_capital=initial, fee_rate_per_side=fee,
                  leverage=leverage, timeframe=timeframe,
                  bar_ms=TIMEFRAME_MS[timeframe], execution_universe=list(pairs),
                  signal_timing=f"closed_{timeframe}_bar",

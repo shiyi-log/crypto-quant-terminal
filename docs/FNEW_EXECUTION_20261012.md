@@ -6,7 +6,11 @@
 
 ## 身份、预算与成本
 
-账户格式为 `<canonical>_Fnew_R50_k1.5_100x_maker`。s33使用 `_100x_taker`，明确费用为0.0005/边；其它四项为maker 0.0002/边。所有ID长度≤80。人口标识是 `fnew_design_version` / `sample_population = fnew-20261012-v1`，`arm_id = Fnew_20261012`，因子在 `fnew_factors`；没有 `factorial_design_version`，不能把新45项计入原261人口。
+新工厂账户格式为 `<canonical>_Fnew_Demo_R50_k1.5_100x_maker`。费率表与2026-10-12 Binance Demo账户报价一致：s33使用 `_100x_taker`，费用为0.0004/边（0.0400%）；其它四项为maker 0.0002/边（0.0200%）。`fee_model_version = binance-demo-commission-20261012-v1`与费率共同进入经济哈希。taker已有实际成交手续费验证，maker目前只有账户报价，尚未由maker成交验证。费率证据见 `docs/BINANCE_DEMO_TRADING.md`。
+
+没有`Demo_`标记的旧身份 `<canonical>_Fnew_R50_k1.5_100x_taker` 仍按原冻结0.0005/边解释，旧maker仍为0.0002/边；不补写fee_model_version，所有旧规范化字段及rule_hash保持不变。给旧身份直接改费率或标记新版费率表会被拒绝。即使maker数字相同，新增费率版本元数据也使用新身份。工厂只生成独立新定义，不迁移数据库、不改历史账户或成交，也不自动启用新人口。
+
+所有ID长度≤80。人口标识是 `fnew_design_version` / `sample_population = fnew-20261012-v1`，`arm_id = Fnew_20261012`，因子在 `fnew_factors`；没有 `factorial_design_version`，不能把新45项计入原261人口。同一Fnew机制的旧费率与Demo费率账户应按完整ID和fee_model_version分开分析，不把重复机制当作独立样本。
 
 每账户初始资金10,000 USDT、100倍杠杆、权益30%的保证金预算、最多两个持仓。R为计划止损距离及已建模往返费用的风险预算；剩余保证金、槽位和现金可进一步限制仓位。收盘确认、下一根open代理成交、跳空、强平和未建模成本可能使实际亏损超过R。
 
@@ -55,7 +59,7 @@ from strategy_fnew_signals import evaluate_fnew
 
 specs = load_fnew_specs()  # 45 definitions; paired entries blocked by default
 spec = next(s for s in specs if
-            s['strategy_id'] == 's33_basis_momentum_1h_Fnew_R50_k1.5_100x_taker')
+            s['strategy_id'] == 's33_basis_momentum_1h_Fnew_Demo_R50_k1.5_100x_taker')
 # candles: futures pair -> closed rows, plus 'spot' -> spot pair -> closed rows
 # as_of_utc: true current observation for forward service;
 # historical indicator inspection may use the final candle close timestamp.

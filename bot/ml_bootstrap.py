@@ -67,7 +67,7 @@ def equity_returns(df_test, prob, thresh, start=None):
             if state[i, k] == 0.0:
                 p = pos.pop(k)
                 fi = min(i + 1, T - 1)
-                cash += p["stake"] + p["q"] * (opx[fi, k] - p["e"]) - p["stake"] * 0.0005
+                cash += p["stake"] + p["q"] * (opx[fi, k] - p["e"]) - p["stake"] * 0.0004
         if i > 0:
             allsig = [k for k in range(K) if state[i - 1, k] != 0]
             vals = {k: stg[i - 1, k] for k in allsig if np.isfinite(stg[i - 1, k])}
@@ -86,7 +86,7 @@ def equity_returns(df_test, prob, thresh, start=None):
                 if not np.isfinite(e) or e <= 0:
                     continue
                 q = stake / e * np.sign(state[i, k])
-                fee = stake * 0.0005
+                fee = stake * 0.0004
                 if cash < stake + fee:
                     continue
                 cash -= stake + fee

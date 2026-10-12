@@ -258,7 +258,7 @@ class ForwardPaperRunner:
     def __init__(self, output_dir: str | os.PathLike[str],
                  variants: list[dict[str, Any]], *, top_n: int = 8,
                  max_open: int = 10, exposure: float = 0.30,
-                 cost_one: float = 0.0005, wallet: float = 10_000.0,
+                 cost_one: float = 0.0004, wallet: float = 10_000.0,
                  clock: Any = None, ledger_store: Any = None):
         if not isinstance(top_n, int) or top_n < 1:
             raise ValueError("top_n must be a positive integer")

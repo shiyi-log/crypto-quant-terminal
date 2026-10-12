@@ -28,7 +28,9 @@ import pandas as pd
 SPOT_DIR = "user_data/data/binance"
 PERP_DIR = "user_data/data/binance/futures"
 
-TAKER = 0.0005      # 单边 taker 0.05%
+# Binance Demo 永续单边 taker：2026-10-12 签名报价及实际成交 commission 验证。
+# 本研究现货腿沿用同一费率假设；该 Demo 证据未验证现货手续费。
+TAKER = 0.0004      # 单边 taker 0.04%
 SLIPPAGE = 0.0002   # 单边滑点 0.02%（现货+永续各一次）
 FUNDING_MIN_HISTORY = 720   # 选币至少需要 30 天费率历史
 MAINT_MARGIN = 0.005        # 维持保证金率（用于估算强平）

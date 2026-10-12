@@ -93,7 +93,7 @@ def strength(close: pd.Series, entry=20):
     return pd.concat([up, dn], axis=1).max(axis=1)
 
 
-def run(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
+def run(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0004,
         start=None, wallet=10_000.0, entry="next_open", ml_mask=None,
         chan_entry=20, chan_exit=20, entry_delay=0):
     """
@@ -340,7 +340,7 @@ if __name__ == "__main__":
 #    执行假设：退出成交释放资金，但刚释放的槽位要到下一开盘才可复用；
 #    该开盘原本已有的空余容量仍可成交新单。真实部署还取决于订单成交与资金可用状态。
 # ══════════════════════════════════════════════════════════════════════
-def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
+def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0004,
            start=None, wallet=10_000.0, chan_entry=20, chan_exit=20,
            ml_mask=None, allow_stale_entry=False, event_sink=None,
            initial_cash=None, initial_positions=None, range_filter=None,
@@ -907,7 +907,7 @@ def run_v2(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
 #  本函数把这四项各自做成开关，默认【全部修正】（= 正确行为），
 #  回退任一项即可测出该项的单独贡献。这样归因是引擎内的对照，不是跨引擎比较。
 # ══════════════════════════════════════════════════════════════════════
-def run_ablate(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0005,
+def run_ablate(data, top_n=8, max_open=10, exposure=0.30, cost_one=0.0004,
                start=None, wallet=10_000.0, chan_entry=20, chan_exit=20,
                # ── 四项修正的开关（True = 采用修正）──
                fix_align=True,        # 入场信号对齐：用 state[i-1] 决策、opx[i] 成交

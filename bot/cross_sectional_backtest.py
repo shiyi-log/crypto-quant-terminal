@@ -10,7 +10,7 @@
 这样剥离了市场 beta，只赚排序的钱。
 
 关键成本处理：
-1. 手续费：每腿每次调仓双边 0.05% × 2
+1. 手续费：每腿每次调仓双边 0.04% × 2（Binance Demo 单边 taker）
 2. 资金费率：多空等名义本金时**大部分天然对冲**（多头付、空头收），
    但两篮子平均资金费率不同，残差必须计入 —— 这是市场中性策略相对方向性策略的一大优势
 
@@ -27,7 +27,8 @@ import os
 import numpy as np
 import pandas as pd
 
-FEES = 0.0005          # 单边 taker
+# Binance Demo 单边 taker：2026-10-12 签名报价及实际成交 commission 验证。
+FEES = 0.0004
 DATA_DIR = "user_data/data/binance/futures"
 MODELS_DIR = "user_data/models"
 

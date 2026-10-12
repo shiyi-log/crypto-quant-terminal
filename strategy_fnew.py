@@ -16,6 +16,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from strategy_fee_schedule import (
+    DEMO_FEE_MODEL_VERSION,
+    LEGACY_TAKER_FEE_PER_SIDE,
+    MAKER_FEE_PER_SIDE,
+    TAKER_FEE_PER_SIDE,
+)
+
 
 ROOT = Path(__file__).resolve().parent
 SPECS_PATH = ROOT / "research_multi_strategy" / "strategy_specs.json"
@@ -75,6 +82,7 @@ PARAMETER_DEFAULTS = {
 }
 IDENTITY_PATTERN = re.compile(
     r"(?P<canonical>s(?:32|33|34|35|36)_[a-z][a-z0-9_]*)_Fnew_"
+    r"(?P<demo>Demo_)?"
     r"(?P<risk>R50|R200|R1000)_k(?P<k>1\.0|1\.5|2\.5)_100x_"
     r"(?P<fee>maker|taker)\Z"
 )
@@ -86,7 +94,11 @@ def _digest(value: Any) -> str:
 
 
 def parse_fnew_identity(strategy_id: Any) -> dict[str, Any] | None:
-    """Identify only this population; legacy/factorial IDs return ``None``."""
+    """Identify Fnew contracts while retaining the original frozen fee model.
+
+    The Demo marker gives new fee-table metadata a distinct account identity,
+    including maker accounts whose numerical fee already matches Demo.
+    """
     if not isinstance(strategy_id, str) or len(strategy_id) > 80:
         return None
     match = IDENTITY_PATTERN.fullmatch(strategy_id)
@@ -98,13 +110,18 @@ def parse_fnew_identity(strategy_id: Any) -> dict[str, Any] | None:
     expected_fee = "taker" if canonical == FNEW_CANONICAL_IDS[1] else "maker"
     if match["fee"] != expected_fee:
         raise ValueError("Fnew identity does not match its frozen fee convention")
-    return {
+    demo_fee_model = match["demo"] is not None
+    identity = {
         "canonical_strategy_id": canonical, "arm": "Fnew",
         "risk_budget": match["risk"],
         "max_loss_per_trade_usdt": dict(RISK_BUDGETS)[match["risk"]],
         "risk_stop_atr_mult": float(match["k"]), "fee_convention": expected_fee,
-        "fee_rate_per_side": 0.0005 if expected_fee == "taker" else 0.0002,
+        "fee_rate_per_side": (TAKER_FEE_PER_SIDE if demo_fee_model else LEGACY_TAKER_FEE_PER_SIDE)
+        if expected_fee == "taker" else MAKER_FEE_PER_SIDE,
     }
+    if demo_fee_model:
+        identity["fee_model_version"] = DEMO_FEE_MODEL_VERSION
+    return identity
 
 
 def _number(value: Any, field: str, *, positive: bool = True) -> float:
@@ -270,6 +287,12 @@ def normalize_fnew_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("Fnew identity does not match risk budget or fee convention")
     if spec.get("fee_convention", identity["fee_convention"]) != identity["fee_convention"]:
         raise ValueError("Fnew fee_convention mismatch")
+    fee_model_version = identity.get("fee_model_version")
+    if fee_model_version is None:
+        if "fee_model_version" in spec:
+            raise ValueError("Fnew Demo fee model requires a new Demo-marked strategy identity")
+    elif spec.get("fee_model_version", fee_model_version) != fee_model_version:
+        raise ValueError("Fnew identity does not match fee_model_version")
     paired = canonical in PAIR_STRATEGIES
     sizing_mode = "entry_pair_atr" if paired else "entry_atr"
     scope = "atomic_pair_portfolio" if paired else "per_trade_leg"
@@ -321,6 +344,8 @@ def normalize_fnew_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         "risk_limit_semantics": "planned_stop_and_fee_budget;close_trigger_next_open_gap_and_liquidation_risk",
         "archive_policy": "joint_confirmation_required;default_keep;insufficient_evidence_is_not_refutation",
     }
+    if fee_model_version is not None:
+        economics["fee_model_version"] = fee_model_version
     if paired:
         economics.update(
             paired_execution_policy=FNEW_PAIR_EXECUTION_POLICY,
@@ -383,7 +408,7 @@ def _source_candidates(document: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def build_fnew_specs(document: Mapping[str, Any], *, paired_execution_enabled: bool = False) -> list[dict[str, Any]]:
-    """Build 45 independent definitions; no storage, trading, or migration.
+    """Build 45 Demo-fee definitions; no storage, trading, or migration.
 
     The pair flag is for a caller that has verified the declared paired engine
     before the first account creation. Existing frozen definitions cannot be
@@ -409,9 +434,11 @@ def build_fnew_specs(document: Mapping[str, Any], *, paired_execution_enabled: b
                 params = {**copy.deepcopy(dict(supplied)), "risk_stop_atr_mult": k}
                 enabled = not paired or paired_execution_enabled
                 spec.update(
-                    strategy_id=f"{canonical}_Fnew_{risk_id}_k{k:.1f}_100x_{fee_mode}",
+                    strategy_id=f"{canonical}_Fnew_Demo_{risk_id}_k{k:.1f}_100x_{fee_mode}",
                     canonical_strategy_id=canonical, params=params, params_frozen=copy.deepcopy(params),
-                    max_loss_per_trade_usdt=risk, fee_rate_per_side=.0005 if fee_mode == "taker" else .0002,
+                    max_loss_per_trade_usdt=risk,
+                    fee_rate_per_side=TAKER_FEE_PER_SIDE if fee_mode == "taker" else MAKER_FEE_PER_SIDE,
+                    fee_model_version=DEMO_FEE_MODEL_VERSION,
                     execution_enabled=enabled, execution_blockers=[] if enabled else [PAIR_BLOCKER],
                     blocked_execution_reason=None if enabled else PAIR_BLOCKER,
                     label=f"{candidate.get('name', canonical)} · {risk_id} · k{k:.1f} · 100× · {fee_mode}",

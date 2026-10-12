@@ -17,7 +17,8 @@ import pandas as pd, numpy as np, warnings, glob, os, json, itertools
 warnings.filterwarnings("ignore")
 import event_backtest as E
 
-COST=0.0005; EXPO=0.30; START="2021-07-01"
+# Binance Demo taker fee, 0.04% per side (2026-10-12 verified commission).
+COST=0.0004; EXPO=0.30; START="2021-07-01"
 
 data=E.load_ohlc([os.path.basename(f).split("_")[0] for f in glob.glob(f"{E.PERP}/*-1d-futures.feather")])
 C=pd.DataFrame({s:d["close"] for s,d in data.items()}).sort_index()

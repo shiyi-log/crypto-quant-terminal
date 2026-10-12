@@ -35,7 +35,8 @@ warnings.filterwarnings("ignore")
 
 import event_backtest as E
 
-COST = 0.0005          # 单边 taker
+# Binance Demo 单边 taker：2026-10-12 签名报价及实际成交 commission 验证。
+COST = 0.0004
 STAKE_FRAC = 0.30 / 8  # 每笔占权益比例（与实盘一致）
 TOP_N = 8
 MAX_OPEN = 10

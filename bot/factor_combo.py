@@ -35,7 +35,7 @@ import pandas as pd
 
 import factor_lib as fl
 
-COST = 0.0010     # 双边 taker 0.10%
+COST = 0.0008     # Binance Demo taker 往返 0.08%（2026-10-12）
 
 
 def build_composite(panels, F, factor_signs):

@@ -43,7 +43,8 @@ warnings.filterwarnings("ignore")
 
 import event_backtest as E
 
-COST = 0.0005          # taker 单边
+# Binance Demo 单边 taker：2026-10-12 签名报价及实际成交 commission 验证。
+COST = 0.0004
 COST_M = 6.8 / 10_000  # 实测总成本（第 15 轮）
 EXPO = 0.30
 TOP_N = 8

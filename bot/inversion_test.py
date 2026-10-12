@@ -114,7 +114,7 @@ def main():
     print()
     print(f"  → 原策略（多高预测/空低预测）单边期望: {(long_side.mean()-short_side.mean())/2*100:+.3f}%")
     print(f"  → 【反着做】单边期望:                  {(short_side.mean()-long_side.mean())/2*100:+.3f}%")
-    print(f"     扣双边手续费 0.10% 后:              {((short_side.mean()-long_side.mean())/2-0.001)*100:+.3f}%")
+    print(f"     扣 Demo taker 双边手续费 0.08% 后:    {((short_side.mean()-long_side.mean())/2-0.0008)*100:+.3f}%")
 
     print()
     print("=" * 96)

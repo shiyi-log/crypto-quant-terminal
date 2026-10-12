@@ -189,7 +189,7 @@ def check_params():
             w = Sd / Sd.shape[1]
             gross = (w.shift(1).fillna(0) * Cd.pct_change()).sum(axis=1)
             turn = w.diff().abs().sum(axis=1).fillna(0)
-            net = (gross - turn * 0.0005).dropna()
+            net = (gross - turn * 0.0004).dropna()  # Binance Demo taker/side
             eq = (1 + net).cumprod()
             yrs = (net.index[-1] - net.index[0]).days / 365
             ann = eq.iloc[-1] ** (1 / yrs) - 1

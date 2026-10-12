@@ -15,7 +15,7 @@
     5m  4h          7,221       0.0330
 
 成本口径（关键）：
-    taker 往返 10bp → 5m/15m 数学上不可能
+    taker 往返 8bp → 5m/15m 数学上不可能
     maker 往返  4bp → 单笔毛收益 >4bp 即盈亏平衡  ← 本实验用这个
 
 纪律（沿用前 14 轮）：
@@ -53,7 +53,7 @@ import hft_lab as H
 from ml_regime import ic_t
 
 COST_MAKER = H.MAKER * 2      # 往返 4bp
-COST_TAKER = H.TAKER * 2      # 往返 10bp
+COST_TAKER = H.TAKER * 2      # 往返 8bp
 
 
 def build_dataset(tf="5m", entry=96, exit_=None, coins=("BTC", "ETH")):
@@ -147,7 +147,7 @@ def main():
     cost = COST_MAKER if args.maker else COST_TAKER
     df["label"] = ((df["ret"] - cost) > 0).astype(int)
     print(f"  正样本率（净收益>0）: {df['label'].mean():.3f}")
-    print(f"  成本口径: {'maker 4bp' if args.maker else 'taker 10bp'}")
+    print(f"  成本口径: {'maker 4bp' if args.maker else 'taker 8bp'}")
     print()
 
     # 走查（按时间 70/30，前段训练后段测试；再用扩展窗口）

@@ -32,7 +32,7 @@ import pandas as pd
 
 PERP_DIR = "user_data/data/binance/futures"
 SPOT_DIR = "user_data/data/binance"
-TAKER = 0.0005
+TAKER = 0.0004      # Binance Demo taker 0.04%/边（2026-10-12）
 SLIPPAGE = 0.0002
 MAINT = 0.005          # 维持保证金率
 LIQ_FEE = 0.00125      # 强平罚金（近似）

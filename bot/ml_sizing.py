@@ -46,7 +46,8 @@ from ml_regime import ic_t
 STAKE_TOTAL = 0.30      # 总敞口上限（与实盘 target_exposure 一致）
 TOP_N = 8
 MAX_OPEN = 10
-COST = 0.0005
+# Binance Demo taker fee, 0.04% per side (2026-10-12 verified commission).
+COST = 0.0004
 
 
 def run_sized(data, scores, start, end=None,

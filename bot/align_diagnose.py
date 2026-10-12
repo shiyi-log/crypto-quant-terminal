@@ -197,20 +197,20 @@ def main():
     run("① 基线（收盘成交 / 成本0.03% / 复利）",
         entry_at="close", cost_one=0.0003, compound=True)
     # 只改成本
-    run("② + 成本改成 0.05%（对齐实盘 taker）",
-        entry_at="close", cost_one=0.0005, compound=True)
+    run("② + 成本改成 0.04%（对齐 Binance Demo taker）",
+        entry_at="close", cost_one=0.0004, compound=True)
     # 只改执行价
     run("③ + 开盘成交（对齐 Freqtrade）",
         entry_at="next_open", cost_one=0.0003, compound=True)
     # 都改
-    run("④ + 开盘成交 + 成本0.05%",
-        entry_at="next_open", cost_one=0.0005, compound=True)
+    run("④ + 开盘成交 + 成本0.04%",
+        entry_at="next_open", cost_one=0.0004, compound=True)
     # 都不复利
-    run("⑤ + 开盘成交 + 成本0.05% + 不复利",
-        entry_at="next_open", cost_one=0.0005, compound=False)
+    run("⑤ + 开盘成交 + 成本0.04% + 不复利",
+        entry_at="next_open", cost_one=0.0004, compound=False)
     # 加上目标敞口（实盘 30%）
-    run("⑥ 全部 + 目标敞口 30%（最贴近实盘）",
-        entry_at="next_open", cost_one=0.0005, compound=True, exposure=0.30)
+    run("⑥ 全部 + 目标敞口 30%（最贴近 Binance Demo）",
+        entry_at="next_open", cost_one=0.0004, compound=True, exposure=0.30)
 
     show(rows)
 

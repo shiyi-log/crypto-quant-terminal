@@ -38,6 +38,10 @@ def snapshot(*, factorial=True, side="long", entry=100, exit_price=101,
 
 
 class FeeSensitivityTests(unittest.TestCase):
+    def test_scenarios_match_the_current_demo_fee_schedule(self):
+        self.assertEqual(SCENARIOS["maker"], .0002)
+        self.assertEqual(SCENARIOS["taker"], .0004)
+
     def test_actual_entry_and_exit_notionals_are_charged(self):
         report = analyze_snapshot(snapshot())
         leg = report["accounts"][0]["closed_legs"][0]
@@ -46,7 +50,7 @@ class FeeSensitivityTests(unittest.TestCase):
         self.assertEqual(leg["gross_pnl_usdt"], 10)
         self.assertAlmostEqual(leg["scenarios"]["maker"]["entry_fee_usdt"], .2)
         self.assertAlmostEqual(leg["scenarios"]["maker"]["exit_fee_usdt"], .202)
-        self.assertAlmostEqual(leg["scenarios"]["taker"]["net_pnl_usdt"], 8.995)
+        self.assertAlmostEqual(leg["scenarios"]["taker"]["net_pnl_usdt"], 9.196)
         self.assertAlmostEqual(leg["scenarios"]["stress"]["net_pnl_usdt"], 7.99)
         self.assertAlmostEqual(leg["breakeven_fee_rate_per_side"], 10 / 2010)
 
@@ -54,7 +58,7 @@ class FeeSensitivityTests(unittest.TestCase):
         result = analyze_snapshot(snapshot(side="short", exit_price=90))
         leg = result["accounts"][0]["closed_legs"][0]
         self.assertEqual(leg["gross_pnl_usdt"], 100)
-        self.assertAlmostEqual(leg["scenarios"]["taker"]["fees_usdt"], .95)
+        self.assertAlmostEqual(leg["scenarios"]["taker"]["fees_usdt"], .76)
 
     def test_maker_positive_can_flip_at_exact_cost_difference(self):
         report = analyze_snapshot(snapshot(exit_price=100.06))
@@ -70,7 +74,7 @@ class FeeSensitivityTests(unittest.TestCase):
         result = analyze_snapshot(snapshot(exit_price=80, gross=-10, liquidation=True))
         leg = result["accounts"][0]["closed_legs"][0]
         self.assertEqual(leg["gross_pnl_usdt"], -10)
-        self.assertAlmostEqual(leg["scenarios"]["taker"]["net_pnl_usdt"], -10.9)
+        self.assertAlmostEqual(leg["scenarios"]["taker"]["net_pnl_usdt"], -10.72)
         self.assertLess(leg["breakeven_fee_rate_per_side"], 0)
 
     def test_ordinary_gross_mismatch_is_rejected(self):

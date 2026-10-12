@@ -24,10 +24,10 @@ from runtime_config import load_environment
 from strategy_simulation import SAMPLE_QUALITY_CUTOFF_MS, sample_annotation
 
 
-SCENARIOS = {"maker": 0.0002, "taker": 0.0005, "stress": 0.001}
+SCENARIOS = {"maker": 0.0002, "taker": 0.0004, "stress": 0.001}
 METHOD = "fixed_fills_fixed_quantity_fee_repricing_v1"
 LIMITATIONS = [
-    "Scenario fee rates are research assumptions, not verified account commission rates.",
+    "Taker 0.0004 is verified against Demo actual fills; maker 0.0002 is an account quote without an actual maker fill.",
     "Fill prices, quantities, timestamps and modeled gross PnL are frozen.",
     "Higher fees do not resize ATR risk, change cash constraints or replay liquidation.",
     "The next-open proxy cannot establish maker/taker role or limit-order non-fill risk.",

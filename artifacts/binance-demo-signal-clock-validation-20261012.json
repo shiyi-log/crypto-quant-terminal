@@ -1,0 +1,72 @@
+{
+  "issue": "Cycle-start timestamp falsely rejects signals committed during account reconciliation",
+  "validatedAtUtc": "2026-10-12T05:21:00.392775+00:00",
+  "baseCommit": "4f22a029c6983fe0052143f39786af8f7d50f1d8",
+  "sourceSha256": {
+    "demo_execution_service.py": "a23f9d47e145d705492dcc373a96064966f21f1341e210b29cacc7784bc0989e",
+    "tests/test_demo_contract_integration.py": "0f20fef2fa8f1d83d6e06f81e7b5c9783834b2d82d1a1ad45e3eabfb31f4db38"
+  },
+  "runtimeEvidence": {
+    "databaseAccess": "read_only; no production writes",
+    "exchangeRequests": 0,
+    "namespace": "demo_default",
+    "strategyId": "s01_orb_breakout_B15m_R1000_k1.0_100x_maker",
+    "maxSignalLagMs": 90000,
+    "eventSequence": 19148,
+    "decisionMs": 1791780301464,
+    "paperObservedMs": 1791780302127,
+    "decisionMinusEventMs": -663,
+    "denialReason": "paper_signal_stale",
+    "conclusion": "This signal was incorrectly denied; one record does not establish the cause of all historical absent orders"
+  },
+  "reproduction": {
+    "newRegressionTests": 6,
+    "oldImplementationFailed": 3,
+    "oldImplementationFailures": [
+      "signal committed 663ms after cycle start falsely denied",
+      "first start uses frozen cycle clock and falsely denies arriving signal",
+      "later event exceeding 90s lag is incorrectly admitted using old clock"
+    ],
+    "integrationModules": "real DemoExecutionService, BinanceDemoAdapter and DemoStore; offline ExchangeStub; independent quant_test temporary schema"
+  },
+  "validation": {
+    "command": "uv run python -m unittest tests.test_demo_controller_switch tests.test_demo_controller_handoff tests.test_demo_execution_service tests.test_binance_demo_api tests.test_demo_store tests.test_demo_switch_integration tests.test_demo_contract_integration tests.test_demo_evidence tests.test_demo_evidence_integration -q",
+    "testsRun": 168,
+    "passed": 168,
+    "failed": 0,
+    "skipped": 0,
+    "contractIntegrationTestsPassed": 26,
+    "ruff": "passed",
+    "gitDiffCheck": "passed",
+    "independentReview": "passed; no blocker",
+    "assertions": [
+      "each event reads fresh clock after event availability",
+      "first start does not override the processing clock",
+      "order created_ms and expires_ms use processing clock",
+      "second event is denied if stale at its processing instant",
+      "genuine future entry remains denied",
+      "explicit now_ms remains authoritative",
+      "terminal denials checkpoint and are not replayed later",
+      "accepted entry is never resubmitted after restart",
+      "checkpoint timestamp is not earlier than cycle start or processed event clocks"
+    ]
+  },
+  "preservedBehavior": {
+    "frozenRuleOrExecutionPolicyChanged": false,
+    "signalLagLimitChanged": false,
+    "futureSignalAllowanceAdded": false,
+    "deniedSignalsReplayEnabled": false,
+    "cursorReset": false,
+    "previousDeniedSignalReplayed": false
+  },
+  "deployment": {
+    "authRestarted": false,
+    "runtimeLoadedNewCode": false,
+    "pending": "user authorization for targeted auth restart, together with strategy switch update",
+    "entriesAfterRestart": "paused; explicit manual start required"
+  },
+  "remainingScope": [
+    "cross-cycle wall-clock rollback and time-sorted checkpoint recovery are pre-existing boundaries",
+    "fix does not guarantee a subsequent signal, accepted post-only order, or fill"
+  ]
+}

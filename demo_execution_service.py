@@ -325,7 +325,7 @@ class DemoExecutionService:
                                 forward_boundary_ms=self.binding["forward_boundary_ms"],
                                 rule_hash=self.account["rule_hash"],
                                 execution_hash=self.account["execution_hash"])
-            self.cycle(now)
+            self.cycle()
             return self.status()
 
     def enable_entries(self):
@@ -741,11 +741,16 @@ class DemoExecutionService:
                 self._status["ownership_conflicts"] = conflicts
                 # Conflicting unrelated orders cannot suppress owned protection.
                 self._protect(now)
+                checkpoint_ms = now
                 for event in self.paper.events(self.config.strategy_id, self.last_sequence):
-                    self._paper_event(event, now, conflicts)
+                    # Events can arrive during the preceding account requests.
+                    # Assess each at processing time; explicit cycle clocks stay fixed.
+                    event_now = _stamp(self.clock_ms()) if now_ms is None else now
+                    self._paper_event(event, event_now, conflicts)
                     self.last_sequence = int(event["sequence_id"])
+                    checkpoint_ms = max(checkpoint_ms, event_now)
                 self._record("runner_checkpoint", "runner_checkpoint",
-                             {"last_sequence_id": self.last_sequence, "entries_enabled": self._entries_enabled}, now=now)
+                             {"last_sequence_id": self.last_sequence, "entries_enabled": self._entries_enabled}, now=checkpoint_ms)
                 net = self._net()
                 orders = self._orders()
                 self._status.update(owned_positions={pair: str(qty) for pair, qty in net.items()},

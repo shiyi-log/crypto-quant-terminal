@@ -221,6 +221,172 @@ class DemoContractIntegrationTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "open", rows[0])
         return rows[0]
 
+    def order_post_count(self):
+        return sum(path == "order" and method == "POST"
+                   for path, _, method, _ in self.client.calls)
+
+    def signal_during_next_event_read(self, elapsed=663):
+        """Model an event committed after cycle time, before its source read."""
+        original_events = self.paper.events
+
+        def events(strategy_id, after_sequence, limit=1000):
+            self.paper.events = original_events
+            self.clock += elapsed
+            self.client.now = self.clock
+            self.paper.signal(self.clock)
+            return original_events(strategy_id, after_sequence, limit)
+
+        self.paper.events = events
+
+    def test_signal_arriving_during_cycle_uses_processing_time_and_submits_once(self):
+        self.service.start()
+        self.clock += 1000
+        cycle_started_ms = self.clock
+        self.signal_during_next_event_read()
+
+        result = self.service.cycle()
+
+        self.assertIsNone(result["last_error"], result)
+        self.assertEqual(self.order_post_count(), 1, result)
+        self.assertEqual(len(self.ledger.runner_orders()), 1)
+        order = self.ledger.runner_orders()[0]
+        self.assertEqual(order["created_ms"], cycle_started_ms + 663)
+        self.assertEqual(order["intent_payload"]["expires_ms"],
+                         cycle_started_ms + 663 + self.config.entry_order_ttl_ms)
+        self.assertFalse(self.ledger.list_comparisons(stage="entry_denied"))
+        evidence = self.ledger.list_comparisons(stage="paper_event")
+        self.assertEqual(evidence[0]["observed_ms"], cycle_started_ms + 663)
+        self.assertEqual(evidence[0]["payload"]["paper_observed_ms"], cycle_started_ms + 663)
+        self.assertEqual(result["last_sequence_id"], 1)
+        checkpoint = self.ledger.list_comparisons(stage="runner_checkpoint", limit=1)[0]
+        self.assertEqual(checkpoint["observed_ms"], cycle_started_ms + 663)
+        self.tick()
+        self.assertEqual(self.order_post_count(), 1)
+
+    def test_first_start_processes_arriving_signal_without_changing_forward_boundary(self):
+        boundary_ms = self.clock
+        self.signal_during_next_event_read()
+
+        result = self.service.start()
+
+        self.assertIsNone(result["last_error"], result)
+        self.assertEqual(result["forward_boundary_ms"], boundary_ms)
+        self.assertEqual(self.ledger.get_binding()["forward_boundary_ms"], boundary_ms)
+        self.assertEqual(self.order_post_count(), 1, result)
+        evidence = self.ledger.list_comparisons(stage="paper_event")
+        self.assertEqual(evidence[0]["observed_ms"], boundary_ms + 663)
+        self.assertFalse(self.ledger.list_comparisons(stage="entry_denied"))
+
+    def test_each_event_rechecks_clock_when_second_signal_exceeds_lag_limit(self):
+        self.service.start()
+        self.clock += 1000
+        observed_ms = self.clock
+        self.paper.signal(observed_ms)
+        self.paper.rows[0]["event_type"] = "order_cancelled"
+        self.paper.signal(observed_ms)
+        original_events = self.paper.events
+
+        def events(strategy_id, after_sequence, limit=1000):
+            self.paper.events = original_events
+            rows = original_events(strategy_id, after_sequence, limit)
+            yield rows[0]
+            self.clock += self.config.max_signal_lag_ms + 1
+            self.client.now = self.clock
+            yield rows[1]
+
+        self.paper.events = events
+        result = self.service.cycle()
+
+        self.assertIsNone(result["last_error"], result)
+        self.assertEqual(self.order_post_count(), 0, result)
+        self.assertFalse(self.ledger.runner_orders())
+        denied = self.ledger.list_comparisons(stage="entry_denied")
+        self.assertEqual(len(denied), 1)
+        self.assertEqual(denied[0]["signal_id"], "offline-signal-2")
+        self.assertEqual(denied[0]["payload"]["reason"], "paper_signal_stale")
+        self.assertEqual(denied[0]["observed_ms"], observed_ms + self.config.max_signal_lag_ms + 1)
+        evidence = {row["signal_id"]: row for row in self.ledger.list_comparisons(stage="paper_event")}
+        self.assertEqual(evidence["offline-signal-1"]["observed_ms"], observed_ms)
+        self.assertEqual(evidence["offline-signal-2"]["observed_ms"], self.clock)
+        self.assertEqual(result["last_sequence_id"], 2)
+        checkpoint = self.ledger.list_comparisons(stage="runner_checkpoint", limit=1)[0]
+        self.assertEqual(checkpoint["observed_ms"], self.clock)
+
+    def test_genuinely_future_signal_stays_rejected_without_an_order_post(self):
+        self.service.start()
+        self.clock += 1000
+        self.paper.signal(self.clock + 663)
+
+        result = self.service.cycle()
+
+        self.assertIsNone(result["last_error"], result)
+        self.assertEqual(self.order_post_count(), 0)
+        self.assertFalse(self.ledger.runner_orders())
+        denied = self.ledger.list_comparisons(stage="entry_denied")
+        self.assertEqual(denied[0]["payload"]["reason"], "paper_signal_stale")
+        self.assertEqual(denied[0]["observed_ms"], self.clock)
+        self.assertEqual(result["last_sequence_id"], 1)
+
+    def test_explicit_cycle_time_remains_authoritative_for_future_and_old_wall_clock_signals(self):
+        self.service.start()
+        explicit_ms = NOW + 1000
+        self.clock = NOW + 200_000
+        self.client.now = self.clock
+        self.paper.signal(explicit_ms + 663)
+
+        denied_result = self.service.cycle(now_ms=explicit_ms)
+
+        self.assertIsNone(denied_result["last_error"], denied_result)
+        self.assertEqual(self.order_post_count(), 0)
+        denied = self.ledger.list_comparisons(stage="entry_denied")
+        self.assertEqual(denied[0]["payload"]["reason"], "paper_signal_stale")
+        self.assertEqual(denied[0]["observed_ms"], explicit_ms)
+        explicit_ms += 2000
+        self.paper.signal(explicit_ms)
+
+        accepted_result = self.service.cycle(now_ms=explicit_ms)
+
+        self.assertIsNone(accepted_result["last_error"], accepted_result)
+        self.assertEqual(accepted_result["last_cycle_ms"], explicit_ms)
+        self.assertEqual(self.order_post_count(), 1, accepted_result)
+        evidence = {row["signal_id"]: row for row in self.ledger.list_comparisons(stage="paper_event")}
+        self.assertEqual(evidence["offline-signal-2"]["observed_ms"], explicit_ms)
+        checkpoint = self.ledger.list_comparisons(stage="runner_checkpoint", limit=1)[0]
+        self.assertEqual(checkpoint["observed_ms"], explicit_ms)
+
+    def test_denied_signals_are_checkpointed_and_restart_replays_no_order_submission(self):
+        self.service.start()
+        self.clock += 1000
+        self.paper.signal(self.clock - self.config.max_signal_lag_ms - 1)
+        self.paper.signal(self.clock + 663)
+
+        result = self.service.cycle()
+
+        self.assertIsNone(result["last_error"], result)
+        self.assertEqual(result["last_sequence_id"], 2)
+        self.assertEqual(self.order_post_count(), 0)
+        self.assertEqual(len(self.ledger.list_comparisons(stage="entry_denied")), 2)
+        checkpoint = self.ledger.list_comparisons(stage="runner_checkpoint", limit=1)[0]
+        self.assertEqual(checkpoint["payload"]["last_sequence_id"], 2)
+        # The formerly future signal is now admissible; it must not be replayed.
+        self.clock += 1663
+        self.client.now = self.clock
+        self.service = self.new_service()
+        restarted = self.service.start()
+        self.assertIsNone(restarted["last_error"], restarted)
+        self.assertEqual(restarted["last_sequence_id"], 2)
+        self.assertEqual(self.order_post_count(), 0)
+        self.paper.signal(self.clock)
+        accepted = self.service.cycle()
+        self.assertIsNone(accepted["last_error"], accepted)
+        self.assertEqual(accepted["last_sequence_id"], 3)
+        self.assertEqual(self.order_post_count(), 1)
+        self.service = self.new_service()
+        self.service.start()
+        self.tick()
+        self.assertEqual(self.order_post_count(), 1)
+        self.assertEqual(len(self.ledger.runner_orders()), 1)
+
     def test_real_modules_round_quantity_store_binance_format_and_frozen_risk(self):
         row = self.enter()
         self.assertEqual(Decimal(row["quantity"]) % Decimal(".001"), 0)

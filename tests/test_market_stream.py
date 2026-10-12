@@ -268,11 +268,54 @@ class CollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.collector.flush_spool())
         self.assertEqual(len(self.collector.spool.pending()), 1)
         self.assertEqual(self.collector.status["database_failures"], 1)
+        self.assertIn("写入失败，批次保留并退避重试", self.collector.status["last_error"])
+        self.assertIsNotNone(self.collector.status["last_error_at"])
         self.store.fail = False
         self.collector._retry_at = 0
         self.assertTrue(await self.collector.flush_spool())
         self.assertEqual(len(self.store.ticks), 1)
         self.assertEqual(self.collector.spool.pending(), [])
+        self.assertIsNone(self.collector.status["database_error"])
+        self.assertIsNone(self.collector.status["last_error"])
+        self.assertIsNone(self.collector.status["last_error_at"])
+
+    async def test_database_recovery_preserves_later_unrelated_error(self):
+        await self.collector.persist_batch([normalize_message(trade(), self.config, 100)])
+        self.store.fail = True
+        self.assertFalse(await self.collector.flush_spool())
+        with patch("market_stream.time.time", return_value=200):
+            self.collector.record_error("非法行情消息已拒绝：时间戳无效")
+        error_at = self.collector.status["last_error_at"]
+
+        self.store.fail = False
+        self.collector._retry_at = 0
+        self.assertTrue(await self.collector.flush_spool())
+
+        self.assertIsNone(self.collector.status["database_error"])
+        self.assertEqual(self.collector.status["last_error"], "非法行情消息已拒绝：时间戳无效")
+        self.assertEqual(self.collector.status["last_error_at"], error_at)
+        self.assertEqual(len(self.store.ticks), 1)
+        self.assertEqual(self.collector.spool.pending(), [])
+
+    async def test_database_recovery_restores_active_connection_error(self):
+        self.collector.status["connection_errors"] = {
+            "trades": "成交断开", "orderbooks": "盘口断开",
+        }
+        self.collector.record_error("盘口断开")
+        await self.collector.persist_batch([normalize_message(trade(), self.config, 100)])
+        self.store.fail = True
+        self.assertFalse(await self.collector.flush_spool())
+
+        self.store.fail = False
+        self.collector._retry_at = 0
+        self.assertTrue(await self.collector.flush_spool())
+
+        self.assertIsNone(self.collector.status["database_error"])
+        self.assertEqual(self.collector.status["last_error"], "盘口断开")
+        self.assertIsNotNone(self.collector.status["last_error_at"])
+        self.assertEqual(self.collector.status["connection_errors"], {
+            "trades": "成交断开", "orderbooks": "盘口断开",
+        })
 
     async def test_partial_database_commit_is_idempotent_on_replay(self):
         events = [normalize_message(trade(), self.config, 100), normalize_message(book(), self.config, 100)]

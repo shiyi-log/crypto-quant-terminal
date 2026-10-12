@@ -260,17 +260,29 @@ def normalize_message(message: dict[str, Any], config: StreamConfig, received_ms
             raise ValueError("K 线最高价和最低价必须覆盖开盘价与收盘价")
         quote_volume = _decimal(raw.get("q"))
         candle["quote_volume"] = finite_float(quote_volume, "成交额")
+        base_volume = Decimal(candle["volume"])
+        quote_volume_decimal = Decimal(quote_volume)
         if raw.get("n") is not None:
             candle["num_trades"] = _nonnegative_int(raw["n"])
         if raw.get("V") is not None:
-            candle["taker_buy_base"] = _decimal(raw["V"])
+            taker_buy_base = _decimal(raw["V"])
+            candle["taker_buy_base"] = taker_buy_base
+            if base_volume > 0:
+                candle["flow_imbal_base"] = float(
+                    2 * Decimal(taker_buy_base) / base_volume - 1
+                )
         if raw.get("Q") is not None:
             taker_buy_quote = finite_float(raw["Q"], "买方成交额")
-            if Decimal(_decimal(raw["Q"])) > Decimal(quote_volume):
+            taker_buy_quote_decimal = Decimal(_decimal(raw["Q"]))
+            if taker_buy_quote_decimal > quote_volume_decimal:
                 raise ValueError("买方成交额不能高于 K 线成交额")
             candle["taker_buy_quote"] = taker_buy_quote
-            if candle["quote_volume"] > 0:
-                candle["flow_imbal"] = 2 * taker_buy_quote / candle["quote_volume"] - 1
+            if quote_volume_decimal > 0:
+                quote_imbalance = float(
+                    2 * taker_buy_quote_decimal / quote_volume_decimal - 1
+                )
+                candle["flow_imbal"] = quote_imbalance
+                candle["flow_imbal_q"] = quote_imbalance
         extras.update(source="binance_kline_5m", closed=True,
                       exchange_event_timestamp=event_timestamp)
         return {
@@ -637,6 +649,11 @@ class MarketCollector:
                     "binance", market, pair, "5m", market, rows,
                     source_key="live:binance-ws-klines",
                 )
+                if market == "futures":
+                    self.store.upsert_candles(
+                        "binance", market, pair, "5m", "orderflow", rows,
+                        source_key="live:binance-ws-klines",
+                    )
             elif kind == "orderflow_surge":
                 append = getattr(self.store, "append_orderflow_surge", None)
                 for event in rows:
@@ -734,6 +751,19 @@ class MarketCollector:
         if candidates:
             self.status["price_candidate_last_error"] = None
         self.status["last_flush"] = int(time.time() * 1000)
+        previous_database_error = self.status["database_error"]
+        if (previous_database_error is not None
+                and self.status["last_error"] ==
+                f"写入失败，批次保留并退避重试：{previous_database_error}"):
+            # A successful replay clears only the database error it caused.
+            # Keep a connection error that was recorded while the batch was
+            # waiting, so recovery does not hide an independent outage.
+            connection_errors = self.status["connection_errors"]
+            replacement = next(reversed(connection_errors.values()), None)
+            self.status["last_error"] = replacement
+            self.status["last_error_at"] = (
+                int(time.time() * 1000) if replacement is not None else None
+            )
         self.status["database_error"] = None
         return True
 

@@ -30,6 +30,7 @@ PAIRS = ("BTC/USDT:USDT", "ETH/USDT:USDT")
 TIMEFRAME_MS = {"5m": 300_000, "15m": 900_000, "1h": 3_600_000,
                 "1d": 86_400_000}
 EXECUTION_VERSION = "independent-paper-next-close-open-100x-liquidation-v2"
+EXPERIMENTAL_EXECUTION_VARIANT = "risk-execution-2x2-v1"
 # Every value in this historical model contributes to persisted execution
 # hashes, including the unused sensitivity rates. Keep it unchanged for any
 # definition that predates explicit fee-model versioning.
@@ -319,8 +320,13 @@ def execution_identity(spec: dict) -> dict:
     pairs = execution_pairs(spec)
     risk = spec.get("position_budget", {})
     leverage = _number(risk.get("leverage", 100), "leverage", positive=True)
-    if risk.get("target_exposure", .30) != .30 or risk.get("max_positions", 2) != 2 or leverage != 100:
-        raise ValueError("this execution version requires 30% margin exposure, two slots and leverage 100")
+    execution_variant = spec.get("execution_variant")
+    if risk.get("target_exposure", .30) != .30 or risk.get("max_positions", 2) != 2:
+        raise ValueError("execution requires 30% margin exposure and two slots")
+    if execution_variant != EXPERIMENTAL_EXECUTION_VARIANT and leverage != 100:
+        raise ValueError("the frozen execution version requires leverage 100")
+    if execution_variant == EXPERIMENTAL_EXECUTION_VARIANT and leverage not in {30, 100}:
+        raise ValueError("2x2 execution requires leverage 30 or 100")
     model = dict(copy.deepcopy(base_model), initial_capital=initial, fee_rate_per_side=fee,
                  leverage=leverage, timeframe=timeframe,
                  bar_ms=TIMEFRAME_MS[timeframe], execution_universe=list(pairs),
@@ -328,10 +334,26 @@ def execution_identity(spec: dict) -> dict:
                  research_timeframe=str(spec.get("research_timeframe", timeframe)),
                  research_universe=list(spec.get("research_universe",
                                                 spec.get("universe", pairs))))
+    if execution_variant is not None:
+        if execution_variant != EXPERIMENTAL_EXECUTION_VARIANT:
+            raise ValueError("unsupported execution_variant")
+        model["execution_variant"] = execution_variant
+    # This is deliberately opt-in.  Omitting the field preserves the exact
+    # historical execution model and hash for frozen accounts.  New factorial
+    # accounts can explicitly select the OHLC intrabar stop variant.
+    stop_mode = spec.get("stop_execution_mode")
+    if stop_mode is not None:
+        if stop_mode not in {"close_confirmed", "intrabar"}:
+            raise ValueError("stop_execution_mode must be close_confirmed or intrabar")
+        model["stop_execution_mode"] = stop_mode
     atr_risk = _atr_execution_risk(spec, fee)
     if atr_risk is not None:
         model.update(atr_risk)
         model.pop("risk_stop_pct")
+    if stop_mode == "intrabar":
+        model["stop_policy"] = ("fixed_entry_atr_intrabar_ohlc_stop_first_open_gap"
+                                 if atr_risk is not None
+                                 else "fixed_pct_intrabar_ohlc_stop_first_open_gap")
     if "execution_enabled" in spec:
         if not isinstance(spec["execution_enabled"], bool):
             raise ValueError("execution_enabled must be boolean")
@@ -341,7 +363,18 @@ def execution_identity(spec: dict) -> dict:
             if not isinstance(reason, str) or not reason.strip():
                 raise ValueError("disabled execution requires blocked_execution_reason")
             model["blocked_execution_reason"] = reason
-    return {"rule_hash": _rule_hash(spec), "execution_hash": _hash(model), "execution": model}
+    # The separate signal-side key is only meaningful for the explicitly
+    # versioned 2x2 candidates.  Frozen factorial/Fnew definitions also carry
+    # ``signal_rule_hash`` as evidence, but their persisted account identity is
+    # the full rule hash and must remain unchanged.
+    if execution_variant == EXPERIMENTAL_EXECUTION_VARIANT:
+        rule_hash = (spec.get("signal_rule_hash") or spec.get("canonical_rule_hash")
+                     or _rule_hash(spec))
+    else:
+        rule_hash = _rule_hash(spec)
+    if not isinstance(rule_hash, str) or not rule_hash:
+        raise ValueError("signal_rule_hash must be a non-empty string")
+    return {"rule_hash": rule_hash, "execution_hash": _hash(model), "execution": model}
 
 
 def initial_state(spec: dict, observed_boundary_ms: int) -> dict:
@@ -506,12 +539,14 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                       fee=fee, observed_at_ms=observed_at_ms, fill_candle_ms=timestamp,
                       liquidation=liquidation,
                       fill_model=(order.get("fill_model", "intrabar_liquidation_price") if liquidation
-                                  else EXECUTION_MODEL["fill_model"]),
+                                  else order.get("fill_model", EXECUTION_MODEL["fill_model"])),
                       simulation_fill_model=True)
         if "risk_sizing" in position:
             filled.update(entry_atr=position["entry_atr"], stop_level=position["stop_level"],
                           risk_stop_atr_mult=position["risk_stop_atr_mult"],
                           risk_sizing=copy.deepcopy(position["risk_sizing"]))
+        elif position.get("stop_level") is not None:
+            filled["stop_level"] = position["stop_level"]
         event("order_filled", filled)
         trade = {"trade_id": position["trade_id"], "strategy_id": strategy_id,
                  "pair": pair, "side": position["side"], "quantity": position["quantity"],
@@ -531,6 +566,8 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
             trade.update(entry_atr=position["entry_atr"], stop_level=position["stop_level"],
                          risk_stop_atr_mult=position["risk_stop_atr_mult"],
                          risk_sizing=copy.deepcopy(position["risk_sizing"]))
+        elif position.get("stop_level") is not None:
+            trade["stop_level"] = position["stop_level"]
         event("trade_closed", trade)
 
     def liquidate(pair: str, position: dict, trigger_price: float, *, phase: str) -> None:
@@ -560,8 +597,11 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         close_position(liquidation_order, liquidation_price, liquidation=True)
 
     fee_rate = identity["execution"]["fee_rate_per_side"]
+    stop_mode = identity["execution"].get("stop_execution_mode", "close_confirmed")
     open_prices = {pair: candle["open"] for pair, candle in candles.items()}
     liquidated_at_open = {}
+    stopped_at_open: dict[str, str] = {}
+    stopped_this_candle: dict[str, str] = {}
     if identity["execution"].get("risk_sizing_mode") == "entry_atr":
         # Bankruptcy is forced before a queued close can fill at a worse open.
         # A latest received open is current evidence even after a data gap;
@@ -575,12 +615,74 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
             if bankrupt:
                 liquidated_at_open[pair] = position["trade_id"]
                 liquidate(pair, position, price, phase="next_open_bankruptcy")
+
+    def stop_out(pair: str, position: dict, trigger_price: float, *, phase: str,
+                 fill_model: str) -> None:
+        """Close a configured intrabar stop using only this candle's OHLC.
+
+        The candle path is unknown.  A same-candle stop/target collision is
+        therefore resolved in favour of the stop before strategy exits are
+        considered.  A gap through the stop is filled at the candle open.
+        """
+        stop_order_id = _hash([strategy_id, timestamp, pair, "intrabar_stop",
+                               position["trade_id"], phase])
+        order = {
+            "order_id": stop_order_id,
+            "paper_order_id": f"{timestamp}-{pair.split('/')[0]}-{strategy_id}-stop-{stop_order_id[:12]}",
+            "exchange_order_id": None, "strategy_id": strategy_id, "pair": pair,
+            "side": "sell" if position["direction"] == 1 else "buy",
+            "direction": -position["direction"], "kind": "exit",
+            "reason": "stop_loss_intrabar", "status": "forced",
+            "signal_candle_ms": timestamp, "expected_fill_candle_ms": timestamp,
+            "observed_at_ms": observed_at_ms, "fill_model": fill_model,
+            "stop_level": position.get("stop_level"), "stop_phase": phase,
+            "trigger_price": trigger_price,
+        }
+        close_position(order, trigger_price)
+
+    # A stop variant is an opt-in execution contract for new accounts.  Check
+    # an overnight gap before queued orders, so a pending signal cannot fill a
+    # position that was already stopped at the current open.
+    if stop_mode == "intrabar":
+        for pair, position in list(state["positions"].items()):
+            stop_level = position.get("stop_level")
+            open_price = open_prices.get(pair)
+            if stop_level is None or open_price is None:
+                continue
+            gap = ((position["direction"] == 1 and open_price <= stop_level)
+                   or (position["direction"] == -1 and open_price >= stop_level))
+            if gap:
+                stopped_at_open[pair] = position["trade_id"]
+                stopped_this_candle[pair] = position["trade_id"]
+                stop_out(pair, position, open_price, phase="next_open_stop_gap",
+                         fill_model="execution_open_stop_gap")
+
+        # Evaluate the current candle's adverse extreme before any queued
+        # strategy exit can fill at its open.  OHLC does not reveal path, so a
+        # touched stop wins over a same-candle target or reversal request.
+        for pair, position in list(state["positions"].items()):
+            stop_level = position.get("stop_level")
+            candle = candles.get(pair)
+            if (stop_level is None or candle is None
+                    or position.get("opened_candle_ms") >= timestamp):
+                continue
+            touched = ((position["direction"] == 1 and candle["low"] <= stop_level)
+                       or (position["direction"] == -1 and candle["high"] >= stop_level))
+            if touched:
+                stopped_this_candle[pair] = position["trade_id"]
+                stop_out(pair, position, stop_level, phase="intrabar_extreme",
+                         fill_model="intrabar_stop_level")
     # Mark every leg to the same next-open prices before calculating capital.
     _mark(state, open_prices)
     pending = state["pending_orders"]
     state["pending_orders"] = []
     grouped: dict[str, list[dict]] = {}
     for order in pending:
+        if order["pair"] in stopped_this_candle:
+            cancel(order, "superseded_by_open_stop",
+                   superseded_exit_reason=order.get("reason"),
+                   stopped_trade_id=stopped_this_candle[order["pair"]])
+            continue
         if order["kind"] == "exit" and order["pair"] in liquidated_at_open:
             cancel(order, "superseded_by_open_liquidation", superseded_exit_reason=order["reason"],
                    liquidated_trade_id=liquidated_at_open[order["pair"]])
@@ -696,6 +798,8 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                         "group_id": order.get("group_id"),
                         "paper_order_id": order["paper_order_id"], "exchange_order_id": None,
                         "trade_id": "trade-" + order["order_id"], "unrealized_pnl": 0.0}
+            if stop_mode == "intrabar" and not atr_sizing:
+                position["stop_level"] = price * (1 - direction * identity["execution"]["risk_stop_pct"])
             risk_payload = {}
             if atr_sizing:
                 plan = dict(plans[index], actual_notional=notional,
@@ -704,6 +808,8 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                 risk_payload = {"entry_atr": plan["entry_atr"], "stop_level": plan["stop_level"],
                                 "risk_stop_atr_mult": plan["risk_stop_atr_mult"], "risk_sizing": plan}
                 position.update(copy.deepcopy(risk_payload))
+            elif stop_mode == "intrabar":
+                position["stop_level"] = price * (1 - direction * identity["execution"]["risk_stop_pct"])
             state["positions"][pair] = position
             event("order_filled", dict(order, status="filled", fill_price=price, quantity=quantity,
                   margin=margin, leverage=leverage, notional=notional,
@@ -711,6 +817,25 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                   fill_candle_ms=timestamp,
                   fill_model=EXECUTION_MODEL["fill_model"], simulation_fill_model=True, **risk_payload))
             event("position_opened", position)
+
+    # Entries are filled at this candle's open.  Their remaining OHLC range
+    # must still be eligible to trigger the opt-in intrabar stop before the
+    # generic liquidation check below.  This also makes the conservative
+    # same-candle stop precedence explicit for a newly opened position.
+    if stop_mode == "intrabar":
+        for pair, position in list(state["positions"].items()):
+            if position.get("opened_candle_ms") != timestamp:
+                continue
+            stop_level = position.get("stop_level")
+            candle = candles.get(pair)
+            if stop_level is None or candle is None:
+                continue
+            touched = ((position["direction"] == 1 and candle["low"] <= stop_level)
+                       or (position["direction"] == -1 and candle["high"] >= stop_level))
+            if touched:
+                stopped_this_candle[pair] = position["trade_id"]
+                stop_out(pair, position, stop_level, phase="intrabar_extreme",
+                         fill_model="intrabar_stop_level")
 
     # A liquidation is an exchange-forced exit and is the only execution path
     # allowed to use intrabar high/low. Check after next-open fills so a newly
@@ -797,6 +922,8 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                     denied = "atomic_atr_stop_policy_unsupported"
                 elif _entry_atr(decision["evidence"]) is None:
                     denied = "entry_atr_unavailable_or_invalid"
+            elif pair in stopped_this_candle:
+                denied = "intrabar_stop_precedence"
             if denied:
                 event("entry_denied", dict(decision, reason=denied,
                       blocked_execution_reason=identity["execution"].get("blocked_execution_reason")))

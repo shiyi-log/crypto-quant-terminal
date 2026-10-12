@@ -22,7 +22,7 @@ def kline(timestamp=600_000, quote_volume=40, *, closed=True):
         "k": {"t": timestamp, "T": timestamp + 299_999, "s": "BTCUSDT", "i": "5m",
               "o": "10", "h": "12", "l": "9", "c": "11", "v": "4",
               "q": str(quote_volume), "x": closed, "n": 7, "V": "3",
-              "Q": str(quote_volume * .75)},
+              "Q": str(quote_volume * .6)},
     }}
 
 
@@ -172,10 +172,15 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(row["extras"]["closed"], True)
         self.assertEqual(row["extras"]["num_trades"], 7)
         self.assertEqual(float(row["extras"]["taker_buy_base"]), 3)
-        self.assertEqual(row["extras"]["taker_buy_quote"], 30)
-        self.assertEqual(row["extras"]["flow_imbal"], .5)
+        self.assertEqual(row["extras"]["taker_buy_quote"], 24)
+        self.assertAlmostEqual(row["extras"]["flow_imbal"], .2)
+        self.assertAlmostEqual(row["extras"]["flow_imbal_q"], .2)
+        self.assertEqual(row["extras"]["flow_imbal_base"], .5)
         self.assertEqual(self.store.candle_writes[0][:5],
                          ("binance", "futures", PAIR, "5m", "futures"))
+        self.assertEqual(self.store.candle_writes[1][:5],
+                         ("binance", "futures", PAIR, "5m", "orderflow"))
+        self.assertEqual(self.store.candle_writes[0][5], self.store.candle_writes[1][5])
         self.assertEqual(self.collector.status["surge_observed"], 1)
         self.assertEqual(self.collector.status["surge_persisted"], 1)
 
@@ -188,7 +193,7 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
                              for event in self.pending_events()), 1)
         self.collector.stop.set()
         await self.collector.writer()
-        self.assertEqual(len(self.store.candles), 1)
+        self.assertEqual(len(self.store.candles), 2)
         self.assertEqual(len(self.store.surges), 1)
         self.assertEqual(self.collector.spool.pending(), [])
 
@@ -207,7 +212,7 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
         await self.collector.receive(kline(300_000, 20))
         self.collector.stop.set()
         await self.collector.writer()
-        self.assertEqual(len(self.store.candles), 2)
+        self.assertEqual(len(self.store.candles), 4)
         self.assertEqual(self.store.surges, {})
 
         restarted = MarketCollector(self.config, self.store,
@@ -341,7 +346,7 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
         self.store.fail_surge = True
         self.assertFalse(await self.collector.flush_spool())
         self.assertTrue(path.exists())
-        self.assertEqual(len(self.store.candles), 1)
+        self.assertEqual(len(self.store.candles), 2)
         self.assertEqual(self.store.surges, {})
         self.assertEqual(self.collector.status["database_failures"], 1)
         self.assertIn("突增观测", self.collector.status["database_error"])
@@ -364,7 +369,7 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
         observation = next(event["row"] for event in original
                            if event["kind"] == "orderflow_surge")
         self.assertEqual(self.store.surges, {observation["event_id"]: observation})
-        self.assertEqual(len(self.store.candles), 1)
+        self.assertEqual(len(self.store.candles), 2)
         self.assertEqual((len(self.store.ticks), len(self.store.books)), (1, 1))
         self.assertEqual(restarted.status["dropped"], 0)
 

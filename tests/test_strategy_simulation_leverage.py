@@ -172,6 +172,102 @@ class LeveragedTransitionTests(unittest.TestCase):
         self.assertNotEqual(execution_identity(maker)["execution_hash"],
                             execution_identity(taker)["execution_hash"])
 
+    def test_intrabar_stop_variant_is_opt_in_and_preserves_legacy_hash(self):
+        legacy = execution_identity(self.spec)
+        variant = copy.deepcopy(self.spec)
+        variant["strategy_id"] = "test-leverage_100x_intrabar"
+        variant["stop_execution_mode"] = "intrabar"
+        identity = execution_identity(variant)
+        self.assertNotEqual(identity["execution_hash"], legacy["execution_hash"])
+        self.assertEqual(legacy["execution"].get("stop_execution_mode"), None)
+        self.assertEqual(identity["execution"]["stop_execution_mode"], "intrabar")
+        self.assertEqual(identity["execution"]["stop_policy"],
+                         "fixed_pct_intrabar_ohlc_stop_first_open_gap")
+
+    def test_intrabar_long_stop_uses_low_and_stop_level(self):
+        self.spec["stop_execution_mode"] = "intrabar"
+        state = initial_state(self.spec, BAR_MS)
+        pending, _ = self.step(BAR_MS, (1, None), state=state)
+        opened, _ = self.step(2 * BAR_MS, state=pending,
+                               candles=_bars(2 * BAR_MS, open_price=100,
+                                             high=100.5, low=99.6, close=100))
+        position = opened["positions"][PAIRS[0]]
+        self.assertAlmostEqual(position["stop_level"], 99.5)
+        stopped, events = self.step(3 * BAR_MS, state=opened,
+                                    candles=_bars(3 * BAR_MS, open_price=100,
+                                                  high=101, low=99.5, close=100))
+        self.assertNotIn(PAIRS[0], stopped["positions"])
+        trade = next(item["payload"] for item in events if item["event_type"] == "trade_closed")
+        self.assertEqual(trade["exit_reason"], "stop_loss_intrabar")
+        self.assertEqual(trade["exit_price"], 99.5)
+        filled = next(item["payload"] for item in events if item["event_type"] == "order_filled")
+        self.assertEqual(filled["fill_model"], "intrabar_stop_level")
+
+    def test_intrabar_gap_fills_at_open_and_stop_precedes_signal_exit(self):
+        self.spec["stop_execution_mode"] = "intrabar"
+        pending, _ = self.step(BAR_MS, (1, None), state=initial_state(self.spec, BAR_MS))
+        opened, _ = self.step(2 * BAR_MS, state=pending,
+                               candles=_bars(2 * BAR_MS, open_price=100,
+                                             high=100.5, low=99.6, close=100))
+        stopped, events = self.step(3 * BAR_MS, (0, None), state=opened,
+                                    candles=_bars(3 * BAR_MS, open_price=99,
+                                                  high=100, low=98.5, close=99))
+        self.assertNotIn(PAIRS[0], stopped["positions"])
+        trades = [item["payload"] for item in events if item["event_type"] == "trade_closed"]
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]["exit_reason"], "stop_loss_intrabar")
+        self.assertEqual(trades[0]["exit_price"], 99)
+        filled = next(item["payload"] for item in events if item["event_type"] == "order_filled")
+        self.assertEqual(filled["fill_model"], "execution_open_stop_gap")
+
+    def test_intrabar_stop_applies_to_entry_candle_before_liquidation(self):
+        self.spec["stop_execution_mode"] = "intrabar"
+        pending, _ = self.step(BAR_MS, (1, None), state=initial_state(self.spec, BAR_MS))
+        # The entry fills at this candle's open.  Its low touches the stop but
+        # stays above the 100x liquidation price; the stop must close it first.
+        stopped, events = self.step(
+            2 * BAR_MS,
+            state=pending,
+            candles=_bars(2 * BAR_MS, open_price=100, high=100.5, low=99.4, close=100),
+        )
+        self.assertNotIn(PAIRS[0], stopped["positions"])
+        self.assertFalse(any(item["event_type"] == "liquidation" for item in events))
+        trade = next(item["payload"] for item in events if item["event_type"] == "trade_closed")
+        self.assertEqual(trade["exit_reason"], "stop_loss_intrabar")
+        self.assertEqual(trade["exit_price"], 99.5)
+
+    def test_legacy_close_confirmed_variant_ignores_intrabar_stop_touch(self):
+        # A low below the proposed fixed stop must not alter the historical
+        # close-confirmed execution contract when the opt-in mode is absent.
+        pending, _ = self.step(BAR_MS, (1, None), state=initial_state(self.spec, BAR_MS))
+        observed, events = self.step(
+            2 * BAR_MS,
+            state=pending,
+            candles=_bars(2 * BAR_MS, open_price=100, high=100.5, low=99.4, close=100),
+        )
+        self.assertIn(PAIRS[0], observed["positions"])
+        self.assertFalse(any(item["event_type"] == "trade_closed" for item in events))
+
+    def test_intrabar_stop_cancels_queued_close_without_double_closing(self):
+        self.spec["stop_execution_mode"] = "intrabar"
+        pending, _ = self.step(BAR_MS, (1, None), state=initial_state(self.spec, BAR_MS))
+        opened, _ = self.step(2 * BAR_MS, state=pending,
+                               candles=_bars(2 * BAR_MS, open_price=100,
+                                             high=100.5, low=99.6, close=100))
+        exit_pending, _ = self.step(3 * BAR_MS, (0, None), state=opened,
+                                     candles=_bars(3 * BAR_MS, open_price=100,
+                                                   high=100.5, low=99.6, close=100))
+        self.assertEqual(len(exit_pending["pending_orders"]), 1)
+        stopped, events = self.step(4 * BAR_MS, state=exit_pending,
+                                    candles=_bars(4 * BAR_MS, open_price=100,
+                                                  high=100.5, low=99.5, close=100))
+        self.assertNotIn(PAIRS[0], stopped["positions"])
+        self.assertFalse(stopped["pending_orders"])
+        self.assertEqual(sum(item["event_type"] == "trade_closed" for item in events), 1)
+        self.assertEqual(sum(item["event_type"] == "order_cancelled" for item in events), 1)
+        trade = next(item["payload"] for item in events if item["event_type"] == "trade_closed")
+        self.assertEqual(trade["exit_reason"], "stop_loss_intrabar")
+
 
 if __name__ == "__main__":
     unittest.main()

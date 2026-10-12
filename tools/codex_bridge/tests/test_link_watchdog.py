@@ -87,6 +87,25 @@ class WatchdogProbeTests(unittest.TestCase):
         self.assertFalse(result["healthy"])
         self.assertTrue(any("重启后的 IPC 注册窗口" in text for text in result["warnings"]))
 
+    def test_failed_standby_assignment_is_reported_as_superseded(self):
+        with sqlite3.connect(self.ledger) as db:
+            db.execute(
+                "INSERT INTO messages VALUES (?, ?, ?, ?, ?)",
+                ("dsh-standby1-DATA-FIX-assignment-20261012", "deepseek", None,
+                 "unconfirmed", 1.0),
+            )
+
+        result = self.check((0, '{"accepted":true}', ""))
+
+        self.assertNotIn(
+            "存在未确认消息 dsh-standby1-DATA-FIX-assignment-20261012 —— 需人工核对是否已送达",
+            result["problems"],
+        )
+        self.assertIn(
+            "dsh-standby1-DATA-FIX-assignment-20261012 → 已由 dsh-standby1-DATA-FIX-20261012 重发",
+            result["superseded"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

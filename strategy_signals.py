@@ -218,12 +218,17 @@ def _required_bars(strategy_id: str, params: dict[str, Any]) -> int:
     if strategy_id == "s22_dual_confirmation_trend":
         return max(params["channel"] + 1, 22)
     if strategy_id == "s23_triple_confirmation_breakout":
-        return max(params["channel"] + 1, params["atr_window"] + params["atr_ma"] + 2, 22)
+        # New ATR-risk rules require the entire configured prior window;
+        # legacy rules retain the lookback used by their frozen identity.
+        buffer = 2 if "risk_stop_atr_mult" in params else 1
+        return max(params["channel"] + 1,
+                   params["atr_window"] + params["atr_ma"] + buffer, 22)
     if strategy_id == "s24_cross_sectional_lowvol":
         return max(params["rv_window"] + params["channel"] + 1, 22)
     if strategy_id == "s25_vol_regime_momentum":
+        buffer = 2 if "risk_stop_atr_mult" in params else 1
         return max(params["channel"] + 1,
-                   params["rv_window"] + params["regime_window"] + 2)
+                   params["rv_window"] + params["regime_window"] + buffer)
     if strategy_id == "s26_surge_gated_trend":
         return max(params["channel"] + 1,
                    params["channel"] + params["gate_valid_days"] + 1)
@@ -332,10 +337,11 @@ def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("unsupported leverage_convention")
     if budget["sizing"] != "剩余预算 / 剩余槽位":
         raise ValueError("unsupported sizing")
-    # An explicit warmup overrides the default, while indicator lookbacks
-    # remain mandatory. DEFAULTS supplies a value only when the spec omits it.
-    minimum = max(_integer(spec.get("min_warmup_bars", minimum), "min_warmup_bars"),
-                  _required_bars(strategy_id, params))
+    requested_warmup = _integer(spec.get("min_warmup_bars", minimum), "min_warmup_bars")
+    required = _required_bars(strategy_id, params)
+    # Explicit requests override the default. Frozen definitions already
+    # store their effective warmup, so a valid stored value remains unchanged.
+    minimum = max(requested_warmup, required)
     if atr_risk_enabled:
         minimum = max(minimum, params["atr_window"] + 2)
     capital = _number(spec.get("initial_capital", 10_000), "initial_capital", positive=True)

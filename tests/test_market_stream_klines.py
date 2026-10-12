@@ -1,8 +1,10 @@
 """Closed Binance 5m candle contracts, without network or database access."""
 
+from pathlib import Path
+import tempfile
 import unittest
 
-from market_stream import StreamConfig, normalize_message
+from market_stream import MarketCollector, StreamConfig, normalize_message
 
 
 def kline():
@@ -14,7 +16,7 @@ def kline():
                 "t": 1700000100000, "T": 1700000399999, "s": "BTCUSDT",
                 "i": "5m", "x": True, "o": "100", "h": "103", "l": "99",
                 "c": "102", "v": "12.3400", "q": "1234.50", "n": 42,
-                "V": "7.8900", "Q": "789.00",
+                "V": "7.8900", "Q": "600.00",
             },
         },
     }
@@ -37,7 +39,11 @@ class KlineNormalizationTests(unittest.TestCase):
         self.assertEqual((candle["volume"], candle["quote_volume"], candle["num_trades"]),
                          ("12.3400", 1234.5, 42))
         self.assertEqual(candle["taker_buy_base"], "7.8900")
-        self.assertAlmostEqual(candle["flow_imbal"], 2 * 789 / 1234.5 - 1)
+        self.assertEqual(candle["taker_buy_quote"], 600.0)
+        self.assertAlmostEqual(candle["flow_imbal"], 2 * 600 / 1234.5 - 1)
+        self.assertAlmostEqual(candle["flow_imbal_q"], 2 * 600 / 1234.5 - 1)
+        self.assertAlmostEqual(candle["flow_imbal_base"], 2 * 7.89 / 12.34 - 1)
+        self.assertNotAlmostEqual(candle["flow_imbal"], candle["flow_imbal_base"])
         self.assertEqual(event["row"]["extras"]["exchange_event_timestamp"],
                          message["data"]["E"])
         self.assertTrue(event["row"]["extras"]["closed"])
@@ -124,7 +130,10 @@ class KlineNormalizationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.normalize(message)
         message["data"]["k"].update(q="0", Q="0")
-        self.assertNotIn("flow_imbal", self.normalize(message)["candle"])
+        candle = self.normalize(message)["candle"]
+        self.assertNotIn("flow_imbal", candle)
+        self.assertNotIn("flow_imbal_q", candle)
+        self.assertAlmostEqual(candle["flow_imbal_base"], 2 * 7.89 / 12.34 - 1)
 
 
 class KlineSubscriptionTests(unittest.TestCase):
@@ -142,6 +151,30 @@ class KlineSubscriptionTests(unittest.TestCase):
         self.assertIn("stream.binance.com:9443/stream?", url)
         self.assertIn("btcusdt@kline_5m", url)
         self.assertIn("ethusdt@kline_5m", url)
+
+
+class KlinePersistenceTests(unittest.TestCase):
+    def test_futures_closed_candles_are_written_to_futures_and_orderflow(self):
+        class Store:
+            def __init__(self):
+                self.calls = []
+
+            def upsert_candles(self, exchange, market, pair, timeframe, candle_type,
+                               rows, source_key=None):
+                self.calls.append((exchange, market, pair, timeframe, candle_type,
+                                   rows, source_key))
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store()
+            collector = MarketCollector(
+                StreamConfig(spool_dir=Path(directory) / "spool"), store,
+            )
+            event = normalize_message(kline(), collector.config, 1700000400100)
+            collector._write([event])
+
+        self.assertEqual([call[4] for call in store.calls], ["futures", "orderflow"])
+        self.assertEqual(store.calls[0][5], store.calls[1][5])
+        self.assertEqual(store.calls[0][6], "live:binance-ws-klines")
 
 
 if __name__ == "__main__":

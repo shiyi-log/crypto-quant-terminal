@@ -34,7 +34,32 @@ def fingerprint(value):
                                      allow_nan=False).encode()).hexdigest()
 
 
+def is_fnew_spec(spec):
+    """Fnew accounts carry their own design version and never share the legacy path."""
+    return bool(spec.get("fnew_design_version"))
+
+
+def feed_series(loaded):
+    """Yield ``(name, rows)`` for every closed-candle series in a loaded input.
+
+    s33 declares a separate ``spot`` mapping beside the ordinary perpetual pair
+    mapping.  Nested maps must be walked explicitly: treating the mapping itself
+    as a row list would raise, and silently dropping it would hide a stale spot
+    feed from the alignment checks.
+    """
+    for name, value in (loaded or {}).items():
+        if isinstance(value, dict):
+            for nested_name, rows in value.items():
+                if isinstance(rows, list):
+                    yield f"{name}/{nested_name}", rows
+        elif isinstance(value, list):
+            yield name, value
+
+
 def normalize_account_spec(spec):
+    if is_fnew_spec(spec):
+        from strategy_fnew import normalize_fnew_spec
+        return normalize_fnew_spec(spec)
     if spec.get("factorial_design_version"):
         from strategy_factorial_signals import normalize_factorial_spec
         return normalize_factorial_spec(spec)
@@ -45,7 +70,12 @@ def normalize_account_spec(spec):
 def research_pause_reason(spec):
     from strategy_data import strategy_pairs
     allowed = {"BTC/USDT:USDT", "ETH/USDT:USDT", "TRX/USDT:USDT"}
-    pairs = spec.get("data_universe") if spec.get("factorial_design_version") else strategy_pairs(spec)
+    if is_fnew_spec(spec):
+        pairs = spec.get("data_universe") or spec.get("universe") or []
+    elif spec.get("factorial_design_version"):
+        pairs = spec.get("data_universe")
+    else:
+        pairs = strategy_pairs(spec)
     return "paused_research_context_required" if any(pair not in allowed for pair in pairs) else None
 
 
@@ -55,6 +85,9 @@ def evaluate_account(spec, candles, positions=None, as_of_utc=None):
     reason = research_pause_reason(spec)
     if reason:
         return blocked_evaluation(spec, reason)
+    if is_fnew_spec(spec):
+        from strategy_fnew_signals import evaluate_fnew
+        return evaluate_fnew(spec, candles, positions=positions, as_of_utc=as_of_utc)
     if spec.get("factorial_design_version"):
         from strategy_factorial_signals import evaluate_factorial
         return evaluate_factorial(spec, candles, positions=positions, as_of_utc=as_of_utc)
@@ -266,9 +299,13 @@ def blocked_evaluation(spec, reason="awaiting_native_timeframe_adapter"):
     This keeps generation-2 accounts visible and independently identified while
     preventing a 5m row from being misinterpreted as a 15m/1h/1d observation.
     """
-    from strategy_signals import strategy_rule_hash
+    if is_fnew_spec(spec):
+        from strategy_fnew import fnew_rule_hash
+        rule_hash = spec.get("rule_hash") or fnew_rule_hash(spec)
+    else:
+        from strategy_signals import strategy_rule_hash
+        rule_hash = spec.get("rule_hash") or strategy_rule_hash(spec)
     strategy_id = str(spec["strategy_id"])
-    rule_hash = spec.get("rule_hash") or strategy_rule_hash(spec)
     by_pair = {pair: {"ready": False, "valid_bars": 0,
                       "required_bars": int(spec.get("min_warmup_bars", 0)),
                       "reason": reason}
@@ -341,6 +378,22 @@ class StrategyLabService:
             self.strategy_history[str(spec.get("strategy_id", ""))] = {}
             return {}
         input_spec = spec
+        if is_fnew_spec(spec):
+            # Fnew feeds are declared per mechanism.  s33 additionally requires a
+            # genuine spot market; the cache key must therefore include the feed
+            # contract so a basis account can never be served a perpetual-only
+            # window that a sibling mechanism already loaded.
+            from strategy_fnew_data import load_fnew_candles
+
+            feeds = spec.get("data_feeds") or {}
+            key = ("fnew", self._timeframe(spec), tuple(spec.get("data_universe") or ()),
+                   bool(feeds.get("spot")), limit, observed_at)
+            if key not in self.input_cache:
+                self.input_cache[key] = load_fnew_candles(
+                    self.store, spec, limit=limit, as_of_ms=observed_at)
+            loaded = self.input_cache[key]
+            self.strategy_history[str(spec.get("strategy_id", ""))] = loaded
+            return loaded
         if spec.get("factorial_design_version"):
             input_spec = dict(spec, universe=spec["data_universe"])
         key = (self._timeframe(input_spec), strategy_pairs(input_spec), limit, observed_at)
@@ -365,7 +418,7 @@ class StrategyLabService:
 
     @staticmethod
     def _canonical_id(spec):
-        if spec.get("factorial_design_version"):
+        if is_fnew_spec(spec) or spec.get("factorial_design_version"):
             return spec["canonical_strategy_id"]
         value = str(spec.get("strategy_id", ""))
         for suffix in ("_B15m_100x_maker", "_Cgen2_100x_maker",
@@ -397,10 +450,15 @@ class StrategyLabService:
 
     @staticmethod
     def _context_candles(loaded):
-        """Return latest-aligned full histories for native signal evaluation."""
+        """Return latest-aligned full histories for native signal evaluation.
+
+        Every declared series must share one closing timestamp -- including
+        s33's separate spot feed.  A basis signal must never be evaluated from a
+        window whose spot and perpetual tails disagree.
+        """
         if not loaded:
             return {}
-        latest = [rows[-1]["timestamp"] for rows in loaded.values() if rows]
+        latest = [rows[-1]["timestamp"] for _name, rows in feed_series(loaded) if rows]
         if not latest or len(set(latest)) != 1:
             return {}
         return loaded
@@ -441,8 +499,8 @@ class StrategyLabService:
         """Persist current indicator diagnostics without replaying any close."""
 
         strategy_id = spec["strategy_id"]
-        latest = tuple(sorted((pair, rows[-1]["timestamp"] if rows else None)
-                              for pair, rows in loaded.items()))
+        latest = tuple(sorted((name, rows[-1]["timestamp"] if rows else None)
+                              for name, rows in feed_series(loaded)))
         previous = self.native_warmup_refresh.get(strategy_id)
         if previous is not None and previous[0] == latest \
                 and 0 <= now - previous[1] < NATIVE_WARMUP_REFRESH_MS:
@@ -617,7 +675,7 @@ class StrategyLabService:
         self._native_bootstrap(evaluations)
         self.simulation.update_warmup(evaluations, observed_at_ms=self.boundary)
         native_warmup_bars = {
-            strategy_id: {pair: len(rows) for pair, rows in loaded.items()}
+            strategy_id: {name: len(rows) for name, rows in feed_series(loaded)}
             for strategy_id, loaded in self.strategy_history.items()
         }
         self.publish(status="waiting_new_closed_candle", last_error=None,
@@ -723,6 +781,11 @@ def main():
     parser.add_argument("--interval", type=float, default=15.0)
     parser.add_argument("--factorial", action=argparse.BooleanOptionalAction, default=True,
                         help="启用独立 ATR 风险因子账户，保留旧冻结账户")
+    parser.add_argument("--fnew", action=argparse.BooleanOptionalAction, default=True,
+                        help="启用 Fnew(s32-s36)前向人口，保留旧冻结账户")
+    parser.add_argument("--fnew-paired-execution", action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help="显式启用 s32/s36 原子双腿账户；仅在配对执行通过独立验收后开启")
     args = parser.parse_args()
     if not 1 <= args.interval <= 60:
         parser.error("interval must be between 1 and 60 seconds")
@@ -746,6 +809,19 @@ def main():
         if args.factorial:
             from strategy_factorial import load_factorial_specs
             requested += load_factorial_specs(normalizer=normalize_account_spec)
+        if args.fnew:
+            # The Fnew population keeps its own design version and sample
+            # population.  Paired entries stay blocked unless the operator
+            # explicitly enables them after the pair execution policy has been
+            # accepted; blocked accounts are still created so their frozen
+            # identity and data readiness stay auditable.
+            from strategy_fnew import load_fnew_specs
+            existing_ids = {spec["strategy_id"] for spec in requested}
+            fnew_specs = load_fnew_specs(paired_execution_enabled=args.fnew_paired_execution)
+            collisions = existing_ids & {spec["strategy_id"] for spec in fnew_specs}
+            if collisions:
+                raise ValueError("Fnew identities collide with existing accounts")
+            requested += fnew_specs
         specs, deferred = resume_frozen_specs(store, requested)
         service = StrategyLabService(store, StrategySimulation(store), specs)
         service.publish(identity_changes_deferred=deferred)

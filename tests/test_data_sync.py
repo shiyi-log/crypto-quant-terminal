@@ -74,6 +74,19 @@ class MemoryStore:
             self.candles[(exchange, market, pair, timeframe, candle_type, row["timestamp"])] = row
         return len({row["timestamp"] for row in rows})
 
+    def get_candles(self, exchange, market, pair, timeframe, candle_type="futures",
+                    limit=200, start=None, end=None):
+        rows = [row for (row_exchange, row_market, row_pair, row_timeframe,
+                         row_type, timestamp), row in self.candles.items()
+                if (row_exchange, row_market, row_pair, row_timeframe, row_type)
+                == (exchange, market, pair, timeframe, candle_type)
+                and (start is None or timestamp >= start)
+                and (end is None or timestamp <= end)]
+        rows.sort(key=lambda row: row["timestamp"])
+        if limit is not None:
+            rows = rows[-max(0, int(limit)):]
+        return [{**row, "extras": dict(row.get("extras") or {})} for row in rows]
+
     def upsert_series(self, source, metric, asset, rows, source_key=None):
         for row in rows:
             self.series[(source, metric, asset, row["timestamp"])] = row
@@ -471,6 +484,154 @@ class DataSyncTests(unittest.TestCase):
         assert sync.run()["rows"] == 0
         assert sync.run(force=True)["rows"] == 6
         assert len(store.candles) == 6
+
+    def test_orderflow_import_migrates_legacy_flow_and_derives_missing_fields(self):
+        directory = self.project / "bot/user_data/data/orderflow"
+        directory.mkdir(parents=True)
+        frame = candle_frame(pd.date_range("2026-01-01", periods=5, tz="UTC"))
+        frame["volume"] = [4., 4., 0., 4., 4.]
+        frame["quote_volume"] = [100., 80., 100., 0., np.inf]
+        frame["taker_buy_base"] = [3., 2., 3., 3., 3.]
+        frame["taker_buy_quote"] = [60., 60., 75., 50., 75.]
+        frame["flow_imbal"] = [.5, None, .5, .5, .5]
+        frame["flow_imbal_q"] = [.19, None, None, None, None]
+        frame["flow_imbal_base"] = [None, None, -.25, None, None]
+        frame.to_feather(directory / "BTC_5m_orderflow.feather")
+
+        store = MemoryStore()
+        result = DataSynchronizer(store, self.project).run()
+
+        self.assertEqual(result["errors"], 0)
+        rows = sorted(store.candles.values(), key=lambda row: row["timestamp"])
+        self.assertEqual(rows[0]["extras"]["flow_imbal_base"], .5)
+        self.assertEqual(rows[0]["extras"]["flow_imbal"], .19)
+        self.assertEqual(rows[0]["extras"]["flow_imbal_q"], .19)
+        self.assertEqual(rows[1]["extras"]["flow_imbal_base"], 0.)
+        self.assertEqual(rows[1]["extras"]["flow_imbal"], .5)
+        self.assertEqual(rows[1]["extras"]["flow_imbal_q"], .5)
+        self.assertEqual(rows[2]["extras"]["flow_imbal_base"], -.25)
+        self.assertEqual(rows[2]["extras"]["flow_imbal"], .5)
+        self.assertEqual(rows[2]["extras"]["flow_imbal_q"], .5)
+        self.assertEqual(rows[3]["extras"]["flow_imbal_base"], .5)
+        self.assertNotIn("flow_imbal", rows[3]["extras"])
+        self.assertIsNone(rows[3]["extras"]["flow_imbal_q"])
+        self.assertEqual(rows[4]["extras"]["flow_imbal_base"], .5)
+        self.assertNotIn("flow_imbal", rows[4]["extras"])
+        self.assertIsNone(rows[4]["extras"]["flow_imbal_q"])
+
+    def test_non_orderflow_import_preserves_canonical_flow_and_populates_alias(self):
+        directory = self.project / "bot/user_data/data/binance/futures"
+        directory.mkdir(parents=True)
+        frame = candle_frame(pd.date_range("2026-01-01", periods=2, tz="UTC"))
+        frame["volume"] = [4., 4.]
+        frame["quote_volume"] = [100., 80.]
+        frame["taker_buy_base"] = [3., 2.]
+        frame["taker_buy_quote"] = [60., 60.]
+        frame["flow_imbal"] = [.77, None]
+        frame["flow_imbal_q"] = [None, .31]
+        frame.to_feather(directory / "BTC_USDT_USDT-5m-futures.feather")
+
+        store = MemoryStore()
+        result = DataSynchronizer(store, self.project).run()
+
+        self.assertEqual(result["errors"], 0)
+        rows = sorted(store.candles.values(), key=lambda row: row["timestamp"])
+        self.assertEqual(rows[0]["extras"]["flow_imbal"], .77)
+        self.assertEqual(rows[0]["extras"]["flow_imbal_q"], .77)
+        self.assertEqual(rows[0]["extras"]["flow_imbal_base"], .5)
+        self.assertEqual(rows[1]["extras"]["flow_imbal"], .31)
+        self.assertEqual(rows[1]["extras"]["flow_imbal_q"], .31)
+        self.assertEqual(rows[1]["extras"]["flow_imbal_base"], 0.)
+
+    def test_static_import_merges_existing_rich_extras_instead_of_erasing_them(self):
+        directory = self.project / "bot/user_data/data/binance/futures"
+        directory.mkdir(parents=True)
+        dates = pd.to_datetime(["2026-01-01T00:00:00Z"])
+        frame = candle_frame(dates)
+        frame["quote_volume"] = [100.0]
+        path = directory / "BTC_USDT_USDT-5m-futures.feather"
+        frame.to_feather(path)
+        timestamp = int(dates[0].timestamp() * 1000)
+        store = MemoryStore()
+        identity = ("binance", "futures", "BTC/USDT:USDT", "5m", "futures")
+        store.upsert_candles(*identity, [{
+            "timestamp": timestamp, "open": 10.0, "high": 12.0,
+            "low": 9.0, "close": 11.0, "volume": 4.0,
+            "extras": {"closed": True, "num_trades": 17,
+                       "taker_buy_quote": 60.0, "custom": "keep"},
+        }])
+
+        result = DataSynchronizer(store, self.project).run()
+
+        self.assertEqual(result["errors"], 0)
+        actual = store.candles[(*identity, timestamp)]
+        self.assertEqual(actual["extras"]["custom"], "keep")
+        self.assertEqual(actual["extras"]["num_trades"], 17)
+        self.assertEqual(actual["extras"]["quote_volume"], 100.0)
+        self.assertTrue(actual["extras"]["closed"])
+
+    def test_static_import_does_not_replace_live_provenance(self):
+        directory = self.project / "bot/user_data/data/binance/futures"
+        directory.mkdir(parents=True)
+        dates = pd.to_datetime(["2026-01-01T00:00:00Z"])
+        frame = candle_frame(dates)
+        frame["quote_volume"] = [100.0]
+        frame.to_feather(directory / "BTC_USDT_USDT-5m-futures.feather")
+        timestamp = int(dates[0].timestamp() * 1000)
+        store = MemoryStore()
+        identity = ("binance", "futures", "BTC/USDT:USDT", "5m", "futures")
+        live = {
+            "timestamp": timestamp, "open": 20.0, "high": 22.0,
+            "low": 19.0, "close": 21.0, "volume": 8.0,
+            "extras": {"closed": True, "live_event_timestamp": timestamp + 1,
+                       "quote_volume": 200.0, "custom": "live"},
+        }
+        store.upsert_candles(*identity, [live])
+
+        result = DataSynchronizer(store, self.project).run()
+
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(result["rows"], 0)
+        self.assertEqual(store.candles[(*identity, timestamp)], live)
+
+    def test_static_import_fails_closed_when_existing_candle_read_fails(self):
+        directory = self.project / "bot/user_data/data/binance/futures"
+        directory.mkdir(parents=True)
+        frame = candle_frame(pd.to_datetime(["2026-01-01T00:00:00Z"]))
+        frame.to_feather(directory / "BTC_USDT_USDT-5m-futures.feather")
+        store = MemoryStore()
+        with patch.object(store, "get_candles", side_effect=OSError("database unavailable")), \
+                redirect_stdout(StringIO()):
+            result = DataSynchronizer(store, self.project).run()
+
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(result["rows"], 0)
+        self.assertEqual(store.candles, {})
+
+    def test_null_live_marker_is_not_versioned_and_closed_advances(self):
+        directory = self.project / "bot/user_data/data/binance/futures"
+        directory.mkdir(parents=True)
+        frame = candle_frame(pd.to_datetime(["2026-01-01T00:00:00Z"]))
+        frame["quote_volume"] = [100.0]
+        frame["num_trades"] = [17]
+        frame.to_feather(directory / "BTC_USDT_USDT-5m-futures.feather")
+        timestamp = int(pd.Timestamp("2026-01-01T00:00:00Z").timestamp() * 1000)
+        store = MemoryStore()
+        identity = ("binance", "futures", "BTC/USDT:USDT", "5m", "futures")
+        store.upsert_candles(*identity, [{
+            "timestamp": timestamp, "open": 10.0, "high": 12.0,
+            "low": 9.0, "close": 11.0, "volume": 4.0,
+            "extras": {"closed": False, "live_event_timestamp": None,
+                       "num_trades": None},
+        }])
+
+        result = DataSynchronizer(store, self.project).run()
+
+        self.assertEqual(result["errors"], 0)
+        actual = store.candles[(*identity, timestamp)]
+        self.assertTrue(actual["extras"]["closed"])
+        self.assertEqual(actual["extras"]["num_trades"], 17)
+        self.assertEqual(actual["extras"]["quote_volume"], 100.0)
 
     def test_second_candle_batch_failure_retries_unchanged_source_idempotently(self):
         directory = self.project / "bot/user_data/data/binance"

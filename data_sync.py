@@ -202,6 +202,27 @@ def normalized_frame(frame: Any, funding: bool = False) -> tuple[Any, int]:
     return data, source_count - len(data)
 
 
+def finite_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def derived_flow_imbalance(numerator: Any, denominator: Any) -> float | None:
+    """Calculate a taker-buy imbalance only from finite values and a positive total."""
+    bought = finite_number(numerator)
+    total = finite_number(denominator)
+    if (bought is None or total is None or total <= 0
+            or bought < 0 or bought > total):
+        return None
+    imbalance = 2 * bought / total - 1
+    return imbalance if math.isfinite(imbalance) and -1 <= imbalance <= 1 else None
+
+
 def sqlite_snapshot(path: Path, timeout: float = 3.0) -> dict[str, list[dict[str, Any]]]:
     """短只读事务取得一致快照，先释放 SQLite 再写 PostgreSQL。"""
     deadline = time.monotonic() + timeout
@@ -381,6 +402,57 @@ class DataSynchronizer:
         for start in range(0, len(rows), self.batch_size):
             yield rows[start:start + self.batch_size]
 
+    def _existing_candles(self, exchange: str, market: str, pair: str,
+                          timeframe: str, candle_type: str,
+                          timestamps: Any) -> dict[int, dict[str, Any]]:
+        """Read the target range so sparse static sources cannot erase extras.
+
+        The production store exposes ``get_candles``.  Small test stores and
+        older adapters may not; in that case the caller keeps the historical
+        replacement behavior rather than inventing a second persistence API.
+        """
+        getter = getattr(self.store, "get_candles", None)
+        if not callable(getter):
+            return {}
+        stamps = [int(value) for value in timestamps if value is not None]
+        if not stamps:
+            return {}
+        try:
+            rows = getter(exchange, market, pair, timeframe,
+                          candle_type=candle_type, limit=None,
+                          start=min(stamps), end=max(stamps))
+        except TypeError:
+            # Keep compatibility with minimal adapters that only support
+            # positional arguments.
+            try:
+                rows = getter(exchange, market, pair, timeframe, candle_type,
+                              None, min(stamps), max(stamps))
+            except Exception as exc:
+                raise RuntimeError("无法读取已有 K 线 extras") from exc
+        except Exception as exc:
+            raise RuntimeError("无法读取已有 K 线 extras") from exc
+        return {int(row["timestamp"]): dict(row.get("extras") or {})
+                for row in (rows or []) if row.get("timestamp") is not None}
+
+    @staticmethod
+    def _merge_existing_extras(row: dict[str, Any], existing: dict[str, Any] | None) -> dict[str, Any]:
+        """Preserve existing facts; static input only fills absent extras."""
+        if not existing:
+            return row
+        incoming = dict(row.get("extras") or {})
+        # A row written by the live collector is versioned.  A static feather
+        # snapshot cannot prove it is newer, so leave that complete row alone.
+        if any(existing.get(name) is not None
+               for name in ("live_event_timestamp", "live_snapshot_timestamp")):
+            return {**row, "extras": existing}
+        merged = dict(existing)
+        for name, value in incoming.items():
+            if name not in merged or merged[name] is None:
+                merged[name] = value
+        if existing.get("closed") is True or incoming.get("closed") is True:
+            merged["closed"] = True
+        return {**row, "extras": merged}
+
     def _yield_fast(self) -> None:
         # 初次历史导入也每五秒服务一次进度和交易快照，训练进程无需等待。
         if time.monotonic() - self._last_fast_service >= 5:
@@ -442,9 +514,62 @@ class DataSynchronizer:
         self.summary["rejected_rows"] += rejected
         columns = {"date", "timestamp", "open", "high", "low", "close", "volume"}
         for start in range(0, len(frame), self.batch_size):
+            batch_frame = frame.iloc[start:start + self.batch_size]
+            existing = self._existing_candles(
+                exchange, market, pair, timeframe, kind,
+                batch_frame["timestamp"].tolist(),
+            )
             rows = []
-            for row in frame.iloc[start:start + self.batch_size].to_dict(orient="records"):
+            for row in batch_frame.to_dict(orient="records"):
                 extras = clean_payload({col: value for col, value in row.items() if col not in columns})
+                if kind == "orderflow":
+                    # Older orderflow files used flow_imbal for base and
+                    # flow_imbal_q for quote. Classify by the raw formulas,
+                    # never by field presence alone, so a partially exported
+                    # canonical file is not silently reinterpreted.
+                    legacy = finite_number(extras.get("flow_imbal"))
+                    base = derived_flow_imbalance(row.get("taker_buy_base"), row["volume"])
+                    quote = derived_flow_imbalance(
+                        row.get("taker_buy_quote"), extras.get("quote_volume")
+                    )
+                    alias = finite_number(extras.get("flow_imbal_q"))
+                    if (legacy is not None and base is not None
+                            and math.isclose(legacy, base, rel_tol=1e-8, abs_tol=1e-8)
+                            and (alias is not None or quote is not None
+                                 or "flow_imbal_q" in extras)):
+                        extras.setdefault("flow_imbal_base", legacy)
+                        if quote is not None:
+                            # Keep an explicit quote alias byte-for-byte; the
+                            # integrity audit will report a source mismatch
+                            # instead of silently changing a historical fact.
+                            extras["flow_imbal"] = alias if alias is not None else quote
+                        elif alias is not None:
+                            extras["flow_imbal"] = alias
+                        else:
+                            extras.pop("flow_imbal", None)
+                if extras.get("flow_imbal_base") is None:
+                    imbalance = derived_flow_imbalance(row.get("taker_buy_base"), row["volume"])
+                    if imbalance is not None:
+                        extras["flow_imbal_base"] = imbalance
+                if extras.get("flow_imbal") is None:
+                    quote_alias = extras.get("flow_imbal_q")
+                    if finite_number(quote_alias) is not None:
+                        extras["flow_imbal"] = quote_alias
+                    else:
+                        imbalance = derived_flow_imbalance(
+                            row.get("taker_buy_quote"), extras.get("quote_volume")
+                        )
+                        if imbalance is not None:
+                            extras["flow_imbal"] = imbalance
+                if extras.get("flow_imbal_q") is None:
+                    if finite_number(extras.get("flow_imbal")) is not None:
+                        extras["flow_imbal_q"] = extras["flow_imbal"]
+                    else:
+                        imbalance = derived_flow_imbalance(
+                            row.get("taker_buy_quote"), extras.get("quote_volume")
+                        )
+                        if imbalance is not None:
+                            extras["flow_imbal_q"] = imbalance
                 # Historical files do not normally carry an exchange close flag.
                 # Infer missing flags at one observation time capped by the source
                 # mtime.  An explicit false is a partial snapshot;
@@ -452,9 +577,21 @@ class DataSynchronizer:
                 extras["closed"] = (extras.get("closed") is not False
                                     and candle_close_timestamp(int(row["timestamp"]), timeframe)
                                     <= observed_at)
-                rows.append({"timestamp": int(row["timestamp"]),
-                             **{col: float(row[col]) for col in columns - {"date", "timestamp"}},
-                             "extras": extras})
+                candle = {"timestamp": int(row["timestamp"]),
+                          **{col: float(row[col]) for col in columns - {"date", "timestamp"}},
+                          "extras": extras}
+                old_extras = existing.get(candle["timestamp"])
+                if (old_extras
+                        and any(old_extras.get(name) is not None for name in (
+                            "live_event_timestamp", "live_snapshot_timestamp"))
+                        and not any(extras.get(name) is not None for name in (
+                            "live_event_timestamp", "live_snapshot_timestamp"))):
+                    # The static snapshot cannot supersede a versioned live
+                    # fact, so omit it from this upsert entirely.
+                    continue
+                rows.append(self._merge_existing_extras(candle, old_extras))
+            if not rows:
+                continue
             total += self.store.upsert_candles(exchange, market, pair, timeframe, kind, rows, source_key=key)
             self._yield_fast()
         return total

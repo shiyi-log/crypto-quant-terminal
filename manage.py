@@ -80,8 +80,25 @@ def services(root: Path = ROOT) -> dict[str, Service]:
                 "--port", os.getenv("QUANT_LIVE_PORT", "8892")), root,
                 root / "market_live.py", port=int(os.getenv("QUANT_LIVE_PORT", "8892")),
                 health_path="/health"),
-        Service("strategy-lab", "十策略独立模拟", (python, "-u", str(root / "strategy_lab_service.py")),
+        Service("strategy-lab", "十策略独立模拟", (python, "-u", str(root / "strategy_lab_service.py"),
+                # The Fnew paired execution policy
+                # (atomic-pair-equal-notional-ohlc-v1) is implemented in
+                # strategy_simulation.py and covered by the dedicated pair
+                # execution suite, so s32/s36 may create their first accounts
+                # enabled.  Accounts created while blocked carry a distinct
+                # execution identity and can never be upgraded in place.
+                "--fnew-paired-execution"),
                 root, root / "strategy_lab_service.py"),
+        # s33_basis_momentum_1h trades the perpetual leg but reads a genuine
+        # spot market, and it fails closed when spot is stale.  This collector
+        # verifies exchange-final spot facts and then sustains only the recent
+        # closed 1h tail; it writes its own status document and never touches
+        # another collector or any strategy/account state.
+        Service("spot-basis", "现货基差前向喂数",
+                (python, "-u", str(root / "tools/backfill_spot_basis_history.py"),
+                 "--apply", "--watch", "--output", str(root / "database/runtime/spot_basis"),
+                 "--status-document-key", "spot_basis_status.json"),
+                root, root / "tools/backfill_spot_basis_history.py"),
     ]
     return {spec.name: spec for spec in specs}
 

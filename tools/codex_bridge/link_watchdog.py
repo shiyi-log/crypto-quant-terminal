@@ -202,6 +202,8 @@ def check(stuck_min=15):
             SUPERSEDED = {
                 # 该条在通道中断期未送达，内容已换新 ID 重发并成功
                 "dsh-ablation-and-fixes-20261009": "dsh-channel-bug-and-ablation-20261010",
+                # 对端未运行导致投递失败，内容已用新 ID 重发并成功
+                "dsh-standby1-DATA-FIX-assignment-20261012": "dsh-standby1-DATA-FIX-20261012",
             }
             for r in rows:
                 mid = r.get("id") or ""

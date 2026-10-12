@@ -43,6 +43,12 @@ BATCH_SIZE = 5000
 ALLOWED_DATA_DIRS = frozenset(("binance", "merged", "okx", "orderflow"))
 
 
+def temporary_source(path: Path) -> bool:
+    """Identify atomic-write staging files that are not stable sync sources."""
+    name = path.name.lower()
+    return name.endswith(".tmp") or ".tmp." in name
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -263,6 +269,22 @@ class DataSynchronizer:
         return (len(relative.parts) >= 3
                 and relative.parts[1] in ALLOWED_DATA_DIRS
                 and not (self.user_data / "data" / relative.parts[1]).is_symlink())
+
+    def _is_source_candidate(self, path: Path) -> bool:
+        return not temporary_source(path)
+
+    def _prune_temporary_sources(self) -> None:
+        """Drop stale source rows for atomic-write staging files, never artifacts."""
+        prune = getattr(self.store, "prune_temporary_sources", None)
+        if prune is None:
+            return
+        try:
+            removed = int(prune())
+        except Exception as exc:
+            self._storage_error("无法清理临时源记录", exc)
+            return
+        if removed:
+            self.summary["pruned_sources"] = removed
 
     def _key(self, path: Path) -> str:
         return path.relative_to(self.root).as_posix()
@@ -534,6 +556,7 @@ class DataSynchronizer:
     def _fast_sources(self, force: bool) -> None:
         for path in sorted(self.user_data.rglob("*")):
             if (path.suffix.lower() in {".json", ".jsonl"} and path.is_file()
+                    and self._is_source_candidate(path)
                     and self._allowed_user_data_path(path)
                     and public_source(path, self.user_data)):
                 self._run_source(path, "document", self._document, force)
@@ -550,25 +573,28 @@ class DataSynchronizer:
                         "rows": 0, "errors": 0, "storage_errors": 0, "skipped": 0,
                         "rejected_rows": 0,
                         "warnings": []}
+        self._prune_temporary_sources()
         self._save_sync_state(self.summary)
         data_roots = self._data_roots()
         self._fast_sources(force)
         if not fast:
             for root in data_roots:
                 for path in sorted(root.rglob("*.feather")):
-                    if public_source(path, self.user_data):
+                    if self._is_source_candidate(path) and public_source(path, self.user_data):
                         self._run_source(path, "feather", self._feather, force)
             for name in TRUSTED_PICKLES:
                 path = self.user_data / "newsrc" / name
                 if path.is_file() and public_source(path, self.user_data):
                     self._run_source(path, "series", self._pickle, force)
             for path in sorted(self.user_data.rglob("*.csv")):
-                if (path.is_file() and self._allowed_user_data_path(path)
+                if (path.is_file() and self._is_source_candidate(path)
+                        and self._allowed_user_data_path(path)
                         and public_source(path, self.user_data)):
                     self._run_source(path, "csv", self._csv, force)
             for folder in ("models", "freqaimodels", "cache", "backtest_results", "hyperopt_results"):
                 for path in sorted((self.user_data / folder).rglob("*")):
-                    if (path.is_file() and path.suffix.lower() not in {".json", ".jsonl", ".csv"}
+                    if (path.is_file() and self._is_source_candidate(path)
+                            and path.suffix.lower() not in {".json", ".jsonl", ".csv"}
                             and public_source(path, self.user_data)):
                         if folder == "models" and path.suffix.lower() == ".feather":
                             self._run_source(path, "prediction", self._prediction, force)

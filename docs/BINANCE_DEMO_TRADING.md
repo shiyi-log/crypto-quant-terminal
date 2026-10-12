@@ -98,6 +98,8 @@ Demo 名义默认上限 1,000 USDT。止损距离定仓使用原纸面风险档�
 
 ## 审计与真实费用
 
+需要主动采集三币实际 maker/taker 成交费率时，使用独立的[Demo 真实手续费采集流程](BINANCE_DEMO_FEE_CAPTURE.md)。该流程说明暂停默认 runner、账户空仓与账本对账前置条件、30 秒 GTX maker 与保护价 IOC taker、同会话恢复和服务交接；采集工具不会自动停止或恢复服务。
+
 独立 `demo_orders/demo_fills/demo_positions/demo_account` 保存意图、实际订单、实际成交
 以及仓位/账户快照；第五张 `demo_signal_comparisons` 关联同一冻结信号的两条执行路径。
 交易所订单与成交原始 camelCase 字段保留；十进制以字符串展示，不经过浮点转换。

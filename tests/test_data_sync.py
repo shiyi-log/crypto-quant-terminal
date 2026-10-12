@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 from data_sync import (
     DataSynchronizer, candle_close_timestamp, candle_identity, exclusive_sync, main,
-    sqlite_snapshot, timestamp_ms,
+    sqlite_snapshot, temporary_source, timestamp_ms,
 )
 
 
@@ -85,6 +85,12 @@ class MemoryStore:
 
     def set_sync_state(self, state):
         self.sync.update(state)
+
+    def prune_temporary_sources(self):
+        stale = [key for key in self.sources if temporary_source(Path(key))]
+        for key in stale:
+            del self.sources[key]
+        return len(stale)
 
 
 
@@ -179,6 +185,31 @@ class DataSyncTests(unittest.TestCase):
         assert store.candles == {}
         assert store.documents == {}
         assert store.events == {}
+
+    def test_temporary_atomic_cache_is_ignored_and_stale_source_error_is_pruned(self):
+        cache = self.project / "bot/user_data/cache"
+        cache.mkdir(parents=True)
+        temporary_cache = cache / "panel_128_seq.npy.tmp.npy"
+        temporary_cache.write_bytes(b"interrupted numpy write")
+        final_cache = cache / "panel_128_seq.npy"
+        np.save(final_cache, np.zeros((1, 2, 3), dtype=np.float32))
+
+        store = MemoryStore()
+        temporary_key = "bot/user_data/cache/panel_64_seq.npy.tmp.npy"
+        regular_key = "bot/user_data/cache/old-final-cache.npy"
+        store.sources[temporary_key] = {"error": "ValueError", "path": temporary_key}
+        store.sources[regular_key] = {"error": "OSError", "path": regular_key}
+
+        result = DataSynchronizer(store, self.project).run()
+
+        self.assertTrue(temporary_source(temporary_cache))
+        self.assertFalse(temporary_source(final_cache))
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(result["pruned_sources"], 1)
+        self.assertNotIn(temporary_key, store.sources)
+        self.assertEqual(store.sources[regular_key]["error"], "OSError")
+        self.assertNotIn(temporary_key, store.artifacts)
+        self.assertIn("bot/user_data/cache/panel_128_seq.npy", store.artifacts)
 
     def test_utc_timestamp_and_nat(self):
         timestamps = timestamp_ms(["2026-01-01T08:00:00+08:00", "invalid"])
@@ -853,6 +884,31 @@ class DataSyncTests(unittest.TestCase):
         finally:
             store.close()
             with connect(dsn, autocommit=True) as connection:
+                connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))
+
+    @unittest.skipUnless(os.environ.get("QUANT_TEST_DATABASE_URL"), "未配置隔离 PostgreSQL 测试库")
+    def test_prune_temporary_source_rows_keeps_regular_sources_and_artifacts(self):
+        from data_store import DataStore
+        from psycopg import connect, sql
+
+        schema = "test_sync_prune_" + uuid.uuid4().hex
+        store = DataStore(root=self.project, dsn=os.environ["QUANT_TEST_DATABASE_URL"], schema=schema)
+        try:
+            store.initialize()
+            temporary_key = "bot/user_data/cache/panel_seq.npy.tmp.npy"
+            regular_key = "bot/user_data/cache/panel_seq.npy"
+            store.record_source(temporary_key, temporary_key, "artifact", 1, 1, 0,
+                                error="ValueError")
+            store.record_source(regular_key, regular_key, "artifact", 2, 2, 1)
+            store.save_artifact(temporary_key, temporary_key, 1, 1, "cache")
+
+            self.assertEqual(store.prune_temporary_sources(), 1)
+            self.assertIsNone(store.source_state(temporary_key))
+            self.assertIsNone(store.source_state(regular_key)["error"])
+            self.assertEqual(store.list_artifacts(temporary_key)[0]["key"], temporary_key)
+        finally:
+            store.close()
+            with connect(os.environ["QUANT_TEST_DATABASE_URL"], autocommit=True) as connection:
                 connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))
 
 

@@ -486,6 +486,19 @@ class DataStore:
                  row_count if error is None else 0, str(error) if error is not None else None,
                  mtime_ns, size, str(error) if error is not None else None))
 
+    def prune_temporary_sources(self):
+        """Remove source rows for atomic-write staging files.
+
+        These rows are never stable inputs and are ignored by ``data_sync``.
+        Restrict the deletion to the source key naming convention; artifacts
+        and all non-temporary source rows are left untouched.
+        """
+        with self._connection() as conn:
+            result = conn.execute(
+                "DELETE FROM sources WHERE key LIKE '%.tmp' OR key LIKE '%.tmp.%'"
+            )
+        return result.rowcount
+
     def set_sync_state(self, state):
         with self._connection() as conn:
             # JSONB 合并让不同采集进程更新状态时保留已有字段。

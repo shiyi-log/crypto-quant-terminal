@@ -28,6 +28,25 @@ SCHEMA_VERSION = "multi-strategy-signal-v1"
 ALGORITHM_VERSION = "closed5m-prior-baseline-actual-position-v1"
 IMPLEMENTATION_REVISION = "decimal-threshold-correction-v2"
 
+# This wording was persisted in the rule hash of the original paper
+# population.  Keep accepting it and use it as the canonical hash token so a
+# descriptive correction cannot rewrite frozen identities.
+LEGACY_LEVERAGE_CONVENTION = "A：保证金不变，名义 ×100，逐根强平"
+
+
+def leverage_convention_for(leverage: int) -> str:
+    """Describe the per-arm margin convention without changing risk sizing.
+
+    The risk cap determines notional independently of leverage.  Leverage only
+    determines how much margin that notional consumes and its liquidation
+    distance.  This text is metadata; the historical convention above remains
+    the hash-compatible canonical token for existing accounts.
+    """
+    if leverage not in (30, 100):
+        raise ValueError("2x2 leverage convention requires 30x or 100x")
+    return (f"名义由风险上限决定且独立于杠杆；保证金 = 名义 ÷ {leverage}；"
+            f"{leverage}×逐根强平")
+
 # The focused leverage/stop experiment keeps execution identity in the
 # strategy ID while sharing the underlying signal mechanism.  These suffixes
 # are deliberately enumerated so an unsupported arm or leverage cannot be
@@ -351,9 +370,13 @@ def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     if (str(strategy_id).endswith(("_100x", "_100x_maker")) and leverage != 100):
         raise ValueError("_100x strategy identities require leverage 100")
     budget["leverage"] = leverage
-    if "leverage_convention" in budget and budget["leverage_convention"] != \
-            "A：保证金不变，名义 ×100，逐根强平":
-        raise ValueError("unsupported leverage_convention")
+    if "leverage_convention" in budget:
+        convention = budget["leverage_convention"]
+        allowed = {LEGACY_LEVERAGE_CONVENTION}
+        if experimental_2x2 and leverage in (30, 100):
+            allowed.add(leverage_convention_for(leverage))
+        if convention not in allowed:
+            raise ValueError("unsupported leverage_convention")
     if budget["sizing"] != "剩余预算 / 剩余槽位":
         raise ValueError("unsupported sizing")
     requested_warmup = _integer(spec.get("min_warmup_bars", minimum), "min_warmup_bars")
@@ -416,6 +439,10 @@ def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         # definition that the factory normalized before applying an arm.
         canonical_budget = dict(canonical_signal["position_budget"])
         canonical_budget["leverage"] = 100
+        # Descriptive 2x2 arm metadata is intentionally not a signal-rule
+        # identity input.  Canonicalize it to the historical token used by
+        # the source family so all four arms retain one shared rule hash.
+        canonical_budget["leverage_convention"] = LEGACY_LEVERAGE_CONVENTION
         canonical_signal["position_budget"] = canonical_budget
         canonical_hash = _digest(canonical_signal)
         supplied_signal_hash = (spec.get("canonical_signal_rule_hash")

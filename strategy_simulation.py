@@ -31,6 +31,10 @@ TIMEFRAME_MS = {"5m": 300_000, "15m": 900_000, "1h": 3_600_000,
                 "1d": 86_400_000}
 EXECUTION_VERSION = "independent-paper-next-close-open-100x-liquidation-v2"
 EXPERIMENTAL_EXECUTION_VARIANT = "risk-execution-2x2-v1"
+# This exact text is part of the historical execution hash.  Keep it as the
+# compatibility token while exposing corrected wording for new 2x2 metadata.
+LEGACY_BUDGET_RULE = "new entries use remaining margin budget; 30% is equity margin, notional is margin times leverage"
+RISK_CAP_BUDGET_RULE = "new entries use remaining margin budget; 30% is equity margin; notional is risk-cap derived and independent of leverage"
 # Every value in this historical model contributes to persisted execution
 # hashes, including the unused sensitivity rates. Keep it unchanged for any
 # definition that predates explicit fee-model versioning.
@@ -53,7 +57,7 @@ LEGACY_EXECUTION_MODEL = {
     "non_fill_risk": "unknown_limit_order_non_fill; next_open_proxy_assumes_fill",
     "slippage": "unknown",
     "funding": "unknown",
-    "budget_rule": "new entries use remaining margin budget; 30% is equity margin, notional is margin times leverage",
+    "budget_rule": LEGACY_BUDGET_RULE,
     "budget_basis": "margin",
     "liquidation": {
         "enabled": True,
@@ -394,7 +398,18 @@ def execution_identity(spec: dict) -> dict:
         rule_hash = _rule_hash(spec)
     if not isinstance(rule_hash, str) or not rule_hash:
         raise ValueError("signal_rule_hash must be a non-empty string")
-    return {"rule_hash": rule_hash, "execution_hash": _hash(model), "execution": model}
+    # Correct the descriptive contract for the focused 2x2 population.  The
+    # risk cap, rather than leverage, determines planned notional; leverage
+    # changes margin usage and liquidation distance only.
+    hash_model = model
+    if execution_variant == EXPERIMENTAL_EXECUTION_VARIANT:
+        model["budget_rule"] = RISK_CAP_BUDGET_RULE
+        # Existing 2x2 rows were created with the legacy description.  Hash
+        # only this descriptive token using its historical value so restart
+        # validation accepts those frozen identities without a DB mutation.
+        hash_model = copy.deepcopy(model)
+        hash_model["budget_rule"] = LEGACY_BUDGET_RULE
+    return {"rule_hash": rule_hash, "execution_hash": _hash(hash_model), "execution": model}
 
 
 def initial_state(spec: dict, observed_boundary_ms: int) -> dict:

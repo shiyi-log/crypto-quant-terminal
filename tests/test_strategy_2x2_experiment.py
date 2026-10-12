@@ -8,7 +8,9 @@ from pathlib import Path
 from strategy_2x2_experiment import (build_2x2_candidates,
                                      materialize_2x2_execution_spec,
                                      risk_capped_margin, risk_capped_notional)
-from strategy_simulation import execution_identity
+from strategy_signals import LEGACY_LEVERAGE_CONVENTION, leverage_convention_for
+from strategy_simulation import (LEGACY_BUDGET_RULE, RISK_CAP_BUDGET_RULE,
+                                  execution_identity)
 from strategy_2x2_scope import ARMS, FOCUS_STRATEGY_IDS
 
 
@@ -104,6 +106,35 @@ class Strategy2x2FactoryTests(unittest.TestCase):
                 self.assertEqual(models["C"]["stop_execution_mode"], "intrabar")
                 self.assertEqual(models["D"]["leverage"], 30)
                 self.assertEqual(models["D"]["stop_execution_mode"], "intrabar")
+
+    def test_materialized_descriptions_match_arm_and_risk_sizing_contract(self):
+        candidates = build_2x2_candidates(self.source)
+        materialized = [materialize_2x2_execution_spec(row) for row in candidates]
+        for row in materialized:
+            with self.subTest(strategy_id=row["strategy_id"]):
+                leverage = row["position_budget"]["leverage"]
+                self.assertEqual(row["position_budget"]["leverage_convention"],
+                                 leverage_convention_for(leverage))
+                identity = execution_identity(row)
+                self.assertEqual(identity["execution"]["budget_rule"], RISK_CAP_BUDGET_RULE)
+                self.assertIn("independent of leverage", identity["execution"]["budget_rule"])
+
+    def test_description_correction_is_hash_compatible_with_frozen_2x2_rows(self):
+        candidates = build_2x2_candidates(self.source)
+        for candidate in candidates:
+            corrected = materialize_2x2_execution_spec(candidate)
+            legacy = copy.deepcopy(corrected)
+            legacy["position_budget"]["leverage_convention"] = LEGACY_LEVERAGE_CONVENTION
+            corrected_identity = execution_identity(corrected)
+            legacy_identity = execution_identity(legacy)
+            with self.subTest(strategy_id=corrected["strategy_id"]):
+                self.assertEqual(corrected_identity["rule_hash"], legacy_identity["rule_hash"])
+                self.assertEqual(corrected_identity["execution_hash"],
+                                 legacy_identity["execution_hash"])
+                self.assertEqual(
+                    corrected_identity["execution_hash"],
+                    __import__("strategy_simulation")._hash(
+                        {**corrected_identity["execution"], "budget_rule": LEGACY_BUDGET_RULE}))
 
     def test_materializer_does_not_mutate_candidate(self):
         candidate = build_2x2_candidates(self.source)[0]

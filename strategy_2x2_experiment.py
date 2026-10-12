@@ -45,7 +45,12 @@ def _normalized_base(raw: Mapping[str, Any], normalizer: Callable) -> dict[str, 
     budget.setdefault("max_per_coin", 1)
     budget.setdefault("sizing", "剩余预算 / 剩余槽位")
     budget.setdefault("leverage", 100)
-    budget.setdefault("leverage_convention", "A：保证金不变，名义 ×100，逐根强平")
+    # The source definitions predate the 2x2 execution overlay.  Keep their
+    # legacy convention while normalizing the signal-side identity; the
+    # materializer replaces it with arm-specific explanatory metadata.
+    from strategy_signals import LEGACY_LEVERAGE_CONVENTION
+
+    budget.setdefault("leverage_convention", LEGACY_LEVERAGE_CONVENTION)
     supplied = {
         "strategy_id": strategy_id,
         "params": copy.deepcopy(raw.get("params", raw.get("params_frozen", {}))),
@@ -170,6 +175,9 @@ def materialize_2x2_execution_spec(candidate: Mapping[str, Any]) -> dict[str, An
         raise ValueError("2x2 candidate is missing position_budget")
     budget = copy.deepcopy(dict(budget))
     budget["leverage"] = selected.leverage
+    from strategy_signals import leverage_convention_for
+
+    budget["leverage_convention"] = leverage_convention_for(selected.leverage)
     materialized["position_budget"] = budget
     materialized["execution_variant"] = _experimental_execution_variant()
     materialized["signal_rule_hash"] = signal_hash

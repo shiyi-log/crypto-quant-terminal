@@ -11,14 +11,16 @@
     "causality": "所有信号只能使用【截至当根已收盘】的数据。滚动基准必须 shift(1) 之后再 rolling；禁止全样本分位、禁止未来函数。",
     "fill_model": "信号在 D 根收盘成立，成交在 D+1 根开盘。跳空时按 D+1 实际开盘价成交，禁止回填目标价。",
     "cost_model": {
-      "taker_fee_per_side": 0.0005,
+      "fee_model_version": "binance-demo-commission-20261012-v1",
+      "taker_fee_per_side": 0.0004,
       "maker_fee_per_side": 0.0002,
       "slippage": "unknown",
       "funding": "unknown",
       "note": "滑点与资金费未知时不宣称净收益；资金费可正可负，0 不是上界。",
       "applied_fee_per_side": 0.0002,
       "applied_round_trip": 0.0004,
-      "fee_source": "实测主交易（Freqtrade）成交记录：fee_open=0.0002，且 order_types={entry:limit,exit:limit,stoploss:limit} → maker 费率",
+      "fee_source": "Binance Demo 账户签名 commissionRate 查询（BTC/ETH/TRX maker=0.0002、taker=0.0004）及 manual_smoke_20261012_035400 的10笔真实成交回报；taker佣金/名义价值=0.0004，commissionAsset=USDT，is_maker=false",
+      "maker_fee_evidence_limit": "0.0002来自账户费率报价，尚无maker成交验证",
       "correction": {
         "date": "2026-10-11",
         "caught_by": "用户质疑「手续费应该没这么高」",
@@ -26,7 +28,17 @@
         "truth": "真实往返 0.040%（maker 0.02%/边），实测 5 笔全部为 0.0200%",
         "why": "主交易用【限价单】，Freqtrade get_fee 默认 taker_or_maker='maker'，故按 maker 计费；我误按 taker 假设",
         "impact": "成本高估 2.5 倍。用 0.04% 重算，最优止损止盈组合由【净 −1.58/笔】转为【净 +2.92/笔】——符号翻转",
-        "added_caveat": "maker 费率要求限价单成交。当前 next-open 代理成交假设【必定成交】，配 maker 费率偏乐观；若要严谨，必须建模限价单未成交风险（或改用 taker 费率作为保守边界）"
+        "added_caveat": "maker 费率要求限价单成交。当前 next-open 代理成交假设【必定成交】，配 maker 费率偏乐观；若要严谨，必须建模限价单未成交风险（或改用 taker 费率作为保守边界）",
+        "superseded_by": "2026-10-12 Binance Demo account commission evidence below"
+      },
+      "demo_alignment_20261012": {
+        "status": "current fee schedule; legacy frozen accounts are not migrated",
+        "maker_per_side": 0.0002,
+        "taker_per_side": 0.0004,
+        "round_trip": {"maker": 0.0004, "taker": 0.0008},
+        "evidence": "Signed Binance Demo commissionRate account query for BTC/ETH/TRX plus 10 actual taker fills in USDT; exact observed taker rate 0.0400% per side",
+        "maker_limit": "Maker is quoted at 0.0200% per side; no actual maker fill has verified it",
+        "execution_limit": "The next-open proxy assumes fills and does not model limit-order non-fill risk or maker queue position"
       }
     },
     "pnl_separation": "已平仓收益 / 浮盈 / 未成熟标签 三类必须分开；未成熟结果绝不进胜率与期望。",
@@ -88,7 +100,7 @@
         "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
       },
       "hypothesis_status": "hypothesis",
-      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "evaluation": "毛优势 > 往返成本（Binance Demo taker 0.04%/边，往返 0.08%；maker 报价 0.02%/边、往返 0.04%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
       "btc_eth_priority": {
         "tier1": [
           "BTC/USDT:USDT",
@@ -192,7 +204,7 @@
         "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
       },
       "hypothesis_status": "hypothesis",
-      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "evaluation": "毛优势 > 往返成本（Binance Demo taker 0.04%/边，往返 0.08%；maker 报价 0.02%/边、往返 0.04%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
       "btc_eth_priority": {
         "tier1": [
           "BTC/USDT:USDT",
@@ -299,7 +311,7 @@
         "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
       },
       "hypothesis_status": "hypothesis",
-      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "evaluation": "毛优势 > 往返成本（Binance Demo taker 0.04%/边，往返 0.08%；maker 报价 0.02%/边、往返 0.04%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
       "btc_eth_priority": {
         "tier1": [
           "BTC/USDT:USDT",
@@ -415,7 +427,7 @@
         "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
       },
       "hypothesis_status": "hypothesis",
-      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "evaluation": "毛优势 > 往返成本（Binance Demo taker 0.04%/边，往返 0.08%；maker 报价 0.02%/边、往返 0.04%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
       "btc_eth_priority": {
         "tier1": [
           "BTC/USDT:USDT",
@@ -511,7 +523,7 @@
         "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
       },
       "hypothesis_status": "hypothesis",
-      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "evaluation": "毛优势 > 往返成本（Binance Demo taker 0.04%/边，往返 0.08%；maker 报价 0.02%/边、往返 0.04%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
       "btc_eth_priority": {
         "tier1": [
           "BTC/USDT:USDT",
@@ -617,7 +629,7 @@
         "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
       },
       "hypothesis_status": "hypothesis",
-      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "evaluation": "毛优势 > 往返成本（Binance Demo taker 0.04%/边，往返 0.08%；maker 报价 0.02%/边、往返 0.04%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
       "btc_eth_priority": {
         "tier1": [
           "BTC/USDT:USDT",
@@ -731,7 +743,7 @@
         "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
       },
       "hypothesis_status": "hypothesis",
-      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "evaluation": "毛优势 > 往返成本（Binance Demo taker 0.04%/边，往返 0.08%；maker 报价 0.02%/边、往返 0.04%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
       "btc_eth_priority": {
         "tier1": [
           "BTC/USDT:USDT",
@@ -892,7 +904,7 @@
         "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
       },
       "hypothesis_status": "hypothesis",
-      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "evaluation": "毛优势 > 往返成本（Binance Demo taker 0.04%/边，往返 0.08%；maker 报价 0.02%/边、往返 0.04%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
       "btc_eth_priority": {
         "tier1": [
           "BTC/USDT:USDT",
@@ -991,7 +1003,7 @@
         "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
       },
       "hypothesis_status": "hypothesis",
-      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "evaluation": "毛优势 > 往返成本（Binance Demo taker 0.04%/边，往返 0.08%；maker 报价 0.02%/边、往返 0.04%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
       "btc_eth_priority": {
         "tier1": [
           "BTC/USDT:USDT",
@@ -1092,7 +1104,7 @@
         "leverage_convention": "A：保证金不变，名义 ×100，逐根强平"
       },
       "hypothesis_status": "hypothesis",
-      "evaluation": "毛优势 > 往返成本（taker 0.05%/边往返 0.10%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
+      "evaluation": "毛优势 > 往返成本（Binance Demo taker 0.04%/边，往返 0.08%；maker 报价 0.02%/边、往返 0.04%）；至少 2 个独立时间段成立；与同期同币其他策略做配对比较",
       "btc_eth_priority": {
         "tier1": [
           "BTC/USDT:USDT",
@@ -3076,11 +3088,12 @@
     "timeframe": "逐策略不同：s01~s11=15m · s12/s17/s20/s21=15m · s14/s16/s18=1h · s13/s19=1d",
     "fee_model": {
       "maker_per_side": 0.0002,
-      "taker_per_side": 0.0005,
+      "taker_per_side": 0.0004,
       "applied_per_side": 0.0002,
       "round_trip": 0.0004,
-      "basis": "实测主交易成交记录 fee_open=0.0002，且 order_types 全为 limit → maker 计费",
-      "non_fill_risk": "未建模。限价单可能不成交；maker+必成交偏乐观。建议同时输出 taker 0.05% 敏感性。"
+      "version": "binance-demo-commission-20261012-v1",
+      "basis": "Binance Demo 账户签名 commissionRate 查询（BTC/ETH/TRX一致）及10笔 manual_smoke_20261012_035400 taker成交回报；taker佣金/名义价值=0.0400%/边，USDT计费。maker 0.0200%/边目前仅有账户报价，需实际maker成交验证。",
+      "non_fill_risk": "未建模。next-open代理假设成交，不能证明maker成交或排队成交率；另列Demo taker 0.04%/边（往返0.08%）作为成交语义敏感性。"
     },
     "risk_cap": {
       "max_loss_per_trade_usdt": 50.0,

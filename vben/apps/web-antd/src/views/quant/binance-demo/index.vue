@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import type { DemoEvidence, DemoFill, DemoOrder, DemoRecord, DemoStatus } from '#/api/binance-demo';
+import type { DemoEvidence, DemoFill, DemoOrder, DemoRecord, DemoSession, DemoStatus } from '#/api/binance-demo';
 
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 
@@ -8,10 +8,10 @@ import { Alert, Button, Card, Descriptions, Empty, Form, Input, message, Popconf
 import {
   checkBinanceDemoConnection, getBinanceDemoAccount, getBinanceDemoComparisons, getBinanceDemoEvidence,
   getBinanceDemoFills, getBinanceDemoOrders, getBinanceDemoPositions,
-  getBinanceDemoStatus, saveBinanceDemoCredentials, startBinanceDemo, stopBinanceDemo,
+  getBinanceDemoSessions, getBinanceDemoStatus, saveBinanceDemoCredentials, startBinanceDemo, stopBinanceDemo, switchBinanceDemo,
 } from '#/api/binance-demo';
 
-import { accountLabel, canStartDemo, comparisonObservation, decimalText, demoError, demoState, exchangeTime, fillSide, isSubmissionUnknown, makerText, orderRecordStatus, quotedRateText, submitCredentials, unfilledRatio, valueText } from './display';
+import { accountLabel, canStartDemo, canSwitchDemo, comparisonObservation, decimalText, demoError, demoReadSession, demoSessionLabel, demoState, exchangeTime, fillSide, isSubmissionUnknown, makerText, orderRecordStatus, pinDemoSessions, quotedRateText, selectedDemoAccount, submitCredentials, unfilledRatio, valueText } from './display';
 
 const status = ref<DemoStatus | null>(null);
 const evidence = ref<DemoEvidence | null>(null);
@@ -20,6 +20,10 @@ const fills = ref<DemoFill[]>([]);
 const positions = ref<DemoRecord[]>([]);
 const balances = ref<DemoRecord[]>([]);
 const comparisons = ref<DemoRecord[]>([]);
+const sessions = ref<DemoSession[]>([]);
+const selectedRecordSession = ref('');
+const loadedRecordSession = ref('');
+const loadedCurrentSession = ref('');
 const credentials = reactive({ apiKey: '', secret: '' });
 const selectedAccount = ref('');
 const activeTab = ref('orders');
@@ -28,6 +32,8 @@ const action = ref('');
 const error = ref('');
 const recordError = ref('');
 const evidenceError = ref('');
+const sessionError = ref('');
+const switchError = ref('');
 const updatedAt = ref<number | null>(null);
 let timer: ReturnType<typeof setInterval> | undefined;
 let controller: AbortController | undefined;
@@ -42,6 +48,22 @@ const accounts = computed(() => (status.value?.accounts ?? []).map((account) => 
 })));
 const selected = computed(() => status.value?.accounts?.find((account) => account.accountId === selectedAccount.value));
 const startAllowed = computed(() => canStartDemo(status.value, selectedAccount.value) && !running.value);
+const switchAllowed = computed(() => canSwitchDemo(status.value, selectedAccount.value));
+const switchTargetSelected = computed(() => Boolean(status.value?.runner?.selectedAccountId && status.value.runner.selectedAccountId !== selectedAccount.value));
+const sessionOptions = computed(() => {
+  const active = sessions.value.find((session) => session.active);
+  return [
+    { label: active ? demoSessionLabel(active, status.value?.accounts ?? []) : '当前会话', value: '' },
+    ...sessions.value.filter((session) => !session.active).map((session) => ({
+      label: demoSessionLabel(session, status.value?.accounts ?? []), value: session.virtualAccountKey,
+    })),
+  ];
+});
+const historicalRecords = computed(() => Boolean(loadedRecordSession.value && loadedRecordSession.value !== loadedCurrentSession.value));
+const recordSessionLabel = computed(() => {
+  const loaded = sessions.value.find((session) => session.virtualAccountKey === loadedRecordSession.value);
+  return loaded ? demoSessionLabel(loaded, status.value?.accounts ?? []) : historicalRecords.value ? '所选历史会话' : '当前会话';
+});
 const metrics = computed(() => status.value?.metrics ?? {});
 const feeEvidence = computed(() => evidence.value?.questions?.fees);
 const secondsEvidence = computed(() => evidence.value?.questions?.secondsProfit);
@@ -55,12 +77,12 @@ const feeQuotes = computed(() => status.value?.lastCheck?.commissionRateSource =
   ? status.value.lastCheck.commissionRates ?? [] : []);
 const comparisonRows = computed(() => comparisons.value.map(comparisonObservation));
 const roundTrips = computed(() => {
+  if (historicalRecords.value) return [];
   const rows = status.value?.runner?.round_trips;
   return Array.isArray(rows) ? rows.filter((row): row is DemoRecord => Boolean(row) && typeof row === 'object') : [];
 });
 const actualFees = computed(() => {
-  const rows = metrics.value.actual_commission_by_asset;
-  return Array.isArray(rows) ? rows.filter((row): row is DemoRecord => Boolean(row) && typeof row === 'object') : [];
+  return feeEvidence.value?.chargedByAsset ?? [];
 });
 const riskAlert = computed(() => {
   const value = status.value?.runner?.risk_alert;
@@ -186,24 +208,43 @@ async function refresh() {
   controller = new AbortController();
   const requestSequence = ++sequence;
   const signal = controller.signal;
+  const recordCandidate = selectedRecordSession.value;
   loading.value = true;
+  let overview: DemoStatus;
+  try {
+    overview = await getBinanceDemoStatus(signal);
+  } catch (reason) {
+    if (requestSequence !== sequence) return;
+    status.value = null;
+    orders.value = [];
+    fills.value = [];
+    positions.value = [];
+    balances.value = [];
+    comparisons.value = [];
+    evidence.value = null;
+    sessions.value = [];
+    loadedRecordSession.value = '';
+    loadedCurrentSession.value = '';
+    error.value = demoError(reason);
+    recordError.value = '';
+    evidenceError.value = '';
+    sessionError.value = '';
+    updatedAt.value = null;
+    loading.value = false;
+    return;
+  }
+  if (requestSequence !== sequence) return;
+  const recordSession = demoReadSession(overview, recordCandidate);
   const results = await Promise.allSettled([
-    getBinanceDemoStatus(signal), getBinanceDemoOrders(signal), getBinanceDemoFills(signal),
-    getBinanceDemoPositions(signal), getBinanceDemoAccount(signal), getBinanceDemoComparisons(signal),
-    getBinanceDemoEvidence(signal),
+    getBinanceDemoOrders(signal, recordSession), getBinanceDemoFills(signal, recordSession),
+    getBinanceDemoPositions(signal), getBinanceDemoAccount(signal), getBinanceDemoComparisons(signal, recordSession),
+    getBinanceDemoEvidence(signal, recordSession), getBinanceDemoSessions(signal),
   ]);
   if (requestSequence !== sequence) return;
-  const [overview, orderResult, fillResult, positionResult, accountResult, comparisonResult, evidenceResult] = results;
-  if (overview?.status === 'fulfilled') {
-    status.value = overview.value;
-    if ((!selectedAccount.value || overview.value.runner?.accountLocked || overview.value.runner?.workerRunning) && overview.value.runner?.selectedAccountId) {
-      selectedAccount.value = overview.value.runner.selectedAccountId;
-    }
-    error.value = '';
-  } else {
-    status.value = null;
-    error.value = demoError(overview?.status === 'rejected' ? overview.reason : null);
-  }
+  const [orderResult, fillResult, positionResult, accountResult, comparisonResult, evidenceResult, sessionResult] = results;
+  status.value = overview;
+  selectedAccount.value = selectedDemoAccount(overview, selectedAccount.value);
+  error.value = '';
   orders.value = orderResult?.status === 'fulfilled' ? orderResult.value.items : [];
   fills.value = fillResult?.status === 'fulfilled' ? fillResult.value.items : [];
   positions.value = positionResult?.status === 'fulfilled' ? positionResult.value.items : [];
@@ -211,20 +252,32 @@ async function refresh() {
   comparisons.value = comparisonResult?.status === 'fulfilled' ? comparisonResult.value.items : [];
   evidence.value = evidenceResult?.status === 'fulfilled' ? evidenceResult.value : null;
   evidenceError.value = evidenceResult?.status === 'rejected' ? `证据读取失败：${demoError(evidenceResult.reason)}` : '';
-  const failed = results.slice(1, 6).find((result) => result.status === 'rejected');
+  sessions.value = sessionResult?.status === 'fulfilled' ? pinDemoSessions(overview, sessionResult.value.items) : [];
+  loadedRecordSession.value = recordSession ?? '';
+  loadedCurrentSession.value = overview.runner.virtualAccountKey ?? '';
+  sessionError.value = sessionResult?.status === 'rejected' && status.value?.switchSupported
+    ? `历史会话读取失败：${demoError(sessionResult.reason)}` : '';
+  const failed = results.slice(0, 5).find((result) => result.status === 'rejected');
   recordError.value = failed?.status === 'rejected' ? `交易记录读取失败：${demoError(failed.reason)}` : '';
   updatedAt.value = Date.now();
   loading.value = false;
 }
 
 async function runAction(name: string, work: () => Promise<unknown>, success: string) {
+  controller?.abort();
+  ++sequence;
+  loading.value = false;
   action.value = name;
+  switchError.value = '';
   try {
     await work();
     message.success(success);
     await refresh();
   } catch (reason) {
-    message.error(demoError(reason));
+    const detail = demoError(reason);
+    message.error(detail);
+    if (name === 'switch') switchError.value = detail;
+    await refresh();
   } finally {
     action.value = '';
   }
@@ -246,6 +299,15 @@ function start() {
 
 function stop() {
   return runAction('stop', stopBinanceDemo, '已提交暂停新开仓请求，已有仓位继续风险保护');
+}
+
+function switchStrategy() {
+  if (!switchAllowed.value) return;
+  const accountId = selectedAccount.value;
+  return runAction('switch', async () => {
+    await switchBinanceDemo(accountId);
+    selectedRecordSession.value = '';
+  }, '策略已切换，旧记录已保留；请点击“手动开始 Demo”运行新策略');
 }
 
 onMounted(() => {
@@ -271,7 +333,7 @@ onUnmounted(() => {
         </div>
         <p class="mt-1 text-sm text-muted-foreground">官方模拟盘 · 实际订单与成交回报 · 内部模拟对照</p>
       </div>
-      <Button :loading="loading" @click="refresh">刷新记录</Button>
+      <Button :loading="loading" :disabled="Boolean(action)" @click="refresh">刷新记录</Button>
     </div>
 
     <Alert v-if="error" class="mb-3" show-icon type="error" :message="error" />
@@ -306,7 +368,7 @@ onUnmounted(() => {
             <a href="https://demo.binance.com/en/my/settings/api-management" target="_blank" rel="noopener noreferrer" class="text-xs">创建 Demo 密钥 ↗</a>
           </div>
         </Form>
-        <p class="mt-3 text-xs leading-5 text-muted-foreground">密钥加密保存在数据库，页面不回显完整密钥；提交后清空输入。Demo 账户绑定期间锁定凭据和策略，暂停新开仓后仍继续保护已有仓位。</p>
+        <p class="mt-3 text-xs leading-5 text-muted-foreground">密钥加密保存在数据库，页面不回显完整密钥；提交后清空输入。运行期间锁定凭据，暂停新开仓后仍继续保护已有仓位。</p>
         <Alert v-if="credentialsConfigured && !credentialsReadable" class="mt-3" show-icon type="error" message="已保存配置暂不可解密，请检查本机加密服务；当前不能检查连接或启动交易。" />
       </Card>
 
@@ -317,8 +379,10 @@ onUnmounted(() => {
           <Descriptions.Item label="最近只读检查">{{ status?.lastCheck?.connected === true ? '连通' : status?.lastCheck?.connected === false ? '未连通' : '尚未检查' }} · {{ exchangeTime(status?.lastCheck?.checkedAt) }}</Descriptions.Item>
           <Descriptions.Item label="运行账户">{{ status?.runner?.selectedAccountId || '尚未选择' }}</Descriptions.Item>
         </Descriptions>
-        <Select v-model:value="selectedAccount" :options="accounts" :disabled="accountLocked || Boolean(action)" show-search option-filter-prop="label" placeholder="选择一个策略身份（规则与执行参数冻结）" class="w-full" />
-        <p class="mt-2 text-xs leading-5 text-muted-foreground">一次绑定一个策略账户，内部模拟按同一信号做对照。Demo 共享净头寸，多个纸面账户不能视作独立交易钱包。</p>
+        <Select v-model:value="selectedAccount" :options="accounts" :disabled="!status || Boolean(action)" show-search option-filter-prop="label" placeholder="选择一个策略身份（规则与执行参数冻结）" class="w-full" />
+        <p class="mt-2 text-xs leading-5 text-muted-foreground">一次运行一个策略。选择目标后点击“暂停并切换策略”；确认空仓、无挂单且成交对账完成后切换，旧记录保留，切换后需再次手动开始。</p>
+        <Alert v-if="status?.runner?.selectedAccountId && !status.switchSupported" class="mt-3" show-icon type="info" message="策略切换功能待服务更新，当前可选择目标查看规则。" />
+        <div v-if="switchTargetSelected" class="mt-2 text-xs leading-5 text-muted-foreground">已选择切换目标；当前仍运行上方“运行账户”中的策略。</div>
         <Alert v-if="selected && !selected.eligible" class="mt-3" show-icon type="warning" :message="selected.blockedReason || '该策略暂不满足 Demo 执行条件'" />
         <div v-if="selected" class="mt-3 identity-details text-xs text-muted-foreground">
           <div>规则标识：{{ selected.ruleHash || '未知' }}</div>
@@ -329,15 +393,21 @@ onUnmounted(() => {
             <Button type="primary" :loading="action === 'start'" :disabled="!startAllowed || Boolean(action && action !== 'start')">手动开始 Demo</Button>
           </Popconfirm>
           <Button :loading="action === 'stop'" :disabled="!running || Boolean(action && action !== 'stop')" @click="stop">暂停新开仓</Button>
+          <Popconfirm v-if="switchTargetSelected" title="暂停并切换到所选策略？" description="先暂停新开仓；只有空仓、无挂单且成交已完整对账才会切换。不会自动平仓，旧记录保留，新策略保持暂停。" ok-text="暂停并切换" cancel-text="取消" :disabled="!switchAllowed || Boolean(action)" @confirm="switchStrategy">
+            <Button :loading="action === 'switch'" :disabled="!switchAllowed || Boolean(action && action !== 'switch')">暂停并切换策略</Button>
+          </Popconfirm>
         </div>
         <div class="mt-2 text-xs leading-5 text-muted-foreground">暂停会停止新开仓并撤销未成交入口单；已有仓位继续执行风险保护，仓位变化可在下方查看。</div>
+        <Alert v-if="switchError" class="mt-3" show-icon type="warning" message="策略切换尚未确认完成" :description="switchError" />
+        <Alert v-if="status?.runner?.switchPersistenceUnresolved" class="mt-3" show-icon type="error" message="切换结果待核对，开始与切换操作已暂停。" description="旧会话继续风险保护，请刷新核对当前运行账户与会话记录。" />
         <Alert v-if="status?.runner?.lastError" class="mt-3" show-icon type="error" :message="status.runner.lastError" />
         <Alert v-if="riskAlert" class="mt-3" show-icon type="error" :message="riskAlert" />
         <Alert v-if="ownershipConflicts" class="mt-3" show-icon type="error" message="仓位或订单归属未对账，新开仓已阻断" :description="ownershipConflicts" />
       </Card>
     </div>
 
-    <div class="my-4 grid grid-cols-2 gap-3 xl:grid-cols-6">
+    <div class="mt-4 text-xs text-muted-foreground">当前会话概况</div>
+    <div class="mb-4 mt-2 grid grid-cols-2 gap-3 xl:grid-cols-6">
       <div class="metric"><div class="metric-label">已记录订单</div><div class="metric-value">{{ metric('orderCount') }}</div></div>
       <div class="metric"><div class="metric-label">实际成交回报</div><div class="metric-value">{{ metric('fillCount') }}</div></div>
       <div class="metric"><div class="metric-label">终结入口单未成交率</div><div class="metric-value">{{ unfilledRatio(metrics.unfilledEntryRatio) }}</div><div class="text-xs text-muted-foreground">{{ metric('unfilledEntryCount') }} / {{ metric('terminalEntryCount') }} 已终结入口单</div></div>
@@ -346,8 +416,15 @@ onUnmounted(() => {
       <div class="metric"><div class="metric-label">订单请求延迟中位（ms）</div><div class="metric-value">{{ metric('medianLatencyMs') }}</div><div class="text-xs text-muted-foreground">包含提交、查询及撤单请求</div></div>
     </div>
 
-    <Card :bordered="false" title="三个验证目标的当前证据" class="mb-4">
+    <Card :bordered="false" title="查看记录" class="mb-4">
+      <Select v-model:value="selectedRecordSession" :options="sessionOptions" :disabled="Boolean(action) || !status?.switchSupported" show-search option-filter-prop="label" class="w-full" @change="refresh" />
+      <div class="mt-2 text-xs leading-5 text-muted-foreground">订单、成交、对照和证据展示所选会话；持仓、余额和账户报价始终显示当前 Demo 账户。</div>
+      <Alert v-if="sessionError" class="mt-3" show-icon type="error" :message="sessionError" />
+    </Card>
+
+    <Card :bordered="false" title="三个验证目标的会话证据" class="mb-4">
       <template #extra><span class="text-xs text-muted-foreground">全量账本快照 {{ exchangeTime(evidence?.snapshotAt) }}</span></template>
+      <div class="mb-3 text-xs text-muted-foreground">{{ recordSessionLabel }}</div>
       <Alert v-if="evidenceError" class="mb-3" show-icon type="error" :message="evidenceError" />
       <div v-if="evidence" class="grid grid-cols-1 gap-3 lg:grid-cols-3">
         <div class="evidence-card">
@@ -377,6 +454,7 @@ onUnmounted(() => {
 
     <Card :bordered="false" title="Demo 交易记录">
       <template #extra><span class="text-xs text-muted-foreground">{{ exchangeTime(updatedAt) }} · 最近 100 条</span></template>
+      <div class="mb-3 text-xs text-muted-foreground">{{ recordSessionLabel }}</div>
       <Alert v-if="recordError" class="mb-3" show-icon type="error" :message="recordError" />
       <Tabs v-model:active-key="activeTab">
         <Tabs.TabPane key="orders" tab="订单">
@@ -403,7 +481,7 @@ onUnmounted(() => {
             <template #emptyText><Empty description="尚无实际成交回报，费用与净收益暂不可评估" /></template>
           </Table>
         </Tabs.TabPane>
-        <Tabs.TabPane key="positions" tab="持仓快照">
+        <Tabs.TabPane key="positions" tab="当前持仓快照">
           <Table :columns="positionColumns" :data-source="positions" :row-key="rowKey" :loading="loading" :scroll="{ x: 1550 }" size="small" :pagination="{ pageSize: 10 }">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'updateTime'">{{ exchangeTime(record.updateTime) }}</template>
@@ -412,7 +490,7 @@ onUnmounted(() => {
             <template #emptyText><Empty description="尚无持仓快照" /></template>
           </Table>
         </Tabs.TabPane>
-        <Tabs.TabPane key="account" tab="账户快照">
+        <Tabs.TabPane key="account" tab="当前账户快照">
           <Table :columns="accountColumns" :data-source="balances" :row-key="rowKey" :loading="loading" :scroll="{ x: 1100 }" size="small" :pagination="{ pageSize: 10 }">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'updateTime'">{{ exchangeTime(record.updateTime) }}</template>
@@ -433,7 +511,7 @@ onUnmounted(() => {
         </Tabs.TabPane>
         <Tabs.TabPane key="net-pnl" tab="实收费用与净损益">
           <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <span class="font-medium">账户查询费率</span>
+            <span class="font-medium">当前账户查询费率</span>
             <span class="text-xs text-muted-foreground">查询时间 {{ exchangeTime(status?.lastCheck?.commissionRateObservedAt) }}</span>
           </div>
           <div class="mb-3 text-xs leading-5 text-muted-foreground">报价来自 Demo 已签名账户费率查询，仅表示查询时的 Maker/Taker 费率。报价费率不等于实际扣费，也不能验证实盘费率；实际金额仍以每条成交的 commission 与 commissionAsset 为准。</div>
@@ -456,10 +534,11 @@ onUnmounted(() => {
           </Table>
           <div class="mb-3 text-xs leading-5 text-muted-foreground">净交易损益来自已平仓的 Demo 实际成交回报，扣除已确认 USDT 手续费，尚未包含资金费。费用缺失或手续费资产无法换算为 USDT 时净损益显示未知；不据此宣称策略或秒级交易已盈利。下方按资产汇总已回报手续费，未回报部分不补零。</div>
           <div class="mb-3 flex flex-wrap gap-2">
-            <Tag v-for="(fee, index) in actualFees" :key="index">已回报手续费：{{ decimalText(fee.commission) }} {{ fee.commission_asset || '资产未知' }} · {{ valueText(fee.fill_count) }} 笔</Tag>
+            <Tag v-for="(fee, index) in actualFees" :key="index">已回报手续费：{{ decimalText(fee.knownCommission) }} {{ fee.asset || '资产未知' }}</Tag>
             <span v-if="!actualFees.length" class="text-xs text-muted-foreground">暂无实收手续费汇总</span>
           </div>
-          <Table :columns="roundTripColumns" :data-source="roundTrips" :row-key="rowKey" :loading="loading" :scroll="{ x: 1500 }" size="small" :pagination="{ pageSize: 10 }">
+          <div v-if="historicalRecords" class="text-xs leading-5 text-muted-foreground">历史会话净损益汇总见上方会话证据，逐笔价格与费用见“成交与手续费”。</div>
+          <Table v-else :columns="roundTripColumns" :data-source="roundTrips" :row-key="rowKey" :loading="loading" :scroll="{ x: 1500 }" size="small" :pagination="{ pageSize: 10 }">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'opened_ms' || column.key === 'closed_ms'">{{ exchangeTime(record[String(column.key)]) }}</template>
               <template v-else-if="column.key === 'actual_commission_by_asset'">{{ feesByAsset(record.actual_commission_by_asset) }}</template>

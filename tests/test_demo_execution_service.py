@@ -178,7 +178,8 @@ class ControllerRecoveryTests(unittest.TestCase):
         self.assertNotIn(Credentials().api_key, saved)
 
     def test_restart_can_only_resume_protection_without_new_entries(self):
-        self.data.put_document(STATE_KEY, {"selectedAccountId": "paper", "entriesEnabled": True})
+        self.data.put_document(STATE_KEY, {"selectedAccountId": "paper", "entriesEnabled": True,
+                                          "virtualAccountKey": "offline_demo"})
         result = self.controller.resume_protection()
         self.created[0].start.assert_called_once_with(entries_enabled=False)
         self.assertFalse(result["entriesEnabled"])
@@ -198,7 +199,7 @@ class ControllerRecoveryTests(unittest.TestCase):
         self.factory.assert_not_called()
 
     def test_unavailable_credentials_recovery_is_redacted_and_retains_selection(self):
-        self.data.put_document(STATE_KEY, {"selectedAccountId": "paper"})
+        self.data.put_document(STATE_KEY, {"selectedAccountId": "paper", "virtualAccountKey": "offline_demo"})
         self.provider.side_effect = ValueError("credential-secret-must-not-be-shown")
         result = self.controller.resume_protection()
         self.assertEqual(result["selectedAccountId"], "paper")

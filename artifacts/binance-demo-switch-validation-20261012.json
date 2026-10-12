@@ -1,0 +1,74 @@
+{
+  "feature": "Binance Demo explicit paused strategy switch with immutable session history",
+  "validatedAtUtc": "2026-10-12T04:05:13.745704+00:00",
+  "baseCommit": "188633dd02c80a03d63b32c066e2f2efae6f545e",
+  "sourceSha256": {
+    "demo_api.py": "46f2f3a5ba67e12b001e5e95d586dfc63921c5f0a06155d33d743fc51105c848",
+    "demo_runner_controller.py": "a8e5bd317b50cc4f1c7aa5de7a22433bf892cc7a11776c9e5c13a35ae9c49acf",
+    "demo_store.py": "27240dbad9986a3288cc6b9fda84d37bbcb52f0cbc9a2dbf43957eae1df8c815",
+    "tests/test_binance_demo_api.py": "1c06a2a8cdbb0c02bc0cf7dedd9967fffcc95514b32105f99b2e33308f0f5c12",
+    "tests/test_demo_controller_handoff.py": "ad5e7d2eeec92812f59369a059d867dd0f9482373592a7cdedc9147be395211a",
+    "tests/test_demo_controller_switch.py": "8937b79543b4a4ebf495cde483c41c72d4b1cde6e12b4e4982ed3c43f968f5e3",
+    "tests/test_demo_execution_service.py": "ff9cf7a8b37ab498cca9a9307d61ae9252a322ca26d289d0016c3a5a798b0c5e",
+    "tests/test_demo_store.py": "67258da130d23efd8c56c91e93b8271188a20e82107cd4941f5b3a3462678b89",
+    "tests/test_demo_switch_integration.py": "255a55ec194795735923959bb0e170196e52eb83a03f17a1e85c58c299f4d30a",
+    "vben/apps/web-antd/src/api/binance-demo.ts": "70b26bcb0a5bdcb414e394dc0507c9fd3006e4d7ba15b6ed7468126dff5c632d",
+    "vben/apps/web-antd/src/api/__tests__/binance-demo.test.ts": "ccab28f401453574f9b51635963ecd4466d389dfd441c70d32f4d7cfc8d6002d",
+    "vben/apps/web-antd/src/views/quant/binance-demo/index.vue": "1ce57c9d065d0254e17ded754bc247c2e0ef7dc65670fc48c8db49b0db4c5018",
+    "vben/apps/web-antd/src/views/quant/binance-demo/display.ts": "e2b8d6dcc063d75fcbbdbb56e106ca588d06e0d46ccabfa7a39bf6fa483a283b",
+    "vben/apps/web-antd/src/views/quant/binance-demo/__tests__/display.test.ts": "b34810b66457af037d2b75938ebb698ebebef595ac54a48326047fd25e91031d"
+  },
+  "backendValidation": {
+    "command": "uv run python -m unittest tests.test_demo_controller_switch tests.test_demo_controller_handoff tests.test_demo_execution_service tests.test_binance_demo_api tests.test_demo_store tests.test_demo_switch_integration tests.test_demo_contract_integration tests.test_demo_evidence -q",
+    "testsRun": 155,
+    "passed": 155,
+    "failed": 0,
+    "skipped": 0,
+    "switchIntegrationTests": 5,
+    "integrationIsolation": "independent quant_test database; unique temporary schemas; offline HTTP ExchangeStub; no production credentials; temporary schemas removed",
+    "coverage": [
+      "completed old round trip and switch to new paused namespace",
+      "active and historical orders, fills, metrics and evidence remain isolated",
+      "restart restores new paused namespace and shared account lock",
+      "missing fills in active or historical namespace block switching",
+      "fresh full-account external position and open order block switching",
+      "pointer commit outcome readback and fail-closed ambiguous outcome",
+      "failed protection worker restart cannot enable new entries",
+      "empty active session can be explicitly read before first strategy start",
+      "credentials cannot change through an empty new session"
+    ]
+  },
+  "frontendValidation": {
+    "vitestPassed": 24,
+    "vueTypecheck": "passed",
+    "buildCommand": "pnpm build:antd",
+    "buildTasksPassed": 11,
+    "recordSourceLabels": "loaded data and labels update in the same batch; all record requests pinned to captured namespace",
+    "oldBackendCompatibility": "switchSupported capability gate disables switching until backend updated"
+  },
+  "ruff": "passed",
+  "gitDiffCheck": "passed",
+  "independentReview": "passed; no remaining blocker in reviewed changes",
+  "deployment": {
+    "staticFrontendDeployed": true,
+    "backendRestarted": false,
+    "chunk": "binance-demo-D15Gwdnv.js",
+    "sha256": "03e0fc9a46c2cc68a94ff793f402f63af34b8b67fc8b93cb10e946e455d6fd68",
+    "servedChunkMatchesBuild": true,
+    "servedIndexMatchesBuild": true,
+    "previousFrontendBackup": "/Users/shiyi/DeepSeek/量化/logs/web-backups/20261012T040438Z-b0542c4f"
+  },
+  "runtimeValidation": {
+    "actualStrategySwitched": false,
+    "backendLoadedNewCode": false,
+    "exchangeRequestsByThisValidation": 0,
+    "pendingAction": "user authorization for targeted auth restart; verify paused recovery and switchSupported afterward",
+    "authorizationConstraint": "Do not restart or stop trading processes without user authorization; prior strategy-lab restart authorization does not include auth"
+  },
+  "behavior": {
+    "automaticRestartAfterSwitch": false,
+    "switchAutomaticallyClosesPositions": false,
+    "sameAccountLockRetainedDuringSwitch": true,
+    "historicalBindingsPreserved": true
+  }
+}

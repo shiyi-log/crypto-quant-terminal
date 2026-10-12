@@ -43,6 +43,7 @@ class HandoffTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.data = Documents()
         self.ledger = Mock()
+        self.ledger.virtual_account_key = "demo_default"
         self.ledger.net_fill_positions.return_value = {}
         self.ledger.pending_orders.return_value = []
         self.ledger.runner_orders.return_value = []

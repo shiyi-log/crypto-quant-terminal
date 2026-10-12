@@ -2,7 +2,7 @@ import type { DemoStatus } from '../../../../api/binance-demo';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { canStartDemo, comparisonObservation, decimalText, demoError, demoState, exchangeTime, feeText, fillSide, makerText, orderRecordStatus, orderStatus, quotedRateText, submitCredentials, unfilledRatio } from '../display';
+import { canStartDemo, canSwitchDemo, comparisonObservation, decimalText, demoError, demoReadSession, demoSessionLabel, demoState, exchangeTime, feeText, fillSide, makerText, orderRecordStatus, orderStatus, pinDemoSessions, quotedRateText, selectedDemoAccount, submitCredentials, unfilledRatio } from '../display';
 
 function status(): DemoStatus {
   return {
@@ -64,6 +64,76 @@ describe('Demo exchange report presentation', () => {
     value.credentials.decryptionAvailable = false;
     expect(canStartDemo(value, 's03_R50_k1.5')).toBe(false);
     expect(demoState(value).label).toBe('配置暂不可读取');
+  });
+
+  it('keeps start bound to the current identity even after the worker yields the account lock', () => {
+    const value = status();
+    value.runner = { state: 'yielded_flat', selectedAccountId: 'old-identity', accountLocked: false, tradingEnabled: false };
+    expect(canStartDemo(value, 's03_R50_k1.5')).toBe(false);
+    value.runner.selectedAccountId = 's03_R50_k1.5';
+    expect(canStartDemo(value, 's03_R50_k1.5')).toBe(true);
+    value.runner.switchPersistenceUnresolved = true;
+    expect(canStartDemo(value, 's03_R50_k1.5')).toBe(false);
+    expect(demoState(value).label).toBe('切换状态待核对');
+  });
+
+  it('allows requesting a different eligible strategy while running but requires the backend switch capability', () => {
+    const value = status();
+    value.runner = { state: 'running', selectedAccountId: 'old-identity', tradingEnabled: true, workerRunning: true, accountLocked: true };
+    expect(canSwitchDemo(value, 's03_R50_k1.5')).toBe(false);
+    value.switchSupported = true;
+    expect(canSwitchDemo(value, 's03_R50_k1.5')).toBe(true);
+    expect(canStartDemo(value, 's03_R50_k1.5')).toBe(false);
+    expect(canSwitchDemo(value, 'old-identity')).toBe(false);
+    expect(canSwitchDemo(value, 'unknown-identity')).toBe(false);
+    value.accounts[0]!.eligible = false;
+    expect(canSwitchDemo(value, 's03_R50_k1.5')).toBe(false);
+    value.accounts[0]!.eligible = true;
+    value.runner.handoffInProgress = true;
+    expect(canSwitchDemo(value, 's03_R50_k1.5')).toBe(false);
+    value.runner.handoffInProgress = false;
+    value.runner.switchPersistenceUnresolved = true;
+    expect(canSwitchDemo(value, 's03_R50_k1.5')).toBe(false);
+    value.runner.switchPersistenceUnresolved = false;
+    value.credentials.decryptionAvailable = false;
+    expect(canSwitchDemo(value, 's03_R50_k1.5')).toBe(false);
+  });
+
+  it('preserves a switch candidate across worker polls and labels historical records without exposing ledger keys', () => {
+    const value = status();
+    value.runner = { state: 'running', selectedAccountId: 'old-identity', workerRunning: true, accountLocked: true };
+    expect(selectedDemoAccount(value, 's03_R50_k1.5')).toBe('s03_R50_k1.5');
+    expect(selectedDemoAccount(value, '')).toBe('old-identity');
+    expect(selectedDemoAccount(value, 'removed-identity')).toBe('old-identity');
+    value.accounts[0]!.description = '均值回归';
+    const label = demoSessionLabel({ virtualAccountKey: 'demo_strategy_private-key', strategyId: 's03_R50_k1.5', forwardBoundaryMs: 1791774000000, active: false }, value.accounts);
+    expect(label).toContain('均值回归');
+    expect(label).toContain(exchangeTime(1791774000000));
+    expect(label).not.toContain('private-key');
+  });
+
+  it('explains switch blockers without claiming a position was closed or a switch succeeded', () => {
+    expect(demoError({ response: { data: { detail: 'demo_account_positions_not_flat' } } })).toContain('不会自动平仓');
+    expect(demoError({ response: { data: { detail: 'demo_owned_fills_unresolved' } } })).toContain('成交数量尚未完全对账');
+    expect(demoError({ response: { data: { detail: 'demo_account_open_orders_unresolved' } } })).toContain('挂单');
+    expect(demoError({ response: { data: { detail: 'demo_switch_persistence_failed' } } })).toContain('旧会话保持暂停并继续保护');
+  });
+
+  it('pins a refresh to its captured active ledger even if the session list observes a later switch', () => {
+    const captured = status();
+    captured.runner.virtualAccountKey = 'demo_default';
+    const laterSessions = [
+      { virtualAccountKey: 'demo_default', strategyId: 'old-strategy', active: false },
+      { virtualAccountKey: 'demo_strategy_new', strategyId: 'new-strategy', active: true },
+    ];
+    expect(demoReadSession(captured, '')).toBe('demo_default');
+    expect(demoReadSession(captured, 'demo_strategy_history')).toBe('demo_strategy_history');
+    expect(pinDemoSessions(captured, laterSessions).map((session) => session.active)).toEqual([true, false]);
+    expect(laterSessions.map((session) => session.active)).toEqual([false, true]);
+    delete captured.runner.virtualAccountKey;
+    expect(demoReadSession(captured, '')).toBeUndefined();
+    expect(demoReadSession(captured, 'demo_strategy_history')).toBe('demo_strategy_history');
+    expect(pinDemoSessions(captured, laterSessions)).toEqual(laterSessions);
   });
 
   it('does not hide reconciliation or protection failures behind an active trading flag', () => {

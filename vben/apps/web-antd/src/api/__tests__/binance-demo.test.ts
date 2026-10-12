@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), requireSession: v
 vi.mock('../freqtrade/client', () => ({ ftClient: { get: mocks.get, post: mocks.post }, unwrap: (value: unknown) => value }));
 vi.mock('../session', () => ({ requireSession: mocks.requireSession }));
 
-import { checkBinanceDemoConnection, getBinanceDemoAccount, getBinanceDemoEvidence, getBinanceDemoFills, getBinanceDemoPositions, getBinanceDemoStatus, saveBinanceDemoCredentials, startBinanceDemo, stopBinanceDemo } from '../binance-demo';
+import { checkBinanceDemoConnection, getBinanceDemoAccount, getBinanceDemoComparisons, getBinanceDemoEvidence, getBinanceDemoFills, getBinanceDemoOrders, getBinanceDemoPositions, getBinanceDemoSessions, getBinanceDemoStatus, saveBinanceDemoCredentials, startBinanceDemo, stopBinanceDemo, switchBinanceDemo } from '../binance-demo';
 
 describe('authenticated Binance Demo API contract', () => {
   beforeEach(() => {
@@ -58,6 +58,38 @@ describe('authenticated Binance Demo API contract', () => {
   it('does not issue network requests without an authenticated session', async () => {
     mocks.requireSession.mockImplementationOnce(() => { throw new Error('请先登录'); });
     await expect(saveBinanceDemoCredentials('key', 'secret')).rejects.toThrow('请先登录');
+    expect(mocks.post).not.toHaveBeenCalled();
+  });
+
+  it('requests a strategy switch separately from start and never automatically enables the new strategy', async () => {
+    await switchBinanceDemo('s05_R50_k1.5');
+    expect(mocks.post.mock.calls).toEqual([
+      ['/locals/binance-demo/switch', { accountId: 's05_R50_k1.5' }],
+    ]);
+    expect(mocks.requireSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads historical session records without changing the live account or sending mutations', async () => {
+    const session = 'demo_strategy_1234567890';
+    const history = { environment: 'binance_demo', endpoint: 'demo-fapi.binance.com',
+      scope: 'selected_candle_strategy_execution_only', items: [] };
+    mocks.get.mockResolvedValue(history);
+    await getBinanceDemoOrders(undefined, session);
+    await getBinanceDemoFills(undefined, session);
+    await getBinanceDemoComparisons(undefined, session);
+    await getBinanceDemoEvidence(undefined, session);
+    await getBinanceDemoSessions();
+    await getBinanceDemoAccount();
+    await getBinanceDemoPositions();
+    expect(mocks.get.mock.calls).toEqual([
+      ['/locals/binance-demo/orders', { params: { limit: 100, session }, signal: undefined }],
+      ['/locals/binance-demo/fills', { params: { limit: 100, session }, signal: undefined }],
+      ['/locals/binance-demo/comparisons', { params: { limit: 100, session }, signal: undefined }],
+      ['/locals/binance-demo/evidence', { params: { session }, signal: undefined }],
+      ['/locals/binance-demo/sessions', { signal: undefined }],
+      ['/locals/binance-demo/account', { signal: undefined }],
+      ['/locals/binance-demo/positions', { signal: undefined }],
+    ]);
     expect(mocks.post).not.toHaveBeenCalled();
   });
 

@@ -1,7 +1,8 @@
 """Local authenticated HTTP projection for the independent Demo ledger.
 
 GETs never contact the exchange. Only an explicit /check action performs a
-read-only signed request; /start is the sole entry-trading action. The HTTP
+read-only signed request; /switch checks the account before changing a paused
+session. /start is the sole entry-trading action. The HTTP
 guard runs before body reads, DB access, or controller construction.
 """
 
@@ -21,9 +22,11 @@ PREFIX = "/api/locals/binance-demo"
 MAX_BODY_BYTES = 4096
 MAX_QUERY_BYTES = 512
 _ACCOUNT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,179}\Z")
+_SESSION_KEY = re.compile(r"(?:demo_default|demo_strategy_[0-9a-f]{32})\Z")
 _GET_PATHS = {"", "/status", "/accounts", "/orders", "/fills", "/positions",
-              "/account", "/comparisons", "/evidence"}
-_POST_PATHS = {"/credentials", "/check", "/start", "/stop", "/yield-flat"}
+              "/account", "/comparisons", "/evidence", "/sessions"}
+_POST_PATHS = {"/credentials", "/check", "/start", "/stop", "/yield-flat", "/switch"}
+_HISTORY_PATHS = {"/orders", "/fills", "/comparisons", "/evidence"}
 LIMITATIONS = [
     "币安 Demo 的订单簿、定价和执行可能与实盘不同，不能据此自动上线。",
     "手续费以实际成交 commission 为准，缺失字段保留 unknown。",
@@ -126,16 +129,18 @@ def handle_demo_request(handler, *, method: str, verify_token, allowed_origins,
                                    else "json_object_required", 413 if length > MAX_BODY_BYTES else 400)
             body = _strict_json(handler._read_body())
             expected = ({"apiKey", "secret"} if suffix == "/credentials" else
-                        {"accountId"} if suffix == "/start" else set())
+                        {"accountId"} if suffix in {"/start", "/switch"} else set())
             if set(body) != expected:
                 raise DemoApiError("unexpected_or_missing_request_fields")
             if suffix == "/credentials":
                 if not isinstance(body["apiKey"], str) or not isinstance(body["secret"], str):
                     raise DemoApiError("invalid_demo_credentials")
-            if suffix == "/start":
+            if suffix in {"/start", "/switch"}:
                 _identity(body["accountId"])
             return handler._send(200, api_provider().post(suffix, body, actor=username))
-        allowed = {"limit"} if suffix in {"/orders", "/fills", "/comparisons"} else set()
+        allowed = {"limit"} if suffix in {"/orders", "/fills", "/comparisons", "/sessions"} else set()
+        if suffix in _HISTORY_PATHS:
+            allowed.add("session")
         if set(query) - allowed or any(len(values) != 1 for values in query.values()):
             raise DemoApiError("unexpected_query_parameter")
         limit = 100
@@ -146,7 +151,13 @@ def handle_demo_request(handler, *, method: str, verify_token, allowed_origins,
             limit = int(raw_limit)
         if handler.headers.get("Content-Length", "0") not in {"", "0"}:
             raise DemoApiError("get_request_body_not_supported")
-        return handler._send(200, api_provider().get(suffix, limit=limit))
+        options = {"limit": limit}
+        if "session" in query:
+            session = query["session"][0]
+            if not _SESSION_KEY.fullmatch(session):
+                raise DemoApiError("invalid_demo_session")
+            options["session"] = session
+        return handler._send(200, api_provider().get(suffix, **options))
     except DemoApiError as exc:
         return handler._send(exc.status, {"detail": exc.code, "errorCode": exc.code})
     except DemoCredentialError as exc:
@@ -181,15 +192,26 @@ def list_paper_accounts(data_store) -> list[dict]:
 
 class DemoApi:
     def __init__(self, data_store, credential_store, demo_store, controller, *,
-                 adapter_factory=None, account_provider=None):
+                 adapter_factory=None, account_provider=None, ledger_provider=None,
+                 session_factory=None):
         self.data_store = data_store
         self.credentials = credential_store
-        self.demo_store = demo_store
+        self._demo_store = demo_store
+        self._ledger_provider = ledger_provider
+        if session_factory is None:
+            from demo_store import DemoStore
+            def session_factory(key):
+                return DemoStore(data_store, virtual_account_key=key)
+        self.session_factory = session_factory
         self.controller = controller
         self.adapter_factory = adapter_factory
         self.account_provider = account_provider or (lambda: list_paper_accounts(data_store))
         self._check_lock = threading.Lock()
         self._mutation_lock = threading.RLock()
+
+    @property
+    def demo_store(self):
+        return self._ledger_provider() if self._ledger_provider else self._demo_store
 
     def _runner_status(self):
         status = self.controller.status()
@@ -224,32 +246,51 @@ class DemoApi:
                 "rejectedOrderCount": counts.get("rejected", 0),
                 "medianLatencyMs": native.get("median_latency_ms")}
 
-    def get(self, suffix: str, *, limit=100):
+    def get(self, suffix: str, *, limit=100, session=None):
+        # A GET sees one active pointer, never half of a strategy switch.
+        with self._mutation_lock:
+            return self._get(suffix, limit=limit, session=session)
+
+    def _get(self, suffix: str, *, limit=100, session=None):
+        ledger = self.demo_store
+        if session is not None:
+            if suffix not in _HISTORY_PATHS or not _SESSION_KEY.fullmatch(session):
+                raise DemoApiError("invalid_demo_session")
+            if session != ledger.virtual_account_key:
+                known = ledger.list_strategy_sessions()
+                if not any(item["virtualAccountKey"] == session for item in known):
+                    raise DemoApiError("demo_session_not_found", 404)
+                ledger = self.session_factory(session)
         if suffix in {"", "/status"}:
             return {"environment": "binance_demo", "endpoint": "demo-fapi.binance.com",
                     "credentials": self.credentials.status(), "runner": self._runner_status(),
                     "accounts": self.account_provider(), "metrics": self._metrics(),
                     "lastCheck": self.data_store.get_document("binance_demo_connection_check.json"),
-                    "limitations": LIMITATIONS}
+                    "limitations": LIMITATIONS,
+                    "switchSupported": callable(getattr(self.controller, "switch", None))}
+        if suffix == "/sessions":
+            items = [{**item, "active": item["virtualAccountKey"] == ledger.virtual_account_key}
+                     for item in ledger.list_strategy_sessions(limit=limit)]
+            return {"environment": "binance_demo", "items": items, "limit": limit}
         if suffix == "/evidence":
             from demo_evidence import read_demo_evidence
             return read_demo_evidence(self.data_store,
-                                      virtual_account_key=self.demo_store.virtual_account_key)
+                                      virtual_account_key=ledger.virtual_account_key)
         if suffix == "/accounts":
             items = self.account_provider()
         elif suffix == "/orders":
             from demo_store import binance_order
             items = [binance_order(row) for row in
-                     self.demo_store.list_orders(limit=limit)]
+                     ledger.list_orders(limit=limit)]
         elif suffix == "/fills":
             from demo_store import binance_fill
             items = [binance_fill(row) for row in
-                     self.demo_store.list_fills(limit=limit)]
+                     ledger.list_fills(limit=limit)]
         elif suffix == "/comparisons":
-            items = self.demo_store.list_comparisons(limit=limit)
+            items = ledger.list_comparisons(limit=limit)
         elif suffix in {"/positions", "/account"}:
-            snapshot = (self.demo_store.get_latest_position_snapshot() if suffix == "/positions"
-                        else self.demo_store.get_latest_account_snapshot())
+            snapshot = (ledger.get_latest_position_snapshot() if suffix == "/positions"
+                        else ledger.get_latest_account_snapshot())
             if snapshot is None:
                 items = []
             else:
@@ -283,26 +324,39 @@ class DemoApi:
             if existing["configured"]:
                 import hashlib
                 proposed_fingerprint = hashlib.sha256(body["apiKey"].encode()).hexdigest()[:16]
+                from demo_runner_controller import STATE_KEY
+                controller_state = self.data_store.get_document(STATE_KEY, {}) or {}
+                saved_fingerprint = controller_state.get("credentialFingerprint")
+                if saved_fingerprint and proposed_fingerprint != saved_fingerprint:
+                    raise DemoApiError("demo_ledger_bound_to_existing_api_identity", 409)
                 if (proposed_fingerprint != existing["fingerprint"]
                         and (self.demo_store.list_orders(limit=1)
                              or self.demo_store.get_latest_account_snapshot() is not None
                              or self.demo_store.get_latest_position_snapshot() is not None
                              or self.demo_store.get_binding() is not None)):
-                    # This MVP has one fixed ledger namespace. A different key
-                    # may belong to another Binance account; never mix ledgers.
+                    # A different key may belong to another Binance account;
+                    # immutable session history cannot move to that account.
                     raise DemoApiError("demo_ledger_bound_to_existing_api_identity", 409)
             status = self.credentials.save_credentials(body["apiKey"], body["secret"], actor=actor)
             self.data_store.put_document("binance_demo_connection_check.json", None)
             return {"environment": "binance_demo", "credentials": status}
         if suffix == "/check":
             return self.check()
-        if suffix == "/start":
+        if suffix in {"/start", "/switch"}:
             account_id = _identity(body["accountId"])
             item = next((row for row in self.account_provider() if row["accountId"] == account_id), None)
             if item is None or not item["eligible"]:
                 raise DemoApiError("paper_account_not_demo_eligible", 409)
-            result = self.controller.start(account_id)
-            return {"environment": "binance_demo", "runner": result or self._runner_status()}
+            try:
+                result = (self.controller.switch(account_id) if suffix == "/switch"
+                          else self.controller.start(account_id))
+            except DemoHandoffError as exc:
+                raise DemoApiError(exc.code, 409) from None
+            response = {"environment": "binance_demo", "runner": result or self._runner_status()}
+            if suffix == "/switch":
+                response.update(automaticRestart=False,
+                                switchPolicy="new_paused_session_preserve_history_keep_shared_account_lock")
+            return response
         if suffix == "/stop":
             result = self.controller.stop()
             return {"environment": "binance_demo", "runner": result or self._runner_status(),
@@ -361,6 +415,12 @@ def create_demo_api(data_store, *, auth_dir):
     from demo_runner_controller import DemoRunnerController
 
     credentials = DemoCredentialStore(data_store, master_key_path=auth_dir / "demo_master.key")
-    ledger = DemoStore(data_store, virtual_account_key="demo_default")
+    from demo_runner_controller import STATE_KEY
+    saved = data_store.get_document(STATE_KEY, {}) or {}
+    namespace = saved.get("virtualAccountKey") or "demo_default"
+    if not isinstance(namespace, str) or not _SESSION_KEY.fullmatch(namespace):
+        raise DemoApiError("invalid_demo_session")
+    ledger = DemoStore(data_store, virtual_account_key=namespace)
     controller = DemoRunnerController(data_store, ledger, credentials.load_credentials)
-    return DemoApi(data_store, credentials, ledger, controller)
+    return DemoApi(data_store, credentials, ledger, controller,
+                   ledger_provider=lambda: controller.demo_store)

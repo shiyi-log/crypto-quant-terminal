@@ -91,9 +91,17 @@ export interface DemoStrategyAccount {
   timeframe?: string;
 }
 
+export interface DemoSession extends DemoRecord {
+  virtualAccountKey: string;
+  strategyId: string;
+  forwardBoundaryMs?: null | number;
+  active: boolean;
+}
+
 export interface DemoStatus {
   environment: 'binance_demo';
   endpoint: 'demo-fapi.binance.com';
+  switchSupported?: boolean;
   credentials: {
     configured: boolean;
     decryptionAvailable?: boolean;
@@ -104,6 +112,8 @@ export interface DemoStatus {
   runner: {
     state: string;
     selectedAccountId?: null | string;
+    virtualAccountKey?: null | string;
+    switchPersistenceUnresolved?: boolean;
     tradingEnabled?: boolean;
     workerRunning?: boolean;
     accountLocked?: boolean;
@@ -184,9 +194,9 @@ export async function getBinanceDemoStatus(signal?: AbortSignal): Promise<DemoSt
   return result as unknown as DemoStatus;
 }
 
-export async function getBinanceDemoEvidence(signal?: AbortSignal): Promise<DemoEvidence> {
+export async function getBinanceDemoEvidence(signal?: AbortSignal, session?: string): Promise<DemoEvidence> {
   authenticated();
-  const result = body(await ftClient.get(`${basePath}/evidence`, { signal }));
+  const result = body(await ftClient.get(`${basePath}/evidence`, { ...(session ? { params: { session } } : {}), signal }));
   assertDemo(result);
   if (result.scope !== 'selected_candle_strategy_execution_only') {
     throw new Error('Demo 证据范围不匹配，已停止展示');
@@ -218,10 +228,15 @@ export function stopBinanceDemo() {
   return mutate('stop', {});
 }
 
-async function rows<T extends DemoRecord>(path: string, signal?: AbortSignal): Promise<DemoRows<T>> {
+export function switchBinanceDemo(accountId: string) {
+  return mutate('switch', { accountId });
+}
+
+async function rows<T extends DemoRecord>(path: string, signal?: AbortSignal, session?: string): Promise<DemoRows<T>> {
   authenticated();
+  const scoped = path === 'orders' || path === 'fills' || path === 'comparisons';
   const result = body(await ftClient.get(`${basePath}/${path}`, {
-    ...(path === 'orders' || path === 'fills' || path === 'comparisons' ? { params: { limit: 100 } } : {}), signal,
+    ...(scoped ? { params: { limit: 100, ...(session ? { session } : {}) } } : {}), signal,
   }));
   assertDemo(result);
   return {
@@ -233,8 +248,9 @@ async function rows<T extends DemoRecord>(path: string, signal?: AbortSignal): P
   };
 }
 
-export const getBinanceDemoOrders = (signal?: AbortSignal) => rows<DemoOrder>('orders', signal);
-export const getBinanceDemoFills = (signal?: AbortSignal) => rows<DemoFill>('fills', signal);
+export const getBinanceDemoOrders = (signal?: AbortSignal, session?: string) => rows<DemoOrder>('orders', signal, session);
+export const getBinanceDemoFills = (signal?: AbortSignal, session?: string) => rows<DemoFill>('fills', signal, session);
 export const getBinanceDemoPositions = (signal?: AbortSignal) => rows('positions', signal);
 export const getBinanceDemoAccount = (signal?: AbortSignal) => rows('account', signal);
-export const getBinanceDemoComparisons = (signal?: AbortSignal) => rows('comparisons', signal);
+export const getBinanceDemoComparisons = (signal?: AbortSignal, session?: string) => rows('comparisons', signal, session);
+export const getBinanceDemoSessions = (signal?: AbortSignal) => rows<DemoSession>('sessions', signal);

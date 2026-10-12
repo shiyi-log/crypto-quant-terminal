@@ -114,6 +114,44 @@ class DemoHttpTests(unittest.TestCase):
         self.assertEqual(self.route(handler)[0], 200)
         self.provider.return_value.post.assert_called_once_with("/yield-flat", {}, actor="admin")
 
+    def test_switch_uses_the_same_authentication_origin_and_strict_identity_guard(self):
+        for alteration, expected in (("unauth", 401), ("remote", 403), ("origin", 403),
+                                     ("extra", 400), ("identity", 400)):
+            with self.subTest(alteration=alteration):
+                body = {"accountId": "selected"}
+                if alteration == "extra":
+                    body["flatten"] = True
+                if alteration == "identity":
+                    body["accountId"] = "../other"
+                handler = self.handler("/switch", body)
+                if alteration == "remote":
+                    handler._is_local.return_value = False
+                if alteration == "origin":
+                    handler.headers["Origin"] = "https://foreign.invalid"
+                self.assertEqual(self.route(handler, username=None if alteration == "unauth"
+                                            else "admin")[0], expected)
+                self.provider.assert_not_called()
+        self.assertEqual(self.route(self.handler("/switch", {"accountId": "selected"}))[0], 200)
+        self.provider.return_value.post.assert_called_once_with("/switch", {"accountId": "selected"},
+                                                               actor="admin")
+
+    def test_history_session_is_read_only_strict_and_never_a_post_parameter(self):
+        key = "demo_strategy_" + "a" * 32
+        handler = self.handler("/fills?limit=7&session=" + key)
+        handler.headers["Content-Length"] = "0"
+        self.assertEqual(self.route(handler, method="GET")[0], 200)
+        self.provider.return_value.get.assert_called_once_with("/fills", limit=7, session=key)
+        for suffix in ("/fills?session=../other", "/fills?session=manual_smoke_test",
+                       "/fills?session=demo_default&session=" + key,
+                       "/positions?session=demo_default", "/status?session=demo_default"):
+            handler = self.handler(suffix)
+            handler.headers["Content-Length"] = "0"
+            self.assertEqual(self.route(handler, method="GET")[0], 400)
+            self.provider.assert_not_called()
+        self.assertEqual(self.route(self.handler("/switch?session=" + key,
+                                                {"accountId": "selected"}))[0], 400)
+        self.provider.assert_not_called()
+
 
 class DemoApiTests(unittest.TestCase):
     def setUp(self):
@@ -299,6 +337,99 @@ class DemoApiTests(unittest.TestCase):
         self.assertEqual(refused.exception.code, "demo_worker_busy")
         self.assertNotIn("synthetic-secret-value", str(refused.exception))
         self.controller.start.assert_not_called()
+
+    def test_switch_requires_eligible_target_and_returns_paused_session_policy(self):
+        with self.assertRaisesRegex(DemoApiError, "paper_account_not_demo_eligible"):
+            self.api.post("/switch", {"accountId": "blocked"}, actor="admin")
+        self.controller.switch.assert_not_called()
+        self.controller.switch.return_value = {"selectedAccountId": "selected", "entriesEnabled": False}
+        result = self.api.post("/switch", {"accountId": "selected"}, actor="admin")
+        self.assertFalse(result["automaticRestart"])
+        self.assertFalse(result["runner"]["entriesEnabled"])
+        self.controller.switch.assert_called_once_with("selected")
+        self.controller.start.assert_not_called()
+        self.credentials.save_credentials.assert_not_called()
+
+    def test_switch_refusal_returns_fixed_conflict_without_exchange_error_text(self):
+        self.controller.switch.side_effect = DemoHandoffError("demo_account_positions_not_flat",
+                                                              "synthetic-secret-value")
+        with self.assertRaises(DemoApiError) as refused:
+            self.api.post("/switch", {"accountId": "selected"}, actor="admin")
+        self.assertEqual(refused.exception.status, 409)
+        self.assertEqual(refused.exception.code, "demo_account_positions_not_flat")
+        self.assertNotIn("synthetic-secret-value", str(refused.exception))
+
+    def test_reads_follow_active_store_but_explicit_history_stays_on_old_session(self):
+        key = "demo_strategy_" + "b" * 32
+        old, current = self.ledger, Mock()
+        old.virtual_account_key = "demo_default"
+        current.virtual_account_key = key
+        current.metrics.return_value = {"orders_by_status": {"filled": 2}}
+        current.net_fill_positions.return_value = {}
+        current.list_fills.return_value = []
+        old.list_fills.return_value = []
+        current.list_strategy_sessions.return_value = [
+            {"virtualAccountKey": "demo_default", "strategyId": "old", "forwardBoundaryMs": 100},
+            {"virtualAccountKey": key, "strategyId": "selected", "forwardBoundaryMs": 200}]
+        self.api._ledger_provider = lambda: current
+        self.api.session_factory = Mock(return_value=old)
+        self.assertEqual(self.api.get("")["metrics"]["orderCount"], 2)
+        self.api.get("/fills")
+        current.list_fills.assert_called_once_with(limit=100)
+        old.list_fills.assert_not_called()
+        self.api.get("/fills", session="demo_default")
+        old.list_fills.assert_called_once_with(limit=100)
+        self.api.session_factory.assert_called_once_with("demo_default")
+        sessions = self.api.get("/sessions")["items"]
+        self.assertEqual([item["active"] for item in sessions], [False, True])
+        self.credentials.load_credentials.assert_not_called()
+        self.adapter_factory.assert_not_called()
+
+    def test_unknown_history_never_constructs_a_ledger_or_contacts_exchange(self):
+        self.ledger.list_strategy_sessions.return_value = []
+        self.api.session_factory = Mock()
+        with self.assertRaisesRegex(DemoApiError, "demo_session_not_found") as refused:
+            self.api.get("/evidence", session="demo_strategy_" + "c" * 32)
+        self.assertEqual(refused.exception.status, 404)
+        self.api.session_factory.assert_not_called()
+        self.credentials.load_credentials.assert_not_called()
+
+    def test_explicit_empty_active_session_can_be_read_before_first_strategy_start(self):
+        self.ledger.virtual_account_key = "demo_default"
+        self.ledger.list_fills.return_value = []
+        self.ledger.list_strategy_sessions.return_value = []
+        self.api.session_factory = Mock()
+        self.assertEqual(self.api.get("/fills", session="demo_default")["items"], [])
+        reader = Mock(return_value={"environment": "binance_demo", "binding": None})
+        with patch.dict("sys.modules", {"demo_evidence": Mock(read_demo_evidence=reader)}):
+            self.api.get("/evidence", session="demo_default")
+        reader.assert_called_once_with(self.data, virtual_account_key="demo_default")
+        self.api.session_factory.assert_not_called()
+        self.ledger.list_strategy_sessions.assert_not_called()
+        self.credentials.load_credentials.assert_not_called()
+
+    def test_saved_account_fingerprint_blocks_key_rotation_through_an_empty_new_ledger(self):
+        from demo_runner_controller import STATE_KEY
+        self.credentials.status.return_value = {"configured": True,
+            "fingerprint": hashlib.sha256(b"new-key").hexdigest()[:16]}
+        self.data.get_document.side_effect = lambda key, default=None: (
+            {"credentialFingerprint": hashlib.sha256(b"original-key").hexdigest()[:16]}
+            if key == STATE_KEY else default)
+        with self.assertRaisesRegex(DemoApiError, "demo_ledger_bound_to_existing_api_identity"):
+            self.api.post("/credentials", {"apiKey": "new-key", "secret": "new-secret"}, actor="admin")
+        self.credentials.save_credentials.assert_not_called()
+
+    def test_api_factory_restores_active_namespace_instead_of_returning_to_default(self):
+        from demo_api import create_demo_api
+        from demo_runner_controller import STATE_KEY
+        key = "demo_strategy_" + "d" * 32
+        self.data.get_document.side_effect = lambda name, default=None: (
+            {"virtualAccountKey": key, "selectedAccountId": "selected"} if name == STATE_KEY else default)
+        with patch("demo_api.DemoCredentialStore"), patch("demo_store.DemoStore") as factory, \
+                patch("demo_runner_controller.DemoRunnerController") as controller_factory:
+            api = create_demo_api(self.data, auth_dir=Path("/unused-offline-auth"))
+        factory.assert_called_once_with(self.data, virtual_account_key=key)
+        self.assertIs(api.demo_store, controller_factory.return_value.demo_store)
 
     def test_retained_account_flock_blocks_credential_rotation_after_worker_failure(self):
         self.controller.status.return_value = {"running": False, "entriesEnabled": False,

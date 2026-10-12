@@ -1,4 +1,4 @@
-import type { DemoRecord, DemoStatus, DemoStrategyAccount } from '#/api/binance-demo';
+import type { DemoRecord, DemoSession, DemoStatus, DemoStrategyAccount } from '#/api/binance-demo';
 
 /** Preserve exchange decimal strings, including their precision and known zero. */
 export function decimalText(value: unknown): string {
@@ -81,6 +81,7 @@ export function demoState(status?: DemoStatus | null) {
   if (!status) return { label: '状态未读取', color: 'default' };
   if (!status.credentials?.configured) return { label: '待配置', color: 'default' };
   if (status.credentials.decryptionAvailable === false) return { label: '配置暂不可读取', color: 'error' };
+  if (status.runner.switchPersistenceUnresolved) return { label: '切换状态待核对', color: 'error' };
   const state = status.runner?.state?.toLowerCase();
   if (status.runner.lastError || ['error', 'failed', 'reconciliation_error', 'blocked_unknown_exposure'].includes(state ?? '')) return { label: '运行异常', color: 'error' };
   if (status.runner.risk_alert) return { label: '风险保护待恢复', color: 'error' };
@@ -101,9 +102,37 @@ export function accountLabel(account: DemoStrategyAccount): string {
 }
 
 export function canStartDemo(status: DemoStatus | null, accountId: string): boolean {
-  return Boolean(status?.credentials?.configured && status.credentials.decryptionAvailable !== false && !status?.runner?.tradingEnabled && status?.runner?.state !== 'running' &&
+  return Boolean(status?.credentials?.configured && status.credentials.decryptionAvailable !== false && !status?.runner?.tradingEnabled && status?.runner?.state !== 'running' && !status.runner.switchPersistenceUnresolved &&
+    (!status.runner.selectedAccountId || status.runner.selectedAccountId === accountId) &&
     (!status.runner.accountLocked || status.runner.selectedAccountId === accountId) &&
     status?.accounts?.some((account) => account.accountId === accountId && account.enabled && account.eligible));
+}
+
+export function canSwitchDemo(status: DemoStatus | null, accountId: string): boolean {
+  return Boolean(status?.switchSupported && status.credentials?.configured && status.credentials.decryptionAvailable !== false &&
+    status.runner.selectedAccountId && status.runner.selectedAccountId !== accountId && !status.runner.handoffInProgress && !status.runner.switchPersistenceUnresolved &&
+    status.accounts?.some((account) => account.accountId === accountId && account.enabled && account.eligible));
+}
+
+/** Polling updates the runner without replacing the user's pending choice. */
+export function selectedDemoAccount(status: DemoStatus, candidate: string): string {
+  return candidate && status.accounts.some((account) => account.accountId === candidate)
+    ? candidate : status.runner.selectedAccountId ?? '';
+}
+
+/** Bind a refresh to its captured active ledger, including after an external switch. */
+export function demoReadSession(status: DemoStatus, candidate: string): string | undefined {
+  return candidate || status.runner.virtualAccountKey || undefined;
+}
+
+export function pinDemoSessions(status: DemoStatus, sessions: DemoSession[]): DemoSession[] {
+  const activeKey = status.runner.virtualAccountKey;
+  return activeKey ? sessions.map((session) => ({ ...session, active: session.virtualAccountKey === activeKey })) : sessions;
+}
+
+export function demoSessionLabel(session: DemoSession, accounts: DemoStrategyAccount[]): string {
+  const account = accounts.find((item) => item.accountId === session.strategyId);
+  return `${account?.description || session.strategyId} · ${exchangeTime(session.forwardBoundaryMs)}${session.active ? ' · 当前' : ''}`;
 }
 
 export function unfilledRatio(value: unknown): string {
@@ -151,5 +180,21 @@ export function demoError(error: unknown): string {
   const value = error as { message?: unknown; response?: { data?: { detail?: unknown; error?: unknown; message?: unknown } } };
   const detail = value?.response?.data;
   const message = detail?.detail ?? detail?.error ?? detail?.message ?? value?.message;
-  return typeof message === 'string' ? message : 'Demo 请求失败，请检查服务状态';
+  const labels: Record<string, string> = {
+    demo_owned_exposure_unresolved: '旧策略仍有仓位或仓位归属待核对，暂不能切换；已有仓位继续保护。',
+    demo_owned_orders_unresolved: '旧策略仍有挂单或提交结果未确认，暂不能切换；请稍后重试。',
+    demo_owned_fills_unresolved: '旧策略成交数量尚未完全对账，暂不能切换；请稍后重试。',
+    demo_worker_busy: 'Demo 正在处理订单或成交，请稍后重试切换。',
+    demo_handoff_in_progress: 'Demo 正在交接，请稍后重试。',
+    demo_account_positions_not_flat: 'Demo 账户仍有持仓，暂不能切换；切换不会自动平仓。',
+    demo_account_open_orders_unresolved: 'Demo 账户仍有挂单或订单状态待确认，暂不能切换。',
+    demo_account_reconciliation_unresolved: 'Demo 账户尚未完成对账，暂不能切换。',
+    demo_switch_exchange_check_failed: '未能确认交易所账户空仓且无挂单，暂不能切换；请稍后重试。',
+    demo_switch_persistence_failed: '新策略会话未能保存，旧会话保持暂停并继续保护；请刷新后重试。',
+    demo_switch_persistence_unresolved: '策略切换状态尚未确认，请刷新核对当前策略后再操作。',
+    demo_credential_identity_mismatch: 'Demo 凭据与原会话不一致，暂不能切换策略。',
+    demo_switch_namespace_collision: '新策略会话无法建立，旧会话保持暂停；请刷新后重试。',
+    demo_session_not_found: '所选历史会话不存在，请刷新后重新选择。',
+  };
+  return typeof message === 'string' ? labels[message] ?? message : 'Demo 请求失败，请检查服务状态';
 }

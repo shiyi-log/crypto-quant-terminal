@@ -479,6 +479,52 @@ class DemoStore:
                                 self._identity()).fetchall()
         return {row["pair"]: str(row["quantity"]) for row in rows}
 
+    def account_reconciliation_status(self):
+        """Check all sessions on the shared Demo account, without netting them.
+
+        A flat exchange position alone cannot resolve an unknown submission or
+        missing fill. This check includes historical and manual namespaces.
+        Fee fields may remain unknown; the gate concerns quantity attribution.
+        """
+        with self.store._connection() as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            pending = conn.execute("""SELECT COUNT(*) AS n FROM demo_orders
+                WHERE environment=%s AND status=ANY(%s)""",
+                (self.environment, list(PENDING_STATUSES))).fetchone()["n"]
+            positions = conn.execute("""SELECT COUNT(*) AS n FROM (
+                SELECT f.virtual_account_key,f.pair
+                FROM demo_fills f JOIN demo_orders o
+                USING (environment,virtual_account_key,client_id)
+                WHERE f.environment=%s GROUP BY f.virtual_account_key,f.pair
+                HAVING SUM(CASE WHEN o.side='buy' THEN f.quantity ELSE -f.quantity END)<>0
+                ) positions""", (self.environment,)).fetchone()["n"]
+            gaps = conn.execute("""SELECT COUNT(*) AS n FROM (
+                SELECT o.virtual_account_key,o.client_id,o.filled_quantity
+                FROM demo_orders o LEFT JOIN demo_fills f
+                USING (environment,virtual_account_key,client_id)
+                WHERE o.environment=%s
+                GROUP BY o.virtual_account_key,o.client_id,o.filled_quantity
+                HAVING COALESCE(SUM(f.quantity),0)<>o.filled_quantity
+                ) gaps""", (self.environment,)).fetchone()["n"]
+        return {"safeToSwitch": not (pending or positions or gaps),
+                "pendingOrderCount": int(pending),
+                "nonflatLedgerPairCount": int(positions),
+                "fillQuantityGapCount": int(gaps)}
+
+    def list_strategy_sessions(self, *, limit=1000):
+        """Read immutable candle-runner bindings; experiments keep their scope."""
+        with self.store._connection() as conn:
+            rows = conn.execute("""SELECT virtual_account_key,strategy_id,observed_ms,payload
+                FROM demo_signal_comparisons WHERE environment=%s AND stage='binding'
+                AND (virtual_account_key='demo_default'
+                     OR virtual_account_key ~ '^demo_strategy_[0-9a-f]{32}$')
+                ORDER BY observed_ms DESC,virtual_account_key LIMIT %s""",
+                (self.environment, _limit(limit))).fetchall()
+        return [{"virtualAccountKey": row["virtual_account_key"],
+                 "strategyId": row["strategy_id"],
+                 "forwardBoundaryMs": row["payload"].get("forward_boundary_ms"),
+                 "createdAtMs": row["observed_ms"]} for row in rows]
+
     def metrics(self):
         """Counts and asset-separated actual commission; unknown never becomes zero."""
         with self.store._connection() as conn:

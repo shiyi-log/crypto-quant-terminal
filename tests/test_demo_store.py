@@ -366,6 +366,65 @@ class DemoStoreIntegrationTests(unittest.TestCase):
         self.assertEqual(other.list_comparisons(), [])
         self.assertIsNone(other.get_binding())
 
+    def test_switch_gate_includes_pending_orders_in_other_namespaces(self):
+        self.assertTrue(self.demo.account_reconciliation_status()["safeToSwitch"])
+        other = DemoStore(self.data, "manual_smoke_offline_other")
+        other.reserve_order(intent(client_id="other_1"))
+        for status in ("intent", "submitting", "unknown", "open", "partially_filled"):
+            with self.subTest(status=status):
+                with self.data._connection() as conn:
+                    conn.execute("UPDATE demo_orders SET status=%s WHERE virtual_account_key=%s",
+                                 (status, other.virtual_account_key))
+                facts = self.demo.account_reconciliation_status()
+                self.assertFalse(facts["safeToSwitch"])
+                self.assertEqual(facts["pendingOrderCount"], 1)
+                self.assertEqual(self.demo.pending_orders(), [])
+
+    def test_switch_gate_does_not_net_opposing_session_positions(self):
+        other = DemoStore(self.data, "second_level_offline_other")
+
+        def traded(ledger, client, side, number):
+            ledger.reserve_order(intent(client_id=client, signal_id=client,
+                                        quantity="1", side=side))
+            ledger.record_order_observation(client, observation("FILLED", "1", origQty="1",
+                                                               side=side.upper(), orderId=number,
+                                                               clientOrderId=client))
+            ledger.record_fill(client, fill(exchange_order_id=str(number), trade=str(number),
+                                           side=side))
+
+        traded(self.demo, "buy_1", "buy", 101)
+        traded(other, "sell_1", "sell", 102)
+        facts = self.demo.account_reconciliation_status()
+        self.assertFalse(facts["safeToSwitch"])
+        self.assertEqual(facts["nonflatLedgerPairCount"], 2)
+        self.assertEqual(facts["fillQuantityGapCount"], 0)
+        traded(self.demo, "sell_2", "sell", 103)
+        traded(other, "buy_2", "buy", 104)
+        self.assertTrue(self.demo.account_reconciliation_status()["safeToSwitch"])
+        self.assertIsNone(other.list_fills()[0]["commission"])
+
+    def test_switch_gate_refuses_terminal_orders_with_missing_fill_quantity(self):
+        self.reserve()
+        self.demo.record_order_observation("client_1", observation("CANCELED", "1"))
+        facts = self.demo.account_reconciliation_status()
+        self.assertFalse(facts["safeToSwitch"])
+        self.assertEqual(facts["pendingOrderCount"], 0)
+        self.assertEqual(facts["fillQuantityGapCount"], 1)
+
+    def test_strategy_session_history_excludes_manual_experiments_and_keeps_bindings(self):
+        binding = {key: intent()[key] for key in
+                   ("strategy_id", "signal_id", "rule_hash", "execution_hash", "input_fingerprint")}
+        namespaces = ("demo_default", "demo_strategy_" + "a" * 32, "manual_smoke_offline")
+        for index, key in enumerate(namespaces):
+            DemoStore(self.data, key).bind_account({**binding, "observed_ms": 1000 + index,
+                                                   "forward_boundary_ms": 1000 + index})
+        sessions = self.demo.list_strategy_sessions()
+        self.assertEqual([row["virtualAccountKey"] for row in sessions],
+                         [namespaces[1], namespaces[0]])
+        self.assertEqual(sessions[0]["forwardBoundaryMs"], 1001)
+        with self.assertRaisesRegex(ValueError, "different session"):
+            DemoStore(self.data, namespaces[0]).bind_account({**binding, "strategy_id": "other"})
+
     def test_reconciliation_is_append_only_and_metrics_use_terminal_entry_denominator(self):
         self.reserve()
         self.demo.record_order_observation("client_1", observation("PARTIALLY_FILLED", "1"))

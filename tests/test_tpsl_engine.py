@@ -57,8 +57,10 @@ class TpslEngineTests(unittest.TestCase):
         self.assertEqual(row.trigger["observed_price"], 102.0)
 
     def test_same_bar_stop_loss_wins_and_short_uses_opposite_extremes(self):
-        states = self.states.copy(); states.iloc[1:] = -1
-        strengths = self.strengths.copy(); strengths.iloc[1:] = 2
+        states = self.states.copy()
+        states.iloc[1:] = -1
+        strengths = self.strengths.copy()
+        strengths.iloc[1:] = 2
         data = self.data(opens=[100, 100, 100, 90, 90, 90, 90, 90],
                          highs=[101, 101, 103, 110, 100, 100, 100, 100],
                          lows=[99, 99, 97, 80, 80, 80, 80, 80])
@@ -74,8 +76,10 @@ class TpslEngineTests(unittest.TestCase):
         self.assertGreaterEqual(diag["dual_touch_stop_loss_first"], 1)
 
     def test_short_fixed_take_profit_uses_the_low_and_fills_next_open(self):
-        states = self.states.copy(); states.iloc[1:] = -1
-        strengths = self.strengths.copy(); strengths.iloc[1:] = 2
+        states = self.states.copy()
+        states.iloc[1:] = -1
+        strengths = self.strengths.copy()
+        strengths.iloc[1:] = 2
         data = self.data(
             opens=[100, 100, 100, 100, 100, 100, 100, 100],
             highs=[101, 101, 101, 101, 101, 101, 101, 101],

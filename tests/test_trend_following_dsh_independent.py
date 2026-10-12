@@ -28,7 +28,6 @@ from unittest.mock import MagicMock, patch
 
 try:
     from freqtrade.enums import RunMode
-    from freqtrade.strategy import IStrategy
 except ImportError:
     # The lightweight backend CI does not require the optional trading engine.
     RunMode = None

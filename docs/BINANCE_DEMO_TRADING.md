@@ -56,7 +56,15 @@ Demo 仓位，使用 `reduceOnly` 市价退出。未知订单或仓位阻止新�
 2026-10-12 验证：相关后端 155 项通过，前端 Vitest 24 项、Vue 类型检查和生产构建
 通过。真实模块集成使用独立 `quant_test` 临时 schema 和离线 HTTP stub；未向交易所
 请求或实际切换策略。新静态页面已发布，HTTP 返回与构建一致；鉴权后端尚待授权
-重启加载。完整验证记录见 `artifacts/binance-demo-switch-validation-20261012.json`。
+重启加载（该验证时刻的状态）。完整验证记录见
+`artifacts/binance-demo-switch-validation-20261012.json`。
+
+同日北京时间 13:53，取得用户明确授权后执行 `uv run python manage.py restart auth`，
+认证进程从 81980 更新为 4144。健康检查和 `switchSupported=true` 均已通过，
+原策略、会话、冻结绑定及启动边界保留，共享锁由新认证进程持有。Demo 恢复为
+`paused_flat`，已有保护 worker 正常、入口暂停、无新增开仓提交；实验室、交易 API、
+回测 API 和前端进程不变。当前可刷新页面后切换策略，新策略仍须人工开始。
+部署验证见 `artifacts/binance-demo-auth-restart-validation-20261012.json`。
 
 ## 共用信号与执行差异
 
@@ -71,7 +79,8 @@ runner 只读已有 `strategy_sim_accounts/strategy_sim_events`，使用未来�
 信号仍拒绝。证据、意图和撤单期限使用该处理时间；显式传入的 `cycle(now_ms=...)`
 仍作为固定时间覆盖。暂停、冲突和时效拒绝仍消费游标，避免后续开始时重放旧入口。
 已误拒的历史信号不重放，冻结身份、执行政策及 90 秒限制不变。验证记录见
-`artifacts/binance-demo-signal-clock-validation-20261012.json`；鉴权后端尚待授权重启加载。
+`artifacts/binance-demo-signal-clock-validation-20261012.json`。同日北京时间 13:53 的
+定向认证重启已加载此修复，部署核对通过；未回放历史误拒信号。
 
 入口使用信号收盘价的 post-only 限价单，按 Demo 实际 `exchangeInfo` 的数量步长向下取整，
 买入价向下、卖出价向上取价格步长。三十秒未成交则撤单，再次查询并记录并发部分成交。

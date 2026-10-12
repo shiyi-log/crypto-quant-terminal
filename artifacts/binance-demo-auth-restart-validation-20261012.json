@@ -1,0 +1,75 @@
+{
+  "verifiedAtUtc": "2026-10-12T05:53:48.169853+00:00",
+  "gitCommit": "83c9636",
+  "authorization": "user explicitly authorized restart",
+  "restartCommand": "uv run python manage.py restart auth",
+  "processesBefore": {
+    "auth": [
+      81980
+    ],
+    "strategy-lab": [
+      94359
+    ],
+    "api": [
+      3555
+    ],
+    "webserver": [
+      73726
+    ],
+    "web": [
+      35898
+    ]
+  },
+  "processesAfter": {
+    "auth": [
+      4144
+    ],
+    "strategy-lab": [
+      94359
+    ],
+    "api": [
+      3555
+    ],
+    "webserver": [
+      73726
+    ],
+    "web": [
+      35898
+    ]
+  },
+  "health": {
+    "status": "ok",
+    "uptime_s": 42,
+    "freqtrade_reachable": true,
+    "webserver_reachable": true,
+    "database_reachable": true
+  },
+  "switchSupported": true,
+  "runner": {
+    "selectedAccountId": "s01_orb_breakout_B15m_R1000_k1.0_100x_maker",
+    "virtualAccountKey": "demo_default",
+    "entriesEnabled": false,
+    "recoveryMode": true,
+    "workerRunning": true,
+    "accountLockOwned": true,
+    "controllerError": null,
+    "last_error": null,
+    "status": "paused_flat",
+    "state": "paused_flat",
+    "owned_positions": {},
+    "ownership_conflicts": [],
+    "risk_alert": null
+  },
+  "frozenBindingsUnchanged": true,
+  "recoveryIdentityAndBoundaryUnchanged": true,
+  "credentialIdentityUnchanged": true,
+  "newEntrySubmissions": 0,
+  "accountOrderCountBefore": 12,
+  "accountOrderCountAfter": 12,
+  "sessionCount": 1,
+  "sessionsAndExplicitRecordQueriesPassed": true,
+  "lockOwnedByNewAuthPid": true,
+  "actualStrategySwitched": false,
+  "manualStartStillRequired": true,
+  "verifiedAtBeijing": "2026-10-12T13:53:48.169853+08:00"
+}

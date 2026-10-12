@@ -24,18 +24,18 @@ jobs:
     timeout-minutes: 15
     env:
       # 仅用于本次 CI 容器的公开测试凭据，不读取本机 .env 或真实账户。
-      QUANT_TEST_DATABASE_URL: postgresql://quant_ci:quant_ci_only@127.0.0.1:5432/quant_ci
+      QUANT_TEST_DATABASE_URL: postgresql://quant_test:quant_test_only@127.0.0.1:5432/quant_test
     services:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_USER: quant_ci
-          POSTGRES_PASSWORD: quant_ci_only
-          POSTGRES_DB: quant_ci
+          POSTGRES_USER: quant_test
+          POSTGRES_PASSWORD: quant_test_only
+          POSTGRES_DB: quant_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U quant_ci -d quant_ci"
+          --health-cmd "pg_isready -U quant_test -d quant_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
@@ -83,7 +83,7 @@ jobs:
               database_name, server_version = conn.execute(
                   "SELECT current_database(), current_setting('server_version_num')"
               ).fetchone()
-              assert database_name == "quant_ci", "CI 必须使用专用测试数据库"
+              assert database_name == "quant_test", "CI 必须使用专用测试数据库"
               assert 170000 <= int(server_version) < 180000, "CI 必须使用 PostgreSQL 17"
 
           suite = unittest.defaultTestLoader.discover("tests")

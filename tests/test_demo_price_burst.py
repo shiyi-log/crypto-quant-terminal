@@ -104,8 +104,12 @@ class BurstTests(unittest.TestCase):
 
     def signal(self, close=101.5, *, previous=None):
         if previous is not None:
-            self.store.candles[self.pair][-2] = candle(14, previous)
-        self.store.candles[self.pair][-1] = candle(15, close)
+            prior_index = next(index for index, row in enumerate(self.store.candles[self.pair])
+                               if row["timestamp"] == 14 * BAR_MS)
+            self.store.candles[self.pair][prior_index] = candle(14, previous)
+        decision_index = next(index for index, row in enumerate(self.store.candles[self.pair])
+                              if row["timestamp"] == 15 * BAR_MS)
+        self.store.candles[self.pair][decision_index] = candle(15, close)
         self.now = 16 * BAR_MS + 10
         return self.source.events(BURST_STRATEGY_ID, 0)
 

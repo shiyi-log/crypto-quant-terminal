@@ -88,7 +88,14 @@ class SharedAccountTests(unittest.TestCase):
     def test_registered_other_strategy_positions_and_orders_are_recognized(self):
         self.history.orders = [order(), order("s07", pair=ETH, status="open", reported="0", recorded="0")]
         self.assertEqual(self.shared.assert_attach_safe([{"pair": BTC, "signed_qty": "1"}],
-                                                      [{"client_id": "s07-entry"}]), [])
+            [{"client_id": "s07-entry", "pair": ETH, "order_id": "s07-order"}]), [])
+
+    def test_known_client_cannot_adopt_wrong_pair_or_exchange_order_identity(self):
+        self.history.orders = [order(status="open", reported="0", recorded="0")]
+        for facts in ({"pair": ETH, "order_id": "s35-order"}, {"pair": BTC, "order_id": "different-order"}):
+            with self.subTest(facts=facts):
+                self.assertIn("shared_open_order_identity_mismatch", self.shared.ownership_conflicts([], [
+                    {"client_id": "s35-entry", **facts}]))
 
     def test_duplicate_client_or_exchange_identity_is_never_silently_attributed(self):
         self.history.orders = [order(), order("s07", pair=ETH, client="s35-entry")]

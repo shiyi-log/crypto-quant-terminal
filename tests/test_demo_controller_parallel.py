@@ -416,6 +416,55 @@ class ParallelTests(unittest.TestCase):
         self.assertFalse(first.is_alive())
         self.assertEqual(observed[:2], ["s35", "s07"])
 
+    def test_first_attach_waits_for_legacy_cycle_before_injecting_stable_account_lock(self):
+        stable_lock = self.controller._account_cycle_lock
+        service_mutex = threading.RLock()
+        entered, attempting, release = threading.Event(), threading.Event(), threading.Event()
+        errors = []
+        original_status = self.primary.status
+        def synchronized_status():
+            with service_mutex:
+                return original_status()
+        self.primary.status = synchronized_status
+        original_register = self.controller._register
+        def attempted_register(service):
+            attempting.set()
+            return original_register(service)
+        self.controller._register = attempted_register
+        def old_cycle():
+            with stable_lock, service_mutex:
+                entered.set()
+                release.wait(timeout=2)
+                coordinator = getattr(self.primary, "account_coordinator", None)
+                if coordinator is not None:
+                    coordinator.entry_denial(self.primary.config.virtual_account_key, "BTC/USDT:USDT")
+        def attaching():
+            try:
+                self.controller.attach("s07")
+            except Exception as exc:
+                errors.append(exc)
+        worker = threading.Thread(target=old_cycle, daemon=True)
+        attacher = threading.Thread(target=attaching, daemon=True)
+        worker.start()
+        self.assertTrue(entered.wait(timeout=1))
+        attacher.start()
+        try:
+            self.assertTrue(attempting.wait(timeout=1))
+            self.assertIs(self.controller._account_cycle_lock, stable_lock)
+            self.assertIsNone(getattr(self.primary, "account_coordinator", None))
+        finally:
+            release.set()
+            worker.join(timeout=1)
+            attacher.join(timeout=1)
+            if worker.is_alive() or attacher.is_alive():
+                # A regression must fail the test, not deadlock its cleanup.
+                self.controllers.clear()
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(attacher.is_alive())
+        self.assertEqual(errors, [])
+        self.assertIs(self.primary.account_coordinator.lock, stable_lock)
+        self.assertIs(self.controller._account_cycle_lock, stable_lock)
+
 
 if __name__ == "__main__":
     unittest.main()

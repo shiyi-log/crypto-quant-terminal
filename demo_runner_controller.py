@@ -70,16 +70,21 @@ class DemoRunnerController:
         return ([self.service] if self.service is not None else []) + list(self._parallel_sessions.values())
 
     def _coordinator(self):
-        if self._account_coordinator is None:
-            from demo_shared_account import SharedDemoAccount
-            self._account_coordinator = SharedDemoAccount(self.demo_store)
-            self._account_cycle_lock = self._account_coordinator.lock
-        return self._account_coordinator
+        # This lock exists before the first legacy cycle and NEVER changes.
+        # Installing a different lock while a worker owns the old one can
+        # invert service/coordinator locking during the first attachment.
+        with self._account_cycle_lock:
+            if self._account_coordinator is None:
+                from demo_shared_account import SharedDemoAccount
+                coordinator = SharedDemoAccount(self.demo_store)
+                coordinator.lock = self._account_cycle_lock
+                self._account_coordinator = coordinator
+            return self._account_coordinator
 
     def _register(self, service):
-        coordinator = self._coordinator()
-        service.account_coordinator = coordinator
-        coordinator.register(service)
+        with self._account_cycle_lock:
+            coordinator = self._coordinator()
+            coordinator.register(service)
 
     def _registry_document(self, *, extra=None, primary=None, yielded=False):
         records = copy.deepcopy(self._shared_records)
@@ -395,6 +400,10 @@ class DemoRunnerController:
                     self._restore_incomplete = True
                 if committed or self._shared_persistence_unresolved:
                     self._pause_members()
+                    try:
+                        self._save()
+                    except Exception as exc:
+                        self._error = "Demo shared recovery persistence failed: " + type(exc).__name__
                     self._start_worker()
                 raise
 
@@ -436,7 +445,7 @@ class DemoRunnerController:
 
     def _restore_shared(self, persisted):
         """Assemble every member before any cycle; restore all entry gates shut."""
-        if self._services() and not self._restore_incomplete:
+        if self._services() and not self._restore_incomplete and not self._session_errors:
             return self.status()
         records = persisted.get("sessions", [])
         namespaces = [record.get("virtualAccountKey") for record in records if isinstance(record, dict)]
@@ -833,7 +842,6 @@ class DemoRunnerController:
                 self.service = None
                 self._parallel_sessions.clear()
                 self._account_coordinator = None
-                self._account_cycle_lock = threading.RLock()
                 self._thread = None
                 self._workers.clear()
                 self._yielded_flat = True

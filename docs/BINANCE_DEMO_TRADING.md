@@ -66,6 +66,24 @@ Demo 仓位，使用 `reduceOnly` 市价退出。未知订单或仓位阻止新�
 回测 API 和前端进程不变。当前可刷新页面后切换策略，新策略仍须人工开始。
 部署验证见 `artifacts/binance-demo-auth-restart-validation-20261012.json`。
 
+2026-10-13 北京时间 17:56，经用户授权，实际切换到
+`s35_cascade_continuation_15m_Fnew_Demo_R1000_k1.0_100x_maker`，新会话为
+`demo_strategy_f4c7f945f41c41b092db0943c2fa4052`，并显式开始前向交易。
+`demo_default` 的 s01 冻结绑定和审计记录保留。新会话只接收启动边界之后的信号，
+已有纸面仓位不会复制为 Demo 持仓；启动成功不等于已经产生实际订单。
+运行核对保存在 PostgreSQL documents 的 `binance_demo_switch_s35_20261013.json`。
+该文档在切换后依据当时操作输出和数据库复核整理，记录操作者、旧/新身份、预检、
+HTTP 结果和当前状态；切换时的原始签名响应未复制到此文档，门控通过的依据明确标为
+成功 `/switch` 及其强制执行路径，不将事后核对冒充同时刻的交易所快照。
+
+“内部模拟 vs Demo”默认使用“信号与执行”视图，查询
+`GET /api/locals/binance-demo/comparisons?view=signals`。数据库在取最近 100 条前排除
+`binding`、`runner_checkpoint`、`actual_execution_config`，避免运行心跳淹没业务信号。
+异常及未分类阶段仍保留。选择“全部审计日志”会重新请求 `view=audit`；API 不传
+`view` 时也保持完整审计视图。历史 `session` 与两个视图都兼容，已存证据不删除。
+非成交事件的内部成交价显示 `—`；成交事件缺价显示“未记录”，已平仓事件显示
+`exit_price` 并标注“平仓价”。
+
 ## 共用信号与执行差异
 
 runner 只读已有 `strategy_sim_accounts/strategy_sim_events`，使用未来自然产生的

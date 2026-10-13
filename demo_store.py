@@ -752,6 +752,7 @@ def binance_order(row):
             result[key] = str(result[key])
     result["demoAudit"] = {"environment": row["environment"], "status": row["status"],
                            "strategyId": row["strategy_id"], "signalId": row["signal_id"],
+                           "virtualAccountKey": row.get("virtual_account_key"),
                            "localCreatedMs": row["created_ms"],
                            "exchangeTimeObserved": "time" in raw,
                            "fallbackFields": sorted(set(fallback) - set(raw))}
@@ -776,6 +777,11 @@ def binance_fill(row):
     for key in ("price", "qty", "quoteQty", "commission", "realizedPnl"):
         if result.get(key) is not None:
             result[key] = str(result[key])
+    result["demoAudit"] = {"environment": row.get("environment", "binance_demo"),
+                           "virtualAccountKey": row.get("virtual_account_key"),
+                           "clientOrderId": row.get("client_id"),
+                           "strategyId": row.get("strategy_id"),
+                           "signalId": row.get("signal_id")}
     if row.get("commission_conflict"):
         # Preserve the conflicting partial observation as partial. The last
         # coherent historical pair remains independently queryable in audit.
@@ -784,7 +790,8 @@ def binance_fill(row):
         partial = observations[-1] if observations else {}
         result["commission"] = partial.get("commission")
         result["commissionAsset"] = partial.get("commission_asset")
-        result["demoAudit"] = {"commissionComplete": False, "commissionConflict": True,
+        result["demoAudit"] = {**result["demoAudit"],
+                               "commissionComplete": False, "commissionConflict": True,
                                "lastCoherentCommission": row["commission"],
                                "lastCoherentCommissionAsset": row["commission_asset"]}
     return result

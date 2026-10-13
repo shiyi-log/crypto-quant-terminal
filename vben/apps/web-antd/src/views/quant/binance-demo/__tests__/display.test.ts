@@ -231,6 +231,40 @@ describe('Demo exchange report presentation', () => {
 });
 
 describe('independent Demo strategy sessions', () => {
+  it('shows a direct strategy entry intent without inventing a paper or exchange fill', () => {
+    const row = comparisonObservation({ observation_id: 901, stage: 'strategy_signal', payload: {
+      source_type: 'price_burst_continuation', paper_mirror: false, strategy_event_type: 'order_submitted',
+      strategy_event: { pair: 'BTC/USDT:USDT', kind: 'entry', price: '101.123', reason: 'burst_continuation' },
+    } });
+    expect(row.stageLabel).toBe('策略信号');
+    expect(row.eventLabel).toBe('开仓意图');
+    expect(row.pair).toBe('BTC/USDT:USDT');
+    expect(row.reason).toBe('burst_continuation');
+    expect(row.paperEventType).toBeUndefined();
+    expect(row.paperEventLabel).toBeUndefined();
+    expect(row.strategyEventType).toBe('order_submitted');
+    expect(row.paperMirror).toBe(false);
+    expect(row.sourceType).toBe('price_burst_continuation');
+    expect(row.internalPrice).toBeNull();
+    expect(comparisonPriceText(row)).toBe('—');
+  });
+
+  it('does not promote a direct strategy price into a paper fill and preserves paper fill formatting', () => {
+    const direct = comparisonObservation({ stage: 'strategy_signal', payload: { paper_mirror: false,
+      strategy_event_type: 'order_filled', strategy_event: { fill_price: '120' },
+      paper_event_type: 'order_filled', paper_event: { fill_price: '999' },
+    } });
+    expect(direct.internalPrice).toBeNull();
+    expect(comparisonPriceText(direct)).toBe('—');
+    const exit = comparisonObservation({ stage: 'strategy_signal', payload: { strategy_event_type: 'order_submitted',
+      strategy_event: { kind: 'exit' } } });
+    expect(exit.eventLabel).toBe('平仓意图');
+    const paper = comparisonObservation({ stage: 'paper_event', payload: { paper_event_type: 'order_filled', paper_event: { fill_price: '100.050' } } });
+    expect(paper.eventLabel).toBe('已成交');
+    expect(paper.paperEventLabel).toBe('已成交');
+    expect(comparisonPriceText(paper)).toBe('100.050');
+  });
+
   it('can attach an eligible strategy while the primary is running without changing primary start rules', () => {
     const value = parallelStatus();
     expect(canAttachDemo(value, 's03_R50_k1.5', [])).toBe(true);
@@ -306,13 +340,34 @@ describe('independent Demo strategy sessions', () => {
     expect(canAdoptDemoSession(null, history, [])).toBe(false);
   });
 
-  it.each(['handoffInProgress', 'switchPersistenceUnresolved', 'sharedPersistenceUnresolved'])('blocks mutations while %s is unresolved', (flag) => {
+  it.each(['handoffInProgress', 'switchPersistenceUnresolved', 'sharedRegistryPersistenceUnresolved', 'sharedRecoveryIncomplete'])('blocks mutations while %s is unresolved', (flag) => {
     const value = parallelStatus();
     value.runner[flag] = true;
     const history = strategySession({ member: false });
     expect(canAttachDemo(value, history.strategyId, [])).toBe(false);
     expect(canStartDemoSession(value, strategySession())).toBe(false);
     expect(canAdoptDemoSession(value, history, [])).toBe(false);
+  });
+
+  it.each([
+    ['sharedRegistryPersistenceUnresolved', '并行会话保存状态待核对', 'demo_shared_persistence_unresolved'],
+    ['sharedRecoveryIncomplete', '并行会话恢复未完成', 'demo_shared_recovery_incomplete'],
+  ] as const)('shows the actual controller blocker %s and preserves server rejection explanations', (flag, label, code) => {
+    const value = parallelStatus();
+    value.switchSupported = true;
+    value.runner.tradingEnabled = false;
+    value.runner.state = 'paused_flat';
+    expect(canStartDemo(value, 'old-identity')).toBe(true);
+    expect(canSwitchDemo(value, 's03_R50_k1.5')).toBe(true);
+    value.runner[flag] = true;
+    expect(canStartDemo(value, 'old-identity')).toBe(false);
+    expect(canSwitchDemo(value, 's03_R50_k1.5')).toBe(false);
+    expect(demoState(value)).toEqual({ label, color: 'error' });
+    expect(demoError({ response: { data: { detail: code } } })).toContain('暂不能开启新开仓');
+    value.runner[flag] = false;
+    expect(canAttachDemo(value, 's03_R50_k1.5', [])).toBe(true);
+    expect(canStartDemoSession(value, strategySession())).toBe(true);
+    expect(canAdoptDemoSession(value, strategySession({ member: false }), [])).toBe(true);
   });
 
   it('labels primary, running and paused companions, and history without revealing ledger keys', () => {

@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from demo_runner_controller import (
-    DemoHandoffError, DemoRunnerController, SHARED_STATE_KEY, STATE_KEY,
+    DemoHandoffError, DemoRunnerController, MAX_SHARED_SESSIONS, SHARED_STATE_KEY, STATE_KEY,
 )
 
 
@@ -202,6 +202,19 @@ class ParallelTests(unittest.TestCase):
         self.assertFalse(companion.entries_enabled)
         self.controller.stop()
         self.assertFalse(self.primary.entries_enabled)
+
+    def test_member_limit_preserves_primary_and_accepts_all_requested_companions(self):
+        for index in range(1, MAX_SHARED_SESSIONS):
+            self.controller.attach("companion_" + str(index))
+        self.assertEqual(len(self.controller._services()), MAX_SHARED_SESSIONS)
+        self.assertEqual(len(self.data.items[SHARED_STATE_KEY]["sessions"]), MAX_SHARED_SESSIONS)
+        before = len(self.created)
+        with self.assertRaises(DemoHandoffError) as error:
+            self.controller.attach("above_member_limit")
+        self.assertEqual(error.exception.code, "demo_shared_session_limit")
+        self.assertEqual(len(self.created), before)
+        self.assertIs(self.controller.service, self.primary)
+        self.assertTrue(self.primary.entries_enabled)
 
     def test_healthy_owned_position_can_attach_but_foreign_exposure_cannot(self):
         pair = "BTC/USDT:USDT"

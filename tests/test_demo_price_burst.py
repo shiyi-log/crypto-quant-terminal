@@ -177,13 +177,15 @@ class BurstTests(unittest.TestCase):
         self.assertEqual(events[0]["payload"]["evidence"]["previous_direction"], "sell")
 
     def test_open_and_future_candles_cannot_signal_or_change_fingerprint(self):
+        expected = self.signal()[0]
+        self.setUp()
         self.store.candles[self.pair][-1] = candle(15, 120)
         self.assertEqual(self.source.events(BURST_STRATEGY_ID, 0), [])
         self.store.candles[self.pair].append(candle(16, 1))
         events = self.signal()
-        expected = events[0]["data_fingerprint"]
+        self.assertEqual(events[0], expected)
         self.store.candles[self.pair][-1] = candle(16, 99999)
-        self.assertEqual(self.source.events(BURST_STRATEGY_ID, 0)[0]["data_fingerprint"], expected)
+        self.assertEqual(self.source.events(BURST_STRATEGY_ID, 0), [expected])
         self.assertFalse(any("candidate" in query or "outcome" in query for query in self.store.queries))
 
     def test_explicitly_unclosed_candle_is_not_a_signal(self):
@@ -223,6 +225,15 @@ class BurstTests(unittest.TestCase):
         event = self.source.events(BURST_STRATEGY_ID, 0)[0]
         self.assertAlmostEqual(float(event["payload"]["evidence"]["entry_atr"]), (13 * 2 + 10) / 14)
 
+    def test_persisted_input_facts_support_reconciliation_after_candle_correction(self):
+        event = self.signal()[0]
+        facts = event["payload"]["evidence"]["input_candles"]
+        self.assertEqual(len(facts), 16)
+        self.assertEqual(facts[-1]["close"], "101.5")
+        self.store.candles[self.pair][-1] = candle(15, 1)
+        self.assertEqual(self.source.events(BURST_STRATEGY_ID, 0), [event])
+        self.assertEqual(self.source.events(BURST_STRATEGY_ID, 0)[0]["payload"]["evidence"]["input_candles"], facts)
+
     def test_bootstrap_and_runner_anchor_never_create_preexisting_burst(self):
         self.now = 16 * BAR_MS + 10
         self.store.candles[self.pair][-1] = candle(15, 101.5)
@@ -231,6 +242,36 @@ class BurstTests(unittest.TestCase):
         self.store.documents = {}
         self.source.ensure_account()
         self.assertEqual(self.source.events(BURST_STRATEGY_ID, 0), [])
+
+    def test_exact_boundary_closed_bar_ingested_later_is_never_a_forward_entry(self):
+        for anchor in ("bootstrap", "runner_start"):
+            with self.subTest(anchor=anchor):
+                self.setUp()
+                # The boundary falls on an exchange close. That candle has
+                # closed already, but its database insertion arrives later.
+                self.store.candles[self.pair].pop()
+                self.now = 16 * BAR_MS
+                if anchor == "bootstrap":
+                    self.store.documents = {}
+                    self.source.ensure_account()
+                else:
+                    self.source.latest_sequence(BURST_STRATEGY_ID)
+                self.store.candles[self.pair].append(candle(15, 101.5))
+                self.now += 10
+                self.assertEqual(self.source.events(BURST_STRATEGY_ID, 0), [])
+                self.assertEqual(self.entry_documents(), {})
+                state = self.store.documents[BURST_STATE_KEY]
+                self.assertEqual(state["sequence_id"], 0)
+                self.assertEqual(state["pair_checkpoints"][self.pair], 15 * BAR_MS)
+                self.assertEqual(state["observations"][self.pair]["reason"], "before_forward_boundary")
+                # A genuinely later close is eligible: the strict boundary
+                # must not prevent the next forward directional crossing.
+                self.store.candles[self.pair].append(candle(16, 98.5))
+                self.now = 17 * BAR_MS + 10
+                event = self.source.events(BURST_STRATEGY_ID, 0)[0]
+                self.assertEqual(event["observed_at_ms"], 17 * BAR_MS)
+                self.assertEqual(event["payload"]["buy_sell"], "sell")
+                self.assertEqual(event["sequence_id"], 1)
 
     def test_stale_bar_does_not_get_fresh_observation_timestamp(self):
         self.store.candles[self.pair][-1] = candle(15, 101.5)

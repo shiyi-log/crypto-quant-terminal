@@ -303,6 +303,51 @@ class SharedAccountIntegrationTests(unittest.TestCase):
         self.assertEqual(len(self.posts()), 2)
         self.assertTrue(all(not row["reduce_only"] for ledger in self.ledgers.values() for row in ledger.runner_orders()))
 
+    def test_burst_provenance_is_a_database_signal_and_actual_stop_mode_is_explicit(self):
+        paper = self.papers["s07"]
+        paper.row["definition"].update(signal_source="database_live_closed_candle_forward_burst", paper_mirror=False)
+        paper.row["execution"]["stop_policy"] = "close_confirmed"
+        self.papers["s35"].row["execution"]["stop_policy"] = "intrabar_ohlc"
+        self.start()
+        self.signal("s07")
+        binding = self.ledgers["s07"].get_binding()
+        entry = self.ledgers["s07"].runner_orders()[0]
+        evidence = entry["intent_payload"]
+        self.assertIn("strategy_signal", evidence)
+        self.assertNotIn("paper_signal", evidence)
+        self.assertEqual(evidence["reference_source"], "database_live_closed_candle_forward_burst")
+        self.assertLessEqual(evidence["reference_timestamp_ms"], self.clock)
+        self.assertFalse(evidence["live_executable_slippage_verified"])
+        self.assertEqual(self.ledgers["s07"].list_comparisons(stage="paper_event"), [])
+        signal = self.ledgers["s07"].list_comparisons(stage="strategy_signal")[0]["payload"]
+        self.assertEqual(signal["source_type"], "database_live_closed_candle_forward_burst")
+        self.assertFalse(signal["paper_mirror"])
+        self.assertNotIn("paper_event", signal)
+        self.assertNotIn("paper_initially_flat", binding)
+        self.assertEqual(self.ledgers["s07"].runner_fills(), [])
+        self.signal("s35", pair=ETH)
+        mirrored = self.ledgers["s35"].runner_orders()[0]["intent_payload"]
+        self.assertEqual(mirrored["frozen_source_stop_policy"], "intrabar_ohlc")
+        self.assertEqual(mirrored["actual_stop_execution_mode"], "close_confirmed_closed_candle_poll_reduce_only_market")
+        self.assertIn("paper_signal", mirrored)
+        self.assertEqual(mirrored["reference_source"], "paper_closed_candle_from_live_market")
+        self.assertEqual(self.services["s07"].status()["signal_source"], "database_live_closed_candle_forward_burst")
+
+    def test_burst_rejects_a_future_candle_even_if_mislabelled_closed(self):
+        paper = self.papers["s07"]
+        paper.row["definition"].update(signal_source="database_live_closed_candle_forward_burst", paper_mirror=False)
+        self.start()
+        original = paper.closed_candle
+        def future(pair, timeframe, candle_ms=None):
+            candle = original(pair, timeframe, candle_ms)
+            candle["timestamp"] = self.clock
+            return candle
+        paper.closed_candle = future
+        self.signal("s07")
+        self.assertEqual(self.posts(), [])
+        denied = self.ledgers["s07"].list_comparisons(stage="entry_denied")[0]["payload"]
+        self.assertEqual(denied["reason"], "strategy_candle_not_closed_at_execution")
+
 
 if __name__ == "__main__":
     unittest.main()

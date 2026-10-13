@@ -133,6 +133,8 @@ export interface DemoStatus {
     selectedAccountId?: null | string;
     virtualAccountKey?: null | string;
     switchPersistenceUnresolved?: boolean;
+    sharedRegistryPersistenceUnresolved?: boolean;
+    sharedRecoveryIncomplete?: boolean;
     tradingEnabled?: boolean;
     workerRunning?: boolean;
     accountLocked?: boolean;

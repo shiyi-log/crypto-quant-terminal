@@ -19,6 +19,8 @@ import time
 DEMO_POLICY_VERSION = "binance-demo-single-paper-v1"
 HOST = "demo-fapi.binance.com"
 TERMINAL = {"filled", "canceled", "cancelled", "rejected", "expired"}
+ACTUAL_STOP_EXECUTION_MODE = "close_confirmed_closed_candle_poll_reduce_only_market"
+BURST_SIGNAL_SOURCE = "database_live_closed_candle_forward_burst"
 
 
 def _status(value):
@@ -130,7 +132,13 @@ def signal_reference_evidence(candle, timeframe):
         return evidence
     return {**evidence, "signal_reference_price": price,
             "reference_source": "paper_closed_candle_from_live_market",
-            "reference_timestamp_ms": closed_ms}
+            "reference_timestamp_ms": closed_ms,
+            "reference_candle_provenance": {
+                "target_timeframe": timeframe,
+                "source_timeframe": candle["extras"].get("source_timeframe", timeframe),
+                "source_bars": candle["extras"].get("source_bars", 1),
+                "source_input_fingerprint": candle["extras"].get("source_input_fingerprint"),
+                "resampled": candle["extras"].get("resampled_for_demo_reference") is True}}
 
 
 def attempted_entry_outcomes(orders):
@@ -215,20 +223,9 @@ class PaperEventSource:
         return rows
 
     def closed_candle(self, pair, timeframe, candle_ms=None):
-        from strategy_data import TIMEFRAME_MS
-        bar_ms = TIMEFRAME_MS[timeframe]
-        now = self.clock_ms()
-        params = [pair, timeframe, now - bar_ms, bar_ms]
-        exact = ""
-        if candle_ms is not None:
-            exact = " AND timestamp=%s"
-            params.append(int(candle_ms))
-        with self.store._connection() as conn:
-            return conn.execute("SELECT timestamp,open,high,low,close,volume,extras FROM candles "
-                "WHERE exchange='binance' AND market='futures' AND candle_type='futures' "
-                "AND pair=%s AND timeframe=%s AND timestamp<=%s AND timestamp %% %s=0 "
-                "AND extras->>'closed'='true'" + exact + " ORDER BY timestamp DESC LIMIT 1",
-                tuple(params)).fetchone()
+        from demo_candle_source import closed_demo_candle
+        return closed_demo_candle(self.store, pair, timeframe, now_ms=self.clock_ms(),
+                                  candle_ms=candle_ms)
 
 
 class DemoExecutionService:
@@ -283,6 +280,17 @@ class DemoExecutionService:
     def _account_lock(self):
         return self.account_coordinator.lock if self.account_coordinator is not None else nullcontext()
 
+    def _direct_signal_source(self):
+        return self.account["definition"].get("signal_source") == BURST_SIGNAL_SOURCE
+
+    def _reference_evidence(self, candle):
+        evidence = signal_reference_evidence(candle, self.account["execution"]["timeframe"])
+        if self._direct_signal_source():
+            evidence["reference_comparison_scope"] = "demo_vs_live_database_signal_includes_environment_and_latency"
+            if evidence["reference_source"] is not None:
+                evidence["reference_source"] = BURST_SIGNAL_SOURCE
+        return evidence
+
     def start(self, *, entries_enabled=None):
         with self._account_lock(), self._mutex:
             if self._started:
@@ -323,7 +331,8 @@ class DemoExecutionService:
                 self.last_sequence = self.paper.latest_sequence(self.config.strategy_id)
                 self.binding = {**expected, "forward_boundary_ms": now,
                                 "last_sequence_id": self.last_sequence,
-                                "paper_initially_flat": not bool(self.account["state"].get("positions"))}
+                                "strategy_source_initially_flat" if self._direct_signal_source() else "paper_initially_flat":
+                                    not bool(self.account["state"].get("positions"))}
                 self.store.bind_account(self.binding)
             self._started = True
             self._entries_enabled = self.config.trading_enabled and entries_enabled is not False
@@ -331,7 +340,9 @@ class DemoExecutionService:
                                 status="observing" if self._entries_enabled else "read_only",
                                 forward_boundary_ms=self.binding["forward_boundary_ms"],
                                 rule_hash=self.account["rule_hash"],
-                                execution_hash=self.account["execution_hash"])
+                                execution_hash=self.account["execution_hash"],
+                                signal_source=definition.get("signal_source") or "paper_strategy_simulation_events",
+                                actual_stop_execution_mode=ACTUAL_STOP_EXECUTION_MODE)
             self.cycle()
             return self.status()
 
@@ -557,7 +568,9 @@ class DemoExecutionService:
                 "quantity": str(qty), "price": str(price) if price else None,
                 "reduce_only": role == "exit", "time_in_force": None if role == "exit" else "GTX",
                 "signal_ms": int(event.get("candle_ms") or now), "created_ms": now,
-                "endpoint_host": HOST, "raw": raw or {}}
+                "endpoint_host": HOST, "raw": {
+                    **(raw or {}), "actual_stop_execution_mode": ACTUAL_STOP_EXECUTION_MODE,
+                    "frozen_source_stop_policy": self.account["execution"].get("stop_policy")}}
 
     def _exit(self, pair, qty, reason, signal_id, now, fingerprint=None, *, reference_candle=None):
         actual = self._actual_net.get(pair, Decimal(0))
@@ -582,8 +595,7 @@ class DemoExecutionService:
         intent = self._base_intent(event, pair, "sell" if qty > 0 else "buy", "exit", abs(qty),
                                    None, now, raw={"exit_reason": reason, "demo_policy_hash": self.policy_hash,
                                        "submitted_limit_price": None, "reference_price": None,
-                                       **signal_reference_evidence(reference_candle,
-                                           self.account["execution"]["timeframe"])})
+                                       **self._reference_evidence(reference_candle)})
         progress = [[row["client_id"], str(row["filled_quantity"])] for row in self._orders()
                     if row["pair"] == pair and row.get("reduce_only") and row["status"] in TERMINAL]
         batch = _hash(sorted(progress))[:16]
@@ -608,7 +620,7 @@ class DemoExecutionService:
             row = max(orders, key=lambda order: order["created_ms"])
             intent = self._intent(row)
             max_hold_ms = (self.account["execution"].get("max_hold_ms")
-                if self.account["definition"].get("signal_source") == "database_live_closed_candle_forward_burst" else None)
+                if self._direct_signal_source() else None)
             if max_hold_ms is not None:
                 if isinstance(max_hold_ms, bool) or int(max_hold_ms) != max_hold_ms or max_hold_ms <= 0:
                     raise ValueError("invalid frozen burst maximum hold")
@@ -650,10 +662,16 @@ class DemoExecutionService:
         if event["event_type"] not in ("order_submitted", "order_filled", "order_cancelled",
                                         "order_rejected", "trade_closed"):
             return
-        self._record("paper_event", event["event_id"],
-                     {"paper_event_type": event["event_type"], "paper_event": payload,
-                      "paper_observed_ms": event["observed_at_ms"],
-                      "paper_next_open_is_proxy": True}, fingerprint=event["data_fingerprint"], now=now)
+        if self._direct_signal_source():
+            self._record("strategy_signal", event["event_id"],
+                {"strategy_event_type": event["event_type"], "strategy_event": payload,
+                 "strategy_observed_ms": event["observed_at_ms"], "source_type": BURST_SIGNAL_SOURCE,
+                 "paper_mirror": False}, fingerprint=event["data_fingerprint"], now=now)
+        else:
+            self._record("paper_event", event["event_id"],
+                         {"paper_event_type": event["event_type"], "paper_event": payload,
+                          "paper_observed_ms": event["observed_at_ms"],
+                          "paper_next_open_is_proxy": True}, fingerprint=event["data_fingerprint"], now=now)
         if event["event_type"] != "order_submitted":
             return
         pair = payload["pair"]
@@ -668,7 +686,8 @@ class DemoExecutionService:
             except Exception:
                 # Missing telemetry must never become an execution gate.
                 reference_candle = None
-            self._exit(pair, self._net().get(pair, Decimal(0)), payload.get("reason", "paper_exit"),
+            self._exit(pair, self._net().get(pair, Decimal(0)), payload.get("reason",
+                       "strategy_exit" if self._direct_signal_source() else "paper_exit"),
                        event["event_id"], now, event["data_fingerprint"], reference_candle=reference_candle)
             return
         denied = None
@@ -693,12 +712,16 @@ class DemoExecutionService:
         k = (self.account["definition"].get("params") or self.account["definition"].get("params_frozen") or {}).get("risk_stop_atr_mult")
         if candle is None or atr is None or k is None:
             denied = denied or "signal_candle_or_frozen_atr_unavailable"
+        if self._direct_signal_source():
+            reference_ms = self._reference_evidence(candle)["reference_timestamp_ms"]
+            if reference_ms is None or reference_ms > now:
+                denied = denied or "strategy_candle_not_closed_at_execution"
         if denied:
             self._record("entry_denied", event["event_id"], {"reason": denied, "pair": pair},
                          fingerprint=event["data_fingerprint"], now=now)
             return
         price = _decimal(candle["close"], positive=True)
-        reference_evidence = signal_reference_evidence(candle, self.account["execution"]["timeframe"])
+        reference_evidence = self._reference_evidence(candle)
         atr, k = _decimal(atr, positive=True), _decimal(k, positive=True)
         modeled_fee = _decimal(self.account["execution"]["fee_rate_per_side"])
         risk = _decimal(self.account["execution"]["max_loss_per_trade_usdt"], positive=True)
@@ -720,7 +743,8 @@ class DemoExecutionService:
                           "error_type": type(exc).__name__}, now=now)
             return
         intent = self._base_intent(event, pair, payload["buy_sell"], "entry", qty, price, now,
-            raw={"paper_signal": payload, "demo_policy_hash": self.policy_hash,
+            raw={"strategy_signal" if self._direct_signal_source() else "paper_signal": payload,
+                 "demo_policy_hash": self.policy_hash,
                  "entry_atr": str(atr), "risk_stop_atr_mult": str(k),
                  "reference_price": str(price), "submitted_limit_price": str(price),
                  **reference_evidence, "expires_ms": now + self.config.entry_order_ttl_ms,

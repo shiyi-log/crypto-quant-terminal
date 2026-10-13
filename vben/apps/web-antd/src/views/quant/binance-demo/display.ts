@@ -82,6 +82,8 @@ export function demoState(status?: DemoStatus | null) {
   if (!status.credentials?.configured) return { label: '待配置', color: 'default' };
   if (status.credentials.decryptionAvailable === false) return { label: '配置暂不可读取', color: 'error' };
   if (status.runner.switchPersistenceUnresolved) return { label: '切换状态待核对', color: 'error' };
+  if (status.runner.sharedRegistryPersistenceUnresolved) return { label: '并行会话保存状态待核对', color: 'error' };
+  if (status.runner.sharedRecoveryIncomplete) return { label: '并行会话恢复未完成', color: 'error' };
   const state = status.runner?.state?.toLowerCase();
   if (status.runner.lastError || ['error', 'failed', 'reconciliation_error', 'blocked_unknown_exposure'].includes(state ?? '')) return { label: '运行异常', color: 'error' };
   if (status.runner.risk_alert) return { label: '风险保护待恢复', color: 'error' };
@@ -103,6 +105,7 @@ export function accountLabel(account: DemoStrategyAccount): string {
 
 export function canStartDemo(status: DemoStatus | null, accountId: string): boolean {
   return Boolean(status?.credentials?.configured && status.credentials.decryptionAvailable !== false && !status?.runner?.tradingEnabled && status?.runner?.state !== 'running' && !status.runner.switchPersistenceUnresolved &&
+    !status.runner.sharedRegistryPersistenceUnresolved && !status.runner.sharedRecoveryIncomplete &&
     (!status.runner.selectedAccountId || status.runner.selectedAccountId === accountId) &&
     (!status.runner.accountLocked || status.runner.selectedAccountId === accountId) &&
     status?.accounts?.some((account) => account.accountId === accountId && account.enabled && account.eligible));
@@ -111,13 +114,15 @@ export function canStartDemo(status: DemoStatus | null, accountId: string): bool
 export function canSwitchDemo(status: DemoStatus | null, accountId: string): boolean {
   return Boolean(status?.switchSupported && status.credentials?.configured && status.credentials.decryptionAvailable !== false &&
     status.runner.selectedAccountId && status.runner.selectedAccountId !== accountId && !status.runner.handoffInProgress && !status.runner.switchPersistenceUnresolved &&
+    !status.runner.sharedRegistryPersistenceUnresolved && !status.runner.sharedRecoveryIncomplete &&
     status.accounts?.some((account) => account.accountId === accountId && account.enabled && account.eligible));
 }
 
 function parallelActionsReady(status: DemoStatus | null): status is DemoStatus {
   return Boolean(status?.parallelSupported && status.credentials?.configured &&
     status.credentials.decryptionAvailable !== false && !status.runner.handoffInProgress &&
-    !status.runner.switchPersistenceUnresolved && !status.runner.sharedPersistenceUnresolved);
+    !status.runner.switchPersistenceUnresolved && !status.runner.sharedRegistryPersistenceUnresolved &&
+    !status.runner.sharedRecoveryIncomplete);
 }
 
 function eligibleDemoAccount(status: DemoStatus, accountId: string): boolean {
@@ -235,7 +240,7 @@ export function isComparisonActivity(row: DemoRecord): boolean {
 }
 
 const comparisonStages: Record<string, string> = {
-  paper_event: '内部模拟事件', entry_denied: 'Demo 未开仓', entry_expiry: 'Demo 挂单到期',
+  paper_event: '内部模拟事件', strategy_signal: '策略信号', entry_denied: 'Demo 未开仓', entry_expiry: 'Demo 挂单到期',
   submission_error: 'Demo 提交异常', snapshot_error: '账户检查异常',
   binding: '会话绑定', runner_checkpoint: '运行心跳', actual_execution_config: '执行配置检查',
 };
@@ -256,19 +261,30 @@ export function comparisonPriceText(row: DemoRecord): string {
 export function comparisonObservation(row: DemoRecord): DemoRecord {
   const payload = record(row.payload);
   const paper = record(payload.paper_event);
-  const price = payload.paper_event_type === 'order_filled' ? paper.fill_price
+  const direct = row.stage === 'strategy_signal' || payload.paper_mirror === false;
+  const event = direct ? record(payload.strategy_event) : paper;
+  const price = direct ? null : payload.paper_event_type === 'order_filled' ? paper.fill_price
     : payload.paper_event_type === 'trade_closed' ? paper.exit_price : null;
+  const eventType = direct ? payload.strategy_event_type : payload.paper_event_type;
+  const eventLabel = direct ? eventType === 'order_submitted'
+    ? event.kind === 'entry' ? '开仓意图' : event.kind === 'exit' ? '平仓意图' : '策略委托意图'
+    : `策略事件 · ${valueText(eventType)}`
+    : paperEventTypes[String(eventType ?? '')] ?? valueText(eventType);
   return {
     observationId: row.observation_id,
     signalId: row.signal_id ?? payload.signal_id,
     observedAt: row.observed_ms,
-    pair: payload.pair ?? paper.pair,
+    pair: payload.pair ?? event.pair,
     stage: row.stage,
     stageLabel: comparisonStages[String(row.stage ?? '')] ?? valueText(row.stage),
-    paperEventType: payload.paper_event_type,
-    paperEventLabel: paperEventTypes[String(payload.paper_event_type ?? '')] ?? valueText(payload.paper_event_type),
+    paperEventType: direct ? undefined : payload.paper_event_type,
+    paperEventLabel: direct ? undefined : eventLabel,
+    strategyEventType: direct ? payload.strategy_event_type : undefined,
+    eventLabel,
+    sourceType: payload.source_type,
+    paperMirror: direct ? false : payload.paper_mirror,
     internalPrice: typeof price === 'string' && price !== '' ? price : typeof price === 'number' && Number.isFinite(price) ? String(price) : null,
-    reason: payload.reason ?? payload.cancellation_reason ?? payload.error_kind ?? payload.error_type ?? paper.reason ?? paper.exit_reason,
+    reason: payload.reason ?? payload.cancellation_reason ?? payload.error_kind ?? payload.error_type ?? event.reason ?? event.exit_reason,
     ruleHash: row.rule_hash ?? payload.rule_hash,
     inputFingerprint: row.input_fingerprint ?? payload.input_fingerprint,
   };

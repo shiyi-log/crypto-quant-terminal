@@ -38,6 +38,9 @@ const sessionError = ref('');
 const switchError = ref('');
 const strategyError = ref('');
 const parallelActionError = ref('');
+const sharedStateError = computed(() => status.value?.runner.sharedRegistryPersistenceUnresolved
+  ? demoError({ message: 'demo_shared_persistence_unresolved' })
+  : status.value?.runner.sharedRecoveryIncomplete ? demoError({ message: 'demo_shared_recovery_incomplete' }) : '');
 const updatedAt = ref<number | null>(null);
 let timer: ReturnType<typeof setInterval> | undefined;
 let controller: AbortController | undefined;
@@ -168,7 +171,7 @@ const comparisonColumns = [
   { title: '信号标识', dataIndex: 'signalId', key: 'signalId', width: 200 },
   { title: '交易对', dataIndex: 'pair', key: 'pair', width: 155 },
   { title: '执行阶段', key: 'stage', width: 175 },
-  { title: '内部模拟事件', key: 'paperEventType', width: 160 },
+  { title: '策略 / 内部模拟事件', key: 'paperEventType', width: 170 },
   { title: '内部模拟成交价', key: 'internalPrice', width: 160 },
   { title: '原因', dataIndex: 'reason', key: 'reason', width: 210 },
   { title: '输入指纹', dataIndex: 'inputFingerprint', key: 'inputFingerprint', width: 260, ellipsis: true },
@@ -416,6 +419,7 @@ onUnmounted(() => {
     </div>
 
     <Alert v-if="error" class="mb-3" show-icon type="error" :message="error" />
+    <Alert v-if="sharedStateError" class="mb-3" show-icon type="error" message="并行策略新开仓已阻断" :description="sharedStateError" />
     <Alert
       class="mb-4" show-icon type="info"
       message="Demo 的订单簿定价和执行可能与实盘不同。费用以每笔实际成交回报为准。"
@@ -633,12 +637,12 @@ onUnmounted(() => {
             <Select v-model:value="comparisonView" aria-label="对照记录视图" :options="[{ label: '信号与执行', value: 'signals' }, { label: '全部审计日志', value: 'audit' }]" style="min-width: 170px" @change="changeComparisonView" />
             <span class="text-xs text-muted-foreground">本次读取 {{ comparisonRows.length }} 条{{ comparisonView === 'audit' ? '审计日志' : '信号与执行记录' }}（最多 100 条）</span>
           </div>
-          <div class="mb-3 text-xs text-muted-foreground">默认显示信号、委托与执行异常；运行心跳、配置检查保留在“全部审计日志”。内部模拟成交价“—”表示非成交记录，“未记录”表示成交事件缺少价格。Demo 实际成交见“成交与手续费”，两条成交路径不同。</div>
+          <div class="mb-3 text-xs text-muted-foreground">默认显示信号、委托与执行异常；运行心跳、配置检查保留在“全部审计日志”。直接策略信号展示开仓或平仓意图，不是成交。内部模拟成交价“—”表示非成交记录，“未记录”表示成交事件缺少价格。Demo 实际成交见“成交与手续费”，两条成交路径不同。</div>
           <Table :columns="comparisonColumns" :data-source="comparisonRows" :row-key="rowKey" :loading="loading" :scroll="{ x: 1500 }" size="small" :pagination="{ pageSize: 10 }">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'observedAt'">{{ exchangeTime(record.observedAt) }}</template>
               <template v-else-if="column.key === 'stage'"><span :title="valueText(record.stage)">{{ record.stageLabel }}</span></template>
-              <template v-else-if="column.key === 'paperEventType'"><span :title="valueText(record.paperEventType)">{{ record.paperEventLabel }}</span></template>
+              <template v-else-if="column.key === 'paperEventType'"><span :title="valueText(record.strategyEventType ?? record.paperEventType)">{{ record.eventLabel }}</span></template>
               <template v-else-if="column.key === 'internalPrice'">{{ comparisonPriceText(record) }}</template>
               <template v-else>{{ valueText(record[String(column.key)]) }}</template>
             </template>

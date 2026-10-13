@@ -264,6 +264,9 @@ class PriceBurstEventSource:
         atr = sum(true_ranges, Decimal(0)) / ATR_WINDOW
         if atr <= 0:
             return None, {"reason": "entry_atr_unavailable"}
+        input_candles = [{**fact, "timestamp": row["timestamp"],
+                          "live_event_timestamp": row["extras"]["live_event_timestamp"]}
+                         for row, fact in zip(rows, facts)]
         evidence = {"entry_atr": str(atr), "atr_window": ATR_WINDOW,
                     "burst_origin_candle_ms": rows[-4]["timestamp"],
                     "burst_origin_close": facts[-4]["close"],
@@ -272,8 +275,8 @@ class PriceBurstEventSource:
                     "move_threshold": "0.015", "previous_direction": previous,
                     "source": "database_live_closed_candle_forward_burst",
                     "atr_excludes_decision_candle": True,
-                    "input_fingerprint": _hash([{**fact, "timestamp": row["timestamp"]}
-                                                for row, fact in zip(rows, facts)])}
+                    "input_candles": input_candles,
+                    "input_fingerprint": _hash(input_candles)}
         return side, evidence
 
     def events(self, strategy_id, after_sequence, limit=1000):
@@ -301,7 +304,7 @@ class PriceBurstEventSource:
                 # manufacture a new forward entry for an already observed bar.
                 state["pair_checkpoints"][pair] = timestamp
                 close_ms = timestamp + BAR_MS
-                if close_ms < state["forward_boundary_ms"]:
+                if close_ms <= state["forward_boundary_ms"]:
                     state["observations"][pair] = {"candle_ms": timestamp, "reason": "before_forward_boundary"}
                     continue
                 if not 0 <= now - close_ms <= MAX_SIGNAL_LAG_MS:
@@ -324,6 +327,8 @@ class PriceBurstEventSource:
                 event = {**identity, "sequence_id": state["sequence_id"], "event_id": event_id,
                          "execution_hash": account["execution_hash"],
                          "event_type": "order_submitted", "observed_at_ms": close_ms,
+                         "generated_at_ms": now,
+                         "event_semantics": "forward_entry_intent_not_exchange_order",
                          "data_fingerprint": _hash(payload), "payload": payload}
                 self._insert_document(conn, BURST_EVENT_PREFIX + f"{state['sequence_id']:020d}.json", event)
             if changed:

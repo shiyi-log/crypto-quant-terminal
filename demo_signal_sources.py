@@ -1,10 +1,11 @@
 """Dispatch frozen paper mirrors and the independent forward burst experiment."""
 from demo_execution_service import PaperEventSource
-from demo_price_burst import BURST_STRATEGY_ID, PriceBurstEventSource
+from demo_price_burst import BURST_DEFINITION_KEY, BURST_STRATEGY_ID, PriceBurstEventSource
 
 
 class DemoSignalSources:
     def __init__(self, store, *, paper=None, burst=None, clock_ms=None):
+        self.store = store
         self.paper = paper or PaperEventSource(store, clock_ms=clock_ms)
         self.burst = burst or PriceBurstEventSource(store, clock_ms=clock_ms)
 
@@ -25,12 +26,12 @@ class DemoSignalSources:
         return self.paper.closed_candle(pair, timeframe, candle_ms)
 
     def additional_accounts(self):
-        try:
-            row = self.burst.account(BURST_STRATEGY_ID)
-        except ValueError:
-            # Listing is read only. Account bootstrap is an explicit operator
-            # action and is never hidden in a dashboard GET.
+        # Listing is read only. Account bootstrap is an explicit operator
+        # action and is never hidden in a dashboard GET. Identity corruption
+        # remains an error instead of silently hiding a registered account.
+        if self.store.get_document(BURST_DEFINITION_KEY) is None:
             return []
+        row = self.burst.account(BURST_STRATEGY_ID)
         return [{"accountId": row["strategy_id"], "strategyId": row["strategy_id"],
                  "ruleHash": row["rule_hash"], "executionHash": row["execution_hash"],
                  "enabled": True, "eligible": True, "blockedReason": None,

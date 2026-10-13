@@ -17,6 +17,7 @@ from strategy_signals import (
     normalize_spec,
     strategy_rule_hash,
 )
+from strategy_fee_schedule import DEMO_FEE_MODEL_VERSION, LEGACY_FEE_MODEL_VERSION
 
 START = int(datetime(2025, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
 
@@ -74,6 +75,24 @@ class StrategyRuleIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported strategy_id"):
             normalize_spec({"strategy_id": variant})
 
+    def test_cost_variant_is_explicit_and_has_distinct_rule_hash(self):
+        base = normalize_spec({"strategy_id": "s05_bollinger_fade"})
+        variant = normalize_spec({
+            "strategy_id": "s05_bollinger_fade_Cost4bp",
+            "params": {"min_expected_move_bps": 4.0},
+        })
+        self.assertEqual(_canonical_strategy_id(variant["strategy_id"]),
+                         "s05_bollinger_fade")
+        self.assertEqual(variant["params"]["min_expected_move_bps"], 4.0)
+        self.assertNotEqual(base["rule_hash"], variant["rule_hash"])
+
+    def test_cost_variant_requires_explicit_threshold(self):
+        with self.assertRaisesRegex(ValueError, "requires min_expected_move_bps"):
+            normalize_spec({"strategy_id": "s08_wick_rejection_Cost4bp"})
+        with self.assertRaises(ValueError):
+            normalize_spec({"strategy_id": "s07_surge_continuation",
+                            "params": {"min_expected_move_bps": 4.0}})
+
     def test_2x2_signal_evaluation_accepts_all_declared_arms(self):
         rows = candles(400)
         rows = [dict(row, timestamp=START + index * 900_000)
@@ -124,6 +143,40 @@ class StrategyRuleIdentityTests(unittest.TestCase):
                        {"min_warmup_bars": 100}, {"position_budget": {"target_exposure": 0.2}}):
             with self.subTest(update=update):
                 self.assertNotEqual(baseline, strategy_rule_hash({**spec, **update}))
+
+    def test_legacy_without_fee_model_version_keeps_shape_and_hash(self):
+        spec = {"strategy_id": "s07_surge_continuation"}
+        normalized = normalize_spec(spec)
+        self.assertNotIn("fee_model_version", normalized)
+        self.assertEqual(normalize_spec(normalized), normalized)
+        explicit_legacy = normalize_spec({**spec,
+                                          "fee_model_version": LEGACY_FEE_MODEL_VERSION})
+        self.assertEqual(explicit_legacy["fee_model_version"], LEGACY_FEE_MODEL_VERSION)
+        self.assertNotEqual(explicit_legacy["rule_hash"], normalized["rule_hash"])
+        self.assertEqual(normalize_spec(explicit_legacy), explicit_legacy)
+
+    def test_demo_fee_model_is_explicit_and_rate_bound(self):
+        maker = normalize_spec({"strategy_id": "s07_surge_continuation",
+                                "fee_model_version": DEMO_FEE_MODEL_VERSION})
+        taker = normalize_spec({"strategy_id": "s07_surge_continuation",
+                                "fee_model_version": DEMO_FEE_MODEL_VERSION,
+                                "fee_rate_per_side": 0.0004})
+        self.assertEqual(maker["fee_rate_per_side"], 0.0002)
+        self.assertEqual(taker["fee_rate_per_side"], 0.0004)
+        self.assertEqual(maker["fee_model_version"], DEMO_FEE_MODEL_VERSION)
+        self.assertNotEqual(maker["rule_hash"], taker["rule_hash"])
+        for fee in (0.0003, 0.0005):
+            with self.subTest(fee=fee), self.assertRaisesRegex(ValueError, "Demo fee_model_version"):
+                normalize_spec({"strategy_id": "s07_surge_continuation",
+                                "fee_model_version": DEMO_FEE_MODEL_VERSION,
+                                "fee_rate_per_side": fee})
+
+    def test_fee_model_version_rejects_unknown_and_non_string_values(self):
+        for version in ("unknown", None, True, {}, 1):
+            with self.subTest(version=version), self.assertRaisesRegex(
+                    ValueError, "unsupported fee_model_version"):
+                normalize_spec({"strategy_id": "s07_surge_continuation",
+                                "fee_model_version": version})
 
     def test_changed_executable_spec_cannot_reuse_stale_rule_hash(self):
         normalized = normalize_spec({"strategy_id": "s02_dual_thrust"})
@@ -518,6 +571,46 @@ class TenMechanismTests(unittest.TestCase):
         result = account("s04_btc_eth_pairs", rows, positions={BTC: position(rows)})
         self.assertEqual([result["signals"][pair]["target_side"] for pair in (BTC, ETH)], [0, 0])
         self.assertEqual(result["signals"][BTC]["reason"], "atomic_position_inconsistent")
+
+    def test_cost_variant_s04_gates_pair_convergence_space(self):
+        spec = {"strategy_id": "s04_btc_eth_pairs_Cost4bp",
+                "params": {"L": 96, "T": 0.0005, "exit_band": 0.00049, "H": 96,
+                            "min_expected_move_bps": 4.0}}
+        btc = latest(candles(), close=100.06)
+        eth = candles()
+        result = evaluate(spec, {BTC: btc, ETH: eth})
+        for pair in (BTC, ETH):
+            with self.subTest(pair=pair):
+                signal = result["signals"][pair]
+                self.assertIsNone(signal["target_side"])
+                self.assertEqual(signal["reason"],
+                                 "expected_gross_move_below_cost_threshold")
+                self.assertAlmostEqual(signal["evidence"]["expected_move_bps"], 1.1,
+                                       places=6)
+
+    def test_cost_variant_s05_gates_small_mean_reversion_space(self):
+        prices = [100.0 + (0.0001 if index % 2 else -0.0001)
+                  for index in range(750)]
+        rows = latest(candles(prices=prices), close=100.0003)
+        spec = {"strategy_id": "s05_bollinger_fade_Cost4bp",
+                "params": {"min_expected_move_bps": 4.0}}
+        signal = evaluate(spec, {BTC: rows, ETH: copy.deepcopy(rows)})["signals"][BTC]
+        self.assertIsNone(signal["target_side"])
+        self.assertEqual(signal["reason"],
+                         "expected_gross_move_below_cost_threshold")
+        self.assertLess(signal["evidence"]["expected_move_bps"], 4.0)
+
+    def test_cost_variant_s08_gates_small_atr_target(self):
+        prices = [10_000.0] * 750
+        rows = latest(candles(prices=prices), open_price=10_000.0,
+                      close=10_001.0, high=10_001.1, low=9_996.0)
+        spec = {"strategy_id": "s08_wick_rejection_Cost4bp",
+                "params": {"min_expected_move_bps": 4.0}}
+        signal = evaluate(spec, {BTC: rows, ETH: copy.deepcopy(rows)})["signals"][BTC]
+        self.assertIsNone(signal["target_side"])
+        self.assertEqual(signal["reason"],
+                         "expected_gross_move_below_cost_threshold")
+        self.assertLess(signal["evidence"]["expected_move_bps"], 4.0)
 
     def test_s05_deviation_uses_previous_window_and_exits_on_mean(self):
         prices = [99 if index % 2 else 101 for index in range(750)]

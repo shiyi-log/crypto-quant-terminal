@@ -27,6 +27,10 @@ NATIVE_WARMUP_REFRESH_MS = 30_000
 PAIRS = ("BTC/USDT:USDT", "ETH/USDT:USDT")
 STATUS_PATH = ROOT / "database/runtime/strategy_lab_status.json"
 ACTIVE_VARIANT_SUFFIX = "_100x_maker"
+COST_ADJUSTED_VARIANT_SUFFIX = "_Cost4bp"
+COST_ADJUSTED_STRATEGIES = frozenset({
+    "s04_btc_eth_pairs", "s05_bollinger_fade", "s08_wick_rejection",
+})
 
 
 def fingerprint(value):
@@ -180,6 +184,48 @@ def load_specs(path=None):
             # ledger cannot express six simultaneous long/short legs.
             spec["data_status"] = "cross_sectional_execution_pending"
     return specs
+
+
+def load_cost_adjusted_specs(path=None):
+    """Build the opt-in cost-filter population beside frozen paper accounts.
+
+    The ordinary population is deliberately left untouched: an existing
+    ``strategy_id`` is an immutable ledger identity.  These three definitions
+    carry a distinct suffix, a 4bp expected-move gate, and the explicitly
+    versioned Demo commission contract so they can run in parallel with the
+    original accounts.
+    """
+    from strategy_fee_schedule import DEMO_FEE_MODEL_VERSION, MAKER_FEE_PER_SIDE
+    from strategy_signals import normalize_spec
+
+    selected = [spec for spec in load_specs(path)
+                if spec.get("variant_of") in COST_ADJUSTED_STRATEGIES]
+    result = []
+    for source in selected:
+        spec = copy.deepcopy(source)
+        # The source definition is already normalized and carries the frozen
+        # control hash. A cost variant must derive a fresh identity instead of
+        # asking the normalizer to accept that stale hash.
+        spec.pop("rule_hash", None)
+        spec.pop("execution_hash", None)
+        source_id = str(source["strategy_id"])
+        spec["strategy_id"] = f"{source_id}{COST_ADJUSTED_VARIANT_SUFFIX}"
+        spec["variant_label"] = "4bp 预期毛移动成本过滤 · Demo 费率研究变体"
+        spec["cost_adjustment_version"] = "expected-move-gate-v1"
+        spec["cost_adjustment_status"] = "hypothesis"
+        params = dict(spec.get("params", {}))
+        params["min_expected_move_bps"] = 4.0
+        spec["params"] = params
+        spec["params_frozen"] = copy.deepcopy(params)
+        spec["fee_model_version"] = DEMO_FEE_MODEL_VERSION
+        spec["fee_rate_per_side"] = MAKER_FEE_PER_SIDE
+        normalized = normalize_spec(spec)
+        result.append({**spec, **normalized})
+    if {spec.get("variant_of") for spec in result} != COST_ADJUSTED_STRATEGIES:
+        raise ValueError("cost-adjusted population must contain s04, s05 and s08")
+    if len({spec["strategy_id"] for spec in result}) != len(result):
+        raise ValueError("cost-adjusted strategy identities must be distinct")
+    return result
 
 
 def load_2x2_specs(path=None, *, activate=False):
@@ -824,6 +870,9 @@ def main():
     parser.add_argument("--risk-execution-2x2", action=argparse.BooleanOptionalAction,
                         default=False,
                         help="显式启用重点策略 2x2 杠杆/止损对照账户（默认关闭）")
+    parser.add_argument("--cost-adjusted", action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help="显式启用 s04/s05/s08 4bp 成本过滤研究变体（默认关闭）")
     args = parser.parse_args()
     if not 1 <= args.interval <= 60:
         parser.error("interval must be between 1 and 60 seconds")
@@ -844,6 +893,11 @@ def main():
     service = None
     try:
         requested = load_specs()
+        if args.cost_adjusted:
+            # Cost gates and the Demo fee model are new identities.  Keeping
+            # this behind an explicit gate makes the old population a stable
+            # parallel control and avoids accidental account upgrades.
+            requested += load_cost_adjusted_specs()
         if args.risk_execution_2x2:
             # The focus population is opt-in and gets distinct strategy IDs;
             # resume_frozen_specs below protects any already persisted identity.

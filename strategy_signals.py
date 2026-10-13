@@ -17,6 +17,13 @@ from decimal import Decimal
 from statistics import mean, median, stdev
 from typing import Any
 
+from strategy_fee_schedule import (
+    DEMO_FEE_MODEL_VERSION,
+    LEGACY_FEE_MODEL_VERSION,
+    MAKER_FEE_PER_SIDE,
+    TAKER_FEE_PER_SIDE,
+)
+
 BAR_MS = 300_000
 DAY_MS = 86_400_000
 TIMEFRAME_MS = {"5m": 300_000, "15m": 900_000, "1h": 3_600_000,
@@ -57,6 +64,16 @@ _TWO_BY_TWO_SUFFIXES = (
     "_2x2_C_L100_intrabar",
     "_2x2_D_L30_intrabar",
 )
+
+# Cost-gated variants are separate identities.  The optional parameter is
+# deliberately absent from the frozen defaults so legacy rule hashes remain
+# unchanged.
+_COST_FILTER_SUFFIX = "_Cost4bp"
+_COST_FILTER_PARAM = "min_expected_move_bps"
+_COST_FILTER_STRATEGIES = frozenset({
+    "s04_btc_eth_pairs", "s05_bollinger_fade", "s08_wick_rejection",
+})
+_COST_FILTER_REASON = "expected_gross_move_below_cost_threshold"
 
 # Native bars for the later research arms.  The original arm remains 5m by
 # default for backwards compatibility; these identities are explicitly daily.
@@ -172,13 +189,20 @@ def _canonical_strategy_id(strategy_id: Any) -> str:
     signal implementation is shared with the frozen research mechanism.
     """
     value = str(strategy_id)
-    for suffix in _TWO_BY_TWO_SUFFIXES:
-        if value.endswith(suffix):
-            return value[:-len(suffix)]
-    for suffix in ("_B15m_100x_maker", "_Cgen2_100x_maker",
-                   "_Dgen3_100x_maker", "_100x_maker", "_100x", "_v2"):
-        if value.endswith(suffix):
-            return value[:-len(suffix)]
+    # Cost variants append their research marker to an existing execution
+    # identity (for example ``..._B15m_100x_maker_Cost4bp``). Strip both
+    # layers so the signal implementation remains the canonical mechanism.
+    suffixes = (_COST_FILTER_SUFFIX, *_TWO_BY_TWO_SUFFIXES,
+                "_B15m_100x_maker", "_Cgen2_100x_maker",
+                "_Dgen3_100x_maker", "_100x_maker", "_100x", "_v2")
+    changed = True
+    while changed:
+        changed = False
+        for suffix in suffixes:
+            if value.endswith(suffix):
+                value = value[:-len(suffix)]
+                changed = True
+                break
     return value
 
 
@@ -276,6 +300,22 @@ def _required_bars(strategy_id: str, params: dict[str, Any]) -> int:
     return 2
 
 
+def _cost_filter_passes(params: Mapping[str, Any], expected_move_ratio: float,
+                        evidence: dict[str, Any]) -> bool:
+    """Record and enforce an explicit expected-move gate for new variants."""
+    if _COST_FILTER_PARAM not in params:
+        return True
+    expected = _number(expected_move_ratio, "expected_move_ratio")
+    threshold_bps = _number(params[_COST_FILTER_PARAM], _COST_FILTER_PARAM,
+                            positive=True)
+    expected_bps = expected * 10_000
+    evidence.update(expected_move_pct=expected,
+                    expected_move_bps=expected_bps,
+                    min_expected_move_bps=threshold_bps,
+                    cost_filter="expected_gross_move")
+    return expected_bps > threshold_bps
+
+
 def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     """Freeze executable semantics; exclude research claims and annotations.
 
@@ -288,7 +328,9 @@ def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("strategy spec must be a mapping")
     strategy_id = spec.get("strategy_id")
     canonical_id = _canonical_strategy_id(strategy_id)
-    is_2x2 = any(str(strategy_id).endswith(suffix) for suffix in _TWO_BY_TWO_SUFFIXES)
+    is_2x2 = any(str(strategy_id).endswith(suffix)
+                 or str(strategy_id).endswith(suffix + _COST_FILTER_SUFFIX)
+                 for suffix in _TWO_BY_TWO_SUFFIXES)
     experimental_2x2 = is_2x2 and spec.get("execution_variant") == "risk-execution-2x2-v1"
     if canonical_id not in DEFAULTS:
         raise ValueError(f"unsupported strategy_id: {strategy_id}")
@@ -299,10 +341,31 @@ def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
                         and isinstance(supplied, Mapping)
                         and "risk_stop_atr_mult" in supplied)
     defaults, minimum = (DEFAULTS if atr_risk_enabled else LEGACY_DEFAULTS)[canonical_id]
-    if not isinstance(supplied, Mapping) or set(supplied) - set(defaults):
+    cost_variant = str(strategy_id).endswith(_COST_FILTER_SUFFIX)
+    if cost_variant and canonical_id not in _COST_FILTER_STRATEGIES:
+        raise ValueError("cost filter variant is unsupported for this strategy")
+    if not isinstance(supplied, Mapping):
         raise ValueError("unknown or invalid executable params")
+    unknown = set(supplied) - set(defaults) - {_COST_FILTER_PARAM}
+    if unknown:
+        raise ValueError("unknown or invalid executable params")
+    has_cost_filter = _COST_FILTER_PARAM in supplied
+    if cost_variant and not has_cost_filter:
+        raise ValueError("cost filter variant requires min_expected_move_bps")
+    if has_cost_filter and not cost_variant:
+        raise ValueError("min_expected_move_bps requires a new Cost4bp strategy identity")
+    if has_cost_filter and canonical_id not in _COST_FILTER_STRATEGIES:
+        raise ValueError("min_expected_move_bps is unsupported for this strategy")
     params = {**defaults, **supplied}
+    if has_cost_filter:
+        min_expected_move_bps = _number(supplied[_COST_FILTER_PARAM],
+                                        _COST_FILTER_PARAM, positive=True)
+        if min_expected_move_bps >= 10_000:
+            raise ValueError("min_expected_move_bps must be below 10000")
+        params[_COST_FILTER_PARAM] = min_expected_move_bps
     for key, value in params.items():
+        if key == _COST_FILTER_PARAM:
+            continue
         if isinstance(defaults[key], bool):
             if value is not True:
                 raise ValueError(f"{key} must remain true")
@@ -392,6 +455,18 @@ def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     fee = _number(spec.get("fee_rate_per_side", 0.0002), "fee_rate_per_side")
     if not 0 <= fee < 1:
         raise ValueError("fee_rate_per_side must be in [0, 1)")
+    # Fee model versioning is opt-in so historical definitions without the
+    # field retain their exact normalized shape and rule hash.  Once a model
+    # is explicit, bind the version and its allowed Demo rates to the rule.
+    fee_model_version = None
+    if "fee_model_version" in spec:
+        fee_model_version = spec["fee_model_version"]
+        if (not isinstance(fee_model_version, str)
+                or fee_model_version not in {LEGACY_FEE_MODEL_VERSION, DEMO_FEE_MODEL_VERSION}):
+            raise ValueError("unsupported fee_model_version")
+        if (fee_model_version == DEMO_FEE_MODEL_VERSION
+                and fee not in {MAKER_FEE_PER_SIDE, TAKER_FEE_PER_SIDE}):
+            raise ValueError("Demo fee_model_version requires the Demo maker or taker fee rate")
     policies = {
         "closed_only": True, "fill_model": "next_closed_bar_open_proxy",
         "slippage": "unknown", "funding": "unknown",
@@ -423,6 +498,8 @@ def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         "position_budget": budget, "initial_capital": capital, "fee_rate_per_side": fee,
         **policies,
     }
+    if fee_model_version is not None:
+        normalized["fee_model_version"] = fee_model_version
     for key, expected in (("schema_version", SCHEMA_VERSION),
                           ("algorithm_version", ALGORITHM_VERSION)):
         if key in spec and spec[key] != expected:
@@ -1183,6 +1260,10 @@ def _single_mechanism(strategy_id: str, rows: list[dict[str, Any]], params: dict
             return (0, "mean_reversion_complete", evidence, 1.0) if z * pos["side"] >= 0 \
                 else (None, "position_held", evidence, 1.0)
         side = 1 if z <= -params["Z"] else -1 if z >= params["Z"] else None
+        if side is not None:
+            expected_move = abs(close - ma) / close
+            if not _cost_filter_passes(params, expected_move, evidence):
+                return None, _COST_FILTER_REASON, evidence, 1.0
         return side, "statistical_deviation" if side else "no_statistical_deviation", evidence, 1.0
     if strategy_id == "s06_volume_climax_reversal":
         volume_window = params["volume_window"]
@@ -1265,6 +1346,10 @@ def _single_mechanism(strategy_id: str, rows: list[dict[str, Any]], params: dict
         threshold = Decimal(str(params["W"])) * range_decimal
         side = 1 if lower >= threshold and close > current["open"] else \
             -1 if upper >= threshold and close < current["open"] else None
+        if side is not None:
+            expected_move = params["tp_atr_mult"] * atr / close
+            if not _cost_filter_passes(params, expected_move, evidence):
+                return None, _COST_FILTER_REASON, evidence, 1.0
         return side, "wick_rejection" if side else "no_wick_rejection", evidence, 1.0
     if strategy_id == "s09_trend_pullback":
         slow = params["ma_slow"]
@@ -1553,6 +1638,11 @@ def evaluate(spec: Mapping[str, Any], candles_by_pair: Mapping[str, Any],
         common.update(eth_return=eth_return, relative_return=diff,
                       peer_data_fingerprint=signals[ETH]["evidence"]["data_fingerprint"],
                       equal_notional=True, both_legs_required=True)
+        expected_move = abs(diff) - params["exit_band"]
+        if _COST_FILTER_PARAM in params:
+            # Keep the pair's expected convergence distance visible for audit;
+            # the explicit threshold is shared with the single-leg variants.
+            _cost_filter_passes(params, expected_move, common)
         btc_pos, eth_pos = actual_positions[BTC], actual_positions[ETH]
         target: tuple[int | None, int | None] = (None, None)
         reason = "no_relative_strength_trigger"
@@ -1567,8 +1657,12 @@ def evaluate(spec: Mapping[str, Any], candles_by_pair: Mapping[str, Any],
             else:
                 reason = "paired_position_held"
         elif abs(diff) >= params["T"]:
-            target = (1, -1) if diff > 0 else (-1, 1)
-            reason = "relative_strength_pair"
+            if _COST_FILTER_PARAM in params and not _cost_filter_passes(
+                    params, expected_move, common):
+                reason = _COST_FILTER_REASON
+            else:
+                target = (1, -1) if diff > 0 else (-1, 1)
+                reason = "relative_strength_pair"
         for pair, side in zip((BTC, ETH), target):
             signals[pair].update(target_side=side, reason=reason,
                                  evidence={**signals[pair]["evidence"], **common})

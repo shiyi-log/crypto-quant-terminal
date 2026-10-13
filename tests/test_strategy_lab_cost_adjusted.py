@@ -24,6 +24,10 @@ class CostAdjustedPopulationTests(unittest.TestCase):
                             for spec in adjusted))
         self.assertTrue(all(spec["fee_rate_per_side"] == MAKER_FEE_PER_SIDE
                             for spec in adjusted))
+        self.assertTrue(all(spec["execution_enabled"] is False
+                            and spec["blocked_execution_reason"] ==
+                            "cost_adjusted_research_only"
+                            for spec in adjusted))
         legacy_ids = {spec["strategy_id"] for spec in legacy}
         self.assertFalse(legacy_ids & {spec["strategy_id"] for spec in adjusted})
 

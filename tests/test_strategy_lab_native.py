@@ -89,6 +89,24 @@ class NativeCycleTests(TestCase):
         service.cycle(900_001)
         self.assertEqual(service.status["status"], "waiting_new_closed_candle")
 
+    def test_native_empty_tail_becomes_explicitly_stale_after_startup_grace(self):
+        pair = "BTC/USDT:USDT"
+        spec = {"strategy_id": "s12_surge_expansion_breakout_100x_maker",
+                "timeframe": "15m", "execution_universe": [pair],
+                "universe": [pair], "params_frozen": {"VR": 10.0,
+                "window": 96, "valid_bars": 24, "H": 48},
+                "position_budget": {"leverage": 100}}
+        status_path = Path(tempfile.mkdtemp()) / "status.json"
+        service = StrategyLabService(Mock(), Mock(), [spec], now_ms=900_000,
+                                     status_path=status_path)
+        service.load_strategy_inputs = lambda *_args, **_kwargs: {pair: []}
+        interval = 900_000
+        boundary = service.boundaries["15m"]
+        service.cycle(boundary + interval + MAX_CLOSE_DELAY_MS + 1)
+        self.assertEqual(service.status["native_timeframes"]["15m"]["status"],
+                         "data_stale")
+        self.assertEqual(service.status["status"], "data_stale")
+
     def test_processed_native_close_current_until_successor_close_deadline(self):
         for timeframe in ("15m", "1h"):
             with self.subTest(timeframe=timeframe):

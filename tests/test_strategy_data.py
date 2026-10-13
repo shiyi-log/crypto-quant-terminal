@@ -170,6 +170,31 @@ class StrategyDataTests(unittest.TestCase):
                 self.assertIsNone(error)
                 self.assertEqual(len(continuous), 750)
 
+    def test_stale_native_tail_fails_closed_when_fallback_is_unavailable(self):
+        interval = timeframe_milliseconds("15m")
+        direct = [candle(index * interval) for index in range(4)]
+        # The latest complete target bar is 9*interval; the direct cache is
+        # six bars behind and must not be returned as current input.
+        rows = load_spec_candles(
+            candle_store(direct, [], "15m"),
+            {"timeframe": "15m", "universe": ["BTC/USDT:USDT"]},
+            limit=2, as_of_ms=10 * interval,
+        )["BTC/USDT:USDT"]
+        self.assertEqual(rows, [])
+
+    def test_native_tail_within_age_tolerance_can_survive_missing_fallback(self):
+        interval = timeframe_milliseconds("15m")
+        direct = [candle(index * interval) for index in range(7)]
+        # Three bars behind is the explicit tolerance; a fourth would fail
+        # closed.  The fallback query may still be attempted, but its absence
+        # does not discard a bounded delayed native write.
+        rows = load_spec_candles(
+            candle_store(direct, [], "15m"),
+            {"timeframe": "15m", "universe": ["BTC/USDT:USDT"]},
+            limit=2, as_of_ms=10 * interval,
+        )["BTC/USDT:USDT"]
+        self.assertEqual([row["timestamp"] for row in rows], [5 * interval, 6 * interval])
+
     def test_merge_does_not_fill_a_gap_or_replace_direct_with_an_incomplete_bucket(self):
         interval = timeframe_milliseconds("15m")
         direct = [candle(index * interval) for index in range(750)]

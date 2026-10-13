@@ -52,6 +52,12 @@ _TWO_BY_TWO_SUFFIXES = (
     "_2x2_D_L30_intrabar",
 )
 
+# Direct native-timeframe tables are maintained on demand (for example, a
+# 15m table can stop advancing while the 5m feed remains live).  Keep a
+# bounded tolerance for delayed writes, but never hand a stopped native tail
+# to signal evaluation when no fresher lower-timeframe fallback is available.
+DEFAULT_NATIVE_MAX_AGE_BARS = 3
+
 
 def timeframe_milliseconds(timeframe: str) -> int:
     """Return the fixed UTC duration for a supported Binance interval."""
@@ -195,14 +201,23 @@ def resample_closed_candles(rows: list[Mapping[str, Any]], source_timeframe: str
 def load_spec_candles(store: Any, spec: Mapping[str, Any], *, limit: int = 750,
                       as_of_ms: int | None = None, source_timeframe: str = "5m",
                       exchange: str = "binance", market: str = "futures",
-                      candle_type: str = "futures") -> dict[str, list[dict[str, Any]]]:
+                      candle_type: str = "futures",
+                      native_max_age_bars: int = DEFAULT_NATIVE_MAX_AGE_BARS
+                      ) -> dict[str, list[dict[str, Any]]]:
     """Read closed inputs for one strategy from ``DataStore``.
 
     The target timeframe is queried first.  If it is stale or has fewer than
     ``limit`` closed rows, continuously resampled lower-timeframe rows extend
     it.  The fresher source owns overlapping rows in full; no interpolation
-    or cross-symbol substitution is performed.
+    or cross-symbol substitution is performed.  With an ``as_of_ms`` clock,
+    the final native tail must be no more than ``native_max_age_bars`` bars
+    behind the latest complete target bar.  This turns an on-demand native
+    cache that stopped advancing into an explicit empty input instead of
+    silently evaluating on old prices.
     """
+    if (isinstance(native_max_age_bars, bool) or
+            not isinstance(native_max_age_bars, int) or native_max_age_bars < 0):
+        raise ValueError("native_max_age_bars must be a non-negative integer")
     timeframe = strategy_timeframe(spec)
     target_ms = timeframe_milliseconds(timeframe)
     pairs = strategy_pairs(spec)
@@ -242,12 +257,20 @@ def load_spec_candles(store: Any, spec: Mapping[str, Any], *, limit: int = 750,
                 rows = [merged[stamp] for stamp in sorted(merged)]
         if as_of_ms is not None:
             rows = [row for row in rows if row["timestamp"] + target_ms <= as_of_ms]
+            if rows:
+                expected_latest = (int(as_of_ms) // target_ms - 1) * target_ms
+                age_bars = max(0, (expected_latest - rows[-1]["timestamp"]) // target_ms)
+                if age_bars > native_max_age_bars:
+                    # Do not expose an old native cache when the lower
+                    # timeframe source could not provide a current tail.
+                    rows = []
         result[pair] = rows[-limit:]
     return result
 
 
 __all__ = [
-    "BREADTH_PAIRS", "TIMEFRAME_MS", "closed_candles", "load_spec_candles",
+    "BREADTH_PAIRS", "DEFAULT_NATIVE_MAX_AGE_BARS", "TIMEFRAME_MS",
+    "closed_candles", "load_spec_candles",
     "resample_closed_candles", "strategy_pairs", "strategy_timeframe",
     "timeframe_milliseconds",
 ]

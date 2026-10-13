@@ -52,6 +52,9 @@ def services(root: Path = ROOT) -> dict[str, Service]:
     legacy_python = bot / ".venv/bin/python"
     trading_python = str(legacy_python) if legacy_python.exists() else sys.executable
     python = sys.executable
+    integrity_timeframes = tuple(value.strip() for value in
+                                 os.getenv("QUANT_INTEGRITY_TIMEFRAMES", "5m,15m,1h,1d").split(",")
+                                 if value.strip()) or ("5m",)
     specs = [
         Service("api", "交易 API", (trading_python, "-m", "freqtrade", "trade", "--config",
                 "user_data/config_trend_live.json", "--config", "config_api_access_log.json",
@@ -118,7 +121,9 @@ def services(root: Path = ROOT) -> dict[str, Service]:
                 (python, "-u", str(root / "tools/check_candle_integrity.py"),
                  "--watch", "--interval", os.getenv("QUANT_INTEGRITY_INTERVAL", "300"),
                  "--pair", "BTC/USDT:USDT", "--pair", "ETH/USDT:USDT",
-                 "--pair", "TRX/USDT:USDT", "--timeframe", "5m",
+                 "--pair", "TRX/USDT:USDT",
+                 *(argument for timeframe in integrity_timeframes
+                   for argument in ("--timeframe", timeframe)),
                  "--max-age-bars", os.getenv("QUANT_INTEGRITY_MAX_AGE_BARS", "3"),
                  "--no-formula-check",
                  "--output", str(root / "database/runtime/candle_integrity_report.json"),

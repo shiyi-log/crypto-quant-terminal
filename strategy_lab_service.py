@@ -644,13 +644,23 @@ class StrategyLabService:
             latest_values = [value for value in latest_by_id.values() if value is not None]
             boundary = self.boundaries.get(timeframe, self.boundary)
             factorial = any(spec.get("factorial_design_version") for spec in specs)
+            active_specs = [spec for spec in specs
+                            if spec.get("execution_enabled") is not False
+                            and not research_pause_reason(spec)]
             # A delayed third asset must not hold back the timely BTC/ETH arm.
             latest = (max(latest_values) if factorial else min(latest_values)) if latest_values else None
             native_status[timeframe] = {"latest_closed_at": latest,
                                         "session_boundary_ms": boundary,
                                         "strategy_count": len(specs)}
             if latest is None or latest < boundary:
-                native_status[timeframe]["status"] = "waiting_new_closed_candle"
+                # ``load_spec_candles`` returns an empty mapping when a native
+                # on-demand cache is too old and the 5m fallback cannot supply
+                # a complete tail.  Keep the normal startup grace period, then
+                # expose the condition as stale instead of an indefinite wait.
+                stale_deadline = boundary + interval + MAX_CLOSE_DELAY_MS
+                native_status[timeframe]["status"] = (
+                    "data_stale" if active_specs and now > stale_deadline
+                    else "waiting_new_closed_candle")
                 continue
             due_ids = [spec["strategy_id"] for spec in specs
                        if latest_by_id.get(spec["strategy_id"]) == latest

@@ -88,6 +88,14 @@ class ProcessIdentityTests(unittest.TestCase):
             changed[changed.index(option) + 1] = wrong_value
             self.assertFalse(manage.matches_stream_arguments(spec, changed, self.root), option)
 
+    def test_integrity_service_checks_native_timeframes_by_default(self):
+        command = self.specs["integrity"].command
+        self.assertEqual(
+            [command[index + 1] for index, value in enumerate(command)
+             if value == "--timeframe"],
+            ["5m", "15m", "1h", "1d"],
+        )
+
     def test_start_reuses_existing_service(self):
         with patch("manage.find_processes", return_value=[42]), \
              patch("manage.health", return_value="HTTP 200"), \

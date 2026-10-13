@@ -316,6 +316,67 @@ def _cost_filter_passes(params: Mapping[str, Any], expected_move_ratio: float,
     return expected_bps > threshold_bps
 
 
+def _structural_stop_config(spec: Mapping[str, Any], strategy_id: str) -> dict[str, Any] | None:
+    """Validate the opt-in, signal-frozen structural stop contract."""
+    mode = spec.get("risk_sizing_mode")
+    if mode is None:
+        return None
+    if mode != "structural":
+        raise ValueError("unsupported risk_sizing_mode")
+    raw = spec.get("structural_stop")
+    if not isinstance(raw, Mapping):
+        raise ValueError("structural risk sizing requires structural_stop configuration")
+    stop_spec_id = raw.get("stop_spec_id")
+    version = spec.get("stop_policy_version", raw.get("stop_policy_version", "structural-stop-v1"))
+    if not isinstance(stop_spec_id, str) or not stop_spec_id.strip():
+        raise ValueError("structural_stop.stop_spec_id must be a non-empty string")
+    if not isinstance(version, str) or not version.strip():
+        raise ValueError("stop_policy_version must be a non-empty string")
+    lookback = _integer(raw.get("structure_lookback", raw.get("lookback")),
+                        "structural_stop.lookback")
+    buffer_pct = _number(raw.get("buffer_pct", 0), "structural_stop.buffer_pct")
+    if buffer_pct < 0 or buffer_pct >= 1:
+        raise ValueError("structural_stop.buffer_pct must be in [0, 1)")
+    notional = _number(raw.get("frozen_notional"), "structural_stop.frozen_notional", positive=True)
+    quantity = raw.get("frozen_quantity")
+    if quantity is None:
+        quantity = None
+    else:
+        quantity = _number(quantity, "structural_stop.frozen_quantity", positive=True)
+    notional_policy = spec.get("notional_policy", "frozen_signal")
+    if notional_policy not in {"frozen_signal", "dual_limit"}:
+        raise ValueError("structural notional_policy must be frozen_signal or dual_limit")
+    stop_execution_mode = spec.get("stop_execution_mode", "close_confirmed")
+    if stop_execution_mode not in {"close_confirmed", "intrabar"}:
+        raise ValueError("stop_execution_mode must be close_confirmed or intrabar")
+    stop_clamp_policy = spec.get("stop_clamp_policy", "none")
+    clamp_ratio = spec.get("stop_liquidation_clamp_factor")
+    if stop_clamp_policy not in {"none", "liquidation_distance_fraction"}:
+        raise ValueError("unsupported stop_clamp_policy")
+    if stop_clamp_policy == "liquidation_distance_fraction":
+        clamp_ratio = _number(clamp_ratio, "stop_liquidation_clamp_factor", positive=True)
+        if not math.isclose(clamp_ratio, 0.7, rel_tol=0, abs_tol=1e-12):
+            raise ValueError("structural stop clamp factor is fixed at 0.7")
+    elif clamp_ratio is not None:
+        raise ValueError("stop_liquidation_clamp_factor requires liquidation clamp policy")
+    budget = spec.get("position_budget", {})
+    leverage = _number(budget.get("leverage", 1), "position_budget.leverage", positive=True)
+    return {
+        "strategy_id": strategy_id,
+        "stop_spec_id": stop_spec_id,
+        "stop_policy_version": version,
+        "structure_lookback": lookback,
+        "buffer_pct": buffer_pct,
+        "frozen_notional": notional,
+        "frozen_quantity": quantity,
+        "notional_policy": notional_policy,
+        "stop_execution_mode": stop_execution_mode,
+        "stop_clamp_policy": stop_clamp_policy,
+        "clamp_ratio": clamp_ratio,
+        "liquidation_distance": 1 / leverage,
+    }
+
+
 def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     """Freeze executable semantics; exclude research claims and annotations.
 
@@ -500,6 +561,17 @@ def normalize_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     }
     if fee_model_version is not None:
         normalized["fee_model_version"] = fee_model_version
+    risk_sizing_mode = spec.get("risk_sizing_mode")
+    if risk_sizing_mode == "structural":
+        structural_stop = _structural_stop_config(spec, strategy_id)
+        normalized["risk_sizing_mode"] = risk_sizing_mode
+        normalized["stop_policy_version"] = structural_stop["stop_policy_version"]
+        normalized["structural_stop"] = structural_stop
+        normalized["notional_policy"] = structural_stop["notional_policy"]
+        normalized["stop_execution_mode"] = structural_stop["stop_execution_mode"]
+        normalized["stop_clamp_policy"] = structural_stop["stop_clamp_policy"]
+        if structural_stop["clamp_ratio"] is not None:
+            normalized["stop_liquidation_clamp_factor"] = structural_stop["clamp_ratio"]
     for key, expected in (("schema_version", SCHEMA_VERSION),
                           ("algorithm_version", ALGORITHM_VERSION)):
         if key in spec and spec[key] != expected:
@@ -772,11 +844,94 @@ def _orb(rows: list[dict[str, Any]], params: dict[str, Any],
     return (1 if current["close"] > hi else -1), "first_session_breakout", evidence
 
 
+def _structural_stop_evidence(rows: list[dict[str, Any]], side: int,
+                              config: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """Freeze a causal structure stop from bars strictly before the signal bar."""
+    lookback = config["structure_lookback"]
+    if len(rows) <= lookback:
+        return None, "structural_stop_history_not_ready"
+    prior = rows[-lookback - 1:-1]
+    anchor = prior[-1]
+    if side == 1:
+        raw_stop = min(row["low"] for row in prior) * (1 - config["buffer_pct"])
+        valid = raw_stop < rows[-1]["close"]
+    elif side == -1:
+        raw_stop = max(row["high"] for row in prior) * (1 + config["buffer_pct"])
+        valid = raw_stop > rows[-1]["close"]
+    else:
+        return None, "structural_stop_direction_invalid"
+    if not valid or not math.isfinite(raw_stop) or raw_stop <= 0:
+        return None, "structural_stop_direction_invalid"
+    inputs = [{key: row[key] for key in ("timestamp", "open", "high", "low", "close")}
+              for row in prior]
+    entry_price = rows[-1]["close"]
+    quantity = config.get("frozen_quantity")
+    if quantity is None:
+        quantity = config["frozen_notional"] / entry_price
+    liquidation_distance = config["liquidation_distance"]
+    clamp_ratio = config["clamp_ratio"]
+    signal_clamp_distance = (min(abs(entry_price - raw_stop),
+                                 entry_price * liquidation_distance * clamp_ratio)
+                             if clamp_ratio is not None else abs(entry_price - raw_stop))
+    signal_clamp_flag = signal_clamp_distance < abs(entry_price - raw_stop)
+    evidence = {
+        "risk_sizing_mode": "structural",
+        "stop_spec_id": config["stop_spec_id"],
+        "stop_policy_version": config["stop_policy_version"],
+        "structure_anchor_candle_ms": anchor["timestamp"],
+        "structure_lookback": lookback,
+        "structure_inputs_hash": _digest(inputs),
+        "stop_direction": side,
+        "entry_price": entry_price,
+        "raw_stop_level": float(raw_stop),
+        "raw_stop_distance": abs(entry_price - raw_stop),
+        "raw_stop_distance_pct": abs(entry_price - raw_stop) / entry_price,
+        "clamped_stop_level": entry_price - side * signal_clamp_distance,
+        "clamped_stop_distance": signal_clamp_distance,
+        "clamp_flag": signal_clamp_flag,
+        "clamp_ratio": clamp_ratio,
+        "liquidation_distance": liquidation_distance,
+        "stop_execution_mode": config["stop_execution_mode"],
+        "stop_clamp_policy": config["stop_clamp_policy"],
+        "notional_policy": config["notional_policy"],
+        "frozen_notional": config["frozen_notional"],
+        "frozen_quantity": quantity,
+        "signal_id": _digest([config["strategy_id"], anchor["timestamp"], side,
+                               config["stop_spec_id"]]),
+        "signal_candle_ms": rows[-1]["timestamp"],
+    }
+    return evidence, "structural_stop_ready"
+
+
 def _single(strategy_id: str, rows: list[dict[str, Any]], params: dict[str, Any],
-            pos: dict[str, Any] | None, *,
-            bar_ms: int = BAR_MS) -> tuple[int | None, str, dict[str, Any], float]:
+            pos: dict[str, Any] | None, *, bar_ms: int = BAR_MS,
+            structural_stop: Mapping[str, Any] | None = None
+            ) -> tuple[int | None, str, dict[str, Any], float]:
     """Check fixed risk before mechanism exits; attach ATR to entries/flips."""
     canonical_id = _canonical_strategy_id(strategy_id)
+    if structural_stop is not None:
+        close = rows[-1]["close"]
+        if pos and pos.get("risk_sizing_mode") == "structural":
+            entry_evidence = pos.get("entry_evidence") or {}
+            stop = pos.get("stop_level", entry_evidence.get("raw_stop_level"))
+            evidence = {"close": close, "entry_price": pos["entry_price"],
+                        "risk_sizing_mode": "structural",
+                        "stop_spec_id": entry_evidence.get("stop_spec_id"),
+                        "stop_level": stop,
+                        "raw_stop_level": entry_evidence.get("raw_stop_level"),
+                        "signal_id": entry_evidence.get("signal_id")}
+            if stop is None or not math.isfinite(float(stop)):
+                return None, "structural_stop_unavailable", evidence, 1.0
+            if (close - float(stop)) * pos["side"] <= 0:
+                return 0, "stop_loss_close_confirmed", evidence, 1.0
+        side, reason, evidence, size = _single_mechanism(strategy_id, rows, params, pos,
+                                                         bar_ms=bar_ms)
+        if side in (-1, 1) and (not pos or side != pos["side"]):
+            frozen, stop_reason = _structural_stop_evidence(rows, side, structural_stop)
+            evidence = {**evidence, **(frozen or {})}
+            if frozen is None:
+                return None, stop_reason, evidence, size
+        return side, reason, evidence, size
     if (canonical_id not in ATR_HARD_STOP_STRATEGIES
             or "risk_stop_atr_mult" not in params):
         return _single_mechanism(strategy_id, rows, params, pos, bar_ms=bar_ms)
@@ -1387,6 +1542,7 @@ def evaluate(spec: Mapping[str, Any], candles_by_pair: Mapping[str, Any],
     canonical_id = _canonical_strategy_id(strategy_id)
     required = normalized["min_warmup_bars"]
     params = normalized["params"]
+    structural_stop = normalized.get("structural_stop")
     timeframe = normalized.get("timeframe", "5m")
     bar_ms = TIMEFRAME_MS[timeframe]
     configured_pairs = spec.get("execution_universe", UNIVERSE)
@@ -1668,8 +1824,9 @@ def evaluate(spec: Mapping[str, Any], candles_by_pair: Mapping[str, Any],
                                  evidence={**signals[pair]["evidence"], **common})
         return result
     for pair in pairs:
-        side, reason, evidence, size = _single(strategy_id, histories[pair], params,
-                                               actual_positions[pair], bar_ms=bar_ms)
+        side, reason, evidence, size = _single(
+            strategy_id, histories[pair], params, actual_positions[pair], bar_ms=bar_ms,
+            structural_stop=structural_stop)
         signals[pair].update(target_side=side, reason=reason, size_multiplier=size,
                              evidence={**signals[pair]["evidence"], **evidence})
     return result

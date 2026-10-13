@@ -224,8 +224,53 @@ def _atr_execution_risk(spec: dict, fee: float) -> dict | None:
             "risk_budget_limit": "planned_pair_stop_and_fee_only; gaps, close_confirmation, liquidation, unobserved_path and unknown costs may exceed it",
             "atomic_atr_stop_policy": "paired_close_confirmed_aggregate_return",
         }
-    if mode not in (None, "entry_atr"):
+    if mode not in (None, "entry_atr", "structural"):
         raise ValueError("unsupported risk_sizing_mode")
+    if mode == "structural":
+        maximum = _number(spec.get("max_loss_per_trade_usdt", 50),
+                          "max_loss_per_trade_usdt", positive=True)
+        policy = spec.get("notional_policy", "frozen_signal")
+        if policy not in {"frozen_signal", "dual_limit"}:
+            raise ValueError("structural notional_policy must be frozen_signal or dual_limit")
+        stop_policy_version = spec.get("stop_policy_version", "structural-stop-v1")
+        if not isinstance(stop_policy_version, str) or not stop_policy_version.strip():
+            raise ValueError("stop_policy_version must be a non-empty string")
+        clamp_policy = spec.get("stop_clamp_policy", "none")
+        clamp_factor = spec.get("stop_liquidation_clamp_factor")
+        if clamp_policy not in {"none", "liquidation_distance_fraction"}:
+            raise ValueError("unsupported stop_clamp_policy")
+        if clamp_policy == "liquidation_distance_fraction":
+            if clamp_factor is None:
+                raise ValueError("stop clamp policy requires stop_liquidation_clamp_factor")
+            clamp_factor = _number(clamp_factor, "stop_liquidation_clamp_factor", positive=True)
+            if not math.isclose(clamp_factor, 0.7, rel_tol=0, abs_tol=1e-12):
+                raise ValueError("structural stop clamp factor is fixed at 0.7")
+        elif clamp_factor is not None:
+            raise ValueError("stop_liquidation_clamp_factor requires liquidation clamp policy")
+        result = {
+            "version": "independent-paper-structural-stop-v1",
+            "risk_sizing_mode": "structural",
+            "risk_scope": "signal_frozen_quantity",
+            "max_loss_per_trade_usdt": maximum,
+            "risk_round_trip_fee": 2 * fee,
+            "risk_sizing": "frozen_signal_quantity;planned_stop_and_fee_only",
+            "notional_policy": policy,
+            "stop_policy_version": stop_policy_version,
+            "stop_execution_mode": spec.get("stop_execution_mode", "close_confirmed"),
+            "stop_clamp_policy": clamp_policy,
+            "clamp_ratio": clamp_factor,
+            "stop_liquidation_clamp_factor": clamp_factor,
+            "stop_policy": "frozen_signal_stop_close_confirmed_next_open",
+            "open_bankruptcy_breach_policy": "bankruptcy_settlement_before_pending_exits_and_entries;cancel_superseded_exits;intrabar_check_after_next_open_fills",
+            "liquidation": {**EXECUTION_MODEL["liquidation"],
+                            "trigger": "next_open_then_closed_candle_low_high",
+                            "order_precedence": "open_bankruptcy_breach_before_pending_orders"},
+            "risk_budget_limit": "frozen_signal_quantity;gaps,close_confirmation,liquidation and unknown costs may exceed it",
+            "experiment_id": spec.get("experiment_id", "structural-stop-v1"),
+        }
+        if not isinstance(result["experiment_id"], str) or not result["experiment_id"].strip():
+            raise ValueError("experiment_id must be a non-empty string")
+        return result
     if mode == "entry_atr" and not enabled:
         raise ValueError("entry_atr sizing requires explicit risk_stop_atr_mult")
     if not enabled:
@@ -262,6 +307,41 @@ def _entry_atr(evidence: Any) -> float | None:
         return None
 
 
+def _stop_clamp(price: float, direction: int, raw_stop: float,
+                model: dict) -> dict:
+    """Apply an explicit liquidation-distance clamp without changing notional."""
+    raw_distance = abs(price - raw_stop)
+    liquidation_distance = 1.0 / model["leverage"]
+    factor = model.get("stop_liquidation_clamp_factor")
+    if factor is None:
+        return {
+            "stop_level": raw_stop,
+            "raw_stop_level": raw_stop,
+            "raw_stop_distance": raw_distance,
+            "raw_stop_distance_pct": raw_distance / price,
+            "clamped_stop_level": raw_stop,
+            "clamped_stop_distance": raw_distance,
+            "clamped_stop_distance_pct": raw_distance / price,
+            "clamp_flag": False,
+            "clamp_ratio": None,
+            "liquidation_distance": liquidation_distance,
+        }
+    maximum_distance = price * liquidation_distance * factor
+    clamped = raw_distance > maximum_distance
+    distance = min(raw_distance, maximum_distance)
+    stop = price - direction * distance
+    return {
+        "stop_level": stop,
+        "raw_stop_level": raw_stop,
+        "raw_stop_distance": raw_distance,
+        "raw_stop_distance_pct": raw_distance / price,
+        "clamped_stop_level": stop,
+        "clamped_stop_distance": distance,
+        "clamped_stop_distance_pct": distance / price,
+        "clamp_flag": clamped,
+        "clamp_ratio": factor,
+        "liquidation_distance": liquidation_distance,
+    }
 def _audit_atr_evidence(evidence: Any) -> Any:
     """Keep rejected non-finite ATR evidence serializable in the audit log."""
     result = copy.deepcopy(evidence)
@@ -278,29 +358,262 @@ def _audit_atr_evidence(evidence: Any) -> Any:
     return result
 
 
+_STRUCTURAL_AUDIT_FIELDS = (
+    "stop_spec_id", "stop_policy_version", "structure_anchor_candle_ms",
+    "structure_lookback", "structure_inputs_hash", "stop_direction",
+    "entry_price", "raw_stop_level", "raw_stop_distance", "raw_stop_distance_pct",
+    "signal_raw_stop_level", "signal_raw_stop_distance", "signal_raw_stop_distance_pct",
+    "signal_clamped_stop_level", "signal_clamped_stop_distance", "signal_clamp_flag",
+    "signal_liquidation_distance",
+    "execution_raw_distance", "execution_raw_distance_pct",
+    "execution_clamped_distance", "execution_clamped_distance_pct",
+    "execution_stop_level", "clamped_stop_level", "clamped_stop_distance",
+    "clamped_stop_distance_pct", "clamp_flag", "clamp_ratio", "liquidation_distance",
+    "stop_execution_mode", "stop_clamp_policy",
+    "frozen_notional", "frozen_quantity", "frozen_quantity_primary",
+    "notional_sizing_role",
+    "actual_notional_at_fill", "notional_drift", "notional_drift_ratio",
+    "notional_adjusted_for_safety", "notional_policy", "signal_id", "signal_candle_ms",
+)
+
+
+def _structural_audit_fields(source: dict) -> dict:
+    """Expose structural stop audit values at event payload top level."""
+    risk = source.get("risk_sizing") if isinstance(source.get("risk_sizing"), dict) else {}
+    result = {}
+    for key in _STRUCTURAL_AUDIT_FIELDS:
+        if key in source:
+            result[key] = copy.deepcopy(source[key])
+        elif key in risk:
+            result[key] = copy.deepcopy(risk[key])
+    return result
+
+
 def _entry_atr_plan(order: dict, price: float, model: dict) -> dict | None:
     atr = _entry_atr(order.get("evidence"))
     if atr is None:
         return None
     multiplier = model["risk_stop_atr_mult"]
     distance = multiplier * atr
-    stop = price - order["direction"] * distance
-    distance_pct = distance / price
-    denominator = distance_pct + model["risk_round_trip_fee"]
+    raw_stop = price - order["direction"] * distance
+    stop_fields = _stop_clamp(price, order["direction"], raw_stop, model)
+    distance_pct = stop_fields["clamped_stop_distance_pct"]
+    denominator = stop_fields["raw_stop_distance_pct"] + model["risk_round_trip_fee"]
     if not math.isfinite(denominator) or denominator <= 0:
         return None
     notional = model["max_loss_per_trade_usdt"] / denominator
-    if (not all(math.isfinite(value) for value in (distance, stop, distance_pct, notional))
-            or min(stop, distance_pct, notional) <= 0):
+    if (not all(math.isfinite(value) for value in
+                (distance, stop_fields["stop_level"], distance_pct, notional))
+            or min(stop_fields["stop_level"], distance_pct, notional) <= 0):
         return None
-    return {"mode": "entry_atr", "entry_atr": atr, "entry_price": price,
-            "risk_stop_atr_mult": multiplier, "stop_level": stop,
+    plan = {"mode": "entry_atr", "entry_atr": atr, "entry_price": price,
+            "risk_stop_atr_mult": multiplier, **stop_fields,
             "stop_distance_pct": distance_pct,
             "max_loss_per_trade_usdt": model["max_loss_per_trade_usdt"],
             "round_trip_fee": model["risk_round_trip_fee"],
             "risk_cap_notional": notional,
             "atr_signal_candle_ms": order["signal_candle_ms"],
             "limit_basis": "planned_stop_and_fee_only"}
+    if model.get("stop_liquidation_clamp_factor") is not None:
+        plan["notional_policy"] = "risk_cap_raw"
+        plan["clamp_policy"] = model["stop_clamp_policy"]
+    return plan
+
+
+def _structural_stop_plan(order: dict, price: float, model: dict) -> dict | None:
+    """Consume a signal-frozen structural stop; never derive it from ATR."""
+    evidence = order.get("evidence")
+    if not isinstance(evidence, dict):
+        return None
+    try:
+        required = (
+            "stop_spec_id", "stop_policy_version", "structure_anchor_candle_ms",
+            "structure_lookback", "structure_inputs_hash", "stop_direction",
+            "entry_price", "raw_stop_level", "raw_stop_distance",
+            "raw_stop_distance_pct", "clamped_stop_level", "clamped_stop_distance",
+            "clamp_flag", "signal_id", "signal_candle_ms",
+            "frozen_notional", "frozen_quantity", "notional_policy",
+            "stop_execution_mode", "stop_clamp_policy", "clamp_ratio",
+            "liquidation_distance",
+        )
+        if any(key not in evidence for key in required):
+            return None
+        if evidence.get("risk_sizing_mode") != "structural":
+            return None
+        raw_entry = _number(evidence["entry_price"], "structural entry_price", positive=True)
+        raw_stop = _number(evidence["raw_stop_level"], "raw_stop_level", positive=True)
+        frozen_notional = _number(evidence["frozen_notional"], "frozen_notional", positive=True)
+        frozen_quantity = _number(evidence["frozen_quantity"], "frozen_quantity", positive=True)
+        anchor_ms = _ms(evidence["structure_anchor_candle_ms"],
+                        "structure_anchor_candle_ms")
+        signal_ms = _ms(evidence["signal_candle_ms"], "signal_candle_ms")
+        lookback = evidence["structure_lookback"]
+        if (isinstance(lookback, bool) or not isinstance(lookback, int)
+                or lookback <= 0 or anchor_ms >= signal_ms):
+            return None
+        for field in ("structure_inputs_hash", "signal_id"):
+            value = evidence[field]
+            if not isinstance(value, str) or not value.strip():
+                return None
+        if "signal_candle_ms" in order:
+            if _ms(order["signal_candle_ms"], "order signal_candle_ms") != signal_ms:
+                return None
+        if "expected_fill_candle_ms" in order:
+            if _ms(order["expected_fill_candle_ms"], "expected_fill_candle_ms") <= signal_ms:
+                return None
+        stop_spec_id = evidence["stop_spec_id"]
+        stop_policy_version = evidence["stop_policy_version"]
+        direction = order["direction"]
+        if direction not in (-1, 1) or evidence["stop_direction"] != direction:
+            return None
+        if not isinstance(stop_spec_id, str) or not stop_spec_id:
+            return None
+        if not isinstance(stop_policy_version, str) or not stop_policy_version:
+            return None
+        if direction * (raw_entry - raw_stop) <= 0:
+            return None
+        raw_distance = abs(raw_entry - raw_stop)
+        signal_liquidation_distance = _number(
+            evidence["liquidation_distance"], "liquidation_distance", positive=True)
+        if not math.isclose(signal_liquidation_distance, 1 / model["leverage"],
+                            rel_tol=1e-8, abs_tol=1e-10):
+            return None
+        if not math.isclose(
+                raw_distance, _number(evidence["raw_stop_distance"], "raw_stop_distance"),
+                rel_tol=1e-8, abs_tol=1e-10):
+            return None
+        if not math.isclose(
+                raw_distance / raw_entry,
+                _number(evidence["raw_stop_distance_pct"], "raw_stop_distance_pct"),
+                rel_tol=1e-8, abs_tol=1e-10):
+            return None
+        signal_clamped_distance = _number(
+            evidence["clamped_stop_distance"], "clamped_stop_distance", positive=True)
+        signal_clamped_level = _number(
+            evidence["clamped_stop_level"], "clamped_stop_level", positive=True)
+        signal_clamp_flag = evidence["clamp_flag"]
+        if not isinstance(signal_clamp_flag, bool):
+            return None
+        signal_factor = evidence["clamp_ratio"]
+        maximum_signal_distance = (
+            raw_entry * signal_liquidation_distance * float(signal_factor)
+            if signal_factor is not None else raw_distance)
+        expected_signal_distance = min(raw_distance, maximum_signal_distance)
+        if not math.isclose(signal_clamped_distance, expected_signal_distance,
+                            rel_tol=1e-8, abs_tol=1e-10):
+            return None
+        if not math.isclose(signal_clamped_level,
+                            raw_entry - direction * expected_signal_distance,
+                            rel_tol=1e-8, abs_tol=1e-10):
+            return None
+        if signal_clamp_flag != (raw_distance > maximum_signal_distance):
+            return None
+        if evidence["notional_policy"] not in {"frozen_signal", "dual_limit"}:
+            return None
+        if evidence["notional_policy"] != model["notional_policy"]:
+            return None
+        if evidence["stop_policy_version"] != model["stop_policy_version"]:
+            return None
+        if evidence["stop_execution_mode"] != model.get("stop_execution_mode", "close_confirmed"):
+            return None
+        if evidence["stop_clamp_policy"] != model.get("stop_clamp_policy", "none"):
+            return None
+        model_factor = model.get("stop_liquidation_clamp_factor")
+        evidence_factor = evidence["clamp_ratio"]
+        if model_factor is None:
+            if evidence_factor is not None:
+                return None
+        elif evidence_factor is None or not math.isclose(
+                float(evidence_factor), float(model_factor), rel_tol=0, abs_tol=1e-12):
+            return None
+        if not math.isclose(frozen_quantity * raw_entry, frozen_notional,
+                            rel_tol=1e-8, abs_tol=1e-8):
+            return None
+        # A next-open fill that has already crossed the frozen signal stop is
+        # deliberately rejected.  Replacing it with a newly computed stop
+        # would turn a causal signal into a wrong-side position.
+        if (direction == 1 and price <= raw_stop) or (direction == -1 and price >= raw_stop):
+            return None
+        execution_raw_distance = abs(price - raw_stop)
+        liquidation_distance = 1.0 / model["leverage"]
+        factor = model.get("stop_liquidation_clamp_factor")
+        maximum_distance = (price * liquidation_distance * factor
+                            if factor is not None else execution_raw_distance)
+        execution_clamped_distance = min(execution_raw_distance, maximum_distance)
+        clamp_flag = execution_raw_distance > maximum_distance
+        execution_stop = (price - direction * execution_clamped_distance
+                          if clamp_flag else raw_stop)
+        if direction * (price - execution_stop) <= 0:
+            return None
+        fields = {
+            "stop_level": execution_stop,
+            "raw_stop_level": raw_stop,
+            "raw_stop_distance": raw_distance,
+            "raw_stop_distance_pct": raw_distance / raw_entry,
+            "clamped_stop_level": execution_stop,
+            "clamped_stop_distance": execution_clamped_distance,
+            "clamped_stop_distance_pct": execution_clamped_distance / price,
+            "clamp_flag": clamp_flag,
+            "clamp_ratio": factor,
+            "liquidation_distance": liquidation_distance,
+            "stop_direction": direction,
+            "execution_raw_distance": execution_raw_distance,
+            "execution_raw_distance_pct": execution_raw_distance / price,
+            "execution_clamped_distance": execution_clamped_distance,
+            "execution_clamped_distance_pct": execution_clamped_distance / price,
+            "execution_stop_level": execution_stop,
+            "signal_raw_stop_level": raw_stop,
+            "signal_raw_stop_distance": raw_distance,
+            "signal_raw_stop_distance_pct": raw_distance / raw_entry,
+        }
+        if "clamped_stop_level" in evidence:
+            fields["signal_clamped_stop_level"] = _number(
+                evidence["clamped_stop_level"], "signal_clamped_stop_level", positive=True)
+        if "clamped_stop_distance" in evidence:
+            fields["signal_clamped_stop_distance"] = _number(
+                evidence["clamped_stop_distance"], "signal_clamped_stop_distance", positive=True)
+        if "clamp_flag" in evidence:
+            fields["signal_clamp_flag"] = bool(evidence["clamp_flag"])
+        if "liquidation_distance" in evidence:
+            fields["signal_liquidation_distance"] = _number(
+                evidence["liquidation_distance"], "signal_liquidation_distance", positive=True)
+        actual_notional_at_fill = frozen_quantity * price
+        plan = {
+            "mode": "structural", "entry_price": price,
+            "stop_spec_id": stop_spec_id,
+            "stop_policy_version": stop_policy_version,
+            "frozen_notional": frozen_notional,
+            "frozen_quantity": frozen_quantity,
+            "risk_cap_notional": frozen_notional,
+            "max_loss_per_trade_usdt": model["max_loss_per_trade_usdt"],
+            "round_trip_fee": model["risk_round_trip_fee"],
+            "notional_policy": model["notional_policy"],
+            "stop_distance_pct": fields["clamped_stop_distance_pct"],
+            "frozen_quantity_primary": model["notional_policy"] == "frozen_signal",
+            "notional_sizing_role": (
+                "primary_frozen_quantity" if model["notional_policy"] == "frozen_signal"
+                else "secondary_dual_limit"),
+            "actual_notional_at_fill": actual_notional_at_fill,
+            "notional_drift": actual_notional_at_fill - frozen_notional,
+            "notional_drift_ratio": actual_notional_at_fill / frozen_notional - 1,
+            "planned_loss_usdt": actual_notional_at_fill *
+                (fields["clamped_stop_distance_pct"] + model["risk_round_trip_fee"]),
+            "risk_sizing_mode": "structural",
+            "stop_execution_mode": model.get("stop_execution_mode", "close_confirmed"),
+            "stop_clamp_policy": model.get("stop_clamp_policy", "none"),
+            **fields,
+        }
+        for key in ("structure_anchor_candle_ms", "structure_lookback",
+                    "structure_inputs_hash", "signal_id", "signal_candle_ms"):
+            if key in evidence:
+                plan[key] = copy.deepcopy(evidence[key])
+        if model.get("notional_policy") == "dual_limit":
+            safety = model["max_loss_per_trade_usdt"] / (
+                fields["clamped_stop_distance_pct"] + model["risk_round_trip_fee"])
+            plan["notional_adjusted_for_safety"] = min(frozen_notional, safety)
+        return plan
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
 
 
 def execution_pairs(spec: dict) -> tuple[str, ...]:
@@ -374,10 +687,26 @@ def execution_identity(spec: dict) -> dict:
     if atr_risk is not None:
         model.update(atr_risk)
         model.pop("risk_stop_pct")
+        clamp_factor = spec.get("stop_liquidation_clamp_factor")
+        if model.get("risk_sizing_mode") == "entry_atr" and clamp_factor is not None:
+            clamp_factor = _number(clamp_factor, "stop_liquidation_clamp_factor", positive=True)
+            if clamp_factor > 1:
+                raise ValueError("stop_liquidation_clamp_factor must be <= 1")
+            policy = spec.get("stop_clamp_policy", "liquidation_distance_fraction")
+            if policy != "liquidation_distance_fraction":
+                raise ValueError("unsupported stop_clamp_policy")
+            model.update(stop_clamp_policy=policy, clamp_ratio=clamp_factor,
+                         stop_liquidation_clamp_factor=clamp_factor,
+                         notional_policy="risk_cap_raw")
+        elif model.get("risk_sizing_mode") == "entry_atr" and spec.get("stop_clamp_policy") is not None:
+            raise ValueError("stop_clamp_policy requires stop_liquidation_clamp_factor")
     if stop_mode == "intrabar":
-        model["stop_policy"] = ("fixed_entry_atr_intrabar_ohlc_stop_first_open_gap"
-                                 if atr_risk is not None
-                                 else "fixed_pct_intrabar_ohlc_stop_first_open_gap")
+        model["stop_policy"] = (
+            "frozen_structural_intrabar_ohlc_stop_first_open_gap"
+            if model.get("risk_sizing_mode") == "structural" else
+            "fixed_entry_atr_intrabar_ohlc_stop_first_open_gap"
+            if atr_risk is not None else
+            "fixed_pct_intrabar_ohlc_stop_first_open_gap")
     if "execution_enabled" in spec:
         if not isinstance(spec["execution_enabled"], bool):
             raise ValueError("execution_enabled must be boolean")
@@ -534,7 +863,7 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
     strategy_id = state["strategy_id"]
 
     def event(kind: str, payload: dict) -> None:
-        if identity["execution"].get("risk_sizing_mode") == "entry_atr" and "evidence" in payload:
+        if identity["execution"].get("risk_sizing_mode") in {"entry_atr", "structural"} and "evidence" in payload:
             payload = dict(payload, evidence=_audit_atr_evidence(payload["evidence"]))
         ordinal = len(events)
         event_id = _hash([strategy_id, timestamp, kind, ordinal, payload])
@@ -577,9 +906,15 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                                   else order.get("fill_model", EXECUTION_MODEL["fill_model"])),
                       simulation_fill_model=True)
         if "risk_sizing" in position:
-            filled.update(entry_atr=position["entry_atr"], stop_level=position["stop_level"],
-                          risk_stop_atr_mult=position["risk_stop_atr_mult"],
-                          risk_sizing=copy.deepcopy(position["risk_sizing"]))
+            filled.update(stop_level=position["stop_level"],
+                          risk_sizing=copy.deepcopy(position["risk_sizing"]),
+                          risk_sizing_mode=position.get("risk_sizing_mode", "entry_atr"))
+            if position.get("risk_sizing_mode") == "structural":
+                filled.update(_structural_audit_fields(position))
+            if "entry_atr" in position:
+                filled["entry_atr"] = position["entry_atr"]
+            if "risk_stop_atr_mult" in position:
+                filled["risk_stop_atr_mult"] = position["risk_stop_atr_mult"]
         elif position.get("stop_level") is not None:
             filled["stop_level"] = position["stop_level"]
         event("order_filled", filled)
@@ -598,9 +933,15 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                  "funding": "unknown", "slippage": "unknown", "liquidation": liquidation,
                  "rule_hash": state["rule_hash"]}
         if "risk_sizing" in position:
-            trade.update(entry_atr=position["entry_atr"], stop_level=position["stop_level"],
-                         risk_stop_atr_mult=position["risk_stop_atr_mult"],
-                         risk_sizing=copy.deepcopy(position["risk_sizing"]))
+            trade.update(stop_level=position["stop_level"],
+                         risk_sizing=copy.deepcopy(position["risk_sizing"]),
+                         risk_sizing_mode=position.get("risk_sizing_mode", "entry_atr"))
+            if position.get("risk_sizing_mode") == "structural":
+                trade.update(_structural_audit_fields(position))
+            if "entry_atr" in position:
+                trade["entry_atr"] = position["entry_atr"]
+            if "risk_stop_atr_mult" in position:
+                trade["risk_stop_atr_mult"] = position["risk_stop_atr_mult"]
         elif position.get("stop_level") is not None:
             trade["stop_level"] = position["stop_level"]
         event("trade_closed", trade)
@@ -625,7 +966,7 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                    "margin": position["margin"], "leverage": position["leverage"],
                    "liquidation_price": liquidation_price, "trigger_price": trigger_price,
                    "reason": "liquidation"}
-        if identity["execution"].get("risk_sizing_mode") == "entry_atr":
+        if identity["execution"].get("risk_sizing_mode") in {"entry_atr", "structural"}:
             liquidation_order["liquidation_phase"] = phase
             payload["liquidation_phase"] = phase
         event("liquidation", payload)
@@ -637,7 +978,7 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
     liquidated_at_open = {}
     stopped_at_open: dict[str, str] = {}
     stopped_this_candle: dict[str, str] = {}
-    if identity["execution"].get("risk_sizing_mode") == "entry_atr":
+    if identity["execution"].get("risk_sizing_mode") in {"entry_atr", "structural"}:
         # Bankruptcy is forced before a queued close can fill at a worse open.
         # A latest received open is current evidence even after a data gap;
         # pending discretionary orders still require continuity and freshness.
@@ -752,8 +1093,12 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         entries = [order for order in orders if order["kind"] == "entry"]
         if not entries:
             continue
-        atr_sizing = identity["execution"].get("risk_sizing_mode") == "entry_atr"
+        risk_mode = identity["execution"].get("risk_sizing_mode")
+        atr_sizing = risk_mode == "entry_atr"
+        structural_sizing = risk_mode == "structural"
         blocked = ("execution_disabled" if identity["execution"].get("execution_enabled") is False
+                   else "atomic_structural_stop_policy_unsupported"
+                   if structural_sizing and orders[0].get("atomic")
                    else "atomic_atr_stop_policy_unsupported" if atr_sizing and orders[0].get("atomic")
                    else None)
         if blocked:
@@ -762,13 +1107,18 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                       blocked_execution_reason=identity["execution"].get("blocked_execution_reason")))
             continue
         plans = []
-        if atr_sizing:
+        if atr_sizing or structural_sizing:
             valid_entries = []
             for order in entries:
-                plan = _entry_atr_plan(order, open_prices[order["pair"]], identity["execution"])
+                price = open_prices[order["pair"]]
+                plan = (_entry_atr_plan(order, price, identity["execution"])
+                        if atr_sizing else
+                        _structural_stop_plan(order, price, identity["execution"]))
                 if plan is None:
                     rejected = dict(order, evidence=_audit_atr_evidence(order.get("evidence")),
-                                    status="rejected", reason="entry_atr_unavailable_or_invalid")
+                                    status="rejected", reason=(
+                                        "entry_atr_unavailable_or_invalid" if atr_sizing
+                                        else "structural_stop_unavailable_or_invalid"))
                     event("order_rejected", rejected)
                 else:
                     valid_entries.append(order)
@@ -802,6 +1152,19 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         if atr_sizing:
             amounts = [min(remaining / slots, plan["risk_cap_notional"] / leverage, cash_unit) * weight
                        for plan, weight in zip(plans, weights, strict=True)]
+        elif structural_sizing:
+            amounts = [(
+                plan.get("notional_adjusted_for_safety", plan["frozen_notional"])
+                / leverage * weight
+                if identity["execution"].get("notional_policy") == "dual_limit" else
+                plan["frozen_quantity"] * open_prices[order["pair"]] / leverage * weight
+            ) for plan, order, weight in zip(plans, entries, weights, strict=True)]
+            limit = min(remaining / slots, cash_unit)
+            if any(amount > limit for amount in amounts):
+                for order in entries:
+                    event("order_rejected", dict(order, status="rejected",
+                          reason="structural_frozen_notional_exceeds_budget"))
+                continue
         else:
             risk_cap_margin = identity["execution"]["max_loss_per_trade_usdt"] / (
                 leverage * (identity["execution"]["risk_stop_pct"]
@@ -817,7 +1180,12 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
             if pair in state["positions"]:
                 raise ValueError("pending entry would overwrite an existing position")
             fee = margin * leverage * fee_rate
-            quantity = margin * leverage / price
+            quantity = (plans[index].get("notional_adjusted_for_safety",
+                                        plans[index]["frozen_notional"]) / price * weights[index]
+                        if structural_sizing and
+                        identity["execution"].get("notional_policy") == "dual_limit" else
+                        plans[index]["frozen_quantity"] * weights[index]
+                        if structural_sizing else margin * leverage / price)
             notional = quantity * price
             liquidation_price = price * (1 - direction / leverage)
             state["cash"] -= margin + fee
@@ -833,17 +1201,30 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                         "group_id": order.get("group_id"),
                         "paper_order_id": order["paper_order_id"], "exchange_order_id": None,
                         "trade_id": "trade-" + order["order_id"], "unrealized_pnl": 0.0}
-            if stop_mode == "intrabar" and not atr_sizing:
+            if stop_mode == "intrabar" and not atr_sizing and not structural_sizing:
                 position["stop_level"] = price * (1 - direction * identity["execution"]["risk_stop_pct"])
             risk_payload = {}
-            if atr_sizing:
+            if atr_sizing or structural_sizing:
                 plan = dict(plans[index], actual_notional=notional,
                             planned_loss_usdt=notional * (plans[index]["stop_distance_pct"]
                                                          + plans[index]["round_trip_fee"]))
-                risk_payload = {"entry_atr": plan["entry_atr"], "stop_level": plan["stop_level"],
-                                "risk_stop_atr_mult": plan["risk_stop_atr_mult"], "risk_sizing": plan}
+                if structural_sizing:
+                    frozen_reference = plan["frozen_notional"] * weights[index]
+                    plan.update(
+                        actual_notional_at_fill=notional,
+                        notional_drift=notional - frozen_reference,
+                        notional_drift_ratio=(notional / frozen_reference - 1
+                                              if frozen_reference else None),
+                    )
+                risk_payload = {"stop_level": plan["stop_level"], "risk_sizing": plan,
+                                "risk_sizing_mode": risk_mode}
+                if atr_sizing:
+                    risk_payload.update(entry_atr=plan["entry_atr"],
+                                        risk_stop_atr_mult=plan["risk_stop_atr_mult"])
+                elif structural_sizing:
+                    risk_payload.update(_structural_audit_fields(plan))
                 position.update(copy.deepcopy(risk_payload))
-            elif stop_mode == "intrabar":
+            elif stop_mode == "intrabar" and not structural_sizing:
                 position["stop_level"] = price * (1 - direction * identity["execution"]["risk_stop_pct"])
             state["positions"][pair] = position
             event("order_filled", dict(order, status="filled", fill_price=price, quantity=quantity,
@@ -917,7 +1298,7 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
             raise ValueError("size_multiplier must be in [0,1]")
         evidence = info.get("evidence", {})
         decisions.append({"pair": pair, "target_side": target, "reason": info.get("reason", "signal"),
-                          "evidence": (_audit_atr_evidence(evidence) if identity["execution"].get("risk_sizing_mode") == "entry_atr"
+                          "evidence": (_audit_atr_evidence(evidence) if identity["execution"].get("risk_sizing_mode") in {"entry_atr", "structural"}
                                        else copy.deepcopy(evidence)),
                           "size_multiplier": multiplier})
     if atomic:
@@ -927,7 +1308,7 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         if len(state["positions"]) not in (0, 2) and sides != [0, 0]:
             raise ValueError("atomic pair account has an incomplete hedge; refusing single-leg decisions")
     fingerprint_signal = signal
-    if identity["execution"].get("risk_sizing_mode") == "entry_atr":
+    if identity["execution"].get("risk_sizing_mode") in {"entry_atr", "structural"}:
         fingerprint_signal = copy.deepcopy(signal)
         for info in fingerprint_signal.get("signals", {}).values():
             if "evidence" in info:
@@ -952,10 +1333,13 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
             denied = None
             if identity["execution"].get("execution_enabled") is False:
                 denied = "execution_disabled"
-            elif identity["execution"].get("risk_sizing_mode") == "entry_atr":
+            elif identity["execution"].get("risk_sizing_mode") in {"entry_atr", "structural"}:
                 if atomic:
-                    denied = "atomic_atr_stop_policy_unsupported"
-                elif _entry_atr(decision["evidence"]) is None:
+                    denied = ("atomic_atr_stop_policy_unsupported"
+                              if identity["execution"].get("risk_sizing_mode") == "entry_atr"
+                              else "atomic_structural_stop_policy_unsupported")
+                elif (identity["execution"].get("risk_sizing_mode") == "entry_atr"
+                      and _entry_atr(decision["evidence"]) is None):
                     denied = "entry_atr_unavailable_or_invalid"
             elif pair in stopped_this_candle:
                 denied = "intrabar_stop_precedence"

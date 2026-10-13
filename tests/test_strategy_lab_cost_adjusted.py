@@ -5,7 +5,7 @@ import unittest
 from strategy_fee_schedule import DEMO_FEE_MODEL_VERSION, MAKER_FEE_PER_SIDE
 from strategy_lab_service import load_cost_adjusted_specs, load_specs, normalize_account_spec
 from strategy_simulation import execution_identity
-from strategy_signals import BAR_MS, BTC, ETH, evaluate
+from strategy_signals import BTC, ETH, evaluate
 
 
 class CostAdjustedPopulationTests(unittest.TestCase):

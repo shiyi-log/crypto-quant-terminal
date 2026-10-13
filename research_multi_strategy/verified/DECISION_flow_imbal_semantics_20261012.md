@@ -6,15 +6,19 @@
 
 | 位置 | flow_imbal 口径 | 证据 |
 |---|---|---|
-| **DB `candle_type='futures'`** | **quote**（2×taker_buy_quote/quote_volume−1） | DSH 实测 200 行，最大差 **0.00e+00** |
-| **DB `candle_type='orderflow'`（旧）** | 同 futures · quote | 自检工具 quote 校验通过 |
-| **本地 orderflow feather** | **base**（2×taker_buy_base/volume−1） | 备用1号实测精确相等 |
+| **DB `candle_type='futures'`** | **quote**（2×taker_buy_quote/quote_volume−1） | DSH 实测 300 行，最大差 **0.00e+00** |
+| **DB `candle_type='orderflow'`（旧 576,002 行）** | **base**（2×taker_buy_base/volume−1） | DSH 逐表复核 300 行，最大差 **0.00e+00**；quote 公式差 5.98e-04 |
+| **DB `orderflow.flow_imbal_q`** | **quote** | DSH 复核最大差 0.00e+00 |
+| **本地 orderflow feather** | **base** | 备用1号实测精确相等 |
 
-⇒ **两边各自内部一致，但跨 `candle_type` 不一致。**
+⇒ **跨 `candle_type` 不一致：futures=quote · orderflow=base。**
+⇒ ⚠️ **DSH 一处自我更正（第 75 处）**：本文早期版本写「DB 的 flow_imbal 是 quote」，
+   那是**只取样 futures 表**得出的结论，属**过度泛化**。逐表复核后更正为上表。
 
-## DSH 提供的反证（关键）
+## DSH 提供的反证（关键 · 论据范围已更正）
 
-我（DSH）用 DB 数据核实，发现**现有 DB 的 flow_imbal 是 quote 口径**：
+我（DSH）用 DB 数据核实时**只取样了 `futures` 表**，据此断言「DB 的 flow_imbal 是 quote」——
+**该表述过度泛化**（见上表更正）。论据本身在 futures 表范围内成立：
 ```
 base  口径 2*tb/volume−1       最大差 3.15e-04  ⇒ ❌
 quote 口径 2*tq/quote_volume−1 最大差 0.00e+00  ⇒ ✅ 完全匹配

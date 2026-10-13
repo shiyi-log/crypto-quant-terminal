@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from binance_demo_credentials import DemoCredentialError, DemoCredentialStore
 from demo_runner_controller import DemoHandoffError
+from demo_store import COMPARISON_VIEWS
 
 PREFIX = "/api/locals/binance-demo"
 MAX_BODY_BYTES = 4096
@@ -141,6 +142,8 @@ def handle_demo_request(handler, *, method: str, verify_token, allowed_origins,
         allowed = {"limit"} if suffix in {"/orders", "/fills", "/comparisons", "/sessions"} else set()
         if suffix in _HISTORY_PATHS:
             allowed.add("session")
+        if suffix == "/comparisons":
+            allowed.add("view")
         if set(query) - allowed or any(len(values) != 1 for values in query.values()):
             raise DemoApiError("unexpected_query_parameter")
         limit = 100
@@ -152,6 +155,11 @@ def handle_demo_request(handler, *, method: str, verify_token, allowed_origins,
         if handler.headers.get("Content-Length", "0") not in {"", "0"}:
             raise DemoApiError("get_request_body_not_supported")
         options = {"limit": limit}
+        if "view" in query:
+            view = query["view"][0]
+            if view not in COMPARISON_VIEWS:
+                raise DemoApiError("invalid_comparison_view")
+            options["view"] = view
         if "session" in query:
             session = query["session"][0]
             if not _SESSION_KEY.fullmatch(session):
@@ -246,12 +254,15 @@ class DemoApi:
                 "rejectedOrderCount": counts.get("rejected", 0),
                 "medianLatencyMs": native.get("median_latency_ms")}
 
-    def get(self, suffix: str, *, limit=100, session=None):
+    def get(self, suffix: str, *, limit=100, session=None, view=None):
         # A GET sees one active pointer, never half of a strategy switch.
         with self._mutation_lock:
-            return self._get(suffix, limit=limit, session=session)
+            return self._get(suffix, limit=limit, session=session, view=view)
 
-    def _get(self, suffix: str, *, limit=100, session=None):
+    def _get(self, suffix: str, *, limit=100, session=None, view=None):
+        if view is not None and (suffix != "/comparisons" or
+                                 not isinstance(view, str) or view not in COMPARISON_VIEWS):
+            raise DemoApiError("invalid_comparison_view")
         ledger = self.demo_store
         if session is not None:
             if suffix not in _HISTORY_PATHS or not _SESSION_KEY.fullmatch(session):
@@ -287,7 +298,10 @@ class DemoApi:
             items = [binance_fill(row) for row in
                      ledger.list_fills(limit=limit)]
         elif suffix == "/comparisons":
-            items = ledger.list_comparisons(limit=limit)
+            comparison_view = "audit" if view is None else view
+            items = ledger.list_comparisons(limit=limit, view=comparison_view)
+            return {"environment": "binance_demo", "items": items, "limit": limit,
+                    "view": comparison_view}
         elif suffix in {"/positions", "/account"}:
             snapshot = (ledger.get_latest_position_snapshot() if suffix == "/positions"
                         else ledger.get_latest_account_snapshot())

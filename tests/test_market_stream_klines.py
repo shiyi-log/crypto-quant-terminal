@@ -7,14 +7,14 @@ import unittest
 from market_stream import MarketCollector, StreamConfig, normalize_message
 
 
-def kline():
+def kline(interval="5m"):
     return {
-        "stream": "btcusdt@kline_5m",
+        "stream": f"btcusdt@kline_{interval}",
         "data": {
             "e": "kline", "E": 1700000400010, "s": "BTCUSDT",
             "k": {
                 "t": 1700000100000, "T": 1700000399999, "s": "BTCUSDT",
-                "i": "5m", "x": True, "o": "100", "h": "103", "l": "99",
+                "i": interval, "x": True, "o": "100", "h": "103", "l": "99",
                 "c": "102", "v": "12.3400", "q": "1234.50", "n": 42,
                 "V": "7.8900", "Q": "600.00",
             },
@@ -82,6 +82,12 @@ class KlineNormalizationTests(unittest.TestCase):
         message = kline()
         message["data"]["k"]["i"] = "1m"
         self.assertIsNone(self.normalize(message))
+
+    def test_configured_one_minute_candle_is_normalized(self):
+        config = StreamConfig(kline_intervals=("1m", "5m"))
+        event = normalize_message(kline("1m"), config, 1700000400100)
+        self.assertEqual(event["timeframe"], "1m")
+        self.assertEqual(event["row"]["extras"]["source"], "binance_kline_1m")
 
     def test_closed_flag_requires_a_boolean(self):
         for value in (None, 0, 1, "true", "false"):
@@ -175,6 +181,31 @@ class KlinePersistenceTests(unittest.TestCase):
         self.assertEqual([call[4] for call in store.calls], ["futures", "orderflow"])
         self.assertEqual(store.calls[0][5], store.calls[1][5])
         self.assertEqual(store.calls[0][6], "live:binance-ws-klines")
+
+    def test_one_minute_candles_are_written_by_timeframe_and_not_mixed(self):
+        class Store:
+            def __init__(self):
+                self.calls = []
+
+            def upsert_candles(self, exchange, market, pair, timeframe, candle_type,
+                               rows, source_key=None):
+                self.calls.append((timeframe, candle_type, source_key, rows))
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store()
+            config = StreamConfig(kline_intervals=("1m", "5m"),
+                                  spool_dir=Path(directory) / "spool")
+            collector = MarketCollector(config, store)
+            one_minute = normalize_message(kline("1m"), config, 1700000400100)
+            five_minute = normalize_message(kline("5m"), config, 1700000400100)
+            collector._write([one_minute, five_minute])
+
+        self.assertEqual([(call[0], call[1]) for call in store.calls], [
+            ("1m", "futures"), ("1m", "orderflow"),
+            ("5m", "futures"), ("5m", "orderflow"),
+        ])
+        self.assertEqual(store.calls[0][2], "live:binance-ws-kline-1m")
+        self.assertEqual(store.calls[2][2], "live:binance-ws-klines")
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ from strategy_factorial import BTC, DESIGN_VERSION, ETH, TRX
 from strategy_factorial_signals import normalize_factorial_spec
 from strategy_lab_service import StrategyLabService
 from strategy_signals import LEGACY_DEFAULTS, normalize_spec
-from strategy_simulation import StrategySimulation, initial_state
+from strategy_simulation import StrategySimulation, execution_identity, initial_state
 
 
 HOUR = 3_600_000
@@ -183,7 +183,8 @@ class FactorialServiceTests(unittest.TestCase):
         for spec in (two, three):
             state = initial_state(spec, BOUNDARY)
             rows.append({"strategy_id": spec["strategy_id"], "definition": spec,
-                         "rule_hash": state["rule_hash"], "state": state})
+                         "rule_hash": state["rule_hash"], "state": state,
+                         "execution": execution_identity(spec)["execution"]})
         rows.append({"strategy_id": "unselected-account", "definition": {"invalid": True}})
         before = copy.deepcopy(rows)
         store = MagicMock()

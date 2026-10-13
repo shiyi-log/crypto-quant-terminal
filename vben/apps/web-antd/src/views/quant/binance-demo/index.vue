@@ -11,7 +11,7 @@ import {
   getBinanceDemoSessions, getBinanceDemoStatus, saveBinanceDemoCredentials, startBinanceDemo, stopBinanceDemo, switchBinanceDemo,
 } from '#/api/binance-demo';
 
-import { accountLabel, canStartDemo, canSwitchDemo, comparisonObservation, decimalText, demoError, demoReadSession, demoSessionLabel, demoState, exchangeTime, fillSide, isSubmissionUnknown, makerText, orderRecordStatus, pinDemoSessions, quotedRateText, selectedDemoAccount, submitCredentials, unfilledRatio, valueText } from './display';
+import { accountLabel, canStartDemo, canSwitchDemo, comparisonObservation, comparisonPriceText, decimalText, demoError, demoReadSession, demoSessionLabel, demoState, exchangeTime, fillSide, isComparisonActivity, isSubmissionUnknown, makerText, orderRecordStatus, pinDemoSessions, quotedRateText, selectedDemoAccount, submitCredentials, unfilledRatio, valueText } from './display';
 
 const status = ref<DemoStatus | null>(null);
 const evidence = ref<DemoEvidence | null>(null);
@@ -20,6 +20,7 @@ const fills = ref<DemoFill[]>([]);
 const positions = ref<DemoRecord[]>([]);
 const balances = ref<DemoRecord[]>([]);
 const comparisons = ref<DemoRecord[]>([]);
+const comparisonView = ref<'signals' | 'audit'>('signals');
 const sessions = ref<DemoSession[]>([]);
 const selectedRecordSession = ref('');
 const loadedRecordSession = ref('');
@@ -75,7 +76,8 @@ const credentialsConfigured = computed(() => Boolean(status.value?.credentials?.
 const credentialsReadable = computed(() => credentialsConfigured.value && status.value?.credentials?.decryptionAvailable !== false);
 const feeQuotes = computed(() => status.value?.lastCheck?.commissionRateSource === 'demo_signed_account_commission_rate_quote_not_fill'
   ? status.value.lastCheck.commissionRates ?? [] : []);
-const comparisonRows = computed(() => comparisons.value.map(comparisonObservation));
+const comparisonActivity = computed(() => comparisons.value.filter(isComparisonActivity));
+const comparisonRows = computed(() => (comparisonView.value === 'audit' ? comparisons.value : comparisonActivity.value).map(comparisonObservation));
 const roundTrips = computed(() => {
   if (historicalRecords.value) return [];
   const rows = status.value?.runner?.round_trips;
@@ -153,8 +155,8 @@ const comparisonColumns = [
   { title: '记录时间', key: 'observedAt', width: 185 },
   { title: '信号标识', dataIndex: 'signalId', key: 'signalId', width: 200 },
   { title: '交易对', dataIndex: 'pair', key: 'pair', width: 155 },
-  { title: '对照事件阶段', dataIndex: 'stage', key: 'stage', width: 175 },
-  { title: '内部模拟事件', dataIndex: 'paperEventType', key: 'paperEventType', width: 160 },
+  { title: '执行阶段', key: 'stage', width: 175 },
+  { title: '内部模拟事件', key: 'paperEventType', width: 160 },
   { title: '内部模拟成交价', key: 'internalPrice', width: 160 },
   { title: '原因', dataIndex: 'reason', key: 'reason', width: 210 },
   { title: '输入指纹', dataIndex: 'inputFingerprint', key: 'inputFingerprint', width: 260, ellipsis: true },
@@ -190,6 +192,7 @@ const decimalKeys = new Set([
 ]);
 
 function rowKey(row: DemoRecord, index?: number) {
+  if (typeof row.observationId === 'string') return row.observationId;
   return `${valueText(row.symbol)}:${valueText(row.id ?? row.orderId ?? row.signalId ?? row.asset)}:${index ?? 0}`;
 }
 
@@ -209,6 +212,7 @@ async function refresh() {
   const requestSequence = ++sequence;
   const signal = controller.signal;
   const recordCandidate = selectedRecordSession.value;
+  const comparisonCandidate = comparisonView.value;
   loading.value = true;
   let overview: DemoStatus;
   try {
@@ -237,7 +241,7 @@ async function refresh() {
   const recordSession = demoReadSession(overview, recordCandidate);
   const results = await Promise.allSettled([
     getBinanceDemoOrders(signal, recordSession), getBinanceDemoFills(signal, recordSession),
-    getBinanceDemoPositions(signal), getBinanceDemoAccount(signal), getBinanceDemoComparisons(signal, recordSession),
+    getBinanceDemoPositions(signal), getBinanceDemoAccount(signal), getBinanceDemoComparisons(signal, recordSession, comparisonCandidate),
     getBinanceDemoEvidence(signal, recordSession), getBinanceDemoSessions(signal),
   ]);
   if (requestSequence !== sequence) return;
@@ -261,6 +265,11 @@ async function refresh() {
   recordError.value = failed?.status === 'rejected' ? `交易记录读取失败：${demoError(failed.reason)}` : '';
   updatedAt.value = Date.now();
   loading.value = false;
+}
+
+function changeComparisonView() {
+  comparisons.value = [];
+  void refresh();
 }
 
 async function runAction(name: string, work: () => Promise<unknown>, success: string) {
@@ -500,13 +509,20 @@ onUnmounted(() => {
           </Table>
         </Tabs.TabPane>
         <Tabs.TabPane key="comparisons" tab="内部模拟 vs Demo">
-          <div class="mb-3 text-xs text-muted-foreground">对照审计按信号标识和输入指纹记录。内部成交价只在已记录成交事件时显示；Demo 实际成交见“成交与手续费”。两条成交路径不同，不把审计事件等同于完整组合收益对照。</div>
+          <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <Select v-model:value="comparisonView" aria-label="对照记录视图" :options="[{ label: '信号与执行', value: 'signals' }, { label: '全部审计日志', value: 'audit' }]" style="min-width: 170px" @change="changeComparisonView" />
+            <span class="text-xs text-muted-foreground">本次读取 {{ comparisonRows.length }} 条{{ comparisonView === 'audit' ? '审计日志' : '信号与执行记录' }}（最多 100 条）</span>
+          </div>
+          <div class="mb-3 text-xs text-muted-foreground">默认显示信号、委托与执行异常；运行心跳、配置检查保留在“全部审计日志”。内部模拟成交价“—”表示非成交记录，“未记录”表示成交事件缺少价格。Demo 实际成交见“成交与手续费”，两条成交路径不同。</div>
           <Table :columns="comparisonColumns" :data-source="comparisonRows" :row-key="rowKey" :loading="loading" :scroll="{ x: 1500 }" size="small" :pagination="{ pageSize: 10 }">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'observedAt'">{{ exchangeTime(record.observedAt) }}</template>
-              <template v-else-if="column.key === 'internalPrice'">{{ decimalText(record.internalPrice) }}</template>
+              <template v-else-if="column.key === 'stage'"><span :title="valueText(record.stage)">{{ record.stageLabel }}</span></template>
+              <template v-else-if="column.key === 'paperEventType'"><span :title="valueText(record.paperEventType)">{{ record.paperEventLabel }}</span></template>
+              <template v-else-if="column.key === 'internalPrice'">{{ comparisonPriceText(record) }}</template>
+              <template v-else>{{ valueText(record[String(column.key)]) }}</template>
             </template>
-            <template #emptyText><Empty description="尚无同信号前向对照，不构造成交或盈利结果" /></template>
+            <template #emptyText><Empty :description="comparisonView === 'signals' ? '暂无信号或执行记录，可切换到全部审计日志查看运行状态' : '尚无审计记录'" /></template>
           </Table>
         </Tabs.TabPane>
         <Tabs.TabPane key="net-pnl" tab="实收费用与净损益">

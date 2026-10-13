@@ -79,6 +79,14 @@ class NormalizationTests(unittest.TestCase):
         spot = StreamConfig(pairs=("BTC/USDT",), market="spot").connections()
         self.assertIn("@trade/", spot[0][1])
 
+    def test_explicit_raw_trade_and_multiple_kline_intervals_are_subscribed(self):
+        config = StreamConfig(trade_stream="trade", kline_intervals=("1m", "5m"))
+        connections = dict(config.connections())
+        self.assertIn("btcusdt@trade", connections["trades"])
+        self.assertIn("btcusdt@kline_1m", connections["trades"])
+        self.assertIn("btcusdt@kline_5m", connections["trades"])
+        self.assertEqual(config.effective_trade_stream, "trade")
+
     def test_aggregate_trade_preserves_precision_and_raw_ids(self):
         event = normalize_message(trade(), StreamConfig(), 1700000000100)
         self.assertEqual(event["market"], "futures")
@@ -95,6 +103,24 @@ class NormalizationTests(unittest.TestCase):
         config = StreamConfig(pairs=("BTC/USDT",), market="spot")
         event = normalize_message(message, config, 1700000000100)
         self.assertEqual(event["row"]["trade_id"], "99")
+        self.assertFalse(event["row"]["extras"]["aggregated"])
+
+    def test_spot_raw_trade_keeps_numeric_id_with_explicit_trade_setting(self):
+        message = trade()
+        message["data"].update(e="trade", t=99)
+        message["stream"] = "btcusdt@trade"
+        config = StreamConfig(pairs=("BTC/USDT",), market="spot", trade_stream="trade")
+        event = normalize_message(message, config, 1700000000100)
+        self.assertEqual(event["row"]["trade_id"], "99")
+
+    def test_explicit_raw_trade_namespaces_id_and_preserves_original(self):
+        message = trade()
+        message["data"].update(e="trade", t=99)
+        message["stream"] = "btcusdt@trade"
+        event = normalize_message(message, StreamConfig(trade_stream="trade"), 1700000000100)
+        self.assertEqual(event["row"]["trade_id"], "trade:99")
+        self.assertEqual(event["row"]["extras"]["original_trade_id"], 99)
+        self.assertEqual(event["row"]["extras"]["stream_kind"], "trade")
         self.assertFalse(event["row"]["extras"]["aggregated"])
 
     def test_futures_book_is_partial_snapshot(self):

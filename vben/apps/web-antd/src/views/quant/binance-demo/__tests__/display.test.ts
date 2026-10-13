@@ -2,7 +2,7 @@ import type { DemoStatus } from '../../../../api/binance-demo';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { canStartDemo, canSwitchDemo, comparisonObservation, decimalText, demoError, demoReadSession, demoSessionLabel, demoState, exchangeTime, feeText, fillSide, makerText, orderRecordStatus, orderStatus, pinDemoSessions, quotedRateText, selectedDemoAccount, submitCredentials, unfilledRatio } from '../display';
+import { canStartDemo, canSwitchDemo, comparisonObservation, comparisonPriceText, decimalText, demoError, demoReadSession, demoSessionLabel, demoState, exchangeTime, feeText, fillSide, isComparisonActivity, makerText, orderRecordStatus, orderStatus, pinDemoSessions, quotedRateText, selectedDemoAccount, submitCredentials, unfilledRatio } from '../display';
 
 function status(): DemoStatus {
   return {
@@ -154,7 +154,45 @@ describe('Demo exchange report presentation', () => {
     const row = comparisonObservation({ signal_id: 'event', stage: 'paper_event', observed_ms: 1000, payload: { paper_event_type: 'order_submitted', paper_event: { pair: 'BTC/USDT:USDT', price: 100 } } });
     expect(row.internalPrice).toBeNull();
     expect(row.pair).toBe('BTC/USDT:USDT');
-    expect(comparisonObservation({ payload: { paper_event: { fill_price: 100 } } }).internalPrice).toBe('100');
+    expect(comparisonObservation({ payload: { paper_event_type: 'order_filled', paper_event: { fill_price: 100 } } }).internalPrice).toBe('100');
+  });
+
+  it('keeps routine logs available for audit while preserving execution failures and unfamiliar stages in the activity view', () => {
+    const rows = ['binding', 'runner_checkpoint', 'actual_execution_config', 'paper_event', 'entry_denied', 'entry_expiry', 'submission_error', 'snapshot_error', 'future_execution_stage'].map((stage) => ({ stage }));
+    const activity = rows.filter(isComparisonActivity);
+    expect(activity.map((row) => row.stage)).toEqual(['paper_event', 'entry_denied', 'entry_expiry', 'submission_error', 'snapshot_error', 'future_execution_stage']);
+    expect(rows).toHaveLength(9);
+  });
+
+  it('shows non-fill prices as inapplicable rather than unknown and does not turn submitted prices into fills', () => {
+    for (const row of [
+      { stage: 'runner_checkpoint', payload: {} },
+      { stage: 'actual_execution_config', payload: {} },
+      { stage: 'entry_denied', payload: { pair: 'BTC/USDT:USDT' } },
+      { stage: 'paper_event', payload: { paper_event_type: 'order_submitted', paper_event: { price: 100, fill_price: 101 } } },
+      { stage: 'paper_event', payload: { paper_event_type: 'order_cancelled', paper_event: { price: 100 } } },
+    ]) {
+      const observation = comparisonObservation(row);
+      expect(observation.internalPrice).toBeNull();
+      expect(comparisonPriceText(observation)).toBe('—');
+    }
+    expect(comparisonObservation({ stage: 'runner_checkpoint' }).stageLabel).toBe('运行心跳');
+  });
+
+  it('distinguishes missing fill prices from recorded fill and closing prices without borrowing order prices', () => {
+    const fill = comparisonObservation({ payload: { paper_event_type: 'order_filled', paper_event: { fill_price: '1234567890.12345678' } } });
+    expect(comparisonPriceText(fill)).toBe('1234567890.12345678');
+    const zeroFill = comparisonObservation({ payload: { paper_event_type: 'order_filled', paper_event: { fill_price: 0 } } });
+    expect(comparisonPriceText(zeroFill)).toBe('0');
+    const missing = comparisonObservation({ payload: { paper_event_type: 'order_filled', paper_event: { price: 100 } } });
+    expect(comparisonPriceText(missing)).toBe('未记录');
+    const close = comparisonObservation({ payload: { paper_event_type: 'trade_closed', paper_event: { entry_price: 100, exit_price: '105.10', exit_reason: 'stop_loss' } } });
+    expect(comparisonPriceText(close)).toBe('105.10（平仓价）');
+    expect(close.reason).toBe('stop_loss');
+    const missingClose = comparisonObservation({ payload: { paper_event_type: 'trade_closed', paper_event: { entry_price: 100 } } });
+    expect(comparisonPriceText(missingClose)).toBe('未记录');
+    expect(comparisonObservation({ stage: 'snapshot_error', payload: { error_type: 'TimeoutError' } }).reason).toBe('TimeoutError');
+    expect(comparisonObservation({ payload: { paper_event_type: 'order_cancelled', paper_event: { reason: 'position_already_closed' } } }).reason).toBe('position_already_closed');
   });
 
   it.each([false, true])('discards both secrets after a submission (rejected=%s)', async (rejected) => {

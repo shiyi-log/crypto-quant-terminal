@@ -20,6 +20,8 @@ ENVIRONMENT = "binance_demo"
 ENDPOINT_HOST = "demo-fapi.binance.com"
 TERMINAL_STATUSES = frozenset({"filled", "canceled", "rejected", "expired"})
 PENDING_STATUSES = ("intent", "submitting", "unknown", "open", "partially_filled")
+COMPARISON_VIEWS = frozenset({"audit", "signals"})
+ROUTINE_COMPARISON_STAGES = ("binding", "runner_checkpoint", "actual_execution_config")
 MAX_PAYLOAD_BYTES = 262_144
 RAW_FIELDS = frozenset({
     "orderId", "clientOrderId", "symbol", "side", "type", "status", "origQty",
@@ -613,15 +615,27 @@ class DemoStore:
                          (observation_id, *self._identity(), *fields, stage, observed_ms, self.store._json(payload)))
         return observation_id
 
-    def list_comparisons(self, *, stage=None, signal_id=None, limit=1000):
+    def list_comparisons(self, *, stage=None, signal_id=None, limit=1000, view="audit"):
+        """Read immutable evidence; signal focus filters routine rows before LIMIT.
+
+        Only known routine stages are hidden. Errors and new event stages stay
+        visible until explicitly classified, and the default retains all audit
+        observations for existing callers.
+        """
+        if not isinstance(view, str) or view not in COMPARISON_VIEWS:
+            raise ValueError("invalid comparison view")
+        limit = _limit(limit)
         query = "SELECT * FROM demo_signal_comparisons WHERE environment=%s AND virtual_account_key=%s"
         params = list(self._identity())
         for name, value in (("stage", stage), ("signal_id", signal_id)):
             if value is not None:
                 query += " AND " + name + "=%s"
                 params.append(_text(value, name))
+        if view == "signals":
+            query += " AND stage <> ALL(%s)"
+            params.append(list(ROUTINE_COMPARISON_STAGES))
         with self.store._connection() as conn:
-            rows = conn.execute(query + " ORDER BY observed_ms DESC,observation_id DESC LIMIT %s", (*params, _limit(limit))).fetchall()
+            rows = conn.execute(query + " ORDER BY observed_ms DESC,observation_id DESC LIMIT %s", (*params, limit)).fetchall()
         return _serializable(rows)
 
     def bind_account(self, binding):

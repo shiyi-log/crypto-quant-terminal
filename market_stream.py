@@ -26,6 +26,14 @@ from orderflow_maturity import OrderflowMaturityWorker
 LOG = logging.getLogger("market_stream")
 ROOT = Path(__file__).resolve().parent
 
+# Binance WebSocket interval names accepted by the kline endpoint.  The
+# collector only subscribes to explicitly configured intervals; keeping this
+# allow-list here also prevents malformed spool events from being replayed.
+KLINE_INTERVALS = frozenset({
+    "1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h",
+    "8h", "12h", "1d", "3d", "1w", "1M",
+})
+
 
 class CollectorAlreadyRunning(RuntimeError):
     """同一运行目录已有行情采集器。"""
@@ -111,10 +119,26 @@ class StreamConfig:
     disk_critical_pct: float = 5.0
     disk_warning_bytes: int = 0
     disk_critical_bytes: int = 0
+    # ``None`` preserves the historical market-specific default: futures use
+    # aggregate trades while spot uses raw trades.  ``trade`` can be selected
+    # explicitly for futures without changing the default deployment.
+    trade_stream: str | None = None
+    kline_intervals: tuple[str, ...] = ("5m",)
+    gap_threshold_ms: int = 60_000
 
     def __post_init__(self) -> None:
         if self.market not in {"futures", "spot"}:
             raise ValueError("market 必须为 futures 或 spot")
+        if self.trade_stream is not None and self.trade_stream not in {"aggTrade", "trade"}:
+            raise ValueError("trade_stream 必须为 aggTrade 或 trade")
+        if not self.kline_intervals or any(interval not in KLINE_INTERVALS for interval in self.kline_intervals):
+            raise ValueError("kline_intervals 包含不支持的 Binance K 线周期")
+        if len(set(self.kline_intervals)) != len(self.kline_intervals):
+            raise ValueError("kline_intervals 不能包含重复周期")
+        if isinstance(self.gap_threshold_ms, bool) or not isinstance(self.gap_threshold_ms, int):
+            raise ValueError("gap_threshold_ms 必须为正整数")
+        if self.gap_threshold_ms <= 0:
+            raise ValueError("gap_threshold_ms 必须为正整数")
         if not self.pairs or self.queue_size < 1 or self.batch_size < 1:
             raise ValueError("交易对、队列容量与批次容量必须有效")
         if min(self.flush_interval, self.retry_max, self.shutdown_timeout, self.status_interval) <= 0:
@@ -128,11 +152,18 @@ class StreamConfig:
         if not re.fullmatch(r"[A-Za-z0-9_-]+\.json", self.status_document_key):
             raise ValueError("状态文档键必须是独立 JSON 文件名")
 
+    @property
+    def effective_trade_stream(self) -> str:
+        return self.trade_stream or ("aggTrade" if self.market == "futures" else "trade")
+
     def connections(self) -> list[tuple[str, str]]:
         # 当前币安合约文档将成交和盘口分置于 market/public 分区。
         symbols = [symbol_for(pair) for pair in self.pairs]
-        trades = "/".join(f"{s}@{'aggTrade' if self.market == 'futures' else 'trade'}" for s in symbols)
-        klines = "/".join(f"{s}@kline_5m" for s in symbols)
+        trades = "/".join(f"{s}@{self.effective_trade_stream}" for s in symbols)
+        klines = "/".join(
+            f"{s}@kline_{interval}"
+            for s in symbols for interval in self.kline_intervals
+        )
         books = "/".join(f"{s}@depth20@100ms" for s in symbols)
         if self.market == "futures":
             return [
@@ -205,6 +236,23 @@ def _nonnegative_int(value: Any) -> int:
     return number
 
 
+def _timeframe_milliseconds(timeframe: str | None) -> int | None:
+    """Return a fixed Binance kline interval in milliseconds.
+
+    Monthly candles are calendar based rather than fixed length, so they are
+    intentionally excluded from arithmetic gap detection.
+    """
+    if not isinstance(timeframe, str):
+        return None
+    match = re.fullmatch(r"(\d+)([smhdw])", timeframe)
+    if not match:
+        return None
+    amount = int(match.group(1))
+    unit_ms = {"s": 1_000, "m": 60_000, "h": 3_600_000,
+               "d": 86_400_000, "w": 604_800_000}[match.group(2)]
+    return amount * unit_ms
+
+
 def normalize_message(message: dict[str, Any], config: StreamConfig, received_ms: int) -> dict[str, Any] | None:
     """规范现货/合约字段；现货部分深度缺少事件时间，明确用接收时间。"""
     payload = message.get("data", message)
@@ -233,8 +281,11 @@ def normalize_message(message: dict[str, Any], config: StreamConfig, received_ms
         closed = raw.get("x")
         if not isinstance(closed, bool):
             raise ValueError("K 线收盘标记必须是布尔值")
-        if raw.get("i") != "5m" or not closed:
-            # 采集器只观察收盘后的 5m K 线，未收盘更新由交易/图表流负责。
+        interval = raw.get("i")
+        if interval not in KLINE_INTERVALS:
+            raise ValueError("K 线周期无效")
+        if interval not in config.kline_intervals or not closed:
+            # 采集器只归档显式配置的收盘 K 线，未收盘更新由交易/图表流负责。
             return None
         timestamp = _nonnegative_int(raw.get("t"))
         event_timestamp = _nonnegative_int(payload.get("E", received_ms))
@@ -283,11 +334,11 @@ def normalize_message(message: dict[str, Any], config: StreamConfig, received_ms
                 )
                 candle["flow_imbal"] = quote_imbalance
                 candle["flow_imbal_q"] = quote_imbalance
-        extras.update(source="binance_kline_5m", closed=True,
+        extras.update(source=f"binance_kline_{interval}", closed=True,
                       exchange_event_timestamp=event_timestamp)
         return {
             "kind": "kline", "market": config.market, "pair": pair,
-            "timeframe": "5m", "candle": candle,
+            "timeframe": interval, "candle": candle,
             "row": {**candle, "extras": extras},
             "source_timestamp": received_ms,
         }
@@ -296,9 +347,30 @@ def normalize_message(message: dict[str, Any], config: StreamConfig, received_ms
         maker = payload["m"]
         if not isinstance(maker, bool):
             raise ValueError("buyer_maker 必须是布尔值")
-        extras.update(source="binance_aggTrade" if aggregate else "binance_trade", aggregated=aggregate)
+        original_trade_id = _nonnegative_int(payload["a" if aggregate else "t"])
+        extras.update(
+            source="binance_aggTrade" if aggregate else "binance_trade",
+            aggregated=aggregate,
+            stream_kind="aggTrade" if aggregate else "trade",
+            original_trade_id=original_trade_id,
+        )
+        # aggTrade IDs and raw trade IDs are different exchange namespaces.
+        # Prefixing raw IDs prevents an explicitly enabled raw stream from
+        # overwriting an existing aggregate row in the ticks upsert key.
+        # Spot's historical default is raw ``trade`` and keeps its numeric ID
+        # for compatibility.  A caller that explicitly selects the raw stream
+        # opts into the namespaced ID needed when aggTrade and trade coexist.
+        # Spot trade IDs are already isolated by the market column and must
+        # retain their historical numeric form, even if a shared environment
+        # selects raw trades for the futures collector.
+        namespace_raw_id = config.market == "futures" and config.trade_stream == "trade"
+        trade_id = (
+            str(original_trade_id)
+            if aggregate or not namespace_raw_id
+            else f"trade:{original_trade_id}"
+        )
         return {"kind": "tick", "market": config.market, "pair": pair, "row": {
-            "trade_id": str(_nonnegative_int(payload["a" if aggregate else "t"])),
+            "trade_id": trade_id,
             "timestamp": _nonnegative_int(payload["T"]), "price": _decimal(payload["p"]),
             "quantity": _decimal(payload["q"]), "buyer_maker": maker, "extras": extras,
         }}
@@ -376,7 +448,7 @@ class FileSpool:
             }[event["kind"]]
             if not isinstance(row, dict) or not required.issubset(row):
                 raise ValueError(f"暂存事件字段缺失：{path.name}")
-            if event["kind"] == "kline" and event.get("timeframe") != "5m":
+            if event["kind"] == "kline" and event.get("timeframe") not in KLINE_INTERVALS:
                 raise ValueError(f"暂存 K 线周期错误：{path.name}")
             if event["kind"] in {"orderflow_surge", "price_candidate"} and not isinstance(row["observation"], dict):
                 raise ValueError(f"暂存订单流观测格式错误：{path.name}")
@@ -418,12 +490,22 @@ class MarketCollector:
         self.status: dict[str, Any] = {
             "enabled": config.enabled, "exchange": "binance", "market": config.market,
             "pairs": list(config.pairs), "transport": "websocket", "state": "starting",
-            "trade_type": "aggregated" if config.market == "futures" else "raw",
+            "trade_type": "aggregated" if config.effective_trade_stream == "aggTrade" else "raw",
+            "trade_stream": config.effective_trade_stream,
+            "kline_intervals": list(config.kline_intervals),
             "book_type": "partial_snapshot", "depth": 20, "depth_interval_ms": 100,
             "started_at": int(time.time() * 1000), "received": 0, "persisted": 0,
             "replayed": 0, "overflow_spooled": 0, "invalid_messages": 0,
             "dropped": 0, "inflight": 0, "buffer_length": 0, "database_failures": 0, "reconnects": 0,
             "connections": {name: "connecting" for name, _ in config.connections()},
+            "gap_threshold_ms": config.gap_threshold_ms,
+            "gap_count": 0, "max_gap_ms": 0, "last_gap": None,
+            "gap_metrics": {},
+            "connection_gap_metrics": {
+                name: {"gap_count": 0, "max_gap_ms": 0, "last_gap": None}
+                for name, _ in config.connections()
+            },
+            "data_gap_possible": False,
             "connection_errors": {}, "last_message": None, "last_flush": None,
             "last_error": None, "last_error_at": None, "database_error": None,
             "quarantined_batches": 0, "corrupt_batches": 0, "storage_warning": None,
@@ -444,6 +526,91 @@ class MarketCollector:
                 for pair in config.pairs
             },
         })
+
+    @staticmethod
+    def _gap_connection_name(kind: str, connections: dict[str, Any]) -> str:
+        """Map an event kind to the connection carrying its messages."""
+        if kind == "orderbook":
+            return "orderbooks" if "orderbooks" in connections else "market"
+        return "trades" if "trades" in connections else "market"
+
+    def record_event_gap(self, event: dict[str, Any]) -> None:
+        """Record a large exchange-timestamp gap for one event identity.
+
+        K-lines are compared against their configured candle interval; a
+        regular boundary therefore contributes zero gap.  Tick and orderbook
+        streams have no fixed cadence, so their full timestamp delta is used.
+        Out-of-order and duplicate events do not move the high-water mark.
+        """
+        kind = event.get("kind")
+        if kind not in {"tick", "orderbook", "kline"}:
+            return
+        row = event.get("row")
+        if not isinstance(row, dict):
+            return
+        try:
+            timestamp = _nonnegative_int(row.get("timestamp"))
+        except (TypeError, ValueError, OverflowError):
+            return
+        market = event.get("market")
+        pair = event.get("pair")
+        if not isinstance(market, str) or not isinstance(pair, str):
+            return
+        timeframe = event.get("timeframe") if kind == "kline" else None
+        key = f"{kind}:{market}:{pair}:{timeframe}" if timeframe else f"{kind}:{market}:{pair}"
+        metrics = self.status["gap_metrics"].setdefault(key, {
+            "kind": kind, "market": market, "pair": pair,
+            "gap_count": 0, "max_gap_ms": 0, "last_gap": None,
+            "last_event_timestamp": None,
+        })
+        if timeframe:
+            metrics["timeframe"] = timeframe
+        previous = metrics.get("last_event_timestamp")
+        if previous is None:
+            metrics["last_event_timestamp"] = timestamp
+            return
+        if timestamp <= previous:
+            return
+        expected_interval = (
+            _timeframe_milliseconds(event.get("timeframe")) if kind == "kline" else 0
+        )
+        if expected_interval is None:
+            metrics["last_event_timestamp"] = timestamp
+            return
+        observed_interval = timestamp - previous
+        gap_ms = max(0, observed_interval - expected_interval)
+        metrics["last_event_timestamp"] = timestamp
+        if gap_ms < self.config.gap_threshold_ms:
+            return
+        detail = {
+            "kind": kind, "market": market, "pair": pair,
+            "previous_event_timestamp": previous,
+            "event_timestamp": timestamp,
+            "observed_interval_ms": observed_interval,
+            "expected_interval_ms": expected_interval,
+            "gap_ms": gap_ms,
+            "detected_at": int(time.time() * 1000),
+        }
+        if kind == "kline":
+            detail["timeframe"] = event.get("timeframe")
+        metrics["gap_count"] += 1
+        metrics["max_gap_ms"] = max(metrics["max_gap_ms"], gap_ms)
+        metrics["last_gap"] = detail
+        self.status["gap_count"] += 1
+        self.status["max_gap_ms"] = max(self.status["max_gap_ms"], gap_ms)
+        self.status["last_gap"] = detail
+        connection = self._gap_connection_name(kind, self.status["connections"])
+        connection_metrics = self.status["connection_gap_metrics"].setdefault(connection, {
+            "gap_count": 0, "max_gap_ms": 0, "last_gap": None,
+        })
+        connection_metrics["gap_count"] += 1
+        connection_metrics["max_gap_ms"] = max(connection_metrics["max_gap_ms"], gap_ms)
+        connection_metrics["last_gap"] = detail
+        self.status["data_gap_possible"] = True
+        LOG.warning(
+            "行情时间缺口 kind=%s market=%s pair=%s gap_ms=%s previous=%s current=%s",
+            kind, market, pair, gap_ms, previous, timestamp,
+        )
 
     @staticmethod
     def _surge_observation(event: dict[str, Any]) -> dict[str, Any]:
@@ -564,29 +731,31 @@ class MarketCollector:
             return
         if event is None:
             return
+        self.record_event_gap(event)
         self.status["received"] += 1
         self.status["last_message"] = received_ms
         if event["kind"] == "kline":
             surge = None
             candidate = None
-            try:
-                surge = self.surge_detector.process(
-                    event["pair"], event["timeframe"], event["candle"],
-                    market=event["market"], source_timestamp=event["source_timestamp"],
-                )
-                candidate = getattr(self.surge_detector, "last_candidate", None)
-                self.status["surge_warmup"][event["pair"]] = {
-                    **self.surge_detector.warmup_status(
-                        event["pair"], market=event["market"]
-                    ),
-                    "source": self.status["surge_warmup"][event["pair"]].get("source"),
-                }
-            except Exception as exc:
-                self.status["surge_last_error"] = str(exc)
-                self.record_error(f"突增检测器处理失败：{exc}")
-            # Closed 5m candles and observations are low-frequency facts.  Save
-            # them together before returning, so a process crash cannot lose
-            # the observation after the detector marks its ID as emitted.
+            if event["timeframe"] == "5m":
+                try:
+                    surge = self.surge_detector.process(
+                        event["pair"], event["timeframe"], event["candle"],
+                        market=event["market"], source_timestamp=event["source_timestamp"],
+                    )
+                    candidate = getattr(self.surge_detector, "last_candidate", None)
+                    self.status["surge_warmup"][event["pair"]] = {
+                        **self.surge_detector.warmup_status(
+                            event["pair"], market=event["market"]
+                        ),
+                        "source": self.status["surge_warmup"][event["pair"]].get("source"),
+                    }
+                except Exception as exc:
+                    self.status["surge_last_error"] = str(exc)
+                    self.record_error(f"突增检测器处理失败：{exc}")
+            # Closed candles and 5m observations are low-frequency facts. Save
+            # them together before returning; 1m candles are persisted alone
+            # and intentionally never advance the 5m detector.
             extras = event["row"]["extras"]
             extras.update({key: value for key, value in event["candle"].items()
                            if key not in {"timestamp", "open", "high", "low", "close", "volume"}})
@@ -594,12 +763,12 @@ class MarketCollector:
             batch = [event]
             if candidate is not None:
                 batch.append({"kind": "price_candidate", "market": event["market"],
-                              "pair": event["pair"], "timeframe": "5m", "row": candidate})
+                              "pair": event["pair"], "timeframe": event["timeframe"], "row": candidate})
                 self.status["price_candidate_observed"] += 1
                 self.status["price_candidate_pending"] += 1
             if surge is not None:
                 batch.append({"kind": "orderflow_surge", "market": event["market"],
-                              "pair": event["pair"], "timeframe": "5m", "row": surge})
+                              "pair": event["pair"], "timeframe": event["timeframe"], "row": surge})
                 self.status["surge_observed"] += 1
                 # Count before spooling so a concurrent writer cannot acknowledge
                 # the batch before the pending metric is visible.
@@ -640,19 +809,24 @@ class MarketCollector:
             await asyncio.to_thread(self.spool.persist, events)
 
     def _write(self, events: list[dict[str, Any]]) -> None:
-        groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+        groups: dict[tuple[str, str, str, str | None], list[dict[str, Any]]] = defaultdict(list)
         for event in events:
-            groups[(event["kind"], event["market"], event["pair"])].append(event["row"])
-        for (kind, market, pair), rows in groups.items():
+            groups[(event["kind"], event["market"], event["pair"], event.get("timeframe"))].append(event["row"])
+        for (kind, market, pair, timeframe), rows in groups.items():
             if kind == "kline":
+                source_key = (
+                    "live:binance-ws-klines"
+                    if timeframe == "5m"
+                    else f"live:binance-ws-kline-{timeframe}"
+                )
                 self.store.upsert_candles(
-                    "binance", market, pair, "5m", market, rows,
-                    source_key="live:binance-ws-klines",
+                    "binance", market, pair, timeframe, market, rows,
+                    source_key=source_key,
                 )
                 if market == "futures":
                     self.store.upsert_candles(
-                        "binance", market, pair, "5m", "orderflow", rows,
-                        source_key="live:binance-ws-klines",
+                        "binance", market, pair, timeframe, "orderflow", rows,
+                        source_key=source_key,
                     )
             elif kind == "orderflow_surge":
                 append = getattr(self.store, "append_orderflow_surge", None)
@@ -986,6 +1160,15 @@ def parse_config(argv: list[str] | None = None) -> StreamConfig:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--market", choices=("futures", "spot"), default=os.getenv("QUANT_STREAM_MARKET", "futures"))
     parser.add_argument("--pairs", default=os.getenv("QUANT_STREAM_PAIRS", "BTC/USDT,ETH/USDT"), help="逗号分隔交易对")
+    parser.add_argument("--trade-stream", choices=("aggTrade", "trade"),
+                        default=os.getenv("QUANT_STREAM_TRADE_STREAM") or None,
+                        help="成交流类型；默认合约 aggTrade、现货 trade")
+    parser.add_argument("--kline-intervals",
+                        default=os.getenv("QUANT_STREAM_KLINE_INTERVALS", "5m"),
+                        help="逗号分隔 Binance K 线周期，默认 5m")
+    parser.add_argument("--gap-threshold-ms", type=int,
+                        default=int(os.getenv("QUANT_STREAM_GAP_THRESHOLD_MS", "60000")),
+                        help="记录行情时间缺口的阈值（毫秒），默认 60000")
     parser.add_argument("--spool-dir", type=Path, default=Path(os.getenv("QUANT_STREAM_SPOOL_DIR", str(ROOT / "database/runtime/market_spool"))))
     parser.add_argument("--status-document-key", default="market_stream_status.json")
     parser.add_argument("--disk-warning-pct", type=float, default=float(os.getenv("QUANT_STREAM_DISK_WARNING_PCT", "15")),
@@ -998,8 +1181,14 @@ def parse_config(argv: list[str] | None = None) -> StreamConfig:
                         help="磁盘剩余字节低于此值时进入临界告警，0 表示不启用")
     arguments = parser.parse_args(argv)
     pairs = tuple(dict.fromkeys(normalize_pair(pair, arguments.market) for pair in arguments.pairs.split(",") if pair.strip()))
+    kline_intervals = tuple(dict.fromkeys(
+        interval.strip() for interval in arguments.kline_intervals.split(",") if interval.strip()
+    ))
     return StreamConfig(pairs=pairs, market=arguments.market, spool_dir=arguments.spool_dir,
                         status_document_key=arguments.status_document_key,
+                        trade_stream=arguments.trade_stream,
+                        kline_intervals=kline_intervals,
+                        gap_threshold_ms=arguments.gap_threshold_ms,
                         enabled=os.getenv("QUANT_STREAM_ENABLED", "true").lower() not in {"false", "0", "no"},
                         disk_warning_pct=arguments.disk_warning_pct,
                         disk_critical_pct=arguments.disk_critical_pct,

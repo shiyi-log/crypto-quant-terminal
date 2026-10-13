@@ -144,19 +144,48 @@ function record(value: unknown): DemoRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as DemoRecord : {};
 }
 
+const routineComparisonStages = new Set(['binding', 'runner_checkpoint', 'actual_execution_config']);
+
+/** Hide routine telemetry in the trading view without discarding any audit rows. */
+export function isComparisonActivity(row: DemoRecord): boolean {
+  return !routineComparisonStages.has(String(row.stage ?? ''));
+}
+
+const comparisonStages: Record<string, string> = {
+  paper_event: '内部模拟事件', entry_denied: 'Demo 未开仓', entry_expiry: 'Demo 挂单到期',
+  submission_error: 'Demo 提交异常', snapshot_error: '账户检查异常',
+  binding: '会话绑定', runner_checkpoint: '运行心跳', actual_execution_config: '执行配置检查',
+};
+const paperEventTypes: Record<string, string> = {
+  order_submitted: '已委托', order_filled: '已成交', order_cancelled: '已撤单',
+  order_rejected: '已拒绝', trade_closed: '已平仓',
+};
+
+/** A missing price is relevant only when the event claims a recorded paper fill. */
+export function comparisonPriceText(row: DemoRecord): string {
+  if (typeof row.internalPrice === 'string' && row.internalPrice !== '') {
+    return row.paperEventType === 'trade_closed' ? `${row.internalPrice}（平仓价）` : row.internalPrice;
+  }
+  return row.paperEventType === 'order_filled' || row.paperEventType === 'trade_closed' ? '未记录' : '—';
+}
+
 /** A comparison observation is an audit event, never a fabricated paired fill. */
 export function comparisonObservation(row: DemoRecord): DemoRecord {
   const payload = record(row.payload);
   const paper = record(payload.paper_event);
-  const price = paper.fill_price;
+  const price = payload.paper_event_type === 'order_filled' ? paper.fill_price
+    : payload.paper_event_type === 'trade_closed' ? paper.exit_price : null;
   return {
+    observationId: row.observation_id,
     signalId: row.signal_id ?? payload.signal_id,
     observedAt: row.observed_ms,
     pair: payload.pair ?? paper.pair,
     stage: row.stage,
+    stageLabel: comparisonStages[String(row.stage ?? '')] ?? valueText(row.stage),
     paperEventType: payload.paper_event_type,
-    internalPrice: typeof price === 'string' ? price : typeof price === 'number' ? String(price) : null,
-    reason: payload.reason ?? payload.cancellation_reason ?? payload.error_kind,
+    paperEventLabel: paperEventTypes[String(payload.paper_event_type ?? '')] ?? valueText(payload.paper_event_type),
+    internalPrice: typeof price === 'string' && price !== '' ? price : typeof price === 'number' && Number.isFinite(price) ? String(price) : null,
+    reason: payload.reason ?? payload.cancellation_reason ?? payload.error_kind ?? payload.error_type ?? paper.reason ?? paper.exit_reason,
     ruleHash: row.rule_hash ?? payload.rule_hash,
     inputFingerprint: row.input_fingerprint ?? payload.input_fingerprint,
   };

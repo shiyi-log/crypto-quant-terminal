@@ -181,3 +181,26 @@
 - 新 ATR 执行按冻结信号 ATR 和实际下一 open 反解仓位；开盘跨破产价先强平，再处理待执行订单。历史前截止/旧对照/新因子样本由 API 投影分别标注，跨截止平仓仍按原入场归属，历史事实不改写。
 - 完整后端 843 项通过、8 项可选环境跳过；后续服务缓存、迟到 TRX、exact 交易腿和样本截止测试新增 10 项，46 项因子/服务/执行定向回归通过。修改范围 Ruff、Git 差异检查通过。
 - s07 双方当前均 KEEP，DeepSeek 已撤回归档建议，盈利尚未证实。LEGACY_DEFAULTS/ATR opt-in 是有意保护旧冻结行为；strategy_signals.py 继续由备用3号独占。
+
+### 2026-10-13 数据落库缺口修复与持续采集自检
+
+- 用户指出「数据落库和持续采集还没搞定」。实测确认：实时采集（tick/盘口/5m K 线）一直在跑且连续，
+  真实缺口是**历史导入段缺订单流字段**（TRX 5m 缺 flow_imbal 292,242 行；BTC/ETH 缺 4,076 行）、
+  **orderflow 镜像序列断 4 天**（2026-10-08 23:40 → 2026-10-13 03:05，BTC/ETH 各缺 1,191~1,192 根）、
+  以及**没有任何机制会发现新缺口**。根因是 `data_sync` 只在来源指纹变化时导入，不回补已入库行。
+- 新增 `tools/backfill_candle_flow_fields.py`（derived / rest / archive 三源，dry-run 默认，
+  `--apply` 必须新建备份，只补 null）与 `tools/mirror_orderflow_candles.py`（仅补缺失时间戳、可 `--since`）。
+- 已执行修复共 **423,515 行 extras 更新 + 3,576 行插入**：库内推导 391,475 + REST(BTC/ETH/TRX 5m/15m/1h) 8,330
+  + 二次推导 8,330 + orderflow 镜像插入 3,576 + orderflow 推导 1,170 + REST(其余 17 币 5m) 7,480
+  + 官方月度归档补 2024-01（3,356/3,357）+ 口径错标修正 17。全部有 JSONL 前置镜像与回滚说明。
+- 修复后实证：BTC/ETH/TRX 5m `futures` 源字段覆盖 **100%**，flow_imbal 877,640/877,671（缺 31 = 零成交量根，
+  数学上无定义）；5m `orderflow` **579,602/579,602 = 100%**；两类序列 **gap 全部为 0**，
+  审计 error_count 由 30 降到 0（覆盖模式）/ 2（法证模式，仅剩 6 行 `taker_buy_base > volume` 脏数据）。
+- 新增扩展：`check_candle_integrity` 支持 `--watch/--interval/--status-document`、`--no-formula-check`、
+  零分母根不进入派生字段分母、自动加载 `.env`；`manage.py` 新增受管服务 `integrity`（每 300 秒只读自检，
+  写 `database/runtime/candle_integrity_status.json`），保证「漏数据」不再依赖人工发现。
+- 明确未修：原生 15m/1h 与现货 5m 仍是文件导入产物（停在 2026-10-12 18:4x），本次只补了它们最近
+  1,500 根的字段，**没有**插入缺失的 15m/1h 行——这需要先决定原生周期是否由 5m 滚动生成；
+  当前策略读取端按既有设计回落到 5m 重采样，不阻塞决策。详见
+  [数据落库与持续采集修复记录](DATA_REPAIR_AND_INTEGRITY_20261013.md)。
+- 验证：`tests.test_candle_flow_backfill` 17 项、`tests.test_candle_integrity` 18 项全通过；Ruff 通过。

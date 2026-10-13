@@ -106,6 +106,27 @@ class WatchdogProbeTests(unittest.TestCase):
             result["superseded"],
         )
 
+    def test_failed_spot_deliveries_and_known_probes_no_longer_raise_alerts(self):
+        superseded = (
+            "dsh-SPOT-REALTIME-COLLECTOR-requested-20261013",
+            "dsh-SPOT-REALTIME-COLLECTOR-retry-20261013",
+            "p1791872816",
+            "probe-1791875518",
+        )
+        with sqlite3.connect(self.ledger) as db:
+            db.executemany("INSERT INTO messages VALUES (?, ?, ?, ?, ?)",
+                           [(message_id, "codex", None, "unconfirmed", 1.0)
+                            for message_id in (*superseded, "unrelated-business-message")])
+
+        result = self.check((0, '{"accepted":true}', ""))
+
+        self.assertEqual(len(result["superseded"]), 4)
+        self.assertIn("p1791872816 → 已失效的诊断探针，无业务内容", result["superseded"])
+        self.assertIn("probe-1791875518 → 已失效的诊断探针，无业务内容", result["superseded"])
+        self.assertEqual(result["problems"], [
+            "存在未确认消息 unrelated-business-message —— 需人工核对是否已送达",
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

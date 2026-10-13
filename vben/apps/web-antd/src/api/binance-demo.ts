@@ -232,11 +232,11 @@ export function switchBinanceDemo(accountId: string) {
   return mutate('switch', { accountId });
 }
 
-async function rows<T extends DemoRecord>(path: string, signal?: AbortSignal, session?: string): Promise<DemoRows<T>> {
+async function rows<T extends DemoRecord>(path: string, signal?: AbortSignal, session?: string, view?: 'signals' | 'audit'): Promise<DemoRows<T>> {
   authenticated();
   const scoped = path === 'orders' || path === 'fills' || path === 'comparisons';
   const result = body(await ftClient.get(`${basePath}/${path}`, {
-    ...(scoped ? { params: { limit: 100, ...(session ? { session } : {}) } } : {}), signal,
+    ...(scoped ? { params: { limit: 100, ...(session ? { session } : {}), ...(view ? { view } : {}) } } : {}), signal,
   }));
   assertDemo(result);
   return {
@@ -252,5 +252,5 @@ export const getBinanceDemoOrders = (signal?: AbortSignal, session?: string) => 
 export const getBinanceDemoFills = (signal?: AbortSignal, session?: string) => rows<DemoFill>('fills', signal, session);
 export const getBinanceDemoPositions = (signal?: AbortSignal) => rows('positions', signal);
 export const getBinanceDemoAccount = (signal?: AbortSignal) => rows('account', signal);
-export const getBinanceDemoComparisons = (signal?: AbortSignal, session?: string) => rows('comparisons', signal, session);
+export const getBinanceDemoComparisons = (signal?: AbortSignal, session?: string, view: 'signals' | 'audit' = 'signals') => rows('comparisons', signal, session, view);
 export const getBinanceDemoSessions = (signal?: AbortSignal) => rows<DemoSession>('sessions', signal);

@@ -72,6 +72,14 @@ class DemoStoreUnitTests(unittest.TestCase):
                 demo.reserve_order(intent(**change))
         demo.store._connection.assert_not_called()
 
+    def test_invalid_comparison_view_is_rejected_before_database_reads(self):
+        demo = DemoStore(Mock())
+        for view in ("unknown", "", "SIGNALS", [], None):
+            with self.subTest(view=view):
+                with self.assertRaisesRegex(ValueError, "invalid comparison view"):
+                    demo.list_comparisons(view=view)
+        demo.store._connection.assert_not_called()
+
 
 @unittest.skipUnless(os.getenv("QUANT_TEST_DATABASE_URL"), "independent quant_test database required")
 class DemoStoreIntegrationTests(unittest.TestCase):
@@ -365,6 +373,33 @@ class DemoStoreIntegrationTests(unittest.TestCase):
         self.assertEqual(other.runner_orders(), [])
         self.assertEqual(other.list_comparisons(), [])
         self.assertIsNone(other.get_binding())
+
+    def test_signal_focus_filters_before_limit_without_removing_audit_or_error_evidence(self):
+        comparison = {key: intent()[key] for key in
+                      ("strategy_id", "signal_id", "rule_hash", "execution_hash", "input_fingerprint")}
+        self.demo.bind_account(comparison)
+        for observed_ms in range(2000, 2101):
+            self.demo.append_comparison(comparison, "runner_checkpoint", observed_ms)
+        self.demo.append_comparison(comparison, "actual_execution_config", 2200)
+        for stage, observed_ms in (("paper_event", 1000), ("snapshot_error", 1100),
+                                  ("future_business_event", 1200)):
+            self.demo.append_comparison(comparison, stage, observed_ms)
+        other = DemoStore(self.data, "session_b")
+        other.append_comparison(comparison, "paper_event", 1300)
+
+        # More than one page of newer routine rows must not hide older signals.
+        focused = self.demo.list_comparisons(view="signals", limit=2)
+        self.assertEqual([row["stage"] for row in focused], ["future_business_event", "snapshot_error"])
+        self.assertTrue(all(row["virtual_account_key"] == "session_a" for row in focused))
+        self.assertEqual([row["stage"] for row in self.demo.list_comparisons(
+            view="signals", signal_id=comparison["signal_id"], limit=100)],
+            ["future_business_event", "snapshot_error", "paper_event"])
+        self.assertEqual(self.demo.list_comparisons(view="signals", stage="runner_checkpoint"), [])
+        self.assertEqual(len(self.demo.list_comparisons(stage="runner_checkpoint")), 101)
+        audit = self.demo.list_comparisons()
+        self.assertEqual(len(audit), 106)
+        self.assertEqual(audit[0]["stage"], "binding")
+        self.assertEqual(self.demo.list_comparisons(view="audit"), audit)
 
     def test_switch_gate_includes_pending_orders_in_other_namespaces(self):
         self.assertTrue(self.demo.account_reconciliation_status()["safeToSwitch"])

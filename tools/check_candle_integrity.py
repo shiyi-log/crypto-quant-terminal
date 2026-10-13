@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from contextlib import suppress
 from datetime import datetime, timezone
 import json
 import math
@@ -20,6 +21,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -49,6 +51,19 @@ TIMEFRAME_MS = {
     "w": 604_800_000,
 }
 IDENTITY_FIELDS = ("exchange", "market", "pair", "timeframe", "candle_type")
+# Derived imbalance fields and the column whose zero value makes them undefined.
+DERIVED_DENOMINATORS = {
+    "flow_imbal": "quote_volume",
+    "flow_imbal_q": "quote_volume",
+    "flow_imbal_base": "volume",
+}
+
+
+def _denominator_value(row: dict[str, Any], name: str) -> Any:
+    value = row["extras"].get(name)
+    if value is None and name == "volume":
+        value = row.get("volume", row["extras"].get("volume"))
+    return value
 
 
 def timeframe_milliseconds(timeframe: str) -> int:
@@ -171,6 +186,7 @@ def inspect_dataset(
     min_coverage: float = 1.0,
     max_age_bars: int | None = None,
     as_of_ms: int | None = None,
+    formula_check: bool = True,
 ) -> dict[str, Any]:
     """Inspect one normalized or raw dataset without I/O."""
     dataset = _normalize_dataset(dataset, 0)
@@ -240,13 +256,31 @@ def inspect_dataset(
     total = len(rows)
     if not rows:
         result["errors"].append("empty_dataset")
+    # An imbalance is undefined on a bar whose denominator is exactly zero
+    # (0/0).  Those rows cannot carry the field by construction, so they are
+    # removed from the derived-field denominator while a missing numerator or
+    # denominator still fails the independent source-field coverage check.
+    derived_denominators = result.setdefault("field_denominators", {})
     for field in required_fields:
+        denominator_name = DERIVED_DENOMINATORS.get(field)
+        if denominator_name is None:
+            denominator_rows = rows
+        else:
+            denominator_rows = [
+                row for row in rows
+                if not (_finite_number(_denominator_value(row, denominator_name))
+                        and float(_denominator_value(row, denominator_name)) == 0)
+            ]
         present = sum(_field_present(row["extras"], field) for row in rows)
-        coverage = present / total if total else 0.0
+        denominator = len(denominator_rows)
+        coverage = present / denominator if denominator else 0.0
         passes = coverage >= min_coverage
+        derived_denominators[field] = denominator
         result["fields"][field] = {
             "present": present,
             "missing": total - present,
+            "denominator": denominator,
+            "undefined": total - denominator,
             "coverage": coverage,
             "min_coverage": min_coverage,
             "passes": passes,
@@ -267,7 +301,8 @@ def inspect_dataset(
     canonical_checked = 0
     canonical_unavailable = 0
     total_unavailable = 0
-    for flow_name, denominator_name, taker_name, error_name, required in formula_specs:
+    for flow_name, denominator_name, taker_name, error_name, required in (
+            formula_specs if formula_check else ()):
         checked = 0
         unavailable = 0
         mismatches: list[dict[str, Any]] = []
@@ -320,7 +355,9 @@ def inspect_dataset(
         total_unavailable += unavailable
         if mismatches:
             result["errors"].append(error_name)
-    flow_status = "failed" if all_mismatches else "passed" if canonical_checked else "unknown"
+    flow_status = ("not_requested" if not formula_check
+                   else "failed" if all_mismatches else "passed" if canonical_checked
+                   else "unknown")
     result["flow_formula"] = {
         "status": flow_status,
         "checked": canonical_checked,
@@ -444,6 +481,7 @@ def inspect_snapshot(
     rest_fetcher: Callable[[str, str], list[dict[str, Any]]] | None = None,
     max_age_bars: int | None = None,
     as_of_ms: int | None = None,
+    formula_check: bool = True,
 ) -> dict[str, Any]:
     datasets = normalize_snapshot(payload)
     reports = []
@@ -454,6 +492,7 @@ def inspect_snapshot(
             min_coverage=min_coverage,
             max_age_bars=max_age_bars,
             as_of_ms=as_of_ms,
+            formula_check=formula_check,
         )
         if rest_fetcher is not None:
             try:
@@ -472,7 +511,8 @@ def inspect_snapshot(
         "method": METHOD,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "policy": {"required_fields": list(required_fields), "min_coverage": min_coverage,
-                   "max_age_bars": max_age_bars, "as_of_ms": as_of_ms},
+                   "max_age_bars": max_age_bars, "as_of_ms": as_of_ms,
+                   "formula_check": formula_check},
         "dataset_count": len(reports),
         "ok": errors == 0,
         "error_count": errors,
@@ -548,7 +588,100 @@ def _write_json(path: Path, payload: Any) -> None:
         handle.write("\n")
 
 
+def compact_status(report: dict[str, Any], *, cycles: int, interval: float,
+                   last_error: str | None = None) -> dict[str, Any]:
+    """Small, monitor-friendly projection of a full audit report."""
+    datasets = []
+    for dataset in report.get("datasets", []):
+        tail = dataset.get("tail") or {}
+        datasets.append({
+            "identity": [dataset.get(name) for name in IDENTITY_FIELDS],
+            "row_count": dataset.get("row_count"),
+            "gap_count": dataset.get("gap_count"),
+            "duplicate_timestamp_count": dataset.get("duplicate_timestamp_count"),
+            "tail_passes": tail.get("passes"),
+            "errors": list(dataset.get("errors") or []),
+            "flow_formula_status": (dataset.get("flow_formula") or {}).get("status"),
+        })
+    return {
+        "method": METHOD,
+        "pid": os.getpid(),
+        "cycles": cycles,
+        "interval_seconds": interval,
+        "ok": bool(report.get("ok")),
+        "error_count": int(report.get("error_count") or 0),
+        "dataset_count": int(report.get("dataset_count") or 0),
+        "last_error": last_error,
+        "datasets": datasets,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def audit_once(args: argparse.Namespace, *, dsn: str) -> dict[str, Any]:
+    """Run one audit using already-parsed arguments."""
+    required = tuple(args.required_fields or DEFAULT_REQUIRED_FIELDS)
+    if args.input:
+        payload = json.loads(args.input.read_text(encoding="utf-8"))
+    else:
+        if not dsn:
+            raise ValueError("QUANT_DATABASE_URL is not configured")
+        payload = read_database_snapshot(dsn=dsn, schema=args.schema, pairs=args.pairs,
+                                         timeframes=args.timeframes)
+    rest_fetcher = (lambda pair, timeframe: fetch_rest_klines(
+        pair, timeframe, limit=args.rest_limit,
+    )) if args.rest else None
+    report = inspect_snapshot(
+        payload,
+        required_fields=required,
+        min_coverage=args.min_coverage,
+        rest_fetcher=rest_fetcher,
+        max_age_bars=args.max_age_bars,
+        as_of_ms=args.as_of_ms,
+        formula_check=not args.no_formula_check,
+    )
+    if args.output:
+        _write_json(args.output, report)
+    if args.persist:
+        if not dsn:
+            raise ValueError("--persist requires QUANT_DATABASE_URL")
+        persist_report(dsn=dsn, schema=args.schema, key=args.document_key, report=report)
+    return report
+
+
+def run_watch(args: argparse.Namespace, *, dsn: str, cycles: int | None = None,
+              audit: Callable[[], dict[str, Any]] | None = None,
+              sleep: Callable[[float], None] = time.sleep) -> int:
+    """Re-audit on an interval and publish a status document each cycle."""
+    if args.interval <= 0:
+        raise ValueError("--interval must be positive")
+    audit = audit or (lambda: audit_once(args, dsn=dsn))
+    completed = 0
+    while cycles is None or completed < cycles:
+        last_error = None
+        try:
+            report = audit()
+        except Exception as exc:  # a failed cycle must stay visible, not silent
+            last_error = f"{type(exc).__name__}"
+            report = {"ok": False, "error_count": 1, "dataset_count": 0, "datasets": []}
+        completed += 1
+        status = compact_status(report, cycles=completed, interval=args.interval,
+                                last_error=last_error)
+        if args.status_document:
+            _write_json(args.status_document, status)
+        print(json.dumps(status, ensure_ascii=False), flush=True)
+        if cycles is not None and completed >= cycles:
+            break
+        sleep(args.interval)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    # A managed service inherits the project environment, but a direct CLI run
+    # should not fail only because ``.env`` was not exported by hand.
+    with suppress(Exception):
+        from runtime_config import load_environment
+        load_environment(Path(__file__).resolve().parents[1])
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, help="offline JSON snapshot; otherwise read PostgreSQL")
     parser.add_argument("--schema", default="quant")
@@ -567,6 +700,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, help="write report JSON locally")
     parser.add_argument("--persist", action="store_true", help="write report to PostgreSQL documents")
     parser.add_argument("--document-key", default="candle_integrity/latest.json")
+    parser.add_argument("--no-formula-check", action="store_true", dest="no_formula_check",
+                        help="audit coverage/gaps only; skip derived-formula reconciliation")
+    parser.add_argument("--watch", action="store_true",
+                        help="re-audit on an interval instead of exiting after one run")
+    parser.add_argument("--interval", type=float, default=300.0,
+                        help="seconds between audits in --watch mode")
+    parser.add_argument("--status-document", type=Path,
+                        help="JSON status document refreshed every --watch cycle")
+    parser.add_argument("--max-cycles", type=int,
+                        help="stop after this many cycles (testing and one-shot batches)")
     args = parser.parse_args(argv)
     try:
         if not 0 <= args.min_coverage <= 1:
@@ -577,31 +720,12 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--as-of-ms must be non-negative")
         if not 1 <= args.rest_limit <= 1500:
             raise ValueError("--rest-limit must be between 1 and 1500")
-        required = tuple(args.required_fields or DEFAULT_REQUIRED_FIELDS)
+        if args.max_cycles is not None and args.max_cycles < 1:
+            raise ValueError("--max-cycles must be positive")
         dsn = os.getenv("QUANT_DATABASE_URL", "")
-        if args.input:
-            payload = json.loads(args.input.read_text(encoding="utf-8"))
-        else:
-            if not dsn:
-                raise ValueError("QUANT_DATABASE_URL is not configured")
-            payload = read_database_snapshot(dsn=dsn, schema=args.schema, pairs=args.pairs, timeframes=args.timeframes)
-        rest_fetcher = (lambda pair, timeframe: fetch_rest_klines(
-            pair, timeframe, limit=args.rest_limit,
-        )) if args.rest else None
-        report = inspect_snapshot(
-            payload,
-            required_fields=required,
-            min_coverage=args.min_coverage,
-            rest_fetcher=rest_fetcher,
-            max_age_bars=args.max_age_bars,
-            as_of_ms=args.as_of_ms,
-        )
-        if args.output:
-            _write_json(args.output, report)
-        if args.persist:
-            if not dsn:
-                raise ValueError("--persist requires QUANT_DATABASE_URL")
-            persist_report(dsn=dsn, schema=args.schema, key=args.document_key, report=report)
+        if args.watch:
+            return run_watch(args, dsn=dsn, cycles=args.max_cycles)
+        report = audit_once(args, dsn=dsn)
         print(json.dumps({"method": METHOD, "ok": report["ok"],
                           "dataset_count": report["dataset_count"], "error_count": report["error_count"],
                           "output": str(args.output) if args.output else None}, ensure_ascii=False))

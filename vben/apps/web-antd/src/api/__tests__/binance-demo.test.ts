@@ -84,11 +84,24 @@ describe('authenticated Binance Demo API contract', () => {
     expect(mocks.get.mock.calls).toEqual([
       ['/locals/binance-demo/orders', { params: { limit: 100, session }, signal: undefined }],
       ['/locals/binance-demo/fills', { params: { limit: 100, session }, signal: undefined }],
-      ['/locals/binance-demo/comparisons', { params: { limit: 100, session }, signal: undefined }],
+      ['/locals/binance-demo/comparisons', { params: { limit: 100, session, view: 'signals' }, signal: undefined }],
       ['/locals/binance-demo/evidence', { params: { session }, signal: undefined }],
       ['/locals/binance-demo/sessions', { signal: undefined }],
       ['/locals/binance-demo/account', { signal: undefined }],
       ['/locals/binance-demo/positions', { signal: undefined }],
+    ]);
+    expect(mocks.post).not.toHaveBeenCalled();
+  });
+
+  it('queries signals separately from routine audit history with the same captured session and abort signal', async () => {
+    const session = 'demo_strategy_history';
+    const signal = new AbortController().signal;
+    mocks.get.mockResolvedValue({ environment: 'binance_demo', items: [] });
+    await getBinanceDemoComparisons(signal, session);
+    await getBinanceDemoComparisons(signal, session, 'audit');
+    expect(mocks.get.mock.calls).toEqual([
+      ['/locals/binance-demo/comparisons', { params: { limit: 100, session, view: 'signals' }, signal }],
+      ['/locals/binance-demo/comparisons', { params: { limit: 100, session, view: 'audit' }, signal }],
     ]);
     expect(mocks.post).not.toHaveBeenCalled();
   });

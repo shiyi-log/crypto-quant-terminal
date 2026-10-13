@@ -16,10 +16,10 @@ PAIR = "BTC/USDT:USDT"
 MISSING = object()
 
 
-def kline(timestamp=600_000, quote_volume=40, *, closed=True):
-    return {"stream": "btcusdt@kline_5m", "data": {
+def kline(timestamp=600_000, quote_volume=40, *, closed=True, interval="5m"):
+    return {"stream": f"btcusdt@kline_{interval}", "data": {
         "e": "kline", "E": timestamp + 300_000, "s": "BTCUSDT",
-        "k": {"t": timestamp, "T": timestamp + 299_999, "s": "BTCUSDT", "i": "5m",
+        "k": {"t": timestamp, "T": timestamp + 299_999, "s": "BTCUSDT", "i": interval,
               "o": "10", "h": "12", "l": "9", "c": "11", "v": "4",
               "q": str(quote_volume), "x": closed, "n": 7, "V": "3",
               "Q": str(quote_volume * .6)},
@@ -206,6 +206,18 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
         event = next(event for event in self.pending_events()
                      if event["kind"] == "orderflow_surge")
         self.assertEqual(event["row"]["observation"]["baseline_quote_volume"], 10)
+
+    async def test_one_minute_candle_is_persisted_without_advancing_five_minute_detector(self):
+        config = replace(self.config, kline_intervals=("1m", "5m"))
+        collector = MarketCollector(config, self.store, VolumeSurgeDetector(window_size=2))
+        await collector.receive(kline(600_000, 1000, interval="1m"))
+        events = self.pending_events(collector)
+        self.assertEqual([event["kind"] for event in events], ["kline"])
+        self.assertEqual(events[0]["timeframe"], "1m")
+        self.assertEqual(collector.status["surge_observed"], 0)
+        await self.flush_all(collector)
+        self.assertEqual(self.store.candle_writes[0][3], "1m")
+        self.assertEqual(self.store.candle_writes[1][3], "1m")
 
     async def test_writer_history_can_warm_restarted_detector_from_persisted_extras(self):
         await self.collector.receive(kline(0, 10))

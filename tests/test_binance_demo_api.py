@@ -152,6 +152,29 @@ class DemoHttpTests(unittest.TestCase):
                                                 {"accountId": "selected"}))[0], 400)
         self.provider.assert_not_called()
 
+    def test_comparison_view_is_strict_and_preserves_history_and_limit(self):
+        key = "demo_strategy_" + "a" * 32
+        for view in ("signals", "audit"):
+            with self.subTest(view=view):
+                handler = self.handler("/comparisons?view=" + view + "&limit=7&session=" + key)
+                handler.headers["Content-Length"] = "0"
+                self.assertEqual(self.route(handler, method="GET")[0], 200)
+                self.provider.return_value.get.assert_called_once_with(
+                    "/comparisons", limit=7, session=key, view=view)
+        for suffix in ("/comparisons?view=", "/comparisons?view=other",
+                       "/comparisons?view=signals&view=audit", "/comparisons?view=SIGNALS",
+                       "/orders?view=signals", "/status?view=audit",
+                       "/comparisons?view=signals&limit=0"):
+            with self.subTest(suffix=suffix):
+                handler = self.handler(suffix)
+                handler.headers["Content-Length"] = "0"
+                self.assertEqual(self.route(handler, method="GET")[0], 400)
+                self.provider.assert_not_called()
+        handler = self.handler("/comparisons")
+        handler.headers["Content-Length"] = "0"
+        self.assertEqual(self.route(handler, method="GET")[0], 200)
+        self.provider.return_value.get.assert_called_once_with("/comparisons", limit=100)
+
 
 class DemoApiTests(unittest.TestCase):
     def setUp(self):
@@ -393,6 +416,39 @@ class DemoApiTests(unittest.TestCase):
         self.assertEqual(refused.exception.status, 404)
         self.api.session_factory.assert_not_called()
         self.credentials.load_credentials.assert_not_called()
+
+    def test_comparisons_default_to_full_audit_and_focus_keeps_selected_history(self):
+        key = "demo_strategy_" + "b" * 32
+        old = Mock()
+        self.ledger.virtual_account_key = key
+        self.ledger.list_comparisons.return_value = [{"stage": "runner_checkpoint"}]
+        self.ledger.list_strategy_sessions.return_value = [{"virtualAccountKey": "demo_default"}]
+        old.list_comparisons.return_value = [{"stage": "paper_event"}]
+        self.api.session_factory = Mock(return_value=old)
+        audit = self.api.get("/comparisons")
+        self.assertEqual(audit["view"], "audit")
+        self.assertEqual(audit["items"], [{"stage": "runner_checkpoint"}])
+        self.ledger.list_comparisons.assert_called_once_with(limit=100, view="audit")
+        focused = self.api.get("/comparisons", view="signals", limit=5, session="demo_default")
+        self.assertEqual(focused["view"], "signals")
+        self.assertEqual(focused["items"], [{"stage": "paper_event"}])
+        old.list_comparisons.assert_called_once_with(limit=5, view="signals")
+        self.api.session_factory.assert_called_once_with("demo_default")
+        self.adapter_factory.assert_not_called()
+        self.credentials.load_credentials.assert_not_called()
+
+    def test_invalid_comparison_view_never_reads_database_or_history(self):
+        self.api.session_factory = Mock()
+        for suffix, view in (("/comparisons", "other"), ("/comparisons", []),
+                             ("/comparisons", ""), ("/fills", "signals")):
+            with self.subTest(suffix=suffix, view=view):
+                with self.assertRaisesRegex(DemoApiError, "invalid_comparison_view"):
+                    self.api.get(suffix, view=view, session="demo_default")
+        self.ledger.list_comparisons.assert_not_called()
+        self.ledger.list_strategy_sessions.assert_not_called()
+        self.data._connection.assert_not_called()
+        self.api.session_factory.assert_not_called()
+        self.adapter_factory.assert_not_called()
 
     def test_explicit_empty_active_session_can_be_read_before_first_strategy_start(self):
         self.ledger.virtual_account_key = "demo_default"

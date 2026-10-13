@@ -56,7 +56,37 @@ class ProcessIdentityTests(unittest.TestCase):
             for spec in self.specs.values():
                 self.assertFalse(manage.matches_process(spec, command, self.root))
                 self.assertFalse(manage.matches_process(spec, command, self.root / "bot"))
-        self.assertEqual(set(self.specs), {"auth", "web", "api", "webserver", "sync", "market", "market-trx", "market-live", "strategy-lab", "spot-basis"})
+        self.assertEqual(set(self.specs),
+                         {"auth", "web", "api", "webserver", "sync", "market", "market-trx",
+                          "market-spot", "market-live", "strategy-lab", "spot-basis", "integrity"})
+
+    def test_spot_collector_has_isolated_database_stream_configuration(self):
+        spec = self.specs["market-spot"]
+        self.assertEqual(spec.stream_market, "spot")
+        self.assertEqual(spec.stream_pairs, ("BTCUSDT", "ETHUSDT", "TRXUSDT"))
+        self.assertEqual(spec.stream_kline_intervals, ("1m", "5m"))
+        self.assertEqual(spec.stream_spool_dir,
+                         self.root / "database/runtime/spot/market_spool")
+        self.assertEqual(spec.stream_status_document, "market_stream_spot_status.json")
+        self.assertIn(("--kline-intervals", "1m,5m"),
+                      tuple(zip(spec.command, spec.command[1:])))
+
+    def test_spot_collector_process_identity_checks_market_and_configuration(self):
+        spec = self.specs["market-spot"]
+        arguments = ["--market", "spot", "--pairs", "BTC/USDT,ETH/USDT,TRX/USDT",
+                     "--kline-intervals", "1m,5m", "--spool-dir",
+                     str(spec.stream_spool_dir), "--status-document-key",
+                     spec.stream_status_document]
+        self.assertTrue(manage.matches_stream_arguments(spec, arguments, self.root))
+
+        for option, wrong_value in (("--market", "futures"),
+                                    ("--pairs", "BTC/USDT,ETH/USDT"),
+                                    ("--kline-intervals", "5m"),
+                                    ("--spool-dir", str(self.root / "database/runtime/market_spool")),
+                                    ("--status-document-key", "market_stream_status.json")):
+            changed = list(arguments)
+            changed[changed.index(option) + 1] = wrong_value
+            self.assertFalse(manage.matches_stream_arguments(spec, changed, self.root), option)
 
     def test_start_reuses_existing_service(self):
         with patch("manage.find_processes", return_value=[42]), \

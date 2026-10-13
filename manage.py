@@ -42,6 +42,8 @@ class Service:
     stream_spool_dir: Path | None = None
     stream_pairs: tuple[str, ...] | None = None
     stream_status_document: str | None = None
+    stream_market: str | None = None
+    stream_kline_intervals: tuple[str, ...] | None = None
 
 
 def services(root: Path = ROOT) -> dict[str, Service]:
@@ -75,7 +77,18 @@ def services(root: Path = ROOT) -> dict[str, Service]:
                 "--status-document-key", "market_stream_trx_status.json"),
                 root, root / "market_stream.py",
                 stream_spool_dir=root / "database/runtime/trx/market_spool",
-                stream_pairs=("TRXUSDT",), stream_status_document="market_stream_trx_status.json"),
+                stream_pairs=("TRXUSDT",), stream_status_document="market_stream_trx_status.json",
+                stream_market="futures"),
+        Service("market-spot", "现货逐笔、盘口与 K 线采集",
+                (python, "-u", str(root / "market_stream.py"), "--market", "spot",
+                 "--pairs", "BTC/USDT,ETH/USDT,TRX/USDT", "--kline-intervals", "1m,5m",
+                 "--spool-dir", str(root / "database/runtime/spot/market_spool"),
+                 "--status-document-key", "market_stream_spot_status.json"),
+                root, root / "market_stream.py",
+                stream_spool_dir=root / "database/runtime/spot/market_spool",
+                stream_pairs=("BTCUSDT", "ETHUSDT", "TRXUSDT"),
+                stream_status_document="market_stream_spot_status.json", stream_market="spot",
+                stream_kline_intervals=("1m", "5m")),
         Service("market-live", "实时 K 线推送", (python, "-u", str(root / "market_live.py"),
                 "--port", os.getenv("QUANT_LIVE_PORT", "8892")), root,
                 root / "market_live.py", port=int(os.getenv("QUANT_LIVE_PORT", "8892")),
@@ -99,6 +112,19 @@ def services(root: Path = ROOT) -> dict[str, Service]:
                  "--apply", "--watch", "--output", str(root / "database/runtime/spot_basis"),
                  "--status-document-key", "spot_basis_status.json"),
                 root, root / "tools/backfill_spot_basis_history.py"),
+        # 用户要求「不能漏数据」：缺口必须由常驻进程主动发现，而不是等人手工跑。
+        # 只读审计，不写 K 线；状态文档供运维与前端读取。
+        Service("integrity", "K线完整性自检",
+                (python, "-u", str(root / "tools/check_candle_integrity.py"),
+                 "--watch", "--interval", os.getenv("QUANT_INTEGRITY_INTERVAL", "300"),
+                 "--pair", "BTC/USDT:USDT", "--pair", "ETH/USDT:USDT",
+                 "--pair", "TRX/USDT:USDT", "--timeframe", "5m",
+                 "--max-age-bars", os.getenv("QUANT_INTEGRITY_MAX_AGE_BARS", "3"),
+                 "--no-formula-check",
+                 "--output", str(root / "database/runtime/candle_integrity_report.json"),
+                 "--status-document",
+                 str(root / "database/runtime/candle_integrity_status.json")),
+                root, root / "tools/check_candle_integrity.py"),
     ]
     return {spec.name: spec for spec in specs}
 
@@ -165,8 +191,8 @@ def matches_process(spec: Service, command: str, cwd: Path | None) -> bool:
 
 
 def matches_stream_arguments(spec: Service, arguments: list[str], cwd: Path) -> bool:
-    """同一采集脚本按暂存目录区分实例，TRX 侧车还必须带独立状态与币池。"""
-    names = {"--spool-dir", "--pairs", "--market", "--status-document-key"}
+    """同一采集脚本按 spool 区分实例，侧车还需匹配独立市场、状态与币池。"""
+    names = {"--spool-dir", "--pairs", "--market", "--status-document-key", "--kline-intervals"}
     options: dict[str, str] = {}
     index = 0
     while index < len(arguments):
@@ -206,8 +232,20 @@ def matches_stream_arguments(spec: Service, arguments: list[str], cwd: Path) -> 
             return False
         actual_pairs = {pair.strip().upper().split(":", 1)[0].replace("/", "")
                         for pair in pairs.split(",") if pair.strip()}
-        return (actual_pairs == set(spec.stream_pairs)
-                and options.get("--market", "futures") == "futures")
+        if actual_pairs != set(spec.stream_pairs):
+            return False
+        if options.get("--market", "futures") != (spec.stream_market or "futures"):
+            return False
+        if spec.stream_kline_intervals is not None:
+            intervals = options.get("--kline-intervals")
+            if intervals is None:
+                return False
+            actual_intervals = tuple(dict.fromkeys(
+                interval.strip() for interval in intervals.split(",") if interval.strip()
+            ))
+            if set(actual_intervals) != set(spec.stream_kline_intervals):
+                return False
+        return True
     return True
 
 

@@ -421,7 +421,8 @@ class AtrExecutionTests(unittest.TestCase):
         spec = _spec()
         state = initial_state(spec, BAR)
         row = {"strategy_id": spec["strategy_id"], "definition": spec,
-               "rule_hash": state["rule_hash"], "state": state}
+               "rule_hash": state["rule_hash"], "state": state,
+               "execution": execution_identity(spec)["execution"]}
         other = copy.deepcopy(row)
         other["strategy_id"] = "unselected-broken-account"
         other["definition"] = {"invalid": "must_not_be_loaded"}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 import tempfile
@@ -9,11 +10,13 @@ import unittest
 from unittest.mock import patch
 
 from tools.check_candle_integrity import (
+    compact_status,
     fetch_rest_klines,
     inspect_dataset,
     inspect_snapshot,
     main,
     reconcile_rest,
+    run_watch,
     timeframe_milliseconds,
 )
 
@@ -184,6 +187,77 @@ class CandleIntegrityTests(unittest.TestCase):
             report = json.loads(output.read_text(encoding="utf-8"))
             self.assertFalse(report["ok"])
             self.assertGreater(report["error_count"], 0)
+
+    def test_zero_denominator_bars_do_not_fail_derived_field_coverage(self):
+        zero_trade = {"timestamp": 0, "volume": 0.0,
+                      "extras": {"quote_volume": 0.0, "num_trades": 0,
+                                 "taker_buy_base": 0.0, "taker_buy_quote": 0.0}}
+        report = inspect_dataset(dataset([zero_trade, row(300_000)]))
+        self.assertTrue(report["ok"], report["errors"])
+        self.assertEqual(report["fields"]["flow_imbal"]["denominator"], 1)
+        self.assertEqual(report["fields"]["flow_imbal"]["undefined"], 1)
+        self.assertEqual(report["fields"]["quote_volume"]["coverage"], 1.0)
+
+    def test_absent_denominator_still_fails_derived_field_coverage(self):
+        broken = {"timestamp": 0, "volume": 10.0, "extras": {"num_trades": 1}}
+        report = inspect_dataset(dataset([broken, row(300_000)]))
+        self.assertIn("field_coverage:flow_imbal", report["errors"])
+        self.assertIn("field_coverage:quote_volume", report["errors"])
+
+    def test_formula_check_can_be_skipped_for_coverage_watchdogs(self):
+        payload = {"datasets": [dataset([row(0), row(300_000)])]}
+        skipped = inspect_snapshot(payload, formula_check=False)
+        self.assertTrue(skipped["ok"])
+        self.assertEqual(skipped["datasets"][0]["flow_formula"]["status"], "not_requested")
+        self.assertFalse(skipped["policy"]["formula_check"])
+        checked = inspect_snapshot(payload)
+        self.assertEqual(checked["datasets"][0]["flow_formula"]["status"], "passed")
+
+    def test_compact_status_projects_identity_and_errors(self):
+        report = inspect_snapshot({"datasets": [dataset([row(0), row(300_000)])]})
+        status = compact_status(report, cycles=3, interval=300.0)
+        self.assertTrue(status["ok"])
+        self.assertEqual(status["cycles"], 3)
+        self.assertEqual(status["interval_seconds"], 300.0)
+        self.assertEqual(status["datasets"][0]["identity"],
+                         ["binance", "futures", "BTC/USDT:USDT", "5m", "futures"])
+        self.assertTrue(status["datasets"][0]["tail_passes"] is None)
+        self.assertIn("pid", status)
+
+    def test_watch_writes_status_each_cycle_and_survives_an_audit_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status_path = Path(directory) / "status.json"
+            seen: list[dict] = []
+            calls = []
+
+            def audit():
+                if status_path.exists():
+                    seen.append(json.loads(status_path.read_text(encoding="utf-8")))
+                calls.append(len(calls))
+                if len(calls) == 2:
+                    raise RuntimeError("database unavailable")
+                return inspect_snapshot({"datasets": [dataset([row(0), row(300_000)])]})
+
+            args = argparse.Namespace(interval=0.001, status_document=status_path)
+            slept = []
+            result = run_watch(args, dsn="", cycles=2, audit=audit,
+                               sleep=lambda seconds: slept.append(seconds))
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 2)
+        # The first cycle published a healthy status; the second cycle's failure
+        # replaced it and stayed explicit instead of aborting the watchdog.
+        self.assertTrue(seen[0]["ok"])
+        self.assertEqual(seen[0]["cycles"], 1)
+        self.assertFalse(status["ok"])
+        self.assertEqual(status["last_error"], "RuntimeError")
+        self.assertEqual(status["cycles"], 2)
+        self.assertEqual(slept, [0.001])
+
+    def test_watch_rejects_non_positive_interval(self):
+        args = argparse.Namespace(interval=0.0, status_document=None)
+        with self.assertRaises(ValueError):
+            run_watch(args, dsn="", cycles=1, audit=lambda: {}, sleep=lambda _s: None)
 
 
 if __name__ == "__main__":

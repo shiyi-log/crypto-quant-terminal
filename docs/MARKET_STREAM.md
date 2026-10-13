@@ -27,11 +27,22 @@ K 线保存采用版本检查，较旧的 WS 更新和 REST 快照不会覆盖�
 | USDⓈ-M USDT 合约 | `aggTrade`，同价、同主动方向成交聚合，官方推送间隔 100 ms | `depth20@100ms`，前 20 档部分深度快照 | `BTC/USDT:USDT`、`ETH/USDT:USDT` |
 | 现货 | `trade`，原始逐笔成交 | `depth20@100ms`，前 20 档部分深度快照 | 指定 `--market spot` 后对应现货交易对 |
 
-合约 `aggTrade` **不是每一笔原始撮合**。一条消息可能汇总多个成交，原始首尾成交 ID `f/l` 随交易所正文保存于 `extras.raw`。数据库与运行状态明确标记 `aggregated=true` / `trade_type=aggregated`，不会把它宣传成完整的原始逐笔记录。
+合约默认使用 `aggTrade`，**不是每一笔原始撮合**。一条消息可能汇总多个成交，原始首尾成交 ID `f/l` 随交易所正文保存于 `extras.raw`。数据库与运行状态明确标记 `aggregated=true` / `trade_type=aggregated`，不会把它宣传成完整的原始逐笔记录。
+
+如需试运行合约原始逐笔，可设置 `QUANT_STREAM_TRADE_STREAM=trade` 或传入
+`--trade-stream trade`。原始成交的数据库 ID 使用 `trade:<t>` 命名空间，原始交易所 ID
+仍保存在 `extras.original_trade_id`；这是为了避免 `aggTrade.a` 与 `trade.t` 的不同 ID
+空间撞击现有 ticks 主键。默认部署不会切换成 raw trade，也不会同时把两种流写入同一个
+未区分命名空间的 ID。
+
+采集器也支持显式配置多个 K 线周期，例如
+`QUANT_STREAM_KLINE_INTERVALS=1m,5m`。每个周期按自己的 `timeframe` 写入 candles，
+合约行继续分别写入 `futures` 与 `orderflow`。1m 原始 K 线不会喂给 5m 突增检测器；本阶段
+尚未把 1m 聚合成 15m/1h，也不会用不完整分钟桶伪造高周期 K 线。
 
 盘口只存每次公开推送的前 20 档快照，不重建完整 L2 订单簿，也不声称逐条记录所有深度变化。盘口正文、更新 ID 和事件时间均保留。现货部分深度没有交易所事件时间，使用本地接收时间，并在 `extras.timestamp_source` 中明确标记 `received`。
 
-当前官方接口将合约成交与盘口划分为不同的连接分区，采集器分别建立两个连接：
+当前官方接口将合约成交与盘口划分为不同的连接分区，采集器分别建立两个连接。默认订阅为：
 
 - 合约成交：`wss://fstream.binance.com/market/stream?streams=btcusdt@aggTrade/ethusdt@aggTrade`
 - 合约盘口：`wss://fstream.binance.com/public/stream?streams=btcusdt@depth20@100ms/ethusdt@depth20@100ms`
@@ -65,6 +76,24 @@ uv run python manage.py stop market-trx
 不指定服务名的 `start`、`stop`、`restart`、`status` 会包括两个采集器；单独管理
 `market-trx` 不会停止或复用原 `market` 进程。`QUANT_STREAM_ENABLED` 对两者均生效。
 
+现货实时采集使用独立 `market-spot` 服务：
+
+```text
+.venv/bin/python3 manage.py start market-spot
+.venv/bin/python3 manage.py status market-spot
+.venv/bin/python3 manage.py stop market-spot
+```
+
+固定订阅 BTC/USDT、ETH/USDT、TRX/USDT 的原始成交、前 20 档盘口和已收盘
+1m/5m K 线。正式数据分别写入 PostgreSQL 的 `ticks`、`orderbooks` 和
+`candles`（`market=spot`、`candle_type=spot`），状态写入数据库文档
+`market_stream_spot_status.json`。`database/runtime/spot/market_spool` 仅用于提交前
+暂存与故障恢复；本地状态文件和实例锁也与合约采集器隔离。管理器核对市场、币池、
+周期、状态文档和暂存目录，避免把现货进程误认成合约进程。
+
+该服务从启动时开始积累真实收到的数据，不补齐此前缺失的历史。现有 `spot-basis`
+继续负责独立的 1h REST 前向喂数；其它现货币种需另外配置后才会实时采集。
+
 调试时可直接运行，默认保持采集直到收到 SIGINT 或 SIGTERM：
 
 ```text
@@ -81,6 +110,9 @@ uv run python market_stream.py --help
 | `QUANT_STREAM_ENABLED` | `true` | 设置 `false`、`0` 或 `no` 时跳过启动 |
 | `QUANT_STREAM_MARKET` | `futures` | `futures` 或 `spot` |
 | `QUANT_STREAM_PAIRS` | `BTC/USDT,ETH/USDT` | 逗号分隔；也接受 `BTCUSDT` 形式 |
+| `QUANT_STREAM_TRADE_STREAM` | 合约 `aggTrade`、现货 `trade` | 显式设为 `trade` 时，合约原始成交使用 `trade:<t>` ID |
+| `QUANT_STREAM_KLINE_INTERVALS` | `5m` | 逗号分隔的收盘 K 线周期，例如 `1m,5m` |
+| `QUANT_STREAM_GAP_THRESHOLD_MS` | `60000` | 事件时间缺口阈值；只记录告警，不在 WebSocket 循环内补采 |
 | `QUANT_STREAM_SPOOL_DIR` | `database/runtime/market_spool` | 故障暂存批次的位置，应置于有足够容量的本地盘 |
 | `QUANT_STREAM_DISK_WARNING_PCT` | `15` | 暂存目录所在分区剩余百分比低于此值时写入 `warning` 告警 |
 | `QUANT_STREAM_DISK_CRITICAL_PCT` | `5` | 暂存目录所在分区剩余百分比低于此值时写入 `critical` 告警 |
@@ -126,7 +158,7 @@ WebSocket 断开时指数退避重连，连接期间的原始消息照实存储�
 
 ## 状态与验证
 
-运行状态同步为数据库文档 `market_stream_status.json`；同时保存本地 `database/runtime/market_stream_status.json`，以便数据库故障时仍能检查采集器。
+运行状态同步为数据库文档 `market_stream_status.json`；同时保存本地 `database/runtime/market_stream_status.json`，以便数据库故障时仍能检查采集器。状态中的 `gap_metrics` 按事件类型、市场、交易对和 K 线周期记录上次事件时间、缺口次数、最大缺口和最近缺口；超过阈值会写入日志并设置 `data_gap_possible=true`。这只是发现与告警，历史补采仍需独立工具或 worker。
 
 主要字段包括连接状态、成交类型、盘口类型、收到/写入计数、队列长度、内存批次长度、在写批次长度、暂存批次数、溢出暂存计数、重连计数、最后消息时间、最后写入时间、最后错误、数据库故障次数与下一次重试等待时间。`corrupt_batches`、`corrupt_files`、`storage_warning` 明确报告保留的损坏批次，并跨重启持续提示；`data_gap_possible=true` 说明可能存在行情缺口，损坏批次的缺失条数无法准确推算。`persisted/replayed` 是本次进程成功提交的暂存事件数，包含从前次进程恢复的事件及幂等重播，不能当作数据库新增唯一行数。
 状态发布还会检查暂存目录所在分区，并提供 `disk_total_bytes`、`disk_used_bytes`、`disk_free_bytes`、`disk_free_pct`、`disk_alert_level`、`disk_alert_reason` 和 `disk_checked_at`。`disk_alert_level` 为 `ok`、`warning`、`critical` 或 `unknown`；检查失败时保留 `unknown` 和错误原因，不会把容量误报为正常。数据中心的“实时采集”区域展示剩余容量、检查时间与告警原因。

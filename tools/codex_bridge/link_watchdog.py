@@ -204,6 +204,14 @@ def check(stuck_min=15):
                 "dsh-ablation-and-fixes-20261009": "dsh-channel-bug-and-ablation-20261010",
                 # 对端未运行导致投递失败，内容已用新 ID 重发并成功
                 "dsh-standby1-DATA-FIX-assignment-20261012": "dsh-standby1-DATA-FIX-20261012",
+                # Spot collector request was first sent while the standby
+                # session was unavailable; the same work was delivered to the
+                # main session under the replacement id.
+                "dsh-SPOT-REALTIME-COLLECTOR-requested-20261013": "dsh-SPOT-REALTIME-COLLECTOR-via-main-20261013",
+                "dsh-SPOT-REALTIME-COLLECTOR-retry-20261013": "dsh-SPOT-REALTIME-COLLECTOR-via-main-20261013",
+                # Probe-only messages from the unavailable-session window.
+                "p1791872816": None,
+                "probe-1791875518": None,
             }
             for r in rows:
                 mid = r.get("id") or ""
@@ -211,8 +219,10 @@ def check(stuck_min=15):
                     if mid.startswith(IGNORE_PREFIXES):
                         continue                      # 诊断探针，非业务消息
                     if mid in SUPERSEDED:
-                        s.setdefault("superseded", []).append(
-                            f"{mid} → 已由 {SUPERSEDED[mid]} 重发")
+                        replacement = SUPERSEDED[mid]
+                        detail = (f"{mid} → 已由 {replacement} 重发" if replacement
+                                  else f"{mid} → 已失效的诊断探针，无业务内容")
+                        s.setdefault("superseded", []).append(detail)
                         continue
                     s["problems"].append(
                         f"存在未确认消息 {mid} —— 需人工核对是否已送达")

@@ -145,6 +145,10 @@ class BurstTests(unittest.TestCase):
         self.assertEqual(v2["definition"]["threshold_derivation"],
                          "user_decision_20261013_loosened_from_1p5pct_for_frequency")
 
+    def test_signal_requires_explicit_variant_threshold(self):
+        with self.assertRaises(TypeError):
+            PriceBurstEventSource._signal([], 0)
+
     def test_v2_exact_half_percent_threshold_is_inclusive(self):
         for close, expected in ((100.5, "buy"), (99.5, "sell")):
             with self.subTest(close=close):

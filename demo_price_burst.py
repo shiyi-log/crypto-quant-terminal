@@ -271,7 +271,7 @@ class PriceBurstEventSource:
                                     timestamp)).fetchall()
 
     @staticmethod
-    def _signal(rows, timestamp, move_threshold=Decimal("0.015")):
+    def _signal(rows, timestamp, move_threshold):
         expected = [timestamp - (WARMUP_BARS - index - 1) * BAR_MS
                     for index in range(WARMUP_BARS)]
         if len(rows) != WARMUP_BARS or [row["timestamp"] for row in rows] != expected:

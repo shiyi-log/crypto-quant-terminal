@@ -1,4 +1,4 @@
-import type { DemoRecord, DemoSession, DemoStatus, DemoStrategyAccount } from '#/api/binance-demo';
+import type { DemoRecord, DemoSession, DemoStatus, DemoStrategyAccount, DemoStrategySession } from '#/api/binance-demo';
 
 /** Preserve exchange decimal strings, including their precision and known zero. */
 export function decimalText(value: unknown): string {
@@ -114,6 +114,86 @@ export function canSwitchDemo(status: DemoStatus | null, accountId: string): boo
     status.accounts?.some((account) => account.accountId === accountId && account.enabled && account.eligible));
 }
 
+function parallelActionsReady(status: DemoStatus | null): status is DemoStatus {
+  return Boolean(status?.parallelSupported && status.credentials?.configured &&
+    status.credentials.decryptionAvailable !== false && !status.runner.handoffInProgress &&
+    !status.runner.switchPersistenceUnresolved && !status.runner.sharedPersistenceUnresolved);
+}
+
+function eligibleDemoAccount(status: DemoStatus, accountId: string): boolean {
+  return status.accounts.some((account) => account.accountId === accountId && account.enabled && account.eligible);
+}
+
+function parallelMembers(status: DemoStatus): DemoRecord[] {
+  const sessions = status.runner.parallelSessions;
+  return Array.isArray(sessions) ? sessions.map((session) =>
+    typeof session === 'string' ? { virtualAccountKey: session } : record(session)) : [];
+}
+
+function managedDemoSession(status: DemoStatus, session: DemoSession | DemoStrategySession): boolean {
+  return session.primary === true || session.member === true ||
+    session.virtualAccountKey === status.runner.virtualAccountKey ||
+    parallelMembers(status).some((member) => member.virtualAccountKey === session.virtualAccountKey);
+}
+
+/** A paused member retains its strategy identity; history alone does not reserve it. */
+function strategyAlreadyManaged(status: DemoStatus, accountId: string, sessions: DemoStrategySession[]): boolean {
+  return status.runner.selectedAccountId === accountId ||
+    parallelMembers(status).some((member) => (member.strategyId ?? member.selectedAccountId) === accountId) ||
+    sessions.some((session) => session.strategyId === accountId && managedDemoSession(status, session));
+}
+
+export function canAttachDemo(status: DemoStatus | null, accountId: string, sessions: DemoStrategySession[] = []): boolean {
+  return parallelActionsReady(status) && eligibleDemoAccount(status, accountId) &&
+    !strategyAlreadyManaged(status, accountId, sessions);
+}
+
+/** Each member has its own entry gate, even while another member is running. */
+export function canStartDemoSession(status: DemoStatus | null, session: DemoStrategySession): boolean {
+  return parallelActionsReady(status) && managedDemoSession(status, session) &&
+    session.entriesEnabled === false && eligibleDemoAccount(status, session.strategyId);
+}
+
+/** Resume an immutable historical namespace instead of changing its binding. */
+export function canAdoptDemoSession(status: DemoStatus | null, session: DemoStrategySession, sessions: DemoStrategySession[] = []): boolean {
+  return parallelActionsReady(status) && !managedDemoSession(status, session) &&
+    eligibleDemoAccount(status, session.strategyId) && !strategyAlreadyManaged(status, session.strategyId, sessions);
+}
+
+export function demoStrategySessionState(session: DemoStrategySession) {
+  const detail = record(session.status);
+  const state = String(session.state ?? (typeof session.status === 'string' ? session.status : detail.state ?? detail.status ?? '')).toLowerCase();
+  if (session.lastError || detail.lastError || detail.last_error || detail.initializationError || session.initializationError ||
+    ['error', 'failed', 'reconciliation_error', 'blocked_unknown_exposure'].includes(state)) {
+    return { label: '运行异常', color: 'error' };
+  }
+  if (session.riskAlert || detail.risk_alert) return { label: '风险保护待恢复', color: 'error' };
+  const conflicts = session.ownershipConflicts ?? detail.ownership_conflicts;
+  if (Array.isArray(conflicts) && conflicts.length) {
+    return { label: '仓位归属待核对', color: 'error' };
+  }
+  if (session.primary !== true && session.member !== true) return { label: '历史会话', color: 'default' };
+  if (session.entriesEnabled === true) {
+    if ((session.running ?? detail.running) === false) return { label: '已开闸，等待运行', color: 'warning' };
+    return { label: '正在 Demo 运行', color: 'processing' };
+  }
+  return session.entriesEnabled === false
+    ? { label: '已暂停新开仓', color: 'warning' }
+    : { label: '状态未读取', color: 'default' };
+}
+
+/** Ledger quantities identify ownership; they do not provide exchange entry prices. */
+export function demoOwnedPositionRows(session: DemoStrategySession): DemoRecord[] {
+  if (Array.isArray(session.ownedPositions)) {
+    return session.ownedPositions.filter((position) => position && typeof position === 'object' && !Array.isArray(position));
+  }
+  return Object.entries(record(session.ownedPositions)).flatMap(([pair, signedQuantity]) => {
+    const decimal = typeof signedQuantity === 'string' && /^[+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?$/.test(signedQuantity);
+    if (decimal && /^[+-]?0+(?:\.0+)?(?:[Ee][+-]?\d+)?$/.test(signedQuantity)) return [];
+    return [{ pair, signedQuantity, side: decimal ? signedQuantity.startsWith('-') ? 'short' : 'long' : 'unknown' }];
+  });
+}
+
 /** Polling updates the runner without replacing the user's pending choice. */
 export function selectedDemoAccount(status: DemoStatus, candidate: string): string {
   return candidate && status.accounts.some((account) => account.accountId === candidate)
@@ -130,9 +210,12 @@ export function pinDemoSessions(status: DemoStatus, sessions: DemoSession[]): De
   return activeKey ? sessions.map((session) => ({ ...session, active: session.virtualAccountKey === activeKey })) : sessions;
 }
 
-export function demoSessionLabel(session: DemoSession, accounts: DemoStrategyAccount[]): string {
+export function demoSessionLabel(session: DemoSession | DemoStrategySession, accounts: DemoStrategyAccount[]): string {
   const account = accounts.find((item) => item.accountId === session.strategyId);
-  return `${account?.description || session.strategyId} · ${exchangeTime(session.forwardBoundaryMs)}${session.active ? ' · 当前' : ''}`;
+  const primary = session.active === true || (session.active === undefined && session.primary === true);
+  const role = primary ? '当前主会话' : session.member === true
+    ? session.entriesEnabled === true ? '并行运行' : session.entriesEnabled === false ? '并行暂停' : '并行状态待核对' : '历史会话';
+  return `${account?.description || session.strategyId} · ${exchangeTime(session.forwardBoundaryMs)} · ${role}`;
 }
 
 export function unfilledRatio(value: unknown): string {
@@ -224,6 +307,17 @@ export function demoError(error: unknown): string {
     demo_credential_identity_mismatch: 'Demo 凭据与原会话不一致，暂不能切换策略。',
     demo_switch_namespace_collision: '新策略会话无法建立，旧会话保持暂停；请刷新后重试。',
     demo_session_not_found: '所选历史会话不存在，请刷新后重新选择。',
+    demo_shared_persistence_failed: '并行策略会话未能保存，请刷新核对后重试。',
+    demo_shared_persistence_unresolved: '并行策略会话保存状态待核对，暂不能开启新开仓。',
+    demo_shared_recovery_incomplete: '部分策略会话尚未恢复，暂不能开启新开仓；已有仓位继续保护。',
+    demo_shared_session_initialization_failed: '策略会话初始化尚未完成，暂不能开启新开仓；请刷新核对。',
+    demo_primary_session_required: '请先启用主策略会话，再接入并行策略。',
+    demo_shared_session_limit: '一个 Demo 账户最多同时管理三个策略会话；历史记录继续保留。',
+    demo_shared_account_unreconciled: '共享 Demo 账户仓位或挂单尚未完成归属对账，暂不能接入策略。',
+    demo_session_binding_missing: '该历史会话缺少策略绑定，暂不能恢复；请刷新核对。',
+    paper_account_not_demo_eligible: '该策略账户不符合 Demo 执行条件，请重新选择。',
+    demo_parallel_entries_enabled: '请先暂停所有并行策略的新开仓，再切换主策略或交接账户。',
+    shared_pair_busy: '该币种已有其他策略的持仓或挂单，本次信号跳过，避免净额混账。',
   };
   return typeof message === 'string' ? labels[message] ?? message : 'Demo 请求失败，请检查服务状态';
 }

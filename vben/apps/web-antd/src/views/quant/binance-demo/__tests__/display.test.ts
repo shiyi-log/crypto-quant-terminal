@@ -1,8 +1,8 @@
-import type { DemoStatus } from '../../../../api/binance-demo';
+import type { DemoStatus, DemoStrategySession } from '../../../../api/binance-demo';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { canStartDemo, canSwitchDemo, comparisonObservation, comparisonPriceText, decimalText, demoError, demoReadSession, demoSessionLabel, demoState, exchangeTime, feeText, fillSide, isComparisonActivity, makerText, orderRecordStatus, orderStatus, pinDemoSessions, quotedRateText, selectedDemoAccount, submitCredentials, unfilledRatio } from '../display';
+import { canAdoptDemoSession, canAttachDemo, canStartDemo, canStartDemoSession, canSwitchDemo, comparisonObservation, comparisonPriceText, decimalText, demoError, demoOwnedPositionRows, demoReadSession, demoSessionLabel, demoState, demoStrategySessionState, exchangeTime, feeText, fillSide, isComparisonActivity, makerText, orderRecordStatus, orderStatus, pinDemoSessions, quotedRateText, selectedDemoAccount, submitCredentials, unfilledRatio } from '../display';
 
 function status(): DemoStatus {
   return {
@@ -10,6 +10,23 @@ function status(): DemoStatus {
     credentials: { configured: true }, runner: { state: 'configured', tradingEnabled: false },
     accounts: [{ accountId: 's03_R50_k1.5', strategyId: 's03', enabled: true, eligible: true, ruleHash: 'rule', executionHash: 'execution' }],
     metrics: {}, limitations: [],
+  };
+}
+
+function parallelStatus(): DemoStatus {
+  const value = status();
+  value.parallelSupported = true;
+  value.runner = { state: 'running', selectedAccountId: 'old-identity', virtualAccountKey: 'demo_primary', tradingEnabled: true, workerRunning: true, accountLocked: true };
+  value.accounts.push({ accountId: 'old-identity', strategyId: 'old', enabled: true, eligible: true, ruleHash: 'old-rule', executionHash: 'old-execution' });
+  return value;
+}
+
+function strategySession(overrides: Partial<DemoStrategySession> = {}): DemoStrategySession {
+  return {
+    virtualAccountKey: 'demo_parallel', strategyId: 's03_R50_k1.5',
+    primary: false, member: true, entriesEnabled: false, running: true,
+    status: 'paused_protecting', ownedPositions: [], metrics: {}, roundTrips: [],
+    ...overrides,
   };
 }
 
@@ -210,5 +227,167 @@ describe('Demo exchange report presentation', () => {
   it('never serializes an error request body containing secrets', () => {
     expect(demoError({ response: { data: { detail: { apiKey: 'private-key', secret: 'private-secret' } } }, config: { data: 'private-secret' } })).toBe('Demo 请求失败，请检查服务状态');
     expect(demoError({ response: { data: { detail: '连接失败' } } })).toBe('连接失败');
+  });
+});
+
+describe('independent Demo strategy sessions', () => {
+  it('can attach an eligible strategy while the primary is running without changing primary start rules', () => {
+    const value = parallelStatus();
+    expect(canAttachDemo(value, 's03_R50_k1.5', [])).toBe(true);
+    expect(canStartDemo(value, 's03_R50_k1.5')).toBe(false);
+    expect(canAttachDemo(value, 'old-identity', [])).toBe(false);
+    expect(canAttachDemo(value, 'unknown', [])).toBe(false);
+  });
+
+  it('reserves strategy identity for active or paused members but ignores historical namespaces', () => {
+    const value = parallelStatus();
+    const member = strategySession();
+    expect(canAttachDemo(value, member.strategyId, [member])).toBe(false);
+    expect(canAttachDemo(value, member.strategyId, [strategySession({ entriesEnabled: true })])).toBe(false);
+    expect(canAttachDemo(value, member.strategyId, [strategySession({ member: false, running: false })])).toBe(true);
+    expect(canAttachDemo(value, member.strategyId, [strategySession({ primary: true, member: false })])).toBe(false);
+  });
+
+  it('starts a paused member independently of global trading and keeps the entry gate explicit', () => {
+    const value = parallelStatus();
+    expect(canStartDemoSession(value, strategySession())).toBe(true);
+    expect(canStartDemoSession(value, strategySession({ entriesEnabled: true }))).toBe(false);
+    expect(canStartDemoSession(value, strategySession({ entriesEnabled: undefined }))).toBe(false);
+    expect(canStartDemoSession(value, strategySession({ member: false, status: 'observing' }))).toBe(false);
+    expect(canStartDemoSession(value, strategySession({ virtualAccountKey: 'demo_primary', strategyId: 'old-identity', member: false, primary: true }))).toBe(true);
+  });
+
+  it('recognizes captured runner membership even when a session list has older membership flags', () => {
+    const value = parallelStatus();
+    const session = strategySession({ member: false });
+    value.runner.parallelSessions = [{ virtualAccountKey: session.virtualAccountKey, strategyId: session.strategyId }];
+    expect(canStartDemoSession(value, session)).toBe(true);
+    expect(canAttachDemo(value, session.strategyId, [])).toBe(false);
+    expect(canAdoptDemoSession(value, session, [])).toBe(false);
+    value.runner.parallelSessions = [session.virtualAccountKey];
+    expect(canAttachDemo(value, session.strategyId, [session])).toBe(false);
+    expect(canStartDemoSession(value, session)).toBe(true);
+  });
+
+  it('offers adoption of eligible history while rejecting duplicate current strategies', () => {
+    const value = parallelStatus();
+    const history = strategySession({ member: false, running: false });
+    expect(canAdoptDemoSession(value, history, [history])).toBe(true);
+    expect(canStartDemoSession(value, history)).toBe(false);
+    expect(canAdoptDemoSession(value, history, [history, strategySession({ virtualAccountKey: 'another_member' })])).toBe(false);
+    expect(canAdoptDemoSession(value, strategySession({ member: false, strategyId: 'old-identity' }), [])).toBe(false);
+    expect(canAdoptDemoSession(value, strategySession(), [])).toBe(false);
+  });
+
+  it('requires backend capability, readable credentials, and eligible enabled accounts for every session action', () => {
+    const value = parallelStatus();
+    const history = strategySession({ member: false });
+    const assertDisabled = () => {
+      expect(canAttachDemo(value, history.strategyId, [history])).toBe(false);
+      expect(canStartDemoSession(value, strategySession())).toBe(false);
+      expect(canAdoptDemoSession(value, history, [history])).toBe(false);
+    };
+    value.parallelSupported = false;
+    assertDisabled();
+    value.parallelSupported = true;
+    value.credentials.configured = false;
+    assertDisabled();
+    value.credentials.configured = true;
+    value.credentials.decryptionAvailable = false;
+    assertDisabled();
+    value.credentials.decryptionAvailable = true;
+    value.accounts[0]!.eligible = false;
+    assertDisabled();
+    value.accounts[0]!.eligible = true;
+    value.accounts[0]!.enabled = false;
+    assertDisabled();
+    expect(canAttachDemo(null, history.strategyId, [])).toBe(false);
+    expect(canStartDemoSession(null, strategySession())).toBe(false);
+    expect(canAdoptDemoSession(null, history, [])).toBe(false);
+  });
+
+  it.each(['handoffInProgress', 'switchPersistenceUnresolved', 'sharedPersistenceUnresolved'])('blocks mutations while %s is unresolved', (flag) => {
+    const value = parallelStatus();
+    value.runner[flag] = true;
+    const history = strategySession({ member: false });
+    expect(canAttachDemo(value, history.strategyId, [])).toBe(false);
+    expect(canStartDemoSession(value, strategySession())).toBe(false);
+    expect(canAdoptDemoSession(value, history, [])).toBe(false);
+  });
+
+  it('labels primary, running and paused companions, and history without revealing ledger keys', () => {
+    const value = parallelStatus();
+    const primary = demoSessionLabel(strategySession({ primary: true }), value.accounts);
+    const running = demoSessionLabel(strategySession({ entriesEnabled: true }), value.accounts);
+    const paused = demoSessionLabel(strategySession(), value.accounts);
+    const history = demoSessionLabel(strategySession({ member: false }), value.accounts);
+    expect(primary).toContain('当前主会话');
+    expect(running).toContain('并行运行');
+    expect(paused).toContain('并行暂停');
+    expect(history).toContain('历史会话');
+    for (const label of [primary, running, paused, history]) expect(label).not.toContain('demo_parallel');
+    expect(demoSessionLabel({ virtualAccountKey: 'demo_default', strategyId: 'old', active: true }, [])).toContain('当前主会话');
+  });
+
+  it('treats a protecting worker as paused and never labels historical entries as currently running', () => {
+    expect(demoStrategySessionState(strategySession()).label).toBe('已暂停新开仓');
+    expect(demoStrategySessionState(strategySession({ status: { state: 'observing', running: true }, entriesEnabled: true })).label).toBe('正在 Demo 运行');
+    expect(demoStrategySessionState(strategySession({ entriesEnabled: true, running: false })).label).toBe('已开闸，等待运行');
+    expect(demoStrategySessionState(strategySession({ member: false, entriesEnabled: true })).label).toBe('历史会话');
+    expect(demoStrategySessionState(strategySession({ primary: true, member: false, entriesEnabled: true })).label).toBe('正在 Demo 运行');
+    expect(demoStrategySessionState(strategySession({ entriesEnabled: undefined })).label).toBe('状态未读取');
+    expect(demoSessionLabel(strategySession({ entriesEnabled: undefined }), []).includes('并行暂停')).toBe(false);
+  });
+
+  it('maps signed ledger positions without adding unobserved exchange prices or times', () => {
+    const rows = demoOwnedPositionRows(strategySession({ ownedPositions: {
+      'BTC/USDT:USDT': '-0.00100000', 'ETH/USDT:USDT': '12345678901234567890.12345678',
+      'TRX/USDT:USDT': '-0.0000000000000000000000000000000001',
+    } }));
+    expect(rows).toEqual([
+      { pair: 'BTC/USDT:USDT', signedQuantity: '-0.00100000', side: 'short' },
+      { pair: 'ETH/USDT:USDT', signedQuantity: '12345678901234567890.12345678', side: 'long' },
+      { pair: 'TRX/USDT:USDT', signedQuantity: '-0.0000000000000000000000000000000001', side: 'short' },
+    ]);
+    for (const row of rows) {
+      expect(row).not.toHaveProperty('entryPrice');
+      expect(row).not.toHaveProperty('openedAt');
+    }
+  });
+
+  it('filters only decimal zero balances and leaves unavailable position quantities unknown', () => {
+    const rows = demoOwnedPositionRows(strategySession({ ownedPositions: {
+      zero: '0', negativeZero: '-0.0000', exponentZero: '0E-8',
+      tiny: '-1E-1000', missing: null, malformed: '-unknown', numericZero: 0,
+    } }));
+    expect(rows).toEqual([
+      { pair: 'tiny', signedQuantity: '-1E-1000', side: 'short' },
+      { pair: 'missing', signedQuantity: null, side: 'unknown' },
+      { pair: 'malformed', signedQuantity: '-unknown', side: 'unknown' },
+      { pair: 'numericZero', signedQuantity: 0, side: 'unknown' },
+    ]);
+    const legacy = [{ pair: 'BTC/USDT:USDT', signedQuantity: '0.1', side: 'long' }];
+    expect(demoOwnedPositionRows(strategySession({ ownedPositions: legacy }))).toEqual(legacy);
+    expect(legacy).toHaveLength(1);
+  });
+
+  it('shows session reconciliation and protection failures before a running entry gate', () => {
+    expect(demoStrategySessionState(strategySession({ status: 'reconciliation_error', entriesEnabled: true })).label).toBe('运行异常');
+    expect(demoStrategySessionState(strategySession({ status: { lastError: 'TimeoutError' }, entriesEnabled: true })).label).toBe('运行异常');
+    expect(demoStrategySessionState(strategySession({ initializationError: 'RestoreError', entriesEnabled: true })).label).toBe('运行异常');
+    expect(demoStrategySessionState(strategySession({ status: { risk_alert: 'missing_entry_price' }, entriesEnabled: true })).label).toBe('风险保护待恢复');
+    expect(demoStrategySessionState(strategySession({ status: { ownership_conflicts: ['unowned_open_order'] }, entriesEnabled: true })).label).toBe('仓位归属待核对');
+    expect(demoStrategySessionState(strategySession({ status: 'observing', state: 'reconciliation_error', entriesEnabled: true })).label).toBe('运行异常');
+    expect(demoStrategySessionState(strategySession({ riskAlert: 'missing_entry_price', entriesEnabled: true })).label).toBe('风险保护待恢复');
+    expect(demoStrategySessionState(strategySession({ ownershipConflicts: ['unowned_open_order'], entriesEnabled: true })).label).toBe('仓位归属待核对');
+  });
+
+  it('explains shared-account skips and recovery failures without fabricating fills or successful handoffs', () => {
+    expect(demoError(new Error('shared_pair_busy'))).toContain('本次信号跳过');
+    expect(demoError(new Error('demo_shared_recovery_incomplete'))).toContain('暂不能开启新开仓');
+    expect(demoError(new Error('demo_parallel_entries_enabled'))).toContain('暂停所有并行策略');
+    expect(demoError(new Error('demo_shared_persistence_unresolved'))).toContain('保存状态待核对');
+    expect(demoError(new Error('demo_shared_session_limit'))).toContain('最多同时管理三个策略会话');
+    expect(demoError(new Error('demo_shared_account_unreconciled'))).toContain('归属对账');
   });
 });

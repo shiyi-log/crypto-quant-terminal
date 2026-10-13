@@ -25,13 +25,15 @@ MAX_QUERY_BYTES = 512
 _ACCOUNT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,179}\Z")
 _SESSION_KEY = re.compile(r"(?:demo_default|demo_strategy_[0-9a-f]{32})\Z")
 _GET_PATHS = {"", "/status", "/accounts", "/orders", "/fills", "/positions",
-              "/account", "/comparisons", "/evidence", "/sessions"}
-_POST_PATHS = {"/credentials", "/check", "/start", "/stop", "/yield-flat", "/switch"}
+              "/account", "/comparisons", "/evidence", "/sessions", "/strategies"}
+_POST_PATHS = {"/credentials", "/check", "/start", "/stop", "/yield-flat", "/switch",
+               "/attach", "/adopt-session", "/start-session", "/stop-session"}
 _HISTORY_PATHS = {"/orders", "/fills", "/comparisons", "/evidence"}
 LIMITATIONS = [
     "币安 Demo 的订单簿、定价和执行可能与实盘不同，不能据此自动上线。",
     "手续费以实际成交 commission 为准，缺失字段保留 unknown。",
-    "仅镜像一个冻结策略身份；内部模拟与 Demo 的成交路径不同。",
+    "每个会话独立记录真实成交；共享账户同一币同时只允许一个策略持仓或挂单。",
+    "账户余额和交易所持仓是共享快照；按策略的交易损益尚未包含资金费。",
 ]
 
 
@@ -130,16 +132,21 @@ def handle_demo_request(handler, *, method: str, verify_token, allowed_origins,
                                    else "json_object_required", 413 if length > MAX_BODY_BYTES else 400)
             body = _strict_json(handler._read_body())
             expected = ({"apiKey", "secret"} if suffix == "/credentials" else
-                        {"accountId"} if suffix in {"/start", "/switch"} else set())
+                        {"accountId"} if suffix in {"/start", "/switch", "/attach"} else
+                        {"session"} if suffix in {"/adopt-session", "/start-session", "/stop-session"}
+                        else set())
             if set(body) != expected:
                 raise DemoApiError("unexpected_or_missing_request_fields")
             if suffix == "/credentials":
                 if not isinstance(body["apiKey"], str) or not isinstance(body["secret"], str):
                     raise DemoApiError("invalid_demo_credentials")
-            if suffix in {"/start", "/switch"}:
+            if suffix in {"/start", "/switch", "/attach"}:
                 _identity(body["accountId"])
+            if suffix in {"/adopt-session", "/start-session", "/stop-session"}:
+                if not isinstance(body["session"], str) or not _SESSION_KEY.fullmatch(body["session"]):
+                    raise DemoApiError("invalid_demo_session")
             return handler._send(200, api_provider().post(suffix, body, actor=username))
-        allowed = {"limit"} if suffix in {"/orders", "/fills", "/comparisons", "/sessions"} else set()
+        allowed = {"limit"} if suffix in {"/orders", "/fills", "/comparisons", "/sessions", "/strategies"} else set()
         if suffix in _HISTORY_PATHS:
             allowed.add("session")
         if suffix == "/comparisons":
@@ -239,8 +246,8 @@ class DemoApi:
                 "accountLocked": bool(status.get("accountLockOwned") or worker or pending or has_exposure),
                 "lastError": status.get("controllerError") or status.get("last_error")}
 
-    def _metrics(self):
-        native = self.demo_store.metrics()
+    def _metrics(self, ledger=None):
+        native = (ledger or self.demo_store).metrics()
         counts = native.get("orders_by_status", {})
         if isinstance(counts, list):
             counts = {row["status"]: row["count"] for row in counts}
@@ -253,6 +260,55 @@ class DemoApi:
                 "partiallyFilledOrderCount": counts.get("partially_filled", 0),
                 "rejectedOrderCount": counts.get("rejected", 0),
                 "medianLatencyMs": native.get("median_latency_ms")}
+
+    def _strategy_summaries(self, limit):
+        from demo_execution_service import derive_round_trips
+
+        status = self.controller.status()
+        members = {item["virtualAccountKey"]: item
+                   for item in status.get("parallelSessions", [])}
+        primary = self.demo_store.virtual_account_key
+        members.setdefault(primary, {**status, "virtualAccountKey": primary,
+                                     "strategyId": status.get("selectedAccountId")})
+        sessions = self.demo_store.list_strategy_sessions(limit=limit)
+        # Active members remain inspectable even if a UI history limit excludes
+        # their older immutable binding.
+        by_key = {item["virtualAccountKey"]: item for item in sessions}
+        for key, item in members.items():
+            by_key.setdefault(key, {"virtualAccountKey": key,
+                                   "strategyId": item.get("strategyId", item.get("selectedAccountId")),
+                                   "forwardBoundaryMs": item.get("forward_boundary_ms", item.get("forwardBoundaryMs"))})
+        items = []
+        for key, session in by_key.items():
+            ledger = self.demo_store if key == primary else self.session_factory(key)
+            state = members.get(key, {})
+            # All fills, not a UI page, are necessary to reconstruct independent
+            # round trips. Pair exclusivity prevents shared-average P&L mixing.
+            orders, fills = ledger.runner_orders(), ledger.runner_fills()
+            trades = derive_round_trips(fills, orders)
+            net = ledger.net_fill_positions()
+            net = {pair: str(qty) for pair, qty in net.items() if Decimal(str(qty)) != 0}
+            known = bool(trades) and all(row.get("actual_net_trading_pnl_usdt") is not None
+                                         for row in trades)
+            metrics = self._metrics(ledger)
+            metrics["closedNetTradingPnlUsdt"] = (str(sum((Decimal(row["actual_net_trading_pnl_usdt"])
+                                                        for row in trades), Decimal(0)))
+                                                 if known else None)
+            items.append({**session, "primary": key == primary, "member": key in members,
+                          "entriesEnabled": bool(state.get("entriesEnabled", state.get("entries_enabled", False))),
+                          "status": state.get("status", "historical"),
+                          "state": state.get("state", state.get("status", "historical")),
+                          "ownedPositions": net,
+                          "ownedPositionRows": [{"pair": pair, "signedQuantity": qty,
+                                                 "side": "long" if Decimal(qty) > 0 else "short"}
+                                                for pair, qty in net.items()],
+                          "metrics": metrics, "roundTrips": trades,
+                          "riskAlert": state.get("risk_alert"),
+                          "ownershipConflicts": state.get("ownership_conflicts", []),
+                          "pnlScope": "exclusive_pair_actual_fills_excludes_funding",
+                          "independentWallet": False})
+        return {"environment": "binance_demo", "items": items, "limit": limit,
+                "sharedAccountPolicy": "one_way_exclusive_pair_no_cross_strategy_netting"}
 
     def get(self, suffix: str, *, limit=100, session=None, view=None):
         # A GET sees one active pointer, never half of a strategy switch.
@@ -278,9 +334,16 @@ class DemoApi:
                     "accounts": self.account_provider(), "metrics": self._metrics(),
                     "lastCheck": self.data_store.get_document("binance_demo_connection_check.json"),
                     "limitations": LIMITATIONS,
-                    "switchSupported": callable(getattr(self.controller, "switch", None))}
+                    "switchSupported": callable(getattr(self.controller, "switch", None)),
+                    "parallelSupported": callable(getattr(self.controller, "attach", None))}
+        if suffix == "/strategies":
+            return self._strategy_summaries(limit)
         if suffix == "/sessions":
-            items = [{**item, "active": item["virtualAccountKey"] == ledger.virtual_account_key}
+            members = {item["virtualAccountKey"]: item
+                       for item in self.controller.status().get("parallelSessions", [])}
+            items = [{**item, "active": item["virtualAccountKey"] == ledger.virtual_account_key,
+                      "member": item["virtualAccountKey"] in members or item["virtualAccountKey"] == ledger.virtual_account_key,
+                      "entriesEnabled": bool(members.get(item["virtualAccountKey"], {}).get("entriesEnabled", False))}
                      for item in ledger.list_strategy_sessions(limit=limit)]
             return {"environment": "binance_demo", "items": items, "limit": limit}
         if suffix == "/evidence":
@@ -356,13 +419,14 @@ class DemoApi:
             return {"environment": "binance_demo", "credentials": status}
         if suffix == "/check":
             return self.check()
-        if suffix in {"/start", "/switch"}:
+        if suffix in {"/start", "/switch", "/attach"}:
             account_id = _identity(body["accountId"])
             item = next((row for row in self.account_provider() if row["accountId"] == account_id), None)
             if item is None or not item["eligible"]:
                 raise DemoApiError("paper_account_not_demo_eligible", 409)
             try:
-                result = (self.controller.switch(account_id) if suffix == "/switch"
+                result = (self.controller.attach(account_id) if suffix == "/attach" else
+                          self.controller.switch(account_id) if suffix == "/switch"
                           else self.controller.start(account_id))
             except DemoHandoffError as exc:
                 raise DemoApiError(exc.code, 409) from None
@@ -370,7 +434,22 @@ class DemoApi:
             if suffix == "/switch":
                 response.update(automaticRestart=False,
                                 switchPolicy="new_paused_session_preserve_history_keep_shared_account_lock")
+            elif suffix == "/attach":
+                response.update(automaticRestart=False,
+                                attachPolicy="new_paused_immutable_session_preserve_existing_members")
             return response
+        if suffix in {"/adopt-session", "/start-session", "/stop-session"}:
+            session = body.get("session")
+            if not isinstance(session, str) or not _SESSION_KEY.fullmatch(session):
+                raise DemoApiError("invalid_demo_session")
+            action = {"/adopt-session": "adopt_existing_session", "/start-session": "start_session",
+                      "/stop-session": "stop_session"}[suffix]
+            try:
+                result = getattr(self.controller, action)(session)
+            except DemoHandoffError as exc:
+                raise DemoApiError(exc.code, 409) from None
+            return {"environment": "binance_demo", "runner": result or self._runner_status(),
+                    "session": session, "automaticRestart": False}
         if suffix == "/stop":
             result = self.controller.stop()
             return {"environment": "binance_demo", "runner": result or self._runner_status(),
@@ -427,6 +506,7 @@ class DemoApi:
 def create_demo_api(data_store, *, auth_dir):
     from demo_store import DemoStore
     from demo_runner_controller import DemoRunnerController
+    from demo_signal_sources import DemoSignalSources
 
     credentials = DemoCredentialStore(data_store, master_key_path=auth_dir / "demo_master.key")
     from demo_runner_controller import STATE_KEY
@@ -435,6 +515,9 @@ def create_demo_api(data_store, *, auth_dir):
     if not isinstance(namespace, str) or not _SESSION_KEY.fullmatch(namespace):
         raise DemoApiError("invalid_demo_session")
     ledger = DemoStore(data_store, virtual_account_key=namespace)
-    controller = DemoRunnerController(data_store, ledger, credentials.load_credentials)
+    sources = DemoSignalSources(data_store)
+    controller = DemoRunnerController(data_store, ledger, credentials.load_credentials,
+                                      paper_source=sources)
     return DemoApi(data_store, credentials, ledger, controller,
-                   ledger_provider=lambda: controller.demo_store)
+                   ledger_provider=lambda: controller.demo_store,
+                   account_provider=lambda: list_paper_accounts(data_store) + sources.additional_accounts())

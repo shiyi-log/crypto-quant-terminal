@@ -1,2 +1,6 @@
 # Unified diff artifacts keep their required context marker on blank lines.
 artifacts/*.patch -whitespace
+artifacts/data-repair-20261013/backup-derived-flow-fields-20261013.jsonl filter=lfs diff=lfs merge=lfs -text
+research_multi_strategy/verified/backup_20261013/backfill_backup_20261012T191500Z.jsonl filter=lfs diff=lfs merge=lfs -text
+research_multi_strategy/verified/backup_20261013/migration_backup_20261012T191353Z.csv filter=lfs diff=lfs merge=lfs -text
+research_multi_strategy/verified/backup_20261013/orderflow_flow_imbal_PRE-MIGRATION_20261012T191136Z.csv filter=lfs diff=lfs merge=lfs -text

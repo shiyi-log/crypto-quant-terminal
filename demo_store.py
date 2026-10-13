@@ -132,6 +132,14 @@ def _symbol(pair):
     return str(pair).replace("/", "").replace(":USDT", "")
 
 
+class DemoPairOwnershipError(ValueError):
+    """A committed foreign intent, fill or gap prevents using this pair."""
+
+    def __init__(self, reason, pair):
+        self.reason, self.pair = reason, pair
+        super().__init__(reason + ":" + pair)
+
+
 class DemoStore:
     """All writes are separate committed transactions using DataStore's pool.
 
@@ -164,7 +172,7 @@ class DemoStore:
             row = self._order(conn, _text(client_id, "client_id", 36))
         return _serializable(row)
 
-    def reserve_order(self, intent):
+    def reserve_order(self, intent, *, exclusive_pair=False):
         """Commit a frozen intent before any network call; duplicates reuse it.
 
         Returns ``(row, created)``. A collision with different immutable intent
@@ -206,6 +214,38 @@ class DemoStore:
         intent_payload = _payload(intent.get("intent_payload", intent.get("raw", {})))
         created_ms = _timestamp(intent.get("created_ms", int(time.time() * 1000)))
         with self.store._connection() as conn:
+            if exclusive_pair:
+                # The committed intent is the durable pair reservation. Never
+                # expire another session's reservation by wall-clock age.
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                             ("demo-pair:" + self.environment + ":" + fixed["pair"],))
+                facts = self._shared_account_ownership(conn, pair=fixed["pair"])
+                existing = self._order(conn, client_id)
+                for other in facts["orders"]:
+                    if other["virtual_account_key"] == self.virtual_account_key:
+                        if (existing is None and not fixed["reduce_only"]
+                                and (other["status"] in PENDING_STATUSES
+                                     or _number(other["recorded_fill_quantity"], "filled quantity")
+                                     != _number(other["filled_quantity"], "reported quantity"))):
+                            raise DemoPairOwnershipError("shared_existing_pair_order_or_gap", fixed["pair"])
+                        continue
+                    if (other["status"] in PENDING_STATUSES
+                            or _number(other["recorded_fill_quantity"], "filled quantity")
+                            != _number(other["filled_quantity"], "reported quantity")):
+                        raise DemoPairOwnershipError("shared_pair_busy", fixed["pair"])
+                if any(_number(positions.get(fixed["pair"], 0), "net quantity")
+                       for namespace, positions in facts["net_positions"].items()
+                       if namespace != self.virtual_account_key):
+                    raise DemoPairOwnershipError("shared_pair_busy", fixed["pair"])
+                if (existing is None and not fixed["reduce_only"]
+                        and _number(facts["net_positions"].get(self.virtual_account_key, {}).get(
+                            fixed["pair"], 0), "net quantity")):
+                    raise DemoPairOwnershipError("shared_existing_pair_position", fixed["pair"])
+                collision = conn.execute("SELECT 1 FROM demo_orders WHERE environment=%s "
+                    "AND client_id=%s AND virtual_account_key<>%s LIMIT 1",
+                    (self.environment, client_id, self.virtual_account_key)).fetchone()
+                if collision:
+                    raise DemoPairOwnershipError("shared_client_identity_collision", fixed["pair"])
             row = conn.execute("INSERT INTO demo_orders (environment,virtual_account_key,client_id,endpoint_host,"
                                + ",".join(names) + ",created_ms,raw,intent_payload) VALUES ("
                                + ",".join(["%s"] * (len(names) + 7)) + ") ON CONFLICT DO NOTHING RETURNING *",
@@ -480,6 +520,34 @@ class DemoStore:
                                 "WHERE f.environment=%s AND f.virtual_account_key=%s GROUP BY f.pair ORDER BY f.pair",
                                 self._identity()).fetchall()
         return {row["pair"]: str(row["quantity"]) for row in rows}
+
+    def _shared_account_ownership(self, conn, *, pair=None):
+        # One full-history query keeps order quantities and their fill sums in
+        # the same database snapshot. UI limits must never define ownership.
+        params = [self.environment]
+        pair_clause = ""
+        if pair is not None:
+            pair_clause = " AND o.pair=%s"
+            params.append(pair)
+        rows = conn.execute("""SELECT o.virtual_account_key,o.client_id,o.pair,o.side,
+            o.status,o.reduce_only,o.filled_quantity,o.exchange_order_id,
+            COALESCE(SUM(f.quantity),0) AS recorded_fill_quantity
+            FROM demo_orders o LEFT JOIN demo_fills f
+            USING (environment,virtual_account_key,client_id)
+            WHERE o.environment=%s""" + pair_clause + """
+            GROUP BY o.environment,o.virtual_account_key,o.client_id
+            ORDER BY o.virtual_account_key,o.client_id""", params).fetchall()
+        positions = {}
+        for row in rows:
+            owned = positions.setdefault(row["virtual_account_key"], {})
+            quantity = row["recorded_fill_quantity"] * (1 if row["side"] == "buy" else -1)
+            owned[row["pair"]] = owned.get(row["pair"], 0) + quantity
+        return _serializable({"orders": rows, "net_positions": positions})
+
+    def shared_account_ownership(self):
+        """Account-wide quantities and reservations; namespaces stay distinct."""
+        with self.store._connection() as conn:
+            return self._shared_account_ownership(conn)
 
     def account_reconciliation_status(self):
         """Check all sessions on the shared Demo account, without netting them.

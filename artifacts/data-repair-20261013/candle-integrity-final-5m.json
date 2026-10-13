@@ -1,0 +1,902 @@
+{
+  "method": "candle_integrity_check_v1",
+  "generated_at_utc": "2026-10-12T19:43:33.629854+00:00",
+  "policy": {
+    "required_fields": [
+      "quote_volume",
+      "num_trades",
+      "taker_buy_base",
+      "taker_buy_quote",
+      "flow_imbal",
+      "flow_imbal_base"
+    ],
+    "min_coverage": 1.0,
+    "max_age_bars": 3,
+    "as_of_ms": null,
+    "formula_check": true
+  },
+  "dataset_count": 6,
+  "ok": false,
+  "error_count": 2,
+  "errors": [],
+  "datasets": [
+    {
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "BTC/USDT:USDT",
+      "timeframe": "5m",
+      "candle_type": "futures",
+      "row_count": 292556,
+      "first_timestamp": 1704067200000,
+      "last_timestamp": 1791833700000,
+      "duplicate_timestamp_count": 0,
+      "gap_count": 0,
+      "gaps": [],
+      "fields": {
+        "quote_volume": {
+          "present": 292556,
+          "missing": 0,
+          "denominator": 292556,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "num_trades": {
+          "present": 292556,
+          "missing": 0,
+          "denominator": 292556,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_base": {
+          "present": 292556,
+          "missing": 0,
+          "denominator": 292556,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_quote": {
+          "present": 292556,
+          "missing": 0,
+          "denominator": 292556,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal": {
+          "present": 292551,
+          "missing": 5,
+          "denominator": 292551,
+          "undefined": 5,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal_base": {
+          "present": 292551,
+          "missing": 5,
+          "denominator": 292535,
+          "undefined": 21,
+          "coverage": 1.0000546943100825,
+          "min_coverage": 1.0,
+          "passes": true
+        }
+      },
+      "flow_formula": {
+        "status": "failed",
+        "checked": 292551,
+        "zero_quote_volume_count": 5,
+        "zero_denominator_count": 26,
+        "mismatch_count": 3,
+        "mismatches": [
+          {
+            "formula": "flow_imbal_base",
+            "timestamp": 1730149800000,
+            "actual": -0.11103200710220573,
+            "expected": 11.702025308698715
+          },
+          {
+            "formula": "flow_imbal_base",
+            "timestamp": 1736866800000,
+            "actual": 0.1424684679017394,
+            "expected": 1.9499684018974088
+          },
+          {
+            "formula": "flow_imbal_base",
+            "timestamp": 1738118400000,
+            "actual": -0.5867215876696796,
+            "expected": 5.00800894021233
+          }
+        ],
+        "canonical": "flow_imbal",
+        "formulas": {
+          "flow_imbal": {
+            "status": "passed",
+            "checked": 292551,
+            "zero_denominator_count": 5,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": true
+          },
+          "flow_imbal_base": {
+            "status": "failed",
+            "checked": 292535,
+            "zero_denominator_count": 21,
+            "mismatch_count": 3,
+            "mismatches": [
+              {
+                "timestamp": 1730149800000,
+                "actual": -0.11103200710220573,
+                "expected": 11.702025308698715
+              },
+              {
+                "timestamp": 1736866800000,
+                "actual": 0.1424684679017394,
+                "expected": 1.9499684018974088
+              },
+              {
+                "timestamp": 1738118400000,
+                "actual": -0.5867215876696796,
+                "expected": 5.00800894021233
+              }
+            ],
+            "denominator": "volume",
+            "taker_field": "taker_buy_base",
+            "required": true
+          },
+          "flow_imbal_q": {
+            "status": "passed",
+            "checked": 292551,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": false
+          }
+        }
+      },
+      "rest_reconciliation": {
+        "status": "not_requested"
+      },
+      "errors": [
+        "flow_imbal_base_formula"
+      ],
+      "warnings": [],
+      "expected_interval_ms": 300000,
+      "tail": {
+        "as_of_ms": 1791834204211,
+        "last_closed_end_ms": 1791834000000,
+        "age_ms": 204211,
+        "age_bars": 0.6807033333333333,
+        "max_age_bars": 3,
+        "passes": true
+      },
+      "field_denominators": {
+        "quote_volume": 292556,
+        "num_trades": 292556,
+        "taker_buy_base": 292556,
+        "taker_buy_quote": 292556,
+        "flow_imbal": 292551,
+        "flow_imbal_base": 292535
+      },
+      "ok": false
+    },
+    {
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "BTC/USDT:USDT",
+      "timeframe": "5m",
+      "candle_type": "orderflow",
+      "row_count": 289200,
+      "first_timestamp": 1705074000000,
+      "last_timestamp": 1791833700000,
+      "duplicate_timestamp_count": 0,
+      "gap_count": 0,
+      "gaps": [],
+      "fields": {
+        "quote_volume": {
+          "present": 289200,
+          "missing": 0,
+          "denominator": 289200,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "num_trades": {
+          "present": 289200,
+          "missing": 0,
+          "denominator": 289200,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_base": {
+          "present": 289200,
+          "missing": 0,
+          "denominator": 289200,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_quote": {
+          "present": 289200,
+          "missing": 0,
+          "denominator": 289200,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal": {
+          "present": 289195,
+          "missing": 5,
+          "denominator": 289195,
+          "undefined": 5,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal_base": {
+          "present": 289195,
+          "missing": 5,
+          "denominator": 289195,
+          "undefined": 5,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        }
+      },
+      "flow_formula": {
+        "status": "passed",
+        "checked": 289195,
+        "zero_quote_volume_count": 5,
+        "zero_denominator_count": 10,
+        "mismatch_count": 0,
+        "mismatches": [],
+        "canonical": "flow_imbal",
+        "formulas": {
+          "flow_imbal": {
+            "status": "passed",
+            "checked": 289195,
+            "zero_denominator_count": 5,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": true
+          },
+          "flow_imbal_base": {
+            "status": "passed",
+            "checked": 289195,
+            "zero_denominator_count": 5,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "volume",
+            "taker_field": "taker_buy_base",
+            "required": true
+          },
+          "flow_imbal_q": {
+            "status": "passed",
+            "checked": 289195,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": false
+          }
+        }
+      },
+      "rest_reconciliation": {
+        "status": "not_requested"
+      },
+      "errors": [],
+      "warnings": [
+        "flow_formula_unavailable_for_zero_denominator"
+      ],
+      "expected_interval_ms": 300000,
+      "tail": {
+        "as_of_ms": 1791834205917,
+        "last_closed_end_ms": 1791834000000,
+        "age_ms": 205917,
+        "age_bars": 0.68639,
+        "max_age_bars": 3,
+        "passes": true
+      },
+      "field_denominators": {
+        "quote_volume": 289200,
+        "num_trades": 289200,
+        "taker_buy_base": 289200,
+        "taker_buy_quote": 289200,
+        "flow_imbal": 289195,
+        "flow_imbal_base": 289195
+      },
+      "ok": true
+    },
+    {
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "ETH/USDT:USDT",
+      "timeframe": "5m",
+      "candle_type": "futures",
+      "row_count": 292556,
+      "first_timestamp": 1704067200000,
+      "last_timestamp": 1791833700000,
+      "duplicate_timestamp_count": 0,
+      "gap_count": 0,
+      "gaps": [],
+      "fields": {
+        "quote_volume": {
+          "present": 292556,
+          "missing": 0,
+          "denominator": 292556,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "num_trades": {
+          "present": 292556,
+          "missing": 0,
+          "denominator": 292556,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_base": {
+          "present": 292556,
+          "missing": 0,
+          "denominator": 292556,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_quote": {
+          "present": 292556,
+          "missing": 0,
+          "denominator": 292556,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal": {
+          "present": 292551,
+          "missing": 5,
+          "denominator": 292551,
+          "undefined": 5,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal_base": {
+          "present": 292551,
+          "missing": 5,
+          "denominator": 292535,
+          "undefined": 21,
+          "coverage": 1.0000546943100825,
+          "min_coverage": 1.0,
+          "passes": true
+        }
+      },
+      "flow_formula": {
+        "status": "failed",
+        "checked": 292551,
+        "zero_quote_volume_count": 5,
+        "zero_denominator_count": 26,
+        "mismatch_count": 3,
+        "mismatches": [
+          {
+            "formula": "flow_imbal_base",
+            "timestamp": 1730149800000,
+            "actual": -0.15848532386314274,
+            "expected": 18.443958089584818
+          },
+          {
+            "formula": "flow_imbal_base",
+            "timestamp": 1736866800000,
+            "actual": 0.15235742591748758,
+            "expected": 1.9018800723947957
+          },
+          {
+            "formula": "flow_imbal_base",
+            "timestamp": 1738118400000,
+            "actual": -0.18758581132962604,
+            "expected": 4.9273502576767
+          }
+        ],
+        "canonical": "flow_imbal",
+        "formulas": {
+          "flow_imbal": {
+            "status": "passed",
+            "checked": 292551,
+            "zero_denominator_count": 5,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": true
+          },
+          "flow_imbal_base": {
+            "status": "failed",
+            "checked": 292535,
+            "zero_denominator_count": 21,
+            "mismatch_count": 3,
+            "mismatches": [
+              {
+                "timestamp": 1730149800000,
+                "actual": -0.15848532386314274,
+                "expected": 18.443958089584818
+              },
+              {
+                "timestamp": 1736866800000,
+                "actual": 0.15235742591748758,
+                "expected": 1.9018800723947957
+              },
+              {
+                "timestamp": 1738118400000,
+                "actual": -0.18758581132962604,
+                "expected": 4.9273502576767
+              }
+            ],
+            "denominator": "volume",
+            "taker_field": "taker_buy_base",
+            "required": true
+          },
+          "flow_imbal_q": {
+            "status": "passed",
+            "checked": 292551,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": false
+          }
+        }
+      },
+      "rest_reconciliation": {
+        "status": "not_requested"
+      },
+      "errors": [
+        "flow_imbal_base_formula"
+      ],
+      "warnings": [],
+      "expected_interval_ms": 300000,
+      "tail": {
+        "as_of_ms": 1791834208415,
+        "last_closed_end_ms": 1791834000000,
+        "age_ms": 208415,
+        "age_bars": 0.6947166666666666,
+        "max_age_bars": 3,
+        "passes": true
+      },
+      "field_denominators": {
+        "quote_volume": 292556,
+        "num_trades": 292556,
+        "taker_buy_base": 292556,
+        "taker_buy_quote": 292556,
+        "flow_imbal": 292551,
+        "flow_imbal_base": 292535
+      },
+      "ok": false
+    },
+    {
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "ETH/USDT:USDT",
+      "timeframe": "5m",
+      "candle_type": "orderflow",
+      "row_count": 289199,
+      "first_timestamp": 1705074300000,
+      "last_timestamp": 1791833700000,
+      "duplicate_timestamp_count": 0,
+      "gap_count": 0,
+      "gaps": [],
+      "fields": {
+        "quote_volume": {
+          "present": 289199,
+          "missing": 0,
+          "denominator": 289199,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "num_trades": {
+          "present": 289199,
+          "missing": 0,
+          "denominator": 289199,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_base": {
+          "present": 289199,
+          "missing": 0,
+          "denominator": 289199,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_quote": {
+          "present": 289199,
+          "missing": 0,
+          "denominator": 289199,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal": {
+          "present": 289194,
+          "missing": 5,
+          "denominator": 289194,
+          "undefined": 5,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal_base": {
+          "present": 289194,
+          "missing": 5,
+          "denominator": 289194,
+          "undefined": 5,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        }
+      },
+      "flow_formula": {
+        "status": "passed",
+        "checked": 289194,
+        "zero_quote_volume_count": 5,
+        "zero_denominator_count": 10,
+        "mismatch_count": 0,
+        "mismatches": [],
+        "canonical": "flow_imbal",
+        "formulas": {
+          "flow_imbal": {
+            "status": "passed",
+            "checked": 289194,
+            "zero_denominator_count": 5,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": true
+          },
+          "flow_imbal_base": {
+            "status": "passed",
+            "checked": 289194,
+            "zero_denominator_count": 5,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "volume",
+            "taker_field": "taker_buy_base",
+            "required": true
+          },
+          "flow_imbal_q": {
+            "status": "passed",
+            "checked": 289194,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": false
+          }
+        }
+      },
+      "rest_reconciliation": {
+        "status": "not_requested"
+      },
+      "errors": [],
+      "warnings": [
+        "flow_formula_unavailable_for_zero_denominator"
+      ],
+      "expected_interval_ms": 300000,
+      "tail": {
+        "as_of_ms": 1791834209798,
+        "last_closed_end_ms": 1791834000000,
+        "age_ms": 209798,
+        "age_bars": 0.6993266666666667,
+        "max_age_bars": 3,
+        "passes": true
+      },
+      "field_denominators": {
+        "quote_volume": 289199,
+        "num_trades": 289199,
+        "taker_buy_base": 289199,
+        "taker_buy_quote": 289199,
+        "flow_imbal": 289194,
+        "flow_imbal_base": 289194
+      },
+      "ok": true
+    },
+    {
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "TRX/USDT:USDT",
+      "timeframe": "5m",
+      "candle_type": "futures",
+      "row_count": 292556,
+      "first_timestamp": 1704067200000,
+      "last_timestamp": 1791833700000,
+      "duplicate_timestamp_count": 0,
+      "gap_count": 0,
+      "gaps": [],
+      "fields": {
+        "quote_volume": {
+          "present": 292556,
+          "missing": 0,
+          "denominator": 292556,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "num_trades": {
+          "present": 292556,
+          "missing": 0,
+          "denominator": 292556,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_base": {
+          "present": 292556,
+          "missing": 0,
+          "denominator": 292556,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_quote": {
+          "present": 292556,
+          "missing": 0,
+          "denominator": 292556,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal": {
+          "present": 292535,
+          "missing": 21,
+          "denominator": 292535,
+          "undefined": 21,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal_base": {
+          "present": 292535,
+          "missing": 21,
+          "denominator": 292535,
+          "undefined": 21,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        }
+      },
+      "flow_formula": {
+        "status": "passed",
+        "checked": 292535,
+        "zero_quote_volume_count": 21,
+        "zero_denominator_count": 42,
+        "mismatch_count": 0,
+        "mismatches": [],
+        "canonical": "flow_imbal",
+        "formulas": {
+          "flow_imbal": {
+            "status": "passed",
+            "checked": 292535,
+            "zero_denominator_count": 21,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": true
+          },
+          "flow_imbal_base": {
+            "status": "passed",
+            "checked": 292535,
+            "zero_denominator_count": 21,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "volume",
+            "taker_field": "taker_buy_base",
+            "required": true
+          },
+          "flow_imbal_q": {
+            "status": "passed",
+            "checked": 292535,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": false
+          }
+        }
+      },
+      "rest_reconciliation": {
+        "status": "not_requested"
+      },
+      "errors": [],
+      "warnings": [
+        "flow_formula_unavailable_for_zero_denominator"
+      ],
+      "expected_interval_ms": 300000,
+      "tail": {
+        "as_of_ms": 1791834212195,
+        "last_closed_end_ms": 1791834000000,
+        "age_ms": 212195,
+        "age_bars": 0.7073166666666667,
+        "max_age_bars": 3,
+        "passes": true
+      },
+      "field_denominators": {
+        "quote_volume": 292556,
+        "num_trades": 292556,
+        "taker_buy_base": 292556,
+        "taker_buy_quote": 292556,
+        "flow_imbal": 292535,
+        "flow_imbal_base": 292535
+      },
+      "ok": true
+    },
+    {
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "TRX/USDT:USDT",
+      "timeframe": "5m",
+      "candle_type": "orderflow",
+      "row_count": 1200,
+      "first_timestamp": 1791474000000,
+      "last_timestamp": 1791833700000,
+      "duplicate_timestamp_count": 0,
+      "gap_count": 0,
+      "gaps": [],
+      "fields": {
+        "quote_volume": {
+          "present": 1200,
+          "missing": 0,
+          "denominator": 1200,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "num_trades": {
+          "present": 1200,
+          "missing": 0,
+          "denominator": 1200,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_base": {
+          "present": 1200,
+          "missing": 0,
+          "denominator": 1200,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_quote": {
+          "present": 1200,
+          "missing": 0,
+          "denominator": 1200,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal": {
+          "present": 1200,
+          "missing": 0,
+          "denominator": 1200,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal_base": {
+          "present": 1200,
+          "missing": 0,
+          "denominator": 1200,
+          "undefined": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        }
+      },
+      "flow_formula": {
+        "status": "passed",
+        "checked": 1200,
+        "zero_quote_volume_count": 0,
+        "zero_denominator_count": 0,
+        "mismatch_count": 0,
+        "mismatches": [],
+        "canonical": "flow_imbal",
+        "formulas": {
+          "flow_imbal": {
+            "status": "passed",
+            "checked": 1200,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": true
+          },
+          "flow_imbal_base": {
+            "status": "passed",
+            "checked": 1200,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "volume",
+            "taker_field": "taker_buy_base",
+            "required": true
+          },
+          "flow_imbal_q": {
+            "status": "passed",
+            "checked": 1200,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": false
+          }
+        }
+      },
+      "rest_reconciliation": {
+        "status": "not_requested"
+      },
+      "errors": [],
+      "warnings": [],
+      "expected_interval_ms": 300000,
+      "tail": {
+        "as_of_ms": 1791834213626,
+        "last_closed_end_ms": 1791834000000,
+        "age_ms": 213626,
+        "age_bars": 0.7120866666666666,
+        "max_age_bars": 3,
+        "passes": true
+      },
+      "field_denominators": {
+        "quote_volume": 1200,
+        "num_trades": 1200,
+        "taker_buy_base": 1200,
+        "taker_buy_quote": 1200,
+        "flow_imbal": 1200,
+        "flow_imbal_base": 1200
+      },
+      "ok": true
+    }
+  ]
+}

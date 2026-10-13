@@ -1,6 +1,7 @@
-"""Frontend lifecycle for one Demo session, with protected restart recovery."""
+"""Demo session lifecycles with one account lock and protected restart recovery."""
 from __future__ import annotations
 
+import copy
 import fcntl
 import hashlib
 from decimal import Decimal
@@ -12,6 +13,9 @@ import uuid
 from demo_execution_service import DemoExecutionService, DemoRunnerConfig, PaperEventSource
 
 STATE_KEY = "binance_demo_runner_controller.json"
+SHARED_STATE_KEY = "binance_demo_shared_sessions.json"
+SHARED_POLICY = "one_way_dynamic_pair_exclusive_v1"
+MAX_SHARED_SESSIONS = 3
 
 
 class DemoHandoffError(RuntimeError):
@@ -53,6 +57,98 @@ class DemoRunnerController:
         self._yielded_flat = False
         self._credential_fingerprint = None
         self._switch_persistence_unresolved = False
+        self._parallel_sessions = {}
+        self._shared_records = {}
+        self._session_errors = {}
+        self._shared_enabled = False
+        self._shared_persistence_unresolved = False
+        self._restore_incomplete = False
+        self._account_coordinator = None
+        self._account_cycle_lock = threading.RLock()
+
+    def _services(self):
+        return ([self.service] if self.service is not None else []) + list(self._parallel_sessions.values())
+
+    def _coordinator(self):
+        if self._account_coordinator is None:
+            from demo_shared_account import SharedDemoAccount
+            self._account_coordinator = SharedDemoAccount(self.demo_store)
+            self._account_cycle_lock = self._account_coordinator.lock
+        return self._account_coordinator
+
+    def _register(self, service):
+        coordinator = self._coordinator()
+        service.account_coordinator = coordinator
+        coordinator.register(service)
+
+    def _registry_document(self, *, extra=None, primary=None, yielded=False):
+        records = copy.deepcopy(self._shared_records)
+        for service in self._services() + ([extra] if extra else []):
+            namespace = service.config.virtual_account_key
+            records[namespace] = {**self._document(service),
+                                  "initializationError": self._session_errors.get(namespace)}
+        return {"version": 1, "policy": SHARED_POLICY,
+                "primaryVirtualAccountKey": primary or self.demo_store.virtual_account_key,
+                "credentialFingerprint": self._credential_fingerprint,
+                "yieldedFlat": yielded, "sessions": list(records.values()),
+                "recoveryPolicy": "register_all_members_pause_entries_continue_owned_risk_protection"}
+
+    def _pause_members(self):
+        with self._account_cycle_lock:
+            for service in self._services():
+                try:
+                    service.stop()
+                except Exception as exc:
+                    self._session_errors[service.config.virtual_account_key] = type(exc).__name__
+
+    def _commit_registry(self, document):
+        """A lost acknowledgement never permits overwriting an unknown registry."""
+        previous = self.data_store.get_document(SHARED_STATE_KEY, {})
+        try:
+            self.data_store.put_document(SHARED_STATE_KEY, document)
+        except Exception:
+            try:
+                observed = self.data_store.get_document(SHARED_STATE_KEY, {})
+            except Exception:
+                observed = None
+            if observed == document:
+                pass
+            elif observed == previous:
+                raise DemoHandoffError("demo_shared_persistence_failed",
+                                       "shared session registry was not committed") from None
+            else:
+                self._shared_persistence_unresolved = True
+                self._pause_members()
+                raise DemoHandoffError("demo_shared_persistence_unresolved",
+                                       "shared session registry commit must be reconciled") from None
+        self._shared_records = {record["virtualAccountKey"]: copy.deepcopy(record)
+                                for record in document["sessions"]}
+
+    def _require_shared_ready(self):
+        if self._restore_incomplete or self._session_errors:
+            raise DemoHandoffError("demo_shared_recovery_incomplete",
+                                   "every registered session must recover before entries can start")
+
+    @staticmethod
+    def _assert_initialized(service):
+        state = service.status()
+        if (state.get("entries_enabled") is not False or state.get("last_error")
+                or state.get("ownership_conflicts")
+                or state.get("status") in {"reconciliation_error", "blocked_unknown_exposure"}):
+            raise DemoHandoffError("demo_shared_session_initialization_failed",
+                                   "shared Demo session could not initialize paused reconciliation")
+
+    def _assert_companions_paused_flat(self):
+        if any(record.get("virtualAccountKey") not in
+               {service.config.virtual_account_key for service in self._services()}
+               for record in self._shared_records.values()):
+            raise DemoHandoffError("demo_shared_recovery_incomplete",
+                                   "unrestored sessions prohibit a primary handoff")
+        for service in self._parallel_sessions.values():
+            if service.status().get("entries_enabled") is not False:
+                raise DemoHandoffError("demo_parallel_entries_enabled",
+                                       "pause every companion before switching or yielding the account")
+            self._assert_ledger_flat(service.store)
 
     def _lock(self):
         if self._file_lock:
@@ -70,6 +166,8 @@ class DemoRunnerController:
         # Serialize snapshot plus commit with stop/start so a delayed worker
         # save cannot overwrite a newer paused-entry state.
         with self._mutex:
+            if self._shared_enabled and not self._shared_persistence_unresolved:
+                self._commit_registry(self._registry_document())
             if self.service and not self._switch_persistence_unresolved:
                 self.data_store.put_document(STATE_KEY, self._document(self.service))
 
@@ -99,6 +197,9 @@ class DemoRunnerController:
         binding = self.demo_store.get_binding() or {}
         expected = (self._credential_fingerprint, persisted.get("credentialFingerprint"),
                     binding.get("credential_fingerprint"))
+        if self._shared_enabled:
+            shared = self.data_store.get_document(SHARED_STATE_KEY, {})
+            expected += (shared.get("credentialFingerprint"),)
         if any(value is not None and value != fingerprint for value in expected):
             del credentials
             raise DemoHandoffError("demo_credential_identity_mismatch",
@@ -112,7 +213,8 @@ class DemoRunnerController:
     def _validate_account(self, account_id):
         account = self.paper.account(str(account_id))
         if (account["execution"].get("execution_enabled") is False
-                or account["execution"].get("risk_sizing_mode") != "entry_atr"):
+                or account["execution"].get("risk_sizing_mode") != "entry_atr"
+                or account["execution"].get("blocked_execution_reason")):
             raise ValueError("Demo requires an enabled frozen single-leg ATR account")
 
     def _service(self, account_id, ledger, adapter):
@@ -135,7 +237,12 @@ class DemoRunnerController:
             "credentialFingerprint": self._credential_fingerprint,
             "entriesEnabled": False, "recoveryPolicy": "pause_entries_continue_owned_risk_protection"})
         service = self._service(account_id, self.demo_store, adapter)
-        service.start(entries_enabled=entries_enabled)
+        if self._shared_enabled:
+            self._register(service)
+            self.service = service
+            self._commit_registry(self._registry_document())
+        with self._account_cycle_lock:
+            service.start(entries_enabled=entries_enabled)
         self.service = service
         self._save()
         self._start_worker()
@@ -160,11 +267,23 @@ class DemoRunnerController:
         if self._switch_persistence_unresolved:
             raise DemoHandoffError("demo_switch_persistence_unresolved",
                                    "Demo recovery pointer must be reconciled before changing entries")
+        if self._shared_persistence_unresolved:
+            raise DemoHandoffError("demo_shared_persistence_unresolved",
+                                   "shared session registry must be reconciled before changing entries")
 
     def start(self, account_id):
         """Invoked by the user's frontend start action; never a live start."""
         with self._mutex:
             self._require_not_closing()
+            if not self.service:
+                shared = self.data_store.get_document(SHARED_STATE_KEY, {})
+                if shared.get("sessions"):
+                    self._restore_shared({**shared, "yieldedFlat": False})
+                    self._require_shared_ready()
+            if self._shared_enabled and self.service:
+                if self.service.config.strategy_id != account_id:
+                    raise ValueError("Demo primary session is bound to another frozen identity")
+                return self.start_session(self.service.config.virtual_account_key)
             self._error = None
             self._recovery_mode = False
             if self.service:
@@ -189,15 +308,207 @@ class DemoRunnerController:
         with self._mutex:
             self._require_not_closing()
             if self.service:
-                self.service.stop(flatten=flatten)
+                with self._account_cycle_lock:
+                    self.service.stop(flatten=flatten)
                 self._save()
                 self._wake.set()
             return self.status()
+
+    def attach(self, account_id):
+        """Add a new immutable, paused companion; explicit start opens its gate."""
+        return self._attach(account_id)
+
+    def adopt_existing_session(self, namespace):
+        """Resume an existing immutable namespace without changing its boundary."""
+        with self._mutex:
+            self._require_not_closing()
+            if namespace == self.demo_store.virtual_account_key or namespace in self._parallel_sessions:
+                return self.status()
+            ledger = self.ledger_factory(str(namespace))
+            binding = ledger.get_binding() or {}
+            binding = binding.get("payload", binding)
+            if not binding.get("strategy_id"):
+                raise DemoHandoffError("demo_session_binding_missing", "existing namespace has no strategy binding")
+            return self._attach(binding["strategy_id"], existing_ledger=ledger)
+
+    def _attach(self, account_id, *, existing_ledger=None):
+        with self._mutex:
+            self._require_not_closing()
+            self._require_shared_ready()
+            if not self.service:
+                self.resume_protection()
+                self._require_shared_ready()
+            if not self.service:
+                raise DemoHandoffError("demo_primary_session_required", "start the primary session before attaching")
+            self._lock()
+            account_id = str(account_id)
+            for service in self._services():
+                if service.config.strategy_id == account_id:
+                    return self.status()
+            if len(self._services()) >= MAX_SHARED_SESSIONS:
+                raise DemoHandoffError("demo_shared_session_limit", "at most three Demo sessions may share the account")
+            self._validate_account(account_id)
+            adapter = self._adapter()
+            ledger = existing_ledger or self.ledger_factory("demo_strategy_" + uuid.uuid4().hex)
+            if existing_ledger is None and (ledger.get_binding() or ledger.runner_orders()):
+                raise DemoHandoffError("demo_switch_namespace_collision", "new Demo session is not empty")
+            namespace = ledger.virtual_account_key
+            candidate = self._service(account_id, ledger, adapter)
+            self._register(self.service)
+            self._register(candidate)
+            committed = False
+            try:
+                with self._account_cycle_lock:
+                    conflicts = self._coordinator().assert_attach_safe(
+                        adapter.fetch_positions(), adapter.fetch_open_orders())
+                    mode = adapter.fetch_position_mode()
+                    if conflicts or not isinstance(mode, dict) or mode.get("hedged") is not False:
+                        raise DemoHandoffError("demo_shared_account_unreconciled",
+                                               "shared ownership must reconcile in one-way mode before attaching")
+                    # This registry is the recovery authority BEFORE any start
+                    # cycle, including protection of an adopted old namespace.
+                    self._commit_registry(self._registry_document(extra=candidate))
+                    committed = True
+                    self._shared_enabled = True
+                    self._parallel_sessions[namespace] = candidate
+                    try:
+                        candidate.start(entries_enabled=False)
+                        self._assert_initialized(candidate)
+                    except Exception as exc:
+                        self._session_errors[namespace] = type(exc).__name__
+                        self._restore_incomplete = True
+                        self._pause_members()
+                        raise
+                self._save()
+                self._start_worker()
+                self._wake.set()
+                return self.status()
+            except Exception:
+                if not committed and not self._shared_persistence_unresolved:
+                    self._coordinator().unregister(namespace)
+                elif not committed:
+                    # Keep even an ambiguously committed member available for
+                    # recovery; never overwrite the authoritative registry.
+                    self._shared_enabled = True
+                    self._parallel_sessions[namespace] = candidate
+                    self._session_errors[namespace] = "registry_commit_unresolved"
+                    self._restore_incomplete = True
+                if committed or self._shared_persistence_unresolved:
+                    self._pause_members()
+                    self._start_worker()
+                raise
+
+    def start_session(self, namespace):
+        with self._mutex:
+            self._require_not_closing()
+            self._require_shared_ready()
+            service = self._find_session(namespace)
+            self._start_worker()
+            # Persist membership before enable_entries can synchronously post.
+            if self._shared_enabled:
+                self._commit_registry(self._registry_document())
+            with self._account_cycle_lock:
+                service.enable_entries()
+            try:
+                self._save()
+            except Exception:
+                self._pause_members()
+                raise
+            self._wake.set()
+            return self.status()
+
+    def stop_session(self, namespace, *, flatten=False):
+        with self._mutex:
+            self._require_not_closing()
+            service = self._find_session(namespace)
+            with self._account_cycle_lock:
+                service.stop(flatten=flatten)
+            self._save()
+            self._wake.set()
+            return self.status()
+
+    def _find_session(self, namespace):
+        if self.service and namespace == self.service.config.virtual_account_key:
+            return self.service
+        if namespace in self._parallel_sessions:
+            return self._parallel_sessions[namespace]
+        raise DemoHandoffError("demo_session_not_found", "Demo session is not registered")
+
+    def _restore_shared(self, persisted):
+        """Assemble every member before any cycle; restore all entry gates shut."""
+        if self._services() and not self._restore_incomplete:
+            return self.status()
+        records = persisted.get("sessions", [])
+        namespaces = [record.get("virtualAccountKey") for record in records if isinstance(record, dict)]
+        primary = persisted.get("primaryVirtualAccountKey")
+        if (len(namespaces) != len(records) or len(set(namespaces)) != len(records)
+                or not 1 <= len(records) <= MAX_SHARED_SESSIONS or primary not in namespaces
+                or any(not namespace or not record.get("selectedAccountId")
+                       for namespace, record in zip(namespaces, records))):
+            self._error = "Demo shared recovery failed: invalid registry"
+            self._restore_incomplete = True
+            return self.status()
+        self._shared_enabled = True
+        self._shared_records = {record["virtualAccountKey"]: copy.deepcopy(record) for record in records}
+        self._credential_fingerprint = persisted.get("credentialFingerprint")
+        self.demo_store = self.ledger_factory(primary)
+        self._selected_account_id = self._shared_records[primary]["selectedAccountId"]
+        if persisted.get("yieldedFlat") is True and not self._services():
+            self._yielded_flat = True
+            return self.status()
+        self._lock()
+        self._recovery_mode = True
+        self._session_errors = {}
+        self._restore_incomplete = True
+        # Existing successfully recovered members stay registered on retries.
+        registered_services = []
+        for namespace, record in self._shared_records.items():
+            try:
+                service = next((item for item in self._services()
+                                if item.config.virtual_account_key == namespace), None)
+                if service is None:
+                    ledger = self.demo_store if namespace == primary else self.ledger_factory(namespace)
+                    self._validate_account(record["selectedAccountId"])
+                    service = self._service(record["selectedAccountId"], ledger, self._adapter())
+                    if namespace == primary:
+                        self.service = service
+                    else:
+                        self._parallel_sessions[namespace] = service
+                self._register(service)
+                registered_services.append(service)
+            except Exception as exc:
+                self._session_errors[namespace] = type(exc).__name__
+        # Registration must finish for every possible owner before ANY start()
+        # runs its first reconciliation/protection cycle.
+        with self._account_cycle_lock:
+            for service in registered_services:
+                namespace = service.config.virtual_account_key
+                try:
+                    service.start(entries_enabled=False)
+                    service.stop()
+                    self._assert_initialized(service)
+                except Exception as exc:
+                    self._session_errors[namespace] = type(exc).__name__
+        self._restore_incomplete = bool(self._session_errors)
+        self._error = "Demo shared recovery incomplete" if self._restore_incomplete else None
+        try:
+            self._save()
+        except Exception as exc:
+            self._restore_incomplete = True
+            self._error = "Demo shared recovery persistence failed: " + type(exc).__name__
+            self._pause_members()
+        if self._services():
+            self._start_worker()
+            self._wake.set()
+        return self.status()
 
     def resume_protection(self):
         """On application restart: only reconcile/protect, never resume entries."""
         with self._mutex:
             self._require_not_closing()
+            shared = self.data_store.get_document(SHARED_STATE_KEY, {})
+            if shared.get("sessions"):
+                return self._restore_shared(shared)
             persisted = self.data_store.get_document(STATE_KEY, {})
             account_id = persisted.get("selectedAccountId")
             if account_id and not self.service:
@@ -223,6 +534,22 @@ class DemoRunnerController:
             state = self.service.status() if self.service else {"running": False, "entries_enabled": False,
                 "status": "yielded_flat" if self._yielded_flat else "not_started",
                 "environment": "binance_demo", "live_enabled": False}
+            sessions = []
+            for service in self._services():
+                member_state = service.status()
+                sessions.append({**member_state, "selectedAccountId": service.config.strategy_id,
+                                 "virtualAccountKey": service.config.virtual_account_key,
+                                 "entriesEnabled": member_state.get("entries_enabled", False),
+                                 "primary": service is self.service,
+                                 "initializationError": self._session_errors.get(service.config.virtual_account_key)})
+            present = {member["virtualAccountKey"] for member in sessions}
+            for namespace, record in self._shared_records.items():
+                if namespace not in present:
+                    sessions.append({"selectedAccountId": record["selectedAccountId"],
+                                     "virtualAccountKey": namespace, "entriesEnabled": False,
+                                     "primary": namespace == self.demo_store.virtual_account_key,
+                                     "status": "yielded_flat" if self._yielded_flat else "recovery_error",
+                                     "initializationError": self._session_errors.get(namespace)})
             return {**state, "selectedAccountId": self.service.config.strategy_id if self.service else self._selected_account_id,
                     "virtualAccountKey": self.demo_store.virtual_account_key,
                     "entriesEnabled": state["entries_enabled"], "recoveryMode": self._recovery_mode,
@@ -231,19 +558,34 @@ class DemoRunnerController:
                                           or any(worker.is_alive() for worker in self._workers)),
                     "accountLockOwned": self._file_lock is not None,
                     "handoffInProgress": self._closing,
-                    "switchPersistenceUnresolved": self._switch_persistence_unresolved}
+                    "switchPersistenceUnresolved": self._switch_persistence_unresolved,
+                    "parallelSessions": sessions, "sharedAccountPolicy": SHARED_POLICY,
+                    "sharedSessionsEnabled": self._shared_enabled,
+                    "allEntriesEnabled": bool(sessions) and all(member["entriesEnabled"] for member in sessions),
+                    "sharedRecoveryIncomplete": self._restore_incomplete,
+                    "sharedRegistryPersistenceUnresolved": self._shared_persistence_unresolved}
 
     def _loop(self):
         try:
-            while self.service is not None and not self._halt_worker.is_set():
-                service = self.service
+            while not self._halt_worker.is_set():
+                with self._mutex:
+                    services = self._services()
+                if not services:
+                    break
                 # Do not hold the controller mutex around HTTP requests.
+                for service in services:
+                    try:
+                        with self._account_cycle_lock:
+                            service.cycle()
+                    except Exception as exc:
+                        self._error = "Demo polling failed: " + type(exc).__name__
                 try:
-                    service.cycle()
                     self._save()
                 except Exception as exc:
-                    self._error = "Demo polling failed: " + type(exc).__name__
-                self._wake.wait(service.config.poll_interval_ms / 1000)
+                    self._error = "Demo recovery persistence failed: " + type(exc).__name__
+                    with self._mutex:
+                        self._pause_members()
+                self._wake.wait(min(service.config.poll_interval_ms for service in services) / 1000)
                 self._wake.clear()
         finally:
             with self._mutex:
@@ -251,22 +593,26 @@ class DemoRunnerController:
                     self._thread = None
                     # A timed-out handoff cancels the halt request. If this
                     # worker had already decided to exit, restore protection.
-                    if self.service is not None and not self._halt_worker.is_set():
+                    if self._services() and not self._halt_worker.is_set():
                         self._start_worker()
 
     def _assert_owned_flat(self):
-        positions = self.demo_store.net_fill_positions()
+        self._assert_ledger_flat(self.demo_store)
+
+    @staticmethod
+    def _assert_ledger_flat(ledger):
+        positions = ledger.net_fill_positions()
         if any(Decimal(str(qty)) != 0 for qty in positions.values()):
             raise DemoHandoffError("demo_owned_exposure_unresolved",
                                    "cannot stop Demo protection with owned exposure")
-        if self.demo_store.pending_orders():
+        if ledger.pending_orders():
             raise DemoHandoffError("demo_owned_orders_unresolved",
                                    "cannot stop Demo reconciliation with unresolved orders")
         quantities = {}
-        for fill in self.demo_store.runner_fills():
+        for fill in ledger.runner_fills():
             client_id = fill["client_id"]
             quantities[client_id] = quantities.get(client_id, Decimal(0)) + Decimal(str(fill["quantity"]))
-        for order in self.demo_store.runner_orders():
+        for order in ledger.runner_orders():
             if Decimal(str(order["filled_quantity"])) != quantities.get(order["client_id"], Decimal(0)):
                 raise DemoHandoffError("demo_owned_fills_unresolved",
                                        "cannot stop Demo reconciliation with incomplete owned fills")
@@ -310,7 +656,7 @@ class DemoRunnerController:
     def _resume_paused_worker(self):
         self._closing = False
         self._halt_worker.clear()
-        if self.service is not None:
+        if self._services():
             self._start_worker()
             self._wake.set()
 
@@ -324,6 +670,7 @@ class DemoRunnerController:
         """
         with self._mutex:
             self._require_not_closing()
+            self._assert_companions_paused_flat()
             self._lock()
             self._validate_account(account_id)
             if self.service is None:
@@ -332,7 +679,8 @@ class DemoRunnerController:
                     self._restore_active_store(persisted)
                     self._create(persisted["selectedAccountId"], entries_enabled=False)
             if self.service:
-                self.service.stop()
+                with self._account_cycle_lock:
+                    self.service.stop()
                 self._save()
                 if self.service.config.strategy_id == account_id:
                     return self.status()
@@ -362,7 +710,10 @@ class DemoRunnerController:
                     raise DemoHandoffError("demo_switch_namespace_collision",
                                            "new Demo session is not empty")
                 candidate = self._service(account_id, candidate_store, adapter)
-                candidate.start(entries_enabled=False)
+                if self._shared_enabled:
+                    self._register(candidate)
+                with self._account_cycle_lock:
+                    candidate.start(entries_enabled=False)
                 candidate_state = candidate.status()
                 if (candidate_state.get("entries_enabled") is not False
                         or candidate_state.get("last_error")
@@ -376,6 +727,12 @@ class DemoRunnerController:
                             "previousVirtualAccountKey": self.demo_store.virtual_account_key,
                             "switchPolicy": "flat_account_new_immutable_session_explicit_start"}
                 readback_error = None
+                if self._shared_enabled:
+                    shared_document = self._registry_document(extra=candidate,
+                        primary=candidate_store.virtual_account_key)
+                    shared_document["sessions"] = [record for record in shared_document["sessions"]
+                        if record["virtualAccountKey"] != self.demo_store.virtual_account_key]
+                    self._commit_registry(shared_document)
                 try:
                     self.data_store.put_document(STATE_KEY, document)
                 except Exception as exc:
@@ -389,12 +746,20 @@ class DemoRunnerController:
                     if observed == document:
                         readback_error = "Demo switch commit verified by readback: " + type(exc).__name__
                     elif observed == previous_document:
-                        raise DemoHandoffError("demo_switch_persistence_failed",
-                                               "new Demo recovery pointer was not committed") from None
+                        if self._shared_enabled:
+                            readback_error = "Demo primary compatibility pointer update failed; shared registry committed"
+                        else:
+                            raise DemoHandoffError("demo_switch_persistence_failed",
+                                                   "new Demo recovery pointer was not committed") from None
                     else:
-                        self._switch_persistence_unresolved = True
-                        raise DemoHandoffError("demo_switch_persistence_unresolved",
-                                               "Demo switch commit outcome must be reconciled") from None
+                        if self._shared_enabled:
+                            readback_error = "Demo primary compatibility pointer unconfirmed; shared registry committed"
+                        else:
+                            self._switch_persistence_unresolved = True
+                            raise DemoHandoffError("demo_switch_persistence_unresolved",
+                                                   "Demo switch commit outcome must be reconciled") from None
+                if self._shared_enabled:
+                    self._coordinator().unregister(self.demo_store.virtual_account_key)
                 self.demo_store = candidate_store
                 self.service = candidate
                 self._selected_account_id = str(account_id)
@@ -406,6 +771,11 @@ class DemoRunnerController:
         except Exception as exc:
             with self._mutex:
                 self._error = "Demo switch refused: " + type(exc).__name__
+                if self._shared_enabled and "candidate" in locals() and candidate is not self.service:
+                    try:
+                        self._coordinator().unregister(candidate.config.virtual_account_key)
+                    except Exception:
+                        self._restore_incomplete = True
                 self._resume_paused_worker()
                 try:
                     self._save()
@@ -421,8 +791,12 @@ class DemoRunnerController:
         """
         with self._mutex:
             self._require_not_closing()
+            if self._yielded_flat and not self._services():
+                return self.status()
+            self._assert_companions_paused_flat()
             if self.service:
-                self.service.stop()
+                with self._account_cycle_lock:
+                    self.service.stop()
                 self._save()
             self._assert_owned_flat()
             workers = self._workers | ({self._thread} if self._thread is not None else set())
@@ -441,9 +815,12 @@ class DemoRunnerController:
                 if any(worker.is_alive() for worker in workers):
                     raise DemoHandoffError("demo_worker_busy", "Demo protection worker did not finish")
                 self._assert_owned_flat()
+                self._assert_companions_paused_flat()
                 persisted = self.data_store.get_document(STATE_KEY, {})
                 self._selected_account_id = (self.service.config.strategy_id if self.service else
                                              self._selected_account_id or persisted.get("selectedAccountId"))
+                if self._shared_enabled:
+                    self._commit_registry(self._registry_document(yielded=True))
                 self.data_store.put_document(STATE_KEY, {**persisted,
                     "selectedAccountId": self._selected_account_id, "entriesEnabled": False,
                     "yieldedFlat": True,
@@ -454,6 +831,9 @@ class DemoRunnerController:
                     self._file_lock.close()
                     self._file_lock = None
                 self.service = None
+                self._parallel_sessions.clear()
+                self._account_coordinator = None
+                self._account_cycle_lock = threading.RLock()
                 self._thread = None
                 self._workers.clear()
                 self._yielded_flat = True

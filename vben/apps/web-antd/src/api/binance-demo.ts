@@ -96,12 +96,31 @@ export interface DemoSession extends DemoRecord {
   strategyId: string;
   forwardBoundaryMs?: null | number;
   active: boolean;
+  running?: boolean;
+  entriesEnabled?: boolean;
+  member?: boolean;
+}
+
+/** Per-strategy ledger data; balances remain snapshots of the shared account. */
+export interface DemoStrategySession extends DemoRecord {
+  virtualAccountKey: string;
+  strategyId: string;
+  forwardBoundaryMs?: null | number;
+  primary: boolean;
+  member?: boolean;
+  running?: boolean;
+  entriesEnabled: boolean;
+  status: string | DemoRecord;
+  ownedPositions: DemoRecord | DemoRecord[];
+  metrics: DemoRecord;
+  roundTrips: DemoRecord[];
 }
 
 export interface DemoStatus {
   environment: 'binance_demo';
   endpoint: 'demo-fapi.binance.com';
   switchSupported?: boolean;
+  parallelSupported?: boolean;
   credentials: {
     configured: boolean;
     decryptionAvailable?: boolean;
@@ -119,6 +138,7 @@ export interface DemoStatus {
     accountLocked?: boolean;
     lastError?: null | string;
     lastCheck?: null | DemoRecord;
+    parallelSessions?: (DemoRecord | string)[];
     [key: string]: unknown;
   };
   accounts: DemoStrategyAccount[];
@@ -232,6 +252,24 @@ export function switchBinanceDemo(accountId: string) {
   return mutate('switch', { accountId });
 }
 
+/** Attaching creates a paused namespace; only an explicit start enables entries. */
+export function attachBinanceDemoStrategy(accountId: string) {
+  return mutate('attach', { accountId });
+}
+
+export function startBinanceDemoSession(session: string) {
+  return mutate('start-session', { session });
+}
+
+export function stopBinanceDemoSession(session: string) {
+  return mutate('stop-session', { session });
+}
+
+/** Restore membership without changing a historical binding or enabling entries. */
+export function adoptBinanceDemoSession(session: string) {
+  return mutate('adopt-session', { session });
+}
+
 async function rows<T extends DemoRecord>(path: string, signal?: AbortSignal, session?: string, view?: 'signals' | 'audit'): Promise<DemoRows<T>> {
   authenticated();
   const scoped = path === 'orders' || path === 'fills' || path === 'comparisons';
@@ -254,3 +292,4 @@ export const getBinanceDemoPositions = (signal?: AbortSignal) => rows('positions
 export const getBinanceDemoAccount = (signal?: AbortSignal) => rows('account', signal);
 export const getBinanceDemoComparisons = (signal?: AbortSignal, session?: string, view: 'signals' | 'audit' = 'signals') => rows('comparisons', signal, session, view);
 export const getBinanceDemoSessions = (signal?: AbortSignal) => rows<DemoSession>('sessions', signal);
+export const getBinanceDemoStrategies = (signal?: AbortSignal) => rows<DemoStrategySession>('strategies', signal);

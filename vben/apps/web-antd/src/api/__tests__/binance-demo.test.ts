@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), requireSession: v
 vi.mock('../freqtrade/client', () => ({ ftClient: { get: mocks.get, post: mocks.post }, unwrap: (value: unknown) => value }));
 vi.mock('../session', () => ({ requireSession: mocks.requireSession }));
 
-import { checkBinanceDemoConnection, getBinanceDemoAccount, getBinanceDemoComparisons, getBinanceDemoEvidence, getBinanceDemoFills, getBinanceDemoOrders, getBinanceDemoPositions, getBinanceDemoSessions, getBinanceDemoStatus, saveBinanceDemoCredentials, startBinanceDemo, stopBinanceDemo, switchBinanceDemo } from '../binance-demo';
+import { adoptBinanceDemoSession, attachBinanceDemoStrategy, checkBinanceDemoConnection, getBinanceDemoAccount, getBinanceDemoComparisons, getBinanceDemoEvidence, getBinanceDemoFills, getBinanceDemoOrders, getBinanceDemoPositions, getBinanceDemoSessions, getBinanceDemoStatus, getBinanceDemoStrategies, saveBinanceDemoCredentials, startBinanceDemo, startBinanceDemoSession, stopBinanceDemo, stopBinanceDemoSession, switchBinanceDemo } from '../binance-demo';
 
 describe('authenticated Binance Demo API contract', () => {
   beforeEach(() => {
@@ -67,6 +67,53 @@ describe('authenticated Binance Demo API contract', () => {
       ['/locals/binance-demo/switch', { accountId: 's05_R50_k1.5' }],
     ]);
     expect(mocks.requireSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('attaches a strategy paused without issuing a start or sending credentials again', async () => {
+    const paused = { environment: 'binance_demo', virtualAccountKey: 'demo_strategy_new', entriesEnabled: false };
+    mocks.post.mockResolvedValue(paused);
+    expect(await attachBinanceDemoStrategy('s07_R1000_k1.0')).toEqual(paused);
+    expect(mocks.post.mock.calls).toEqual([
+      ['/locals/binance-demo/attach', { accountId: 's07_R1000_k1.0' }],
+    ]);
+    expect(mocks.requireSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('targets one immutable namespace for start, pause and paused historical adoption', async () => {
+    const session = 'demo_strategy_owned_session';
+    await startBinanceDemoSession(session);
+    await stopBinanceDemoSession(session);
+    await adoptBinanceDemoSession(session);
+    expect(mocks.post.mock.calls).toEqual([
+      ['/locals/binance-demo/start-session', { session }],
+      ['/locals/binance-demo/stop-session', { session }],
+      ['/locals/binance-demo/adopt-session', { session }],
+    ]);
+    expect(mocks.requireSession).toHaveBeenCalledTimes(3);
+    expect(mocks.get).not.toHaveBeenCalled();
+  });
+
+  it('reads all strategy namespaces and their actual ledgers without a record limit or mutations', async () => {
+    const signal = new AbortController().signal;
+    const session = { virtualAccountKey: 'demo_strategy_first', strategyId: 's35', primary: false,
+      member: true, entriesEnabled: true, status: 'running', ownedPositions: [{ pair: 'ETH/USDT:USDT', quantity: '0.01' }],
+      metrics: { fillCount: 2, actualNetTradingPnlUsdt: null }, roundTrips: [] };
+    mocks.get.mockResolvedValue({ environment: 'binance_demo', items: [session] });
+    expect((await getBinanceDemoStrategies(signal)).items).toEqual([session]);
+    expect(mocks.get.mock.calls).toEqual([['/locals/binance-demo/strategies', { signal }]]);
+    expect(mocks.post).not.toHaveBeenCalled();
+  });
+
+  it('rejects parallel operations before sending a request when authentication is unavailable', async () => {
+    mocks.requireSession.mockImplementation(() => { throw new Error('请先登录'); });
+    await expect(attachBinanceDemoStrategy('s07')).rejects.toThrow('请先登录');
+    await expect(startBinanceDemoSession('demo_strategy_s07')).rejects.toThrow('请先登录');
+    await expect(stopBinanceDemoSession('demo_strategy_s07')).rejects.toThrow('请先登录');
+    await expect(adoptBinanceDemoSession('demo_strategy_history')).rejects.toThrow('请先登录');
+    await expect(getBinanceDemoStrategies()).rejects.toThrow('请先登录');
+    expect(mocks.post).not.toHaveBeenCalled();
+    expect(mocks.get).not.toHaveBeenCalled();
+    mocks.requireSession.mockReset();
   });
 
   it('reads historical session records without changing the live account or sending mutations', async () => {

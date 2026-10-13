@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from contextlib import nullcontext
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -248,6 +249,9 @@ class DemoExecutionService:
         self.binding = None
         self.last_sequence = 0
         self._mutex = threading.RLock()
+        # Injected by the shared controller before start; existing frozen
+        # namespace policies and their hashes stay unchanged.
+        self.account_coordinator = None
         self._started = False
         self._entries_enabled = False
         self._actual_net = {}
@@ -276,8 +280,11 @@ class DemoExecutionService:
                                              **copy.deepcopy(payload)}, stage=stage,
                                             observed_ms=self.clock_ms() if now is None else now)
 
+    def _account_lock(self):
+        return self.account_coordinator.lock if self.account_coordinator is not None else nullcontext()
+
     def start(self, *, entries_enabled=None):
-        with self._mutex:
+        with self._account_lock(), self._mutex:
             if self._started:
                 return self.status()
             now = _stamp(self.clock_ms())
@@ -329,7 +336,7 @@ class DemoExecutionService:
             return self.status()
 
     def enable_entries(self):
-        with self._mutex:
+        with self._account_lock(), self._mutex:
             if not self._started or not self.config.trading_enabled:
                 raise RuntimeError("human Demo start with trading enabled is required")
             self._entries_enabled = True
@@ -342,7 +349,7 @@ class DemoExecutionService:
 
     def stop(self, *, flatten=False):
         """Pause entries; retain polling/risk protection until all owned exposure closes."""
-        with self._mutex:
+        with self._account_lock(), self._mutex:
             self._entries_enabled = False
             self._status.update(entries_enabled=False, status="paused_protecting")
             if self._started:
@@ -455,6 +462,8 @@ class DemoExecutionService:
                               "cancellation_reason": "paused" if cancel_entries else "entry_ttl"}, now=now)
 
     def _ownership_conflicts(self, positions, open_orders):
+        if self.account_coordinator is not None:
+            return self.account_coordinator.ownership_conflicts(positions, open_orders)
         net = self._net()
         actual = {}
         conflicts = []
@@ -476,6 +485,12 @@ class DemoExecutionService:
         return conflicts
 
     def _submit(self, intent, *, protective=False):
+        if self.account_coordinator is not None and not protective:
+            denied = self.account_coordinator.entry_denial(self.config.virtual_account_key, intent["pair"])
+            if denied:
+                self._record("entry_denied", intent["signal_id"],
+                             {"reason": denied, "pair": intent["pair"]})
+                return None
         existing = self.store.get_order(intent["client_id"])
         if existing is not None:
             # Crash recovery may repeat a source event at a later clock time.
@@ -489,7 +504,18 @@ class DemoExecutionService:
                 return existing
             row = existing
         else:
-            row, _ = self.store.reserve_order(intent)
+            if self.account_coordinator is None:
+                row, _ = self.store.reserve_order(intent)
+            else:
+                from demo_store import DemoPairOwnershipError
+                try:
+                    row, _ = self.store.reserve_order(intent, exclusive_pair=True)
+                except DemoPairOwnershipError as exc:
+                    self._record("protection_denied" if protective else "entry_denied", intent["signal_id"],
+                                 {"reason": exc.reason, "pair": intent["pair"]})
+                    if protective:
+                        self._status["risk_alert"] = "shared_pair_ownership_unverified"
+                    return None
         if not self.config.trading_enabled or (not protective and not self._entries_enabled):
             return row
         if not self.store.claim_submission(row["client_id"], claimed_ms=self.clock_ms()):
@@ -535,6 +561,12 @@ class DemoExecutionService:
 
     def _exit(self, pair, qty, reason, signal_id, now, fingerprint=None, *, reference_candle=None):
         actual = self._actual_net.get(pair, Decimal(0))
+        if qty and self.account_coordinator is not None and not self.account_coordinator.exit_allowed(
+                self.config.virtual_account_key, pair, actual):
+            self._status["risk_alert"] = "shared_pair_ownership_unverified"
+            self._record("protection_denied", signal_id,
+                         {"reason": "shared_pair_ownership_unverified", "pair": pair}, now=now)
+            return
         if actual * qty <= 0:
             qty = Decimal(0)
         else:
@@ -575,6 +607,20 @@ class DemoExecutionService:
                 continue
             row = max(orders, key=lambda order: order["created_ms"])
             intent = self._intent(row)
+            max_hold_ms = (self.account["execution"].get("max_hold_ms")
+                if self.account["definition"].get("signal_source") == "database_live_closed_candle_forward_burst" else None)
+            if max_hold_ms is not None:
+                if isinstance(max_hold_ms, bool) or int(max_hold_ms) != max_hold_ms or max_hold_ms <= 0:
+                    raise ValueError("invalid frozen burst maximum hold")
+                actual_fills = [fill for fill in self.store.runner_fills() if fill["client_id"] == row["client_id"]]
+                first_fill_ms = min((int(fill["timestamp_ms"]) for fill in actual_fills), default=None)
+                if first_fill_ms is not None and now >= first_fill_ms + max_hold_ms:
+                    # Time protection is anchored to a real Demo fill. Missing
+                    # signal candles must not prevent this owned reduction.
+                    self._reconcile(now, cancel_entries=True)
+                    self._exit(pair, self._net().get(pair, Decimal(0)), "burst_max_hold_from_actual_fill",
+                               _hash(["demo_burst_hold", row["client_id"], first_fill_ms]), now)
+                    continue
             atr, k = intent.get("entry_atr"), intent.get("risk_stop_atr_mult")
             if atr is None or k is None:
                 self._status["risk_alert"] = "frozen_demo_entry_atr_unavailable"
@@ -630,6 +676,9 @@ class DemoExecutionService:
             denied = "entries_paused_or_read_only"
         elif conflicts:
             denied = "demo_account_ownership_conflict"
+        elif self.account_coordinator is not None and self.account_coordinator.entry_denial(
+                self.config.virtual_account_key, pair):
+            denied = self.account_coordinator.entry_denial(self.config.virtual_account_key, pair)
         elif not 0 <= now - event["observed_at_ms"] <= self.config.max_signal_lag_ms:
             denied = "paper_signal_stale"
         elif event["observed_at_ms"] < self.binding["forward_boundary_ms"]:
@@ -680,7 +729,7 @@ class DemoExecutionService:
         self._submit(intent)
 
     def cycle(self, now_ms=None):
-        with self._mutex:
+        with self._account_lock(), self._mutex:
             if not self._started:
                 raise RuntimeError("Demo runner must be explicitly started")
             now = _stamp(self.clock_ms() if now_ms is None else now_ms)
@@ -760,6 +809,13 @@ class DemoExecutionService:
                             "paused_protecting" if net else "paused_flat"))
                 self._status["round_trips"] = derive_round_trips(self.store.runner_fills(), orders)
                 self._status["trading_pnl_excludes_funding"] = True
+                if self.account_coordinator is not None:
+                    shared = self.account_coordinator.status()
+                    self._status["shared_account_policy"] = shared["policy"]
+                    self._status["shared_account"] = shared
+                    self._status["blocked_pair_reasons"] = {
+                        pair: "shared_pair_busy" for pair, owners in shared["pair_owners"].items()
+                        if set(owners) - {self.config.virtual_account_key}}
             except Exception as exc:
                 # Never send credential-bearing request/error text to status or logs.
                 self._status.update(status="reconciliation_error", last_error=type(exc).__name__,

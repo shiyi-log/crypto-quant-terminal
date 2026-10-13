@@ -1,0 +1,5565 @@
+{
+  "method": "candle_integrity_check_v1",
+  "generated_at_utc": "2026-10-12T19:21:45.913079+00:00",
+  "policy": {
+    "required_fields": [
+      "quote_volume",
+      "num_trades",
+      "taker_buy_base",
+      "taker_buy_quote",
+      "flow_imbal",
+      "flow_imbal_base"
+    ],
+    "min_coverage": 1.0,
+    "max_age_bars": 3,
+    "as_of_ms": null
+  },
+  "dataset_count": 6,
+  "ok": false,
+  "error_count": 30,
+  "errors": [],
+  "datasets": [
+    {
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "BTC/USDT:USDT",
+      "timeframe": "5m",
+      "candle_type": "futures",
+      "row_count": 292552,
+      "first_timestamp": 1704067200000,
+      "last_timestamp": 1791832500000,
+      "duplicate_timestamp_count": 0,
+      "gap_count": 0,
+      "gaps": [],
+      "fields": {
+        "quote_volume": {
+          "present": 288806,
+          "missing": 3746,
+          "coverage": 0.9871954387596051,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "num_trades": {
+          "present": 288806,
+          "missing": 3746,
+          "coverage": 0.9871954387596051,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "taker_buy_base": {
+          "present": 288806,
+          "missing": 3746,
+          "coverage": 0.9871954387596051,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "taker_buy_quote": {
+          "present": 288806,
+          "missing": 3746,
+          "coverage": 0.9871954387596051,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "flow_imbal": {
+          "present": 288476,
+          "missing": 4076,
+          "coverage": 0.9860674341655501,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "flow_imbal_base": {
+          "present": 287999,
+          "missing": 4553,
+          "coverage": 0.9844369547977796,
+          "min_coverage": 1.0,
+          "passes": false
+        }
+      },
+      "flow_formula": {
+        "status": "failed",
+        "checked": 288476,
+        "zero_quote_volume_count": 5,
+        "zero_denominator_count": 26,
+        "mismatch_count": 1139,
+        "mismatches": [
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791531600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791531900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791532200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791532500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791532800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791533100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791533400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791533700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791534000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791534300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791534600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791534900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791535200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791535500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791535800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791536100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791536400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791536700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791537000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791537300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791537600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791537900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791538200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791538500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791538800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791539100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791539400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791539700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791540000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791540300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791540600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791540900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791541200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791541500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791541800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791542100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791542400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791542700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791543000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791543300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791543600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791543900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791544200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791544500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791544800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791545100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791545400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791545700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791546000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791546300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791546600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791546900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791547200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791547500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791547800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791548100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791548400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791548700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791549000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791549300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791549600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791549900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791550200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791550500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791550800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791551100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791551400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791551700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791552000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791552300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791552600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791552900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791553200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791553500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791553800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791554100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791554400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791554700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791555000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791555300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791555600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791555900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791556200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791556500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791556800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791557100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791557400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791557700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791558000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791558300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791558600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791558900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791559200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791559500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791559800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791560100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791560400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791560700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791561000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791561300000,
+            "actual": null,
+            "expected": null
+          }
+        ],
+        "canonical": "flow_imbal",
+        "formulas": {
+          "flow_imbal": {
+            "status": "failed",
+            "checked": 288476,
+            "zero_denominator_count": 5,
+            "mismatch_count": 325,
+            "mismatches": [
+              {
+                "timestamp": 1791531600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791531900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791532200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791532500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791532800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791533100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791533400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791533700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791535200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791535500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791535800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791536100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791536400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791536700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791538200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791538500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791538800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791539100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791539400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791539700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791541200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791541500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791541800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791542100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791542400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791542700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791544200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791544500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791544800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791545100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791545400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791545700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791547200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791547500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791547800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791548100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791548400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791548700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791550200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791550500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791550800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791551100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791551400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791551700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791553200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791553500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791553800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791554100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791554400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791554700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791556200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791556500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791556800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791557100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791557400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791557700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791558000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791558300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791558600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791558900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791559200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791559500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791559800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791560100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791560400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791560700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791561000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791561300000,
+                "actual": null,
+                "expected": null
+              }
+            ],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": true
+          },
+          "flow_imbal_base": {
+            "status": "failed",
+            "checked": 287983,
+            "zero_denominator_count": 21,
+            "mismatch_count": 814,
+            "mismatches": [
+              {
+                "timestamp": 1711542300000,
+                "actual": 0.13526209662527955,
+                "expected": -0.6211250246499704
+              },
+              {
+                "timestamp": 1711542600000,
+                "actual": 0.02894082545997012,
+                "expected": -0.5123810920288128
+              },
+              {
+                "timestamp": 1711622400000,
+                "actual": 0.3113881744217586,
+                "expected": 0.3111433337330878
+              },
+              {
+                "timestamp": 1711623900000,
+                "actual": 0.12762712553421118,
+                "expected": 0.12761159925437693
+              },
+              {
+                "timestamp": 1711626300000,
+                "actual": 0.16909881907214008,
+                "expected": -0.2889289547113114
+              },
+              {
+                "timestamp": 1711629600000,
+                "actual": 0.12147866512412975,
+                "expected": 0.12129831278239789
+              },
+              {
+                "timestamp": 1730149800000,
+                "actual": -0.11103200710220573,
+                "expected": 11.702025308698715
+              },
+              {
+                "timestamp": 1736861400000,
+                "actual": 0.16170538813718616,
+                "expected": 0.4536371999215978
+              },
+              {
+                "timestamp": 1736866800000,
+                "actual": 0.1424684679017394,
+                "expected": 1.9499684018974088
+              },
+              {
+                "timestamp": 1738113600000,
+                "actual": -0.5608034690724218,
+                "expected": 0.3571549586458638
+              },
+              {
+                "timestamp": 1738118400000,
+                "actual": -0.5867215876696796,
+                "expected": 5.00800894021233
+              },
+              {
+                "timestamp": 1791474000000,
+                "actual": 0.2256868056944421,
+                "expected": 0.01755637189697512
+              },
+              {
+                "timestamp": 1791531600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791531900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791532200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791532500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791532800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791533100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791533400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791533700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791535200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791535500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791535800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791536100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791536400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791536700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791538200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791538500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791538800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791539100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791539400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791539700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791541200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791541500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791541800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791542100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791542400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791542700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791544200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791544500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791544800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791545100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791545400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791545700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791547200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791547500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791547800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791548100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791548400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791548700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791550200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791550500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791550800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791551100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791551400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791551700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791553200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791553500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791553800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791554100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791554400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791554700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791556200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791556500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791556800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791557100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791557400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791557700000,
+                "actual": null,
+                "expected": null
+              }
+            ],
+            "denominator": "volume",
+            "taker_field": "taker_buy_base",
+            "required": true
+          },
+          "flow_imbal_q": {
+            "status": "passed",
+            "checked": 287999,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": false
+          }
+        }
+      },
+      "rest_reconciliation": {
+        "status": "not_requested"
+      },
+      "errors": [
+        "field_coverage:quote_volume",
+        "field_coverage:num_trades",
+        "field_coverage:taker_buy_base",
+        "field_coverage:taker_buy_quote",
+        "field_coverage:flow_imbal",
+        "field_coverage:flow_imbal_base",
+        "flow_imbal_formula",
+        "flow_imbal_base_formula"
+      ],
+      "warnings": [],
+      "expected_interval_ms": 300000,
+      "tail": {
+        "as_of_ms": 1791832893986,
+        "last_closed_end_ms": 1791832800000,
+        "age_ms": 93986,
+        "age_bars": 0.31328666666666666,
+        "max_age_bars": 3,
+        "passes": true
+      },
+      "ok": false
+    },
+    {
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "BTC/USDT:USDT",
+      "timeframe": "5m",
+      "candle_type": "orderflow",
+      "row_count": 288004,
+      "first_timestamp": 1705074000000,
+      "last_timestamp": 1791832500000,
+      "duplicate_timestamp_count": 0,
+      "gap_count": 1,
+      "gaps": [
+        {
+          "after_timestamp": 1791474000000,
+          "timestamp": 1791831900000,
+          "observed_interval_ms": 357900000,
+          "expected_interval_ms": 300000,
+          "missing_bars": 1192
+        }
+      ],
+      "fields": {
+        "quote_volume": {
+          "present": 288004,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "num_trades": {
+          "present": 288004,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_base": {
+          "present": 288004,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_quote": {
+          "present": 288004,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal": {
+          "present": 287999,
+          "missing": 5,
+          "coverage": 0.9999826391300121,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "flow_imbal_base": {
+          "present": 287999,
+          "missing": 5,
+          "coverage": 0.9999826391300121,
+          "min_coverage": 1.0,
+          "passes": false
+        }
+      },
+      "flow_formula": {
+        "status": "passed",
+        "checked": 287999,
+        "zero_quote_volume_count": 5,
+        "zero_denominator_count": 10,
+        "mismatch_count": 0,
+        "mismatches": [],
+        "canonical": "flow_imbal",
+        "formulas": {
+          "flow_imbal": {
+            "status": "passed",
+            "checked": 287999,
+            "zero_denominator_count": 5,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": true
+          },
+          "flow_imbal_base": {
+            "status": "passed",
+            "checked": 287999,
+            "zero_denominator_count": 5,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "volume",
+            "taker_field": "taker_buy_base",
+            "required": true
+          },
+          "flow_imbal_q": {
+            "status": "passed",
+            "checked": 287999,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": false
+          }
+        }
+      },
+      "rest_reconciliation": {
+        "status": "not_requested"
+      },
+      "errors": [
+        "timestamp_gaps",
+        "field_coverage:flow_imbal",
+        "field_coverage:flow_imbal_base"
+      ],
+      "warnings": [
+        "flow_formula_unavailable_for_zero_denominator"
+      ],
+      "expected_interval_ms": 300000,
+      "tail": {
+        "as_of_ms": 1791832896799,
+        "last_closed_end_ms": 1791832800000,
+        "age_ms": 96799,
+        "age_bars": 0.32266333333333336,
+        "max_age_bars": 3,
+        "passes": true
+      },
+      "ok": false
+    },
+    {
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "ETH/USDT:USDT",
+      "timeframe": "5m",
+      "candle_type": "futures",
+      "row_count": 292552,
+      "first_timestamp": 1704067200000,
+      "last_timestamp": 1791832500000,
+      "duplicate_timestamp_count": 0,
+      "gap_count": 0,
+      "gaps": [],
+      "fields": {
+        "quote_volume": {
+          "present": 288806,
+          "missing": 3746,
+          "coverage": 0.9871954387596051,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "num_trades": {
+          "present": 288806,
+          "missing": 3746,
+          "coverage": 0.9871954387596051,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "taker_buy_base": {
+          "present": 288806,
+          "missing": 3746,
+          "coverage": 0.9871954387596051,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "taker_buy_quote": {
+          "present": 288806,
+          "missing": 3746,
+          "coverage": 0.9871954387596051,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "flow_imbal": {
+          "present": 288476,
+          "missing": 4076,
+          "coverage": 0.9860674341655501,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "flow_imbal_base": {
+          "present": 287999,
+          "missing": 4553,
+          "coverage": 0.9844369547977796,
+          "min_coverage": 1.0,
+          "passes": false
+        }
+      },
+      "flow_formula": {
+        "status": "failed",
+        "checked": 288476,
+        "zero_quote_volume_count": 5,
+        "zero_denominator_count": 26,
+        "mismatch_count": 1138,
+        "mismatches": [
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791531600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791531900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791532200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791532500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791532800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791533100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791533400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791533700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791534000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791534300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791534600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791534900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791535200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791535500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791535800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791536100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791536400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791536700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791537000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791537300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791537600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791537900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791538200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791538500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791538800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791539100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791539400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791539700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791540000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791540300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791540600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791540900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791541200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791541500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791541800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791542100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791542400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791542700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791543000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791543300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791543600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791543900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791544200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791544500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791544800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791545100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791545400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791545700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791546000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791546300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791546600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791546900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791547200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791547500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791547800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791548100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791548400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791548700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791549000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791549300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791549600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791549900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791550200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791550500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791550800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791551100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791551400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791551700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791552000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791552300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791552600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791552900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791553200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791553500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791553800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791554100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791554400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791554700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791555000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791555300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791555600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791555900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791556200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791556500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791556800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791557100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791557400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791557700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791558000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791558300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791558600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791558900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791559200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791559500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791559800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791560100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791560400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791560700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791561000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1791561300000,
+            "actual": null,
+            "expected": null
+          }
+        ],
+        "canonical": "flow_imbal",
+        "formulas": {
+          "flow_imbal": {
+            "status": "failed",
+            "checked": 288476,
+            "zero_denominator_count": 5,
+            "mismatch_count": 325,
+            "mismatches": [
+              {
+                "timestamp": 1791531600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791531900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791532200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791532500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791532800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791533100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791533400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791533700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791535200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791535500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791535800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791536100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791536400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791536700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791538200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791538500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791538800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791539100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791539400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791539700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791541200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791541500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791541800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791542100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791542400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791542700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791544200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791544500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791544800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791545100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791545400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791545700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791547200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791547500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791547800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791548100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791548400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791548700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791550200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791550500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791550800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791551100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791551400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791551700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791553200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791553500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791553800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791554100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791554400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791554700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791556200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791556500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791556800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791557100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791557400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791557700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791558000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791558300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791558600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791558900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791559200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791559500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791559800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791560100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791560400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791560700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791561000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791561300000,
+                "actual": null,
+                "expected": null
+              }
+            ],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": true
+          },
+          "flow_imbal_base": {
+            "status": "failed",
+            "checked": 287983,
+            "zero_denominator_count": 21,
+            "mismatch_count": 813,
+            "mismatches": [
+              {
+                "timestamp": 1711542300000,
+                "actual": -0.0443838769752144,
+                "expected": -0.8369774562292788
+              },
+              {
+                "timestamp": 1711542600000,
+                "actual": -0.2979447259571536,
+                "expected": -0.6499547527704965
+              },
+              {
+                "timestamp": 1711623900000,
+                "actual": 0.0434201630542852,
+                "expected": 0.043344459283372716
+              },
+              {
+                "timestamp": 1711626300000,
+                "actual": 0.1896336981972695,
+                "expected": -0.21658959456676685
+              },
+              {
+                "timestamp": 1711629600000,
+                "actual": 0.21867821741063875,
+                "expected": 0.21846333906441706
+              },
+              {
+                "timestamp": 1730149800000,
+                "actual": -0.15848532386314274,
+                "expected": 18.443958089584818
+              },
+              {
+                "timestamp": 1736861400000,
+                "actual": 0.11425700719648879,
+                "expected": 0.28660424184291333
+              },
+              {
+                "timestamp": 1736866800000,
+                "actual": 0.15235742591748758,
+                "expected": 1.9018800723947957
+              },
+              {
+                "timestamp": 1738113600000,
+                "actual": -0.015261701043541409,
+                "expected": 0.9628405539129752
+              },
+              {
+                "timestamp": 1738118400000,
+                "actual": -0.18758581132962604,
+                "expected": 4.9273502576767
+              },
+              {
+                "timestamp": 1791474300000,
+                "actual": -0.0604223932002218,
+                "expected": -0.5217840352805239
+              },
+              {
+                "timestamp": 1791531600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791531900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791532200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791532500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791532800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791533100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791533400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791533700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791534900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791535200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791535500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791535800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791536100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791536400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791536700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791537900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791538200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791538500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791538800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791539100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791539400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791539700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791540900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791541200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791541500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791541800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791542100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791542400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791542700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791543900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791544200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791544500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791544800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791545100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791545400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791545700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791546900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791547200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791547500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791547800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791548100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791548400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791548700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791549900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791550200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791550500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791550800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791551100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791551400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791551700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791552900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791553200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791553500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791553800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791554100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791554400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791554700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791555900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791556200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791556500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791556800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791557100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791557400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791557700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1791558000000,
+                "actual": null,
+                "expected": null
+              }
+            ],
+            "denominator": "volume",
+            "taker_field": "taker_buy_base",
+            "required": true
+          },
+          "flow_imbal_q": {
+            "status": "passed",
+            "checked": 287999,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": false
+          }
+        }
+      },
+      "rest_reconciliation": {
+        "status": "not_requested"
+      },
+      "errors": [
+        "field_coverage:quote_volume",
+        "field_coverage:num_trades",
+        "field_coverage:taker_buy_base",
+        "field_coverage:taker_buy_quote",
+        "field_coverage:flow_imbal",
+        "field_coverage:flow_imbal_base",
+        "flow_imbal_formula",
+        "flow_imbal_base_formula"
+      ],
+      "warnings": [],
+      "expected_interval_ms": 300000,
+      "tail": {
+        "as_of_ms": 1791832900969,
+        "last_closed_end_ms": 1791832800000,
+        "age_ms": 100969,
+        "age_bars": 0.3365633333333333,
+        "max_age_bars": 3,
+        "passes": true
+      },
+      "ok": false
+    },
+    {
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "ETH/USDT:USDT",
+      "timeframe": "5m",
+      "candle_type": "orderflow",
+      "row_count": 288004,
+      "first_timestamp": 1705074300000,
+      "last_timestamp": 1791832500000,
+      "duplicate_timestamp_count": 0,
+      "gap_count": 1,
+      "gaps": [
+        {
+          "after_timestamp": 1791474300000,
+          "timestamp": 1791831900000,
+          "observed_interval_ms": 357600000,
+          "expected_interval_ms": 300000,
+          "missing_bars": 1191
+        }
+      ],
+      "fields": {
+        "quote_volume": {
+          "present": 288004,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "num_trades": {
+          "present": 288004,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_base": {
+          "present": 288004,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_quote": {
+          "present": 288004,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal": {
+          "present": 287999,
+          "missing": 5,
+          "coverage": 0.9999826391300121,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "flow_imbal_base": {
+          "present": 287999,
+          "missing": 5,
+          "coverage": 0.9999826391300121,
+          "min_coverage": 1.0,
+          "passes": false
+        }
+      },
+      "flow_formula": {
+        "status": "passed",
+        "checked": 287999,
+        "zero_quote_volume_count": 5,
+        "zero_denominator_count": 10,
+        "mismatch_count": 0,
+        "mismatches": [],
+        "canonical": "flow_imbal",
+        "formulas": {
+          "flow_imbal": {
+            "status": "passed",
+            "checked": 287999,
+            "zero_denominator_count": 5,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": true
+          },
+          "flow_imbal_base": {
+            "status": "passed",
+            "checked": 287999,
+            "zero_denominator_count": 5,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "volume",
+            "taker_field": "taker_buy_base",
+            "required": true
+          },
+          "flow_imbal_q": {
+            "status": "passed",
+            "checked": 287999,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": false
+          }
+        }
+      },
+      "rest_reconciliation": {
+        "status": "not_requested"
+      },
+      "errors": [
+        "timestamp_gaps",
+        "field_coverage:flow_imbal",
+        "field_coverage:flow_imbal_base"
+      ],
+      "warnings": [
+        "flow_formula_unavailable_for_zero_denominator"
+      ],
+      "expected_interval_ms": 300000,
+      "tail": {
+        "as_of_ms": 1791832902507,
+        "last_closed_end_ms": 1791832800000,
+        "age_ms": 102507,
+        "age_bars": 0.34169,
+        "max_age_bars": 3,
+        "passes": true
+      },
+      "ok": false
+    },
+    {
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "TRX/USDT:USDT",
+      "timeframe": "5m",
+      "candle_type": "futures",
+      "row_count": 292552,
+      "first_timestamp": 1704067200000,
+      "last_timestamp": 1791832500000,
+      "duplicate_timestamp_count": 0,
+      "gap_count": 0,
+      "gaps": [],
+      "fields": {
+        "quote_volume": {
+          "present": 292114,
+          "missing": 438,
+          "coverage": 0.9985028302660723,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "num_trades": {
+          "present": 292114,
+          "missing": 438,
+          "coverage": 0.9985028302660723,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "taker_buy_base": {
+          "present": 292114,
+          "missing": 438,
+          "coverage": 0.9985028302660723,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "taker_buy_quote": {
+          "present": 292114,
+          "missing": 438,
+          "coverage": 0.9985028302660723,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "flow_imbal": {
+          "present": 310,
+          "missing": 292242,
+          "coverage": 0.0010596406792638573,
+          "min_coverage": 1.0,
+          "passes": false
+        },
+        "flow_imbal_base": {
+          "present": 3,
+          "missing": 292549,
+          "coverage": 1.025458721868249e-05,
+          "min_coverage": 1.0,
+          "passes": false
+        }
+      },
+      "flow_formula": {
+        "status": "failed",
+        "checked": 310,
+        "zero_quote_volume_count": 21,
+        "zero_denominator_count": 42,
+        "mismatch_count": 583873,
+        "mismatches": [
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704067200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704067500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704067800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704068100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704068400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704068700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704069000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704069300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704069600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704069900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704070200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704070500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704070800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704071100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704071400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704071700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704072000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704072300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704072600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704072900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704073200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704073500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704073800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704074100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704074400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704074700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704075000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704075300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704075600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704075900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704076200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704076500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704076800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704077100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704077400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704077700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704078000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704078300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704078600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704078900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704079200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704079500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704079800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704080100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704080400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704080700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704081000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704081300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704081600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704081900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704082200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704082500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704082800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704083100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704083400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704083700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704084000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704084300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704084600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704084900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704085200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704085500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704085800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704086100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704086400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704086700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704087000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704087300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704087600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704087900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704088200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704088500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704088800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704089100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704089400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704089700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704090000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704090300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704090600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704090900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704091200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704091500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704091800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704092100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704092400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704092700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704093000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704093300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704093600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704093900000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704094200000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704094500000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704094800000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704095100000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704095400000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704095700000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704096000000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704096300000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704096600000,
+            "actual": null,
+            "expected": null
+          },
+          {
+            "formula": "flow_imbal",
+            "timestamp": 1704096900000,
+            "actual": null,
+            "expected": null
+          }
+        ],
+        "canonical": "flow_imbal",
+        "formulas": {
+          "flow_imbal": {
+            "status": "failed",
+            "checked": 310,
+            "zero_denominator_count": 21,
+            "mismatch_count": 291783,
+            "mismatches": [
+              {
+                "timestamp": 1704067200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704067500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704067800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704068100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704068400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704068700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704069000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704069300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704069600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704069900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704070200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704070500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704070800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704071100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704071400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704071700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704072000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704072300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704072600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704072900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704073200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704073500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704073800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704074100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704074400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704074700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704075000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704075300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704075600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704075900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704076200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704076500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704076800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704077100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704077400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704077700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704078000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704078300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704078600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704078900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704079200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704079500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704079800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704080100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704080400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704080700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704081000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704081300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704081600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704081900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704082200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704082500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704082800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704083100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704083400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704083700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704084000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704084300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704084600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704084900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704085200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704085500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704085800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704086100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704086400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704086700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704087000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704087300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704087600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704087900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704088200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704088500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704088800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704089100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704089400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704089700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704090000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704090300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704090600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704090900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704091200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704091500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704091800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704092100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704092400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704092700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704093000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704093300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704093600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704093900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704094200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704094500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704094800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704095100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704095400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704095700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704096000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704096300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704096600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704096900000,
+                "actual": null,
+                "expected": null
+              }
+            ],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": true
+          },
+          "flow_imbal_base": {
+            "status": "failed",
+            "checked": 3,
+            "zero_denominator_count": 21,
+            "mismatch_count": 292090,
+            "mismatches": [
+              {
+                "timestamp": 1704067200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704067500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704067800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704068100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704068400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704068700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704069000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704069300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704069600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704069900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704070200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704070500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704070800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704071100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704071400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704071700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704072000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704072300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704072600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704072900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704073200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704073500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704073800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704074100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704074400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704074700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704075000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704075300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704075600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704075900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704076200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704076500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704076800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704077100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704077400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704077700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704078000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704078300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704078600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704078900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704079200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704079500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704079800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704080100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704080400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704080700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704081000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704081300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704081600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704081900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704082200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704082500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704082800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704083100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704083400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704083700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704084000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704084300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704084600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704084900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704085200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704085500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704085800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704086100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704086400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704086700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704087000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704087300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704087600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704087900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704088200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704088500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704088800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704089100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704089400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704089700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704090000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704090300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704090600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704090900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704091200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704091500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704091800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704092100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704092400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704092700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704093000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704093300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704093600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704093900000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704094200000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704094500000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704094800000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704095100000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704095400000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704095700000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704096000000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704096300000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704096600000,
+                "actual": null,
+                "expected": null
+              },
+              {
+                "timestamp": 1704096900000,
+                "actual": null,
+                "expected": null
+              }
+            ],
+            "denominator": "volume",
+            "taker_field": "taker_buy_base",
+            "required": true
+          },
+          "flow_imbal_q": {
+            "status": "passed",
+            "checked": 3,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": false
+          }
+        }
+      },
+      "rest_reconciliation": {
+        "status": "not_requested"
+      },
+      "errors": [
+        "field_coverage:quote_volume",
+        "field_coverage:num_trades",
+        "field_coverage:taker_buy_base",
+        "field_coverage:taker_buy_quote",
+        "field_coverage:flow_imbal",
+        "field_coverage:flow_imbal_base",
+        "flow_imbal_formula",
+        "flow_imbal_base_formula"
+      ],
+      "warnings": [],
+      "expected_interval_ms": 300000,
+      "tail": {
+        "as_of_ms": 1791832905000,
+        "last_closed_end_ms": 1791832800000,
+        "age_ms": 105000,
+        "age_bars": 0.35,
+        "max_age_bars": 3,
+        "passes": true
+      },
+      "ok": false
+    },
+    {
+      "exchange": "binance",
+      "market": "futures",
+      "pair": "TRX/USDT:USDT",
+      "timeframe": "5m",
+      "candle_type": "orderflow",
+      "row_count": 3,
+      "first_timestamp": 1791831900000,
+      "last_timestamp": 1791832500000,
+      "duplicate_timestamp_count": 0,
+      "gap_count": 0,
+      "gaps": [],
+      "fields": {
+        "quote_volume": {
+          "present": 3,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "num_trades": {
+          "present": 3,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_base": {
+          "present": 3,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "taker_buy_quote": {
+          "present": 3,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal": {
+          "present": 3,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        },
+        "flow_imbal_base": {
+          "present": 3,
+          "missing": 0,
+          "coverage": 1.0,
+          "min_coverage": 1.0,
+          "passes": true
+        }
+      },
+      "flow_formula": {
+        "status": "passed",
+        "checked": 3,
+        "zero_quote_volume_count": 0,
+        "zero_denominator_count": 0,
+        "mismatch_count": 0,
+        "mismatches": [],
+        "canonical": "flow_imbal",
+        "formulas": {
+          "flow_imbal": {
+            "status": "passed",
+            "checked": 3,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": true
+          },
+          "flow_imbal_base": {
+            "status": "passed",
+            "checked": 3,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "volume",
+            "taker_field": "taker_buy_base",
+            "required": true
+          },
+          "flow_imbal_q": {
+            "status": "passed",
+            "checked": 3,
+            "zero_denominator_count": 0,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "denominator": "quote_volume",
+            "taker_field": "taker_buy_quote",
+            "required": false
+          }
+        }
+      },
+      "rest_reconciliation": {
+        "status": "not_requested"
+      },
+      "errors": [],
+      "warnings": [],
+      "expected_interval_ms": 300000,
+      "tail": {
+        "as_of_ms": 1791832905913,
+        "last_closed_end_ms": 1791832800000,
+        "age_ms": 105913,
+        "age_bars": 0.3530433333333333,
+        "max_age_bars": 3,
+        "passes": true
+      },
+      "ok": true
+    }
+  ]
+}

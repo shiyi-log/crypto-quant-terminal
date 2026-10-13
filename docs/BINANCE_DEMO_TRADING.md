@@ -20,7 +20,7 @@ uv run python tools/setup_binance_demo.py
 核对 Demo 地址与余额，再选择一个冻结账户并点击开始。服务启动不会自行恢复新入口。
 
 `DemoRunnerController.start(account_id)` 是人工启动闸门。每个运行会话绑定一个
-冻结策略身份和一个 Demo 执行政策；同一个 Demo 账户可并行运行最多四个会话，
+冻结策略身份和一个 Demo 执行政策；同一个 Demo 账户可并行运行最多六个会话，
 每个会话独立记账，共用交易所保证金和余额。同一币同一时刻只能由一个会话持仓或挂单。
 首版只支持已启用且冻结 ATR 风险完整的普通单腿账户；配对账户拒绝启动。
 
@@ -94,6 +94,16 @@ HTTP 结果和当前状态；切换时的原始签名响应未复制到此文档
 `entry_denied/shared_pair_busy`，即使同方向也不合并。该信号消费后不会排队回放。
 共享调度政策单独记录，旧 rule/execution/policy hash、namespace 和前向边界不改。
 
+成员上限为六个。当前轮询先处理主会话，再按注册顺序处理其它会话；没有公平队列，
+不能保证每个策略都获得同币的入场机会。高频信号也不保证限价单实际成交。暂停成员
+不会释放注册名额；新成员通过 `attach` 创建独立 namespace，随后显式 `start-session`。
+
+合并前必须运行 `python tools/check_frozen_strategy_identities.py --ci`；CI 将此检查作为
+独立硬门禁。合并或部署前还必须运行
+`python tools/check_frozen_strategy_identities.py --risk-execution-2x2 --require-existing --json`，只读核对
+当前数据库中将恢复的冻结身份。任何 rule/execution/canonical signal hash 不兼容都
+阻止部署；不得通过重写旧账户定义或跳过错误使门禁通过。
+
 订单和成交的全历史记录是币对占用的持久依据。数据库在预留新意图时取得币对事务锁，
 只有原会话净成交数量为零、全部订单终态且成交数量完整对账，才允许另一会话使用该币。
 超时和重启不释放未知提交，POST 认领后仍只尝试一次。中央 worker 顺序处理各会话，
@@ -142,7 +152,45 @@ s35 沿用原 namespace 和前向边界，s07 与价格爆发实验使用各自�
 未收盘、缺根、陈旧或非实时导入数据拒绝；入场按实际确认后的下单时间，不能回填
 爆发起点价格。最大持有 15 分钟从首笔真实入场成交开始计算；轮询、请求和执行会使
 实际退出稍晚。止损为最新闭盘价确认后 reduce-only 退出，不能保证精确风险上限。
-这是新的前向研究假设；没有真实成交时样本为零，不降低阈值凑样本或宣称已有盈利优势。
+这是新的前向研究假设；没有真实成交时样本为零，不能宣称已有盈利优势。
+
+用户随后选择新增 0.5% 阈值变体，身份为
+`price_burst_continuation_5m_v2_thr50`。v1 的 1.5% 定义、hash 和历史保持不变，
+v2 使用独立 `binance_demo_price_burst_v2_thr50_definition.json`、
+`binance_demo_price_burst_v2_thr50_checkpoint.json` 和事件前缀。
+两个变体都顺爆发方向做延续；v2 的较低阈值属于新的探索性假设，不代表已验证收益。
+显式 bootstrap 仅建立前向边界，账户列表 GET 不创建账户或开闸。
+
+注册及启停均需复用本地 Bearer 身份认证，JSON 请求示例：
+
+| 操作 | 路径（前缀 `/api/locals/binance-demo`） | 请求体 |
+| --- | --- | --- |
+| 新建暂停会话 | `POST /attach` | `{"accountId":"price_burst_continuation_5m_v2_thr50"}` |
+| 恢复旧 namespace | `POST /adopt-session` | `{"session":"demo_strategy_<32hex>"}` |
+| 开闸 | `POST /start-session` | `{"session":"demo_strategy_<32hex>"}` |
+| 暂停新入场、继续保护 | `POST /stop-session` | `{"session":"demo_strategy_<32hex>"}` |
+
+`attach` 返回新的暂停 namespace，需显式开闸；前提为成员未达上限、冻结账户可执行、
+交易所单向模式及共享归属对账正常。纸面已有持仓不复制到新 Demo 会话。
+`GET /strategies` 查询各 namespace 的真实成交仓位、交易损益及实际手续费；
+`GET /orders?session=<namespace>`、`/fills?session=<namespace>` 和
+`/comparisons?session=<namespace>&view=signals` 可逐笔核对，资金费不纳入交易损益。
+
+R50/R1000 影响风险 sizing：`min(R/(k*ATR/price+2*modeled_fee),1000)`。
+两档若均触及 1,000 USDT 上限，实际 Demo 名义相同；R50 是计划风险预算，
+收盘确认止损、执行滑点及实际费用仍可能使净亏损超过预算。
+paper 杠杆不会自动修改交易所杠杆，实际保证金不能简单按 paper 的 100× 推断。
+纸面 `account_budget_exhausted` 拒单不是 Demo 入场闸门：runner 在收到新鲜的
+`order_submitted` 时尝试入场，实际拦截原因以 Demo `entry_denied` 为准。
+
+2026-10-14 按用户要求，主会话已切为
+`s34_vwap_anchor_reversion_15m_Fnew_Demo_R50_k1.0_100x_maker`，namespace 为
+`demo_strategy_d85d81bd6d9e44e3899532fef1c33160`；旧 R1000 会话退出活动成员，
+绑定和历史保留。v2 新 namespace 为 `demo_strategy_4439206c121f41f78e22337e6e7a28d4`，
+已显式开闸。过程、冻结身份门禁、开闸结果及真实成交验证状态保存在 PostgreSQL
+documents 的 `binance_demo_price_burst_v2_activation_20261013.json`；沿用启动日命名，
+各步骤保留实际跨日时间戳。切换成功证明控制器前置断言通过，断言中间的原始签名
+响应没有独立复制到该审计；切换前后的账本和交易所持仓快照另存其中。
 
 “内部模拟 vs Demo”默认使用“信号与执行”视图，查询
 `GET /api/locals/binance-demo/comparisons?view=signals`。数据库在取最近 100 条前排除
@@ -163,6 +211,10 @@ Demo 的信号参考和保护读取同样支持完整闭盘的低周期合成：
 从连续已收盘 5m 数据合成对应 15m/更高周期，保存合成来源和输入指纹。最新保护参考
 必须对应最近完整目标周期；原表陈旧、源缺根或目标尚未收盘时返回不可用，不能使用
 昨天的高周期价格保护今天的持仓。合成保留数据库十进制收盘价，不填补行情缺口。
+
+当前实时采集订阅 1m/5m，高周期原表不会由该采集服务刷新。15m 原表时间陈旧
+应与策略实际输入分开核查：实验室在原表陈旧时以完整 5m 重采样延伸，只生成已闭盘
+且源根齐全的高周期 K 线。无需为恢复实验室另启 15m/1h 采集器；缺失源根仍需补采。
 
 2026-10-12 修正事件时钟：账户核对期间可能产生新事件，因此每条事件在处理前重新
 读取本机时间，首次启动也走该路径；不再用周期开始时的旧时间判断新事件的时效。

@@ -15,7 +15,7 @@ from demo_execution_service import DemoExecutionService, DemoRunnerConfig, Paper
 STATE_KEY = "binance_demo_runner_controller.json"
 SHARED_STATE_KEY = "binance_demo_shared_sessions.json"
 SHARED_POLICY = "one_way_dynamic_pair_exclusive_v1"
-MAX_SHARED_SESSIONS = 4
+MAX_SHARED_SESSIONS = 6
 
 
 class DemoHandoffError(RuntimeError):
@@ -351,7 +351,7 @@ class DemoRunnerController:
                 if service.config.strategy_id == account_id:
                     return self.status()
             if len(self._services()) >= MAX_SHARED_SESSIONS:
-                raise DemoHandoffError("demo_shared_session_limit", "at most four Demo sessions may share the account")
+                raise DemoHandoffError("demo_shared_session_limit", "at most six Demo sessions may share the account")
             self._validate_account(account_id)
             adapter = self._adapter()
             ledger = existing_ledger or self.ledger_factory("demo_strategy_" + uuid.uuid4().hex)
@@ -569,6 +569,7 @@ class DemoRunnerController:
                     "handoffInProgress": self._closing,
                     "switchPersistenceUnresolved": self._switch_persistence_unresolved,
                     "parallelSessions": sessions, "sharedAccountPolicy": SHARED_POLICY,
+                    "maxSharedSessions": MAX_SHARED_SESSIONS,
                     "sharedSessionsEnabled": self._shared_enabled,
                     "allEntriesEnabled": bool(sessions) and all(member["entriesEnabled"] for member in sessions),
                     "sharedRecoveryIncomplete": self._restore_incomplete,

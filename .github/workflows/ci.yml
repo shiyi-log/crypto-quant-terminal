@@ -68,6 +68,11 @@ jobs:
           auth_service.py manage.py runtime_config.py data_store.py data_sync.py
           market_stream.py market_live.py candle_archive.py tests
 
+      - name: 冻结策略身份兼容性硬门禁
+        run: >-
+          uv run --frozen --group dev python
+          tools/check_frozen_strategy_identities.py --ci
+
       - name: 执行单元与数据库集成测试
         run: |
           uv run --frozen --group dev python - <<'PY'

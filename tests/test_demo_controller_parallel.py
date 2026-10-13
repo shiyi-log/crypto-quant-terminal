@@ -216,6 +216,27 @@ class ParallelTests(unittest.TestCase):
         self.assertIs(self.controller.service, self.primary)
         self.assertTrue(self.primary.entries_enabled)
 
+    def test_six_members_restore_all_frozen_bindings_with_entries_paused(self):
+        for index in range(1, 6):
+            self.controller.attach("companion_" + str(index))
+        records = self.data.items[SHARED_STATE_KEY]["sessions"]
+        self.assertEqual(len(records), 6)
+        frozen = {row["virtualAccountKey"]: copy.deepcopy(
+            self.ledgers[row["virtualAccountKey"]].binding) for row in records}
+        restarted = self.restart()
+        state = restarted.resume_protection()
+        self.assertEqual(len(state["parallelSessions"]), 6)
+        self.assertEqual(state["maxSharedSessions"], 6)
+        self.assertEqual(len(restarted._coordinator()._members), 6)
+        self.assertTrue(all(not member["entriesEnabled"] for member in state["parallelSessions"]))
+        for namespace, binding in frozen.items():
+            self.assertEqual(self.ledgers[namespace].binding, binding)
+        sixth = records[-1]["virtualAccountKey"]
+        restarted.start_session(sixth)
+        gates = {member["virtualAccountKey"]: member["entriesEnabled"]
+                 for member in restarted.status()["parallelSessions"]}
+        self.assertEqual([namespace for namespace, enabled in gates.items() if enabled], [sixth])
+
     def test_healthy_owned_position_can_attach_but_foreign_exposure_cannot(self):
         pair = "BTC/USDT:USDT"
         self.primary_ledger.net = {pair: "0.1"}

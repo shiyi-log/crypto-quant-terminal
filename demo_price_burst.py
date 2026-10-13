@@ -18,11 +18,38 @@ BURST_STRATEGY_ID = "price_burst_continuation_5m_v1"
 BURST_DEFINITION_KEY = "binance_demo_price_burst_v1_definition.json"
 BURST_STATE_KEY = "binance_demo_price_burst_v1_checkpoint.json"
 BURST_EVENT_PREFIX = "binance_demo_price_burst_v1_event/"
+BURST_V2_STRATEGY_ID = "price_burst_continuation_5m_v2_thr50"
+BURST_V2_DEFINITION_KEY = "binance_demo_price_burst_v2_thr50_definition.json"
+BURST_V2_STATE_KEY = "binance_demo_price_burst_v2_thr50_checkpoint.json"
+BURST_V2_EVENT_PREFIX = "binance_demo_price_burst_v2_thr50_event/"
 BAR_MS = 300_000
 ATR_WINDOW = 14
 WARMUP_BARS = ATR_WINDOW + 2
 MAX_SIGNAL_LAG_MS = 90_000
 BURST_PAIRS = ("BTC/USDT:USDT", "ETH/USDT:USDT", "TRX/USDT:USDT")
+
+
+_BURST_VARIANTS = {
+    BURST_STRATEGY_ID: {
+        "definition_key": BURST_DEFINITION_KEY,
+        "state_key": BURST_STATE_KEY,
+        "event_prefix": BURST_EVENT_PREFIX,
+        "move_threshold": 0.015,
+        "entry_rule": "close[t]/close[t-3]-1 reaches +/-1.5%; previous closed bar "
+                       "was not beyond the same directional threshold; follow the move",
+    },
+    BURST_V2_STRATEGY_ID: {
+        "definition_key": BURST_V2_DEFINITION_KEY,
+        "state_key": BURST_V2_STATE_KEY,
+        "event_prefix": BURST_V2_EVENT_PREFIX,
+        "move_threshold": 0.005,
+        "entry_rule": "close[t]/close[t-3]-1 reaches +/-0.5%; previous closed bar "
+                       "was not beyond the same directional threshold; follow the move",
+        "threshold_derivation": "user_decision_20261013_loosened_from_1p5pct_for_frequency",
+        "exploration_status": "exploratory_variant_no_prior_expectancy_evidence",
+        "execution_variant": "price_burst_continuation_5m_v2_thr50",
+    },
+}
 
 
 def _hash(value):
@@ -48,16 +75,18 @@ def _decimal(value, *, positive=False):
     return number
 
 
-def _identity():
+def _identity(strategy_id=BURST_STRATEGY_ID):
+    variant = _BURST_VARIANTS.get(strategy_id)
+    if variant is None:
+        raise ValueError("unknown Demo price-burst strategy")
     definition = {
-        "strategy_id": BURST_STRATEGY_ID,
+        "strategy_id": strategy_id,
         "name": "价格爆发确认后延续（Demo 前向实验）",
         "timeframe": "5m", "universe": list(BURST_PAIRS),
-        "params": {"move_bars": 3, "move_threshold": 0.015, "H": 3,
+        "params": {"move_bars": 3, "move_threshold": variant["move_threshold"], "H": 3,
                    "atr_window": ATR_WINDOW, "risk_stop_atr_mult": 1.0},
         "min_warmup_bars": WARMUP_BARS,
-        "entry_rule": "close[t]/close[t-3]-1 reaches +/-1.5%; previous closed bar "
-                      "was not beyond the same directional threshold; follow the move",
+        "entry_rule": variant["entry_rule"],
         "threshold_comparison": "inclusive_decimal_price_ratio_v1",
         "atr_convention": "mean_prior_14_true_ranges_excluding_decision_candle_v1",
         "signal_source": "database_live_closed_candle_forward_burst",
@@ -68,6 +97,9 @@ def _identity():
         "forward_hypothesis": True, "not_profit_claim": True,
         "paper_mirror": False,
     }
+    for key in ("threshold_derivation", "exploration_status"):
+        if key in variant:
+            definition[key] = variant[key]
     execution = {
         "execution_enabled": True, "blocked_execution_reason": None,
         "execution_universe": list(BURST_PAIRS), "timeframe": "5m",
@@ -84,7 +116,9 @@ def _identity():
         "signal_source": definition["signal_source"],
         "max_signal_lag_ms": MAX_SIGNAL_LAG_MS,
     }
-    return {"strategy_id": BURST_STRATEGY_ID, "rule_hash": _hash(definition),
+    if "execution_variant" in variant:
+        execution["execution_variant"] = variant["execution_variant"]
+    return {"strategy_id": strategy_id, "rule_hash": _hash(definition),
             "execution_hash": _hash(execution), "definition": definition,
             "execution": execution, "state": {"positions": {}}}
 
@@ -97,13 +131,20 @@ class PriceBurstEventSource:
     forward boundary, without manufacturing an entry from an already closed bar.
     """
 
-    def __init__(self, data_store, *, clock_ms=None):
+    def __init__(self, data_store, *, clock_ms=None, strategy_id=BURST_STRATEGY_ID):
         self.store = data_store
         self.clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+        variant = _BURST_VARIANTS.get(strategy_id)
+        if variant is None:
+            raise ValueError("unknown Demo price-burst strategy")
+        self.strategy_id = strategy_id
+        self.definition_key = variant["definition_key"]
+        self.state_key = variant["state_key"]
+        self.event_prefix = variant["event_prefix"]
+        self.move_threshold = Decimal(str(variant["move_threshold"]))
 
-    @staticmethod
-    def _require_strategy(strategy_id):
-        if strategy_id != BURST_STRATEGY_ID:
+    def _require_strategy(self, strategy_id):
+        if strategy_id != self.strategy_id:
             raise ValueError("unknown Demo price-burst strategy")
 
     def _lock(self, conn):
@@ -125,13 +166,13 @@ class PriceBurstEventSource:
     def _save_state(self, conn, state):
         conn.execute("INSERT INTO documents (key,payload) VALUES (%s,%s) "
                      "ON CONFLICT (key) DO UPDATE SET payload=EXCLUDED.payload,"
-                     "updated_at=CURRENT_TIMESTAMP", (BURST_STATE_KEY, self.store._json(state)))
+                     "updated_at=CURRENT_TIMESTAMP", (self.state_key, self.store._json(state)))
 
     def _account(self, conn):
-        account = self._read_document(conn, BURST_DEFINITION_KEY)
+        account = self._read_document(conn, self.definition_key)
         if account is None:
             raise ValueError("Demo price-burst account has not been bootstrapped")
-        expected = _identity()
+        expected = _identity(self.strategy_id)
         if any(account.get(key) != value for key, value in expected.items()):
             raise ValueError("frozen Demo price-burst identity mismatch")
         boundary = _integer(account.get("forward_boundary_ms"), "forward boundary")
@@ -140,7 +181,7 @@ class PriceBurstEventSource:
         return account
 
     def _state(self, conn, account):
-        state = self._read_document(conn, BURST_STATE_KEY, locked=True)
+        state = self._read_document(conn, self.state_key, locked=True)
         if state is None:
             raise ValueError("Demo price-burst checkpoint is missing")
         if any(state.get(key) != account[key] for key in ("strategy_id", "rule_hash", "execution_hash")):
@@ -183,18 +224,18 @@ class PriceBurstEventSource:
         now = _integer(self.clock_ms(), "clock")
         with self.store._connection() as conn:
             self._lock(conn)
-            if self._read_document(conn, BURST_DEFINITION_KEY) is not None:
+            if self._read_document(conn, self.definition_key) is not None:
                 account = self._account(conn)
                 self._state(conn, account)
                 return copy.deepcopy(account)
-            if self._read_document(conn, BURST_STATE_KEY) is not None:
+            if self._read_document(conn, self.state_key) is not None:
                 raise ValueError("orphaned Demo price-burst checkpoint")
-            account = {**_identity(), "created_ms": now, "forward_boundary_ms": now}
+            account = {**_identity(self.strategy_id), "created_ms": now, "forward_boundary_ms": now}
             state = {key: account[key] for key in ("strategy_id", "rule_hash", "execution_hash")}
             state.update(sequence_id=0, forward_boundary_ms=now,
                          pair_checkpoints=dict.fromkeys(BURST_PAIRS), observations={})
             self._anchor(conn, state, now)
-            self._insert_document(conn, BURST_DEFINITION_KEY, account)
+            self._insert_document(conn, self.definition_key, account)
             self._save_state(conn, state)
         return copy.deepcopy(account)
 
@@ -230,7 +271,7 @@ class PriceBurstEventSource:
                                     timestamp)).fetchall()
 
     @staticmethod
-    def _signal(rows, timestamp):
+    def _signal(rows, timestamp, move_threshold=Decimal("0.015")):
         expected = [timestamp - (WARMUP_BARS - index - 1) * BAR_MS
                     for index in range(WARMUP_BARS)]
         if len(rows) != WARMUP_BARS or [row["timestamp"] for row in rows] != expected:
@@ -250,8 +291,8 @@ class PriceBurstEventSource:
 
         def direction(close, origin):
             price, base = _decimal(close), _decimal(origin)
-            return "buy" if price >= base * Decimal("1.015") else \
-                "sell" if price <= base * Decimal("0.985") else None
+            return "buy" if price >= base * (Decimal(1) + move_threshold) else \
+                "sell" if price <= base * (Decimal(1) - move_threshold) else None
 
         side = direction(facts[-1]["close"], facts[-4]["close"])
         previous = direction(facts[-2]["close"], facts[-5]["close"])
@@ -272,7 +313,7 @@ class PriceBurstEventSource:
                     "burst_origin_close": facts[-4]["close"],
                     "signal_close": facts[-1]["close"],
                     "move_return": str(_decimal(facts[-1]["close"]) / _decimal(facts[-4]["close"]) - 1),
-                    "move_threshold": "0.015", "previous_direction": previous,
+                    "move_threshold": format(move_threshold, "f"), "previous_direction": previous,
                     "source": "database_live_closed_candle_forward_burst",
                     "atr_excludes_decision_candle": True,
                     "input_candles": input_candles,
@@ -310,7 +351,8 @@ class PriceBurstEventSource:
                 if not 0 <= now - close_ms <= MAX_SIGNAL_LAG_MS:
                     state["observations"][pair] = {"candle_ms": timestamp, "reason": "closed_candle_stale"}
                     continue
-                side, evidence = self._signal(self._history(conn, pair, timestamp), timestamp)
+                side, evidence = self._signal(self._history(conn, pair, timestamp), timestamp,
+                                              self.move_threshold)
                 state["observations"][pair] = {"candle_ms": timestamp,
                                                "reason": "entry_intent" if side else evidence["reason"]}
                 if side is None:
@@ -330,12 +372,12 @@ class PriceBurstEventSource:
                          "generated_at_ms": now,
                          "event_semantics": "forward_entry_intent_not_exchange_order",
                          "data_fingerprint": _hash(payload), "payload": payload}
-                self._insert_document(conn, BURST_EVENT_PREFIX + f"{state['sequence_id']:020d}.json", event)
+                self._insert_document(conn, self.event_prefix + f"{state['sequence_id']:020d}.json", event)
             if changed:
                 self._save_state(conn, state)
             rows = conn.execute("SELECT payload FROM documents WHERE left(key,%s)=%s "
-                "AND key>%s ORDER BY key LIMIT %s", (len(BURST_EVENT_PREFIX), BURST_EVENT_PREFIX,
-                    BURST_EVENT_PREFIX + f"{after_sequence:020d}.json", limit)).fetchall()
+                "AND key>%s ORDER BY key LIMIT %s", (len(self.event_prefix), self.event_prefix,
+                    self.event_prefix + f"{after_sequence:020d}.json", limit)).fetchall()
             result = [copy.deepcopy(row["payload"]) for row in rows]
             if any(event.get("strategy_id") != strategy_id
                    or event.get("rule_hash") != account["rule_hash"]

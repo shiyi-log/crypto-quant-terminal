@@ -6,7 +6,9 @@ import unittest
 
 from demo_price_burst import (
     BAR_MS, BURST_DEFINITION_KEY, BURST_EVENT_PREFIX, BURST_PAIRS,
-    BURST_STATE_KEY, BURST_STRATEGY_ID, PriceBurstEventSource,
+    BURST_STATE_KEY, BURST_STRATEGY_ID, BURST_V2_DEFINITION_KEY,
+    BURST_V2_EVENT_PREFIX, BURST_V2_STATE_KEY, BURST_V2_STRATEGY_ID,
+    PriceBurstEventSource, _identity,
 )
 
 
@@ -36,7 +38,7 @@ class Connection:
             return Rows([] if payload is None else [{"payload": payload}])
         if query.startswith("INSERT INTO documents"):
             key, payload = params
-            if key == BURST_STATE_KEY and self.store.fail_checkpoint_writes:
+            if key in {BURST_STATE_KEY, BURST_V2_STATE_KEY} and self.store.fail_checkpoint_writes:
                 raise RuntimeError("simulated checkpoint commit failure")
             if "DO NOTHING" not in query or key not in self.store.documents:
                 self.store.documents[key] = copy.deepcopy(payload)
@@ -116,6 +118,84 @@ class BurstTests(unittest.TestCase):
     def entry_documents(self):
         return {key: value for key, value in self.store.documents.items()
                 if key.startswith(BURST_EVENT_PREFIX)}
+
+    def variant_setup(self, strategy_id):
+        store = MemoryStore()
+        pair = BURST_PAIRS[0]
+        store.candles[pair] = [candle(index) for index in range(16)]
+        clock = {"now": 15 * BAR_MS + 10}
+        source = PriceBurstEventSource(store, clock_ms=lambda: clock["now"],
+                                       strategy_id=strategy_id)
+        source.ensure_account()
+        return store, pair, clock, source
+
+    def test_v1_identity_is_byte_stable_and_v2_is_distinct(self):
+        v1 = _identity(BURST_STRATEGY_ID)
+        v2 = _identity(BURST_V2_STRATEGY_ID)
+        self.assertEqual(v1["rule_hash"],
+                         "420343e13d29d6b0335cbc9e8bd535f69025d7a735ffe3e310b84e12978e7051")
+        self.assertEqual(v1["execution_hash"],
+                         "df020783895bd8a0eb7244dbc5489692a6d8092320a8a3184dbb9c37e9376a4d")
+        self.assertEqual(v1["definition"]["params"]["move_threshold"], 0.015)
+        self.assertEqual(v2["definition"]["params"]["move_threshold"], 0.005)
+        self.assertNotEqual(v1["rule_hash"], v2["rule_hash"])
+        self.assertNotEqual(v1["execution_hash"], v2["execution_hash"])
+        self.assertEqual(v2["definition"]["exploration_status"],
+                         "exploratory_variant_no_prior_expectancy_evidence")
+        self.assertEqual(v2["definition"]["threshold_derivation"],
+                         "user_decision_20261013_loosened_from_1p5pct_for_frequency")
+
+    def test_v2_exact_half_percent_threshold_is_inclusive(self):
+        for close, expected in ((100.5, "buy"), (99.5, "sell")):
+            with self.subTest(close=close):
+                store, pair, clock, source = self.variant_setup(BURST_V2_STRATEGY_ID)
+                decision = next(row for row in store.candles[pair]
+                                if row["timestamp"] == 15 * BAR_MS)
+                decision["close"] = close
+                decision["high"] = max(decision["high"], close)
+                decision["low"] = min(decision["low"], close)
+                clock["now"] = 16 * BAR_MS + 10
+                events = source.events(BURST_V2_STRATEGY_ID, 0)
+                self.assertEqual(events[0]["payload"]["buy_sell"], expected)
+                self.assertEqual(events[0]["payload"]["evidence"]["move_threshold"], "0.005")
+
+    def test_v2_just_inside_threshold_is_rejected(self):
+        for close in (100.499999999, 99.500000001):
+            with self.subTest(close=close):
+                store, pair, clock, source = self.variant_setup(BURST_V2_STRATEGY_ID)
+                decision = next(row for row in store.candles[pair]
+                                if row["timestamp"] == 15 * BAR_MS)
+                decision["close"] = close
+                decision["high"] = max(decision["high"], close)
+                decision["low"] = min(decision["low"], close)
+                clock["now"] = 16 * BAR_MS + 10
+                self.assertEqual(source.events(BURST_V2_STRATEGY_ID, 0), [])
+
+    def test_v1_and_v2_use_independent_documents_and_sequences(self):
+        store = MemoryStore()
+        pair = BURST_PAIRS[0]
+        store.candles[pair] = [candle(index) for index in range(16)]
+        clock = {"now": 15 * BAR_MS + 10}
+        v1 = PriceBurstEventSource(store, clock_ms=lambda: clock["now"])
+        v2 = PriceBurstEventSource(store, clock_ms=lambda: clock["now"],
+                                   strategy_id=BURST_V2_STRATEGY_ID)
+        v1.ensure_account()
+        v2.ensure_account()
+        self.assertIn(BURST_DEFINITION_KEY, store.documents)
+        self.assertIn(BURST_V2_DEFINITION_KEY, store.documents)
+        self.assertIn(BURST_STATE_KEY, store.documents)
+        self.assertIn(BURST_V2_STATE_KEY, store.documents)
+        decision = next(row for row in store.candles[pair]
+                        if row["timestamp"] == 15 * BAR_MS)
+        decision["close"] = 101.5
+        decision["high"] = 101.5
+        clock["now"] = 16 * BAR_MS + 10
+        self.assertEqual(len(v1.events(BURST_STRATEGY_ID, 0)), 1)
+        self.assertEqual(len(v2.events(BURST_V2_STRATEGY_ID, 0)), 1)
+        self.assertEqual(store.documents[BURST_STATE_KEY]["sequence_id"], 1)
+        self.assertEqual(store.documents[BURST_V2_STATE_KEY]["sequence_id"], 1)
+        self.assertTrue(any(key.startswith(BURST_EVENT_PREFIX) for key in store.documents))
+        self.assertTrue(any(key.startswith(BURST_V2_EVENT_PREFIX) for key in store.documents))
 
     def test_account_read_does_not_bootstrap_or_mutate(self):
         empty = MemoryStore()

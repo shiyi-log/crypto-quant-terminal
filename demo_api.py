@@ -9,6 +9,7 @@ guard runs before body reads, DB access, or controller construction.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import time
@@ -28,6 +29,7 @@ _GET_PATHS = {"", "/status", "/accounts", "/orders", "/fills", "/positions",
               "/account", "/comparisons", "/evidence", "/sessions", "/strategies"}
 _POST_PATHS = {"/credentials", "/check", "/start", "/stop", "/yield-flat", "/switch",
                "/attach", "/adopt-session", "/start-session", "/stop-session"}
+logger = logging.getLogger("demo_api")
 _HISTORY_PATHS = {"/orders", "/fills", "/comparisons", "/evidence"}
 LIMITATIONS = [
     "币安 Demo 的订单簿、定价和执行可能与实盘不同，不能据此自动上线。",
@@ -180,6 +182,8 @@ def handle_demo_request(handler, *, method: str, verify_token, allowed_origins,
     except Exception as exc:
         # Do not serialize traceback, raw CCXT errors, request, DSN or secrets.
         # Only fixed server messages and a class name are exposed.
+        logger.error("Demo API request failed error_kind=%s exception_class=%s",
+                     type(exc).__name__, exc.__class__.__name__)
         return handler._send(503, {"detail": "demo_service_unavailable",
                                    "errorCode": "demo_service_unavailable",
                                    "errorKind": type(exc).__name__})

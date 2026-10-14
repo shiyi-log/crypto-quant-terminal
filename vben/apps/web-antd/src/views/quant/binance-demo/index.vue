@@ -32,6 +32,7 @@ const activeTab = ref('orders');
 const loading = ref(false);
 const action = ref('');
 const error = ref('');
+const statusStale = ref(false);
 const recordError = ref('');
 const evidenceError = ref('');
 const sessionError = ref('');
@@ -45,6 +46,39 @@ const updatedAt = ref<number | null>(null);
 let timer: ReturnType<typeof setInterval> | undefined;
 let controller: AbortController | undefined;
 let sequence = 0;
+
+const DEMO_STATUS_TIMEOUT_MS = 4_000;
+const DEMO_STATUS_MAX_ATTEMPTS = 2;
+
+/**
+ * The status endpoint can wait behind a runner exchange poll. Keep this
+ * request bounded and retry one transient failure without changing the
+ * shared API client's timeout used by other endpoints.
+ */
+async function getStatusWithRetry(signal: AbortSignal): Promise<DemoStatus> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < DEMO_STATUS_MAX_ATTEMPTS; attempt += 1) {
+    if (signal.aborted) throw new DOMException('Request aborted', 'AbortError');
+    const requestController = new AbortController();
+    let timedOut = false;
+    const abortRequest = () => requestController.abort();
+    signal.addEventListener('abort', abortRequest, { once: true });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      requestController.abort();
+    }, DEMO_STATUS_TIMEOUT_MS);
+    try {
+      return await getBinanceDemoStatus(requestController.signal);
+    } catch (reason) {
+      if (signal.aborted) throw reason;
+      lastError = timedOut ? new Error('Demo 状态刷新超时') : reason;
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', abortRequest);
+    }
+  }
+  throw lastError ?? new Error('Demo 状态刷新失败');
+}
 
 const state = computed(() => demoState(status.value));
 const running = computed(() => Boolean(status.value?.runner?.tradingEnabled || status.value?.runner?.state === 'running'));
@@ -244,26 +278,19 @@ async function refresh() {
   loading.value = true;
   let overview: DemoStatus;
   try {
-    overview = await getBinanceDemoStatus(signal);
+    overview = await getStatusWithRetry(signal);
   } catch (reason) {
     if (requestSequence !== sequence) return;
-    status.value = null;
-    orders.value = [];
-    fills.value = [];
-    positions.value = [];
-    balances.value = [];
-    comparisons.value = [];
-    evidence.value = null;
-    sessions.value = [];
-    strategies.value = [];
-    loadedRecordSession.value = '';
-    loadedCurrentSession.value = '';
-    error.value = demoError(reason);
+    // Keep the last successful snapshot visible while the runner is busy or
+    // temporarily unavailable. A blank panel would falsely suggest no data.
+    statusStale.value = Boolean(status.value);
+    error.value = status.value
+      ? `状态刷新失败：${demoError(reason)}`
+      : `Demo 状态暂不可用：${demoError(reason)}`;
     recordError.value = '';
     evidenceError.value = '';
     sessionError.value = '';
     strategyError.value = '';
-    updatedAt.value = null;
     loading.value = false;
     return;
   }
@@ -278,8 +305,12 @@ async function refresh() {
   if (requestSequence !== sequence) return;
   const [orderResult, fillResult, positionResult, accountResult, comparisonResult, evidenceResult, sessionResult, strategyResult] = results;
   status.value = overview;
+  statusStale.value = Boolean(overview.runner.status_snapshot_stale);
   selectedAccount.value = selectedDemoAccount(overview, selectedAccount.value);
-  error.value = '';
+  const snapshotAgeMs = Number(overview.runner.status_snapshot_age_ms);
+  error.value = statusStale.value
+    ? `Runner 状态快照较旧（约 ${Number.isFinite(snapshotAgeMs) ? Math.ceil(snapshotAgeMs / 1000) : '?'} 秒）`
+    : '';
   orders.value = orderResult?.status === 'fulfilled' ? orderResult.value.items : [];
   fills.value = fillResult?.status === 'fulfilled' ? fillResult.value.items : [];
   positions.value = positionResult?.status === 'fulfilled' ? positionResult.value.items : [];
@@ -418,7 +449,14 @@ onUnmounted(() => {
       <Button :loading="loading" :disabled="Boolean(action)" @click="refresh">刷新记录</Button>
     </div>
 
-    <Alert v-if="error" class="mb-3" show-icon type="error" :message="error" />
+    <Alert
+      v-if="error"
+      class="mb-3"
+      show-icon
+      :type="statusStale ? 'warning' : 'error'"
+      :message="error"
+      :description="statusStale ? '页面保留上次成功读取的 Demo 快照；下一次自动刷新或手动刷新会继续重试。' : undefined"
+    />
     <Alert v-if="sharedStateError" class="mb-3" show-icon type="error" message="并行策略新开仓已阻断" :description="sharedStateError" />
     <Alert
       class="mb-4" show-icon type="info"

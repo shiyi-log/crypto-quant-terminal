@@ -349,6 +349,10 @@ class DemoExecutionService:
                         "experiment_scope": "selected_candle_strategy_execution_only",
                         "commission_source": "actual_exchange_fills_only",
                         "comparison_scope": self.policy["comparison_scope"]}
+        # Publish only complete cycle states.  HTTP status reads can then fall
+        # back to the last coherent snapshot while a polling cycle holds the
+        # service mutex around exchange requests.
+        self._status_snapshot = (copy.deepcopy(self._status), self.clock_ms())
 
     def _evidence(self, signal_id, fingerprint=None):
         return {"strategy_id": self.config.strategy_id, "signal_id": str(signal_id),
@@ -441,8 +445,27 @@ class DemoExecutionService:
             return self.cycle()
 
     def status(self):
-        with self._mutex:
-            return copy.deepcopy(self._status)
+        acquired = self._mutex.acquire(blocking=False)
+        try:
+            if acquired:
+                snapshot = copy.deepcopy(self._status)
+                published_ms = self._status_snapshot[1]
+            else:
+                published_snapshot = self._status_snapshot
+                snapshot = copy.deepcopy(published_snapshot[0])
+                published_ms = published_snapshot[1]
+        finally:
+            if acquired:
+                self._mutex.release()
+        age_ms = 0 if acquired else max(0, self.clock_ms() - published_ms)
+        snapshot.update(status_snapshot_stale=not acquired,
+                        status_snapshot_age_ms=age_ms,
+                        status_lock_busy=not acquired)
+        return snapshot
+
+    def _publish_status_snapshot(self):
+        """Publish a complete state while the caller owns ``_mutex``."""
+        self._status_snapshot = (copy.deepcopy(self._status), self.clock_ms())
 
     def stop(self, *, flatten=False):
         """Pause entries; retain polling/risk protection until all owned exposure closes."""
@@ -1050,6 +1073,8 @@ class DemoExecutionService:
                 # Never send credential-bearing request/error text to status or logs.
                 self._status.update(status="reconciliation_error", last_error=type(exc).__name__,
                                     risk_alert="critical_risk_protection_cycle_incomplete")
+            finally:
+                self._publish_status_snapshot()
             return self.status()
 
 

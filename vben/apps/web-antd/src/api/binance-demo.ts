@@ -138,6 +138,9 @@ export interface DemoStatus {
     tradingEnabled?: boolean;
     workerRunning?: boolean;
     accountLocked?: boolean;
+    status_snapshot_stale?: boolean;
+    status_snapshot_age_ms?: number;
+    status_lock_busy?: boolean;
     lastError?: null | string;
     lastCheck?: null | DemoRecord;
     parallelSessions?: (DemoRecord | string)[];

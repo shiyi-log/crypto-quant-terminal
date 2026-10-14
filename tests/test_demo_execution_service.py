@@ -3,6 +3,8 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -132,6 +134,32 @@ class ExecutionEvidenceTests(unittest.TestCase):
         self.assertEqual(service.config.poll_interval_ms, 5000)
         self.assertFalse(service.status()["seconds_hypothesis_tested"])
         self.assertEqual(service.status()["experiment_scope"], "selected_candle_strategy_execution_only")
+
+    def test_status_returns_last_snapshot_without_waiting_for_busy_cycle_lock(self):
+        service = DemoExecutionService(Mock(), Mock(), Mock(), DemoRunnerConfig("paper"))
+        service._status.update(status="observing", running=True)
+        with service._mutex:
+            service._publish_status_snapshot()
+        release = threading.Event()
+        held = threading.Event()
+
+        def hold_cycle_lock():
+            with service._mutex:
+                held.set()
+                release.wait(timeout=2)
+
+        worker = threading.Thread(target=hold_cycle_lock)
+        worker.start()
+        self.assertTrue(held.wait(timeout=1))
+        started = time.monotonic()
+        snapshot = service.status()
+        elapsed = time.monotonic() - started
+        release.set()
+        worker.join(timeout=1)
+        self.assertLess(elapsed, 0.1)
+        self.assertEqual(snapshot["status"], "observing")
+        self.assertTrue(snapshot["status_snapshot_stale"])
+        self.assertTrue(snapshot["status_lock_busy"])
 
 
 @dataclass

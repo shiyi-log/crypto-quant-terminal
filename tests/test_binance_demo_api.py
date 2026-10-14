@@ -92,10 +92,13 @@ class DemoHttpTests(unittest.TestCase):
     def test_error_text_never_returns_exception_message(self):
         handler = self.handler("/check")
         provider = Mock(side_effect=RuntimeError("request contains synthetic-secret-value"))
-        code, payload = handle_demo_request(handler, method="POST",
-            verify_token=lambda _: "admin", allowed_origins={ORIGIN}, api_provider=provider)
+        with self.assertLogs("demo_api", level="ERROR") as logs:
+            code, payload = handle_demo_request(handler, method="POST",
+                verify_token=lambda _: "admin", allowed_origins={ORIGIN}, api_provider=provider)
         self.assertEqual(code, 503)
         self.assertNotIn("synthetic-secret-value", json.dumps(payload))
+        self.assertIn("RuntimeError", "\n".join(logs.output))
+        self.assertNotIn("synthetic-secret-value", "\n".join(logs.output))
 
     def test_flat_handoff_uses_authenticated_local_origin_guard_and_empty_body(self):
         for alteration, expected in (("unauth", 401), ("remote", 403), ("origin", 403),

@@ -16,9 +16,12 @@ import json
 import threading
 import time
 
+from demo_store import ABSENT_LOOKUP_TERMINAL_STATUS
+
 DEMO_POLICY_VERSION = "binance-demo-single-paper-v1"
 HOST = "demo-fapi.binance.com"
-TERMINAL = {"filled", "canceled", "cancelled", "rejected", "expired"}
+TERMINAL = {"filled", "canceled", "cancelled", "rejected", "expired",
+            ABSENT_LOOKUP_TERMINAL_STATUS}
 ACTUAL_STOP_EXECUTION_MODE = "close_confirmed_closed_candle_poll_reduce_only_market"
 BURST_SIGNAL_SOURCE = "database_live_closed_candle_forward_burst"
 
@@ -141,17 +144,100 @@ def signal_reference_evidence(candle, timeframe):
                 "resampled": candle["extras"].get("resampled_for_demo_reference") is True}}
 
 
-def attempted_entry_outcomes(orders):
-    """Match DemoStore's population, without claiming exchange acceptance."""
+def attempted_entry_outcomes(orders, rejection_records=None):
+    """Return visible entry-attempt metrics without claiming exchange acceptance.
+
+    An attempt is durably claimed (or has an exchange order id), including
+    unresolved rows.  The historical terminal/unfilled fields intentionally
+    retain their old population and semantics for API compatibility. The
+    rejection rate uses all attempts; non-fill rate uses exchange-accepted
+    submissions because an unknown submission is not evidence of a zero fill.
+    """
     attempted = [order for order in orders if not order.get("reduce_only")
-                 and order["status"] in {"filled", "canceled", "rejected", "expired"}
                  and (order.get("submission_attempts") == 1
                       or order.get("exchange_order_id") is not None)]
-    unfilled = sum(_decimal(order["filled_quantity"]) == 0 for order in attempted)
-    return {"terminal_entry_count": len(attempted), "unfilled_entry_count": unfilled,
-            "unfilled_entry_ratio": unfilled / len(attempted) if attempted else None,
-            "unfilled_entry_population": "terminal_attempted_entries_not_verified_accepted",
-            "unfilled_entry_definition": "zero_reported_filled_quantity_in_terminal_attempted_entry"}
+    terminal = [order for order in attempted if order["status"] in {
+        "filled", "canceled", "rejected", "expired", ABSENT_LOOKUP_TERMINAL_STATUS}]
+    unfilled = sum(_decimal(order.get("filled_quantity", 0)) == 0 for order in terminal)
+    rejected_kinds = {"OrderNotFillable", "OrderImmediatelyFillable"}
+    rejection_rows = []
+    seen_rejections = set()
+    def add_rejection(observation, kind, order):
+        key = (str(order.get("client_id")), kind)
+        if key not in seen_rejections:
+            seen_rejections.add(key)
+            rejection_rows.append((observation, kind, order))
+    order_by_client = {str(order.get("client_id")): order for order in attempted
+                       if order.get("client_id") is not None}
+    for order in attempted:
+        for observation in order.get("audit_observations") or []:
+            raw = observation.get("raw") or {}
+            kind = (raw.get("exchange_error_kind") or raw.get("error_kind")
+                    or observation.get("exchange_error_kind") or observation.get("error_kind"))
+            if kind in rejected_kinds:
+                add_rejection(observation, kind, order)
+    # Exchange rejection subtypes are kept in comparison evidence rather than
+    # exchange raw/audit payloads.  That keeps the raw-evidence redaction
+    # contract while making R4's breakdown visible to the runner/API.
+    records = rejection_records if isinstance(rejection_records, (list, tuple)) else ()
+    for record in records:
+        payload = record.get("payload", record) or {}
+        kind = payload.get("exchange_error_kind")
+        order = order_by_client.get(str(payload.get("client_id")))
+        if kind in rejected_kinds and order is not None:
+            add_rejection(record, kind, order)
+    expired_non_fill = [order for order in terminal
+                        if order["status"] in {"canceled", "expired"}
+                        and _decimal(order.get("filled_quantity", 0)) == 0
+                        and (order.get("exchange_order_id") is not None
+                             or order.get("submission_attempts") == 1)]
+    partial = [order for order in attempted
+               if _decimal(order.get("filled_quantity", 0)) > 0
+               and order.get("quantity") is not None
+               and _decimal(order.get("filled_quantity", 0)) < _decimal(order["quantity"])]
+    full = [order for order in attempted
+            if _decimal(order.get("filled_quantity", 0)) > 0
+            and (order.get("quantity") is None
+                 or _decimal(order.get("filled_quantity", 0)) >= _decimal(order["quantity"]))]
+    last_rejection = None
+    if rejection_rows:
+        def rejection_time(item):
+            observation, _kind, order = item
+            observed = observation.get("exchange_updated_ms")
+            try:
+                observed = int(observed) if observed is not None and int(observed) >= 0 else None
+            except (TypeError, ValueError):
+                observed = None
+            observed = observed or observation.get("observed_ms") or order.get("created_ms", 0)
+            return int(observed)
+        last_rejection = max(rejection_rows, key=rejection_time)
+    last_rejection_ms = (rejection_time(last_rejection)
+                         if last_rejection is not None else None)
+    rejection_count = len(rejection_rows)
+    submitted_count = sum(order.get("exchange_order_id") is not None for order in attempted)
+    attempt_count = len(attempted)
+    non_fill_count = len(expired_non_fill)
+    return {
+        "entry_attempts": attempt_count,
+        "entry_submitted": submitted_count,
+        "entry_rejected_order_not_fillable": rejection_count,
+        "entry_expired_non_fill": len(expired_non_fill),
+        "entry_filled": len(full),
+        "entry_partial": len(partial),
+        "rejection_rate": rejection_count / attempt_count if attempt_count else None,
+        # Non-fill is the B-class outcome after an exchange accepted the
+        # order; deterministic post-only rejection has its own rate above.
+        "non_fill_rate": non_fill_count / submitted_count if submitted_count else None,
+        "total_entry_failure_rate": (rejection_count + non_fill_count) / attempt_count
+        if attempt_count else None,
+        "last_rejection_ms": last_rejection_ms,
+        "last_rejection_kind": last_rejection[1] if last_rejection is not None else None,
+        "terminal_entry_count": len(terminal),
+        "unfilled_entry_count": unfilled,
+        "unfilled_entry_ratio": unfilled / len(terminal) if terminal else None,
+        "unfilled_entry_population": "terminal_attempted_entries_not_verified_accepted",
+        "unfilled_entry_definition": "zero_reported_filled_quantity_in_terminal_attempted_entry",
+    }
 
 
 @dataclass(frozen=True)
@@ -453,6 +539,8 @@ class DemoExecutionService:
             if status in ("submitting", "unknown") and not order:
                 self._status["submission_unknown"] = True
                 # A timeout / absent lookup is NEVER permission to submit again.
+                self.store.record_absent_submission_lookup(
+                    client_id, "client_id_lookup_absent", observed_ms=now)
                 return
             intent = self._intent(row)
             expires = int(intent.get("expires_ms", row["created_ms"] + self.config.entry_order_ttl_ms))
@@ -474,7 +562,8 @@ class DemoExecutionService:
 
     def _ownership_conflicts(self, positions, open_orders):
         if self.account_coordinator is not None:
-            return self.account_coordinator.ownership_conflicts(positions, open_orders)
+            return self.account_coordinator.ownership_conflicts(
+                positions, open_orders, namespace=self.config.virtual_account_key)
         net = self._net()
         actual = {}
         conflicts = []
@@ -491,9 +580,56 @@ class DemoExecutionService:
         known = {row["client_id"] for row in self._orders()}
         if any(order.get("client_id") not in known for order in open_orders):
             conflicts.append("unowned_open_order")
-        if any(row["status"] in ("submitting", "unknown") for row in self._orders()):
-            conflicts.append("unknown_submission")
+        for row in self._orders():
+            if row["status"] in ("submitting", "unknown"):
+                conflicts.append("unknown_submission:" + row["pair"])
         return conflicts
+
+    @staticmethod
+    def _conflicts_block_pair(conflicts, pair):
+        """Keep pair-scoped unknown submissions from blocking other pairs."""
+        for conflict in conflicts:
+            if conflict == "unknown_submission":
+                # Legacy/unscoped callers retain conservative account-wide
+                # behavior. Normal runner cycles use the pair-qualified form.
+                return True
+            if conflict.startswith("unknown_submission:"):
+                if conflict.partition(":")[2] == pair:
+                    return True
+                continue
+            return True
+        return False
+
+    def _finalize_absent_submissions(self, now, positions, open_orders, *,
+                                     open_orders_snapshot_available):
+        """Close only old unknowns after fresh exchange snapshots are flat."""
+        if not open_orders_snapshot_available:
+            return False
+        actual = {}
+        unidentifiable_position = False
+        for position in positions:
+            pair = position.get("pair") or position.get("symbol")
+            quantity = _decimal(position.get("signed_qty", 0))
+            if pair:
+                actual[pair] = actual.get(pair, Decimal(0)) + quantity
+            elif quantity:
+                # Do not treat a position with an unrecognized symbol as a
+                # flat account merely because it cannot be keyed locally.
+                unidentifiable_position = True
+        open_clients = {order.get("client_id") for order in open_orders}
+        finalized = False
+        for row in self._orders():
+            if row.get("status") not in {"submitting", "unknown"}:
+                continue
+            pair = row.get("pair")
+            result = self.store.finalize_absent_submission(
+                row["client_id"], observed_ms=now,
+                exchange_position_flat=(not unidentifiable_position
+                                        and not actual.get(pair, Decimal(0))),
+                exchange_open_order_absent=row["client_id"] not in open_clients)
+            if result and result.get("status") == ABSENT_LOOKUP_TERMINAL_STATUS:
+                finalized = True
+        return finalized
 
     def _submit(self, intent, *, protective=False):
         if self.account_coordinator is not None and not protective:
@@ -542,15 +678,19 @@ class DemoExecutionService:
             # Guard/validation failures did not send a request; exchange rejection
             # is definite.  Every other post-claim outcome is ambiguous.
             kind = getattr(exc, "error_kind", "unknown")
+            exchange_kind = getattr(exc, "exchange_error_kind", None)
             if kind in ("validation", "safety", "rejected", "exchange_rejected", "invalid_order"):
                 self.store.record_order_observation(row["client_id"],
                     {"status": "rejected", "updated_ms": self.clock_ms(),
+                     # Keep exchange subtype in the comparison/audit event
+                     # below; the order raw projection remains generic.
                      "raw": {"error_kind": kind, "error_type": type(exc).__name__}})
             else:
                 self.store.mark_submission_unknown(row["client_id"], type(exc).__name__,
                                                     observed_ms=self.clock_ms())
             self._record("submission_error", row["signal_id"],
                          {"client_id": row["client_id"], "error_kind": kind,
+                          "exchange_error_kind": exchange_kind,
                           "error_type": type(exc).__name__, "protective": protective})
             self._status["last_error"] = "Demo submission " + kind
             return row
@@ -693,7 +833,7 @@ class DemoExecutionService:
         denied = None
         if not self._entries_enabled:
             denied = "entries_paused_or_read_only"
-        elif conflicts:
+        elif self._conflicts_block_pair(conflicts, pair):
             denied = "demo_account_ownership_conflict"
         elif self.account_coordinator is not None and self.account_coordinator.entry_denial(
                 self.config.virtual_account_key, pair):
@@ -733,8 +873,30 @@ class DemoExecutionService:
             return
         qty = notional * multiplier / price
         try:
-            prepared = self.adapter.prepare_limit_order(pair, payload["buy_sell"], str(qty), str(price))
+            prepare_maker = getattr(self.adapter, "prepare_maker_limit_order", None)
+            if not callable(prepare_maker):
+                # Isolated adapter doubles from older tests do not expose the
+                # live quote endpoint; production BinanceDemoAdapter always
+                # takes the guarded maker path above.
+                prepared = self.adapter.prepare_limit_order(
+                    pair, payload["buy_sell"], str(qty), str(price))
+                prepared = {**prepared, "reference_price": str(price),
+                            "quote_adjustment_reason": "legacy_adapter"}
+            else:
+                prepared = prepare_maker(pair, payload["buy_sell"], str(qty), str(price))
+            quote_metadata = {key: prepared.get(key) for key in (
+                "reference_price", "bid_price", "ask_price", "quote_timestamp_ms",
+                "quote_request_latency_ms", "quote_adjustment_reason",
+                "quote_adjustment_applied", "limit_deviation_bps", "book_at_submit",
+                "limit_policy")}
             qty, price = _decimal(prepared["quantity"], positive=True), _decimal(prepared["price"], positive=True)
+            if qty * price > _decimal(self.config.max_notional_usdt, positive=True):
+                # A sell quote can move above the paper reference.  Reduce
+                # quantity to the cap rather than changing the maker price.
+                capped = _decimal(self.config.max_notional_usdt, positive=True) / price
+                capped_prepared = self.adapter.prepare_limit_order(
+                    pair, payload["buy_sell"], str(capped), str(price))
+                qty, price = _decimal(capped_prepared["quantity"], positive=True), _decimal(capped_prepared["price"], positive=True)
             if qty * price > _decimal(self.config.max_notional_usdt, positive=True):
                 raise ValueError("quantized order exceeds Demo notional cap")
         except Exception as exc:
@@ -746,7 +908,20 @@ class DemoExecutionService:
             raw={"strategy_signal" if self._direct_signal_source() else "paper_signal": payload,
                  "demo_policy_hash": self.policy_hash,
                  "entry_atr": str(atr), "risk_stop_atr_mult": str(k),
-                 "reference_price": str(price), "submitted_limit_price": str(price),
+                 # ``reference_price`` remains the historical submitted-price
+                 # alias. Preserve the unadjusted signal price separately.
+                 "reference_price": str(price),
+                 "quote_reference_price": quote_metadata.get("reference_price"),
+                 "submitted_limit_price": str(price),
+                 "quote_bid_price": quote_metadata.get("bid_price"),
+                 "quote_ask_price": quote_metadata.get("ask_price"),
+                 "quote_timestamp_ms": quote_metadata.get("quote_timestamp_ms"),
+                 "quote_request_latency_ms": quote_metadata.get("quote_request_latency_ms"),
+                 "quote_adjustment_reason": quote_metadata.get("quote_adjustment_reason"),
+                 "quote_adjustment_applied": quote_metadata.get("quote_adjustment_applied"),
+                 "limit_deviation_bps": quote_metadata.get("limit_deviation_bps"),
+                 "book_at_submit": quote_metadata.get("book_at_submit"),
+                 "limit_policy": quote_metadata.get("limit_policy"),
                  **reference_evidence, "expires_ms": now + self.config.entry_order_ttl_ms,
                  "sizing_modeled_fee_per_side": str(modeled_fee), "sizing_notional_proxy": str(sizing_notional),
                  "actual_fee_unknown_until_fill": True})
@@ -758,6 +933,7 @@ class DemoExecutionService:
                 raise RuntimeError("Demo runner must be explicitly started")
             now = _stamp(self.clock_ms() if now_ms is None else now_ms)
             self._status.update(last_cycle_ms=now, last_error=None, submission_unknown=False,
+                                submission_unknown_terminalized=False,
                                 risk_alert=None, reconciliation_alert=None)
             try:
                 frozen = self.paper.account(self.config.strategy_id)
@@ -802,16 +978,30 @@ class DemoExecutionService:
                 except Exception as exc:
                     entry_snapshot_errors.append("balance_snapshot_unavailable")
                     self._record("snapshot_error", "balance_snapshot", {"error_type": type(exc).__name__}, now=now)
+                open_orders_snapshot_available = True
                 try:
                     open_orders = [order for order in self.adapter.fetch_open_orders()
                                    if _status(order["status"]) not in TERMINAL]
                 except Exception as exc:
                     open_orders = []
+                    open_orders_snapshot_available = False
                     entry_snapshot_errors.append("open_orders_snapshot_unavailable")
                     self._record("snapshot_error", "open_orders_snapshot", {"error_type": type(exc).__name__}, now=now)
+                terminalized = self._finalize_absent_submissions(
+                    now, positions, open_orders,
+                    open_orders_snapshot_available=open_orders_snapshot_available)
                 conflicts = self._ownership_conflicts(positions, open_orders)
                 conflicts.extend(entry_snapshot_errors)
                 self._status["ownership_conflicts"] = conflicts
+                has_unknown = any(conflict == "unknown_submission"
+                                  or conflict.startswith("unknown_submission:")
+                                  for conflict in conflicts)
+                self._status["alert"] = "blocked_unknown_exposure" if has_unknown else None
+                blocked_pairs = sorted({conflict.partition(":")[2]
+                                       for conflict in conflicts
+                                       if conflict.startswith("unknown_submission:")
+                                       and conflict.partition(":")[2]})
+                self._status["blocked_pairs"] = blocked_pairs
                 # Conflicting unrelated orders cannot suppress owned protection.
                 self._protect(now)
                 checkpoint_ms = now
@@ -826,11 +1016,27 @@ class DemoExecutionService:
                              {"last_sequence_id": self.last_sequence, "entries_enabled": self._entries_enabled}, now=checkpoint_ms)
                 net = self._net()
                 orders = self._orders()
+                terminalized = terminalized or any(
+                    row.get("status") == ABSENT_LOOKUP_TERMINAL_STATUS for row in orders)
+                scoped_only_unknown = bool(conflicts) and bool(blocked_pairs) and all(
+                    conflict.startswith("unknown_submission:") for conflict in conflicts)
+                next_status = ("blocked_unknown_exposure" if conflicts and not scoped_only_unknown else
+                               "observing" if self._entries_enabled else
+                               "paused_protecting" if net else "paused_flat")
+                rejection_records = []
+                list_comparisons = getattr(self.store, "list_comparisons", None)
+                if callable(list_comparisons):
+                    try:
+                        rejection_records = list_comparisons(stage="submission_error", limit=1000)
+                    except Exception:
+                        rejection_records = []
                 self._status.update(owned_positions={pair: str(qty) for pair, qty in net.items()},
-                    last_sequence_id=self.last_sequence, **attempted_entry_outcomes(orders),
-                    status=("blocked_unknown_exposure" if conflicts else
-                            "observing" if self._entries_enabled else
-                            "paused_protecting" if net else "paused_flat"))
+                    last_sequence_id=self.last_sequence,
+                    **attempted_entry_outcomes(orders, rejection_records),
+                    status=next_status)
+                self._status["submission_unknown_terminalized"] = terminalized
+                if terminalized:
+                    self._status["reconciliation_alert"] = "submission_unknown_terminalized"
                 self._status["round_trips"] = derive_round_trips(self.store.runner_fills(), orders)
                 self._status["trading_pnl_excludes_funding"] = True
                 if self.account_coordinator is not None:

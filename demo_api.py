@@ -243,6 +243,7 @@ class DemoApi:
         has_exposure = any(Decimal(value) != 0 for value in self.demo_store.net_fill_positions().values())
         return {**status, "state": state, "tradingEnabled": entries,
                 "workerRunning": worker, "hasExposure": has_exposure,
+                "blockedPairs": status.get("blocked_pairs", []),
                 "accountLocked": bool(status.get("accountLockOwned") or worker or pending or has_exposure),
                 "lastError": status.get("controllerError") or status.get("last_error")}
 
@@ -259,7 +260,18 @@ class DemoApi:
                 "unfilledEntryRatio": native.get("unfilled_entry_ratio"),
                 "partiallyFilledOrderCount": counts.get("partially_filled", 0),
                 "rejectedOrderCount": counts.get("rejected", 0),
-                "medianLatencyMs": native.get("median_latency_ms")}
+                "medianLatencyMs": native.get("median_latency_ms"),
+                "entryAttempts": native.get("entry_attempts"),
+                "entrySubmitted": native.get("entry_submitted"),
+                "entryRejectedOrderNotFillable": native.get("entry_rejected_order_not_fillable"),
+                "entryExpiredNonFill": native.get("entry_expired_non_fill"),
+                "entryFilled": native.get("entry_filled"),
+                "entryPartial": native.get("entry_partial"),
+                "rejectionRate": native.get("rejection_rate"),
+                "nonFillRate": native.get("non_fill_rate"),
+                "totalEntryFailureRate": native.get("total_entry_failure_rate"),
+                "lastRejectionMs": native.get("last_rejection_ms"),
+                "lastRejectionKind": native.get("last_rejection_kind")}
 
     def _strategy_summaries(self, limit):
         from demo_execution_service import derive_round_trips

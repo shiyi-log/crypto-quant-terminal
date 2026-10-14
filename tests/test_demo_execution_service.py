@@ -99,6 +99,34 @@ class ExecutionEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["unfilled_entry_ratio"], 2 / 3)
         self.assertEqual(evidence["unfilled_entry_population"], "terminal_attempted_entries_not_verified_accepted")
 
+    def test_visible_entry_fillability_metrics_classify_rejections_and_nonfills(self):
+        def order(status, attempts=1, filled="0", quantity="1", exchange_id=None,
+                  reduce=False, audit=None):
+            return {"status": status, "submission_attempts": attempts,
+                    "filled_quantity": filled, "quantity": quantity,
+                    "exchange_order_id": exchange_id, "reduce_only": reduce,
+                    "created_ms": 10, "audit_observations": audit or []}
+
+        metrics = attempted_entry_outcomes([
+            order("rejected", audit=[{"raw": {"error_kind": "OrderNotFillable"},
+                                      "observed_ms": 101}]),
+            order("canceled", exchange_id="cancelled", filled="0"),
+            order("filled", exchange_id="filled", filled="1"),
+            order("partially_filled", exchange_id="partial", filled=".25", quantity="1"),
+            order("intent", attempts=0),
+        ])
+        self.assertEqual(metrics["entry_attempts"], 4)
+        self.assertEqual(metrics["entry_submitted"], 3)
+        self.assertEqual(metrics["entry_rejected_order_not_fillable"], 1)
+        self.assertEqual(metrics["entry_expired_non_fill"], 1)
+        self.assertEqual(metrics["entry_filled"], 1)
+        self.assertEqual(metrics["entry_partial"], 1)
+        self.assertEqual(metrics["rejection_rate"], .25)
+        self.assertEqual(metrics["non_fill_rate"], 1 / 3)
+        self.assertEqual(metrics["total_entry_failure_rate"], .5)
+        self.assertEqual(metrics["last_rejection_ms"], 101)
+        self.assertEqual(metrics["last_rejection_kind"], "OrderNotFillable")
+
     def test_candle_account_and_five_second_poll_do_not_test_seconds_hypothesis(self):
         service = DemoExecutionService(Mock(), Mock(), Mock(), DemoRunnerConfig("paper"))
         self.assertEqual(service.config.poll_interval_ms, 5000)

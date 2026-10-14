@@ -39,6 +39,7 @@ class ExchangeStub:
         self.now = NOW
         self.orders, self.fills, self.calls = {}, [], []
         self.timeout_once = False
+        self.order_not_fillable_once = False
         self.visible_fill_limit = None
         self.balance_error = False
         self.server_trade_page_size = None
@@ -72,6 +73,10 @@ class ExchangeStub:
         self.calls.append((path, api, method, copy.deepcopy(params)))
         if path == "exchangeInfo":
             return self._info()
+        if path == "ticker/bookTicker":
+            symbol = params.get("symbol", SYMBOL)
+            return {"symbol": symbol, "bidPrice": "60001.00", "askPrice": "60002.00",
+                    "bidQty": "100", "askQty": "100", "time": self.now}
         if path == "positionSide/dual":
             return {"dualSidePosition": self.hedged}
         if path == "symbolConfig":
@@ -107,6 +112,9 @@ class ExchangeStub:
             return copy.deepcopy(rows[:params.get("limit", 1000)])
         if path == "order" and method == "POST":
             client_id = params["newClientOrderId"]
+            if self.order_not_fillable_once:
+                self.order_not_fillable_once = False
+                raise ccxt.OrderNotFillable('Binance {"code":-5022,"msg":"Post Only order will be rejected"}')
             self.orders[client_id] = {"symbol": SYMBOL, "orderId": len(self.orders) + 100,
                 "clientOrderId": client_id, "side": params["side"], "type": params["type"],
                 "status": "NEW", "origQty": params["quantity"], "executedQty": "0",
@@ -438,6 +446,23 @@ class DemoContractIntegrationTests(unittest.TestCase):
         self.assertEqual(self.ledger.runner_orders()[0]["status"], "open")
         self.assertEqual(sum(path == "order" and verb == "POST" for path, _, verb, _ in self.client.calls), 1)
 
+    def test_order_not_fillable_is_rejected_without_unknown_exposure_block(self):
+        self.service.start()
+        self.clock += 1000
+        self.client.now = self.clock
+        self.paper.signal(self.clock)
+        self.client.order_not_fillable_once = True
+
+        result = self.service.cycle()
+
+        self.assertEqual(result["last_error"], "Demo submission exchange_rejected")
+        row = self.ledger.runner_orders()[0]
+        self.assertEqual(row["status"], "rejected")
+        self.assertNotIn("unknown_submission", result["ownership_conflicts"])
+        self.assertEqual(result["status"], "observing")
+        errors = self.ledger.list_comparisons(stage="submission_error")
+        self.assertEqual(errors[-1]["payload"]["error_kind"], "exchange_rejected")
+
     def test_closed_foreign_order_is_not_an_open_ownership_conflict(self):
         self.client.orders["foreign-old"] = {"symbol": SYMBOL, "orderId": 30,
             "clientOrderId": "foreign-old", "side": "BUY", "type": "LIMIT", "status": "FILLED",
@@ -601,7 +626,17 @@ class DemoContractIntegrationTests(unittest.TestCase):
         evidence = row["intent_payload"]
         self.assertEqual(evidence["signal_reference_price"], "60000.19")
         self.assertEqual(evidence["submitted_limit_price"], "60000.10")
-        self.assertEqual(evidence["reference_price"], evidence["submitted_limit_price"])
+        # ``reference_price`` retains its historical submitted-price alias;
+        # the unadjusted paper price is carried separately for quote audit.
+        self.assertEqual(evidence["reference_price"], "60000.10")
+        self.assertEqual(evidence["quote_reference_price"], "60000.19")
+        self.assertEqual(evidence["quote_bid_price"], "60001.00")
+        self.assertEqual(evidence["quote_ask_price"], "60002.00")
+        self.assertEqual(evidence["quote_adjustment_reason"], "reference_already_maker")
+        self.assertEqual(evidence["limit_deviation_bps"], "0.015")
+        self.assertEqual(evidence["book_at_submit"], {
+            "bid": "60001.00", "ask": "60002.00", "observed_ms": self.clock})
+        self.assertEqual(evidence["limit_policy"], "ref_capped_by_book_maker_price_v1")
         self.assertEqual(evidence["reference_timestamp_ms"], NOW)
         self.assertEqual(evidence["reference_source"], "paper_closed_candle_from_live_market")
 

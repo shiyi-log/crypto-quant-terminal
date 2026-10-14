@@ -9,7 +9,7 @@ from demo_execution_service import derive_round_trips
 ENVIRONMENT = "binance_demo"
 ENDPOINT = "demo-fapi.binance.com"
 SCOPE = "selected_candle_strategy_execution_only"
-TERMINAL = {"filled", "canceled", "expired", "rejected"}
+TERMINAL = {"filled", "canceled", "expired", "rejected", "abandoned_after_absent_lookup"}
 
 
 class DemoEvidenceError(ValueError):

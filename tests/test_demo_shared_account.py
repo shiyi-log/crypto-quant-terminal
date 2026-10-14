@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import unittest
 
 from demo_shared_account import SharedDemoAccount
+from demo_execution_service import DemoExecutionService
 
 BTC, ETH = "BTC/USDT:USDT", "ETH/USDT:USDT"
 
@@ -113,6 +114,24 @@ class SharedAccountTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "still owns"):
             self.shared.unregister("s35")
         self.assertFalse(self.shared.status()["exchange_position_independence"])
+
+    def test_unknown_submission_can_be_scoped_to_member_and_pair(self):
+        self.history.orders = [
+            order("s35", pair=BTC, status="unknown", reported="0", recorded="0"),
+            order("s07", pair=ETH, status="unknown", reported="0", recorded="0"),
+        ]
+        account_wide = self.shared.ownership_conflicts([], [])
+        self.assertIn("unknown_submission", account_wide)
+        s35 = self.shared.ownership_conflicts([], [], namespace="s35")
+        s07 = self.shared.ownership_conflicts([], [], namespace="s07")
+        self.assertEqual(s35, ["unknown_submission:" + BTC])
+        self.assertEqual(s07, ["unknown_submission:" + ETH])
+
+    def test_unknown_submission_scope_does_not_block_other_pair(self):
+        self.assertFalse(DemoExecutionService._conflicts_block_pair(
+            ["unknown_submission:" + BTC], ETH))
+        self.assertTrue(DemoExecutionService._conflicts_block_pair(
+            ["unknown_submission:" + BTC], BTC))
 
 
 if __name__ == "__main__":

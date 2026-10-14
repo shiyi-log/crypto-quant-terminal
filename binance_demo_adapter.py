@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 ADAPTER_VERSION = "binance-demo-usdm-v1"
 SUPPORTED_CCXT_VERSION = "4.5.85"
 DEMO_HOST = "demo-fapi.binance.com"
+MAKER_LIMIT_POLICY = "ref_capped_by_book_maker_price_v1"
 ALLOWED_PAIRS = ("BTC/USDT:USDT", "ETH/USDT:USDT", "TRX/USDT:USDT")
 PAIR_SYMBOLS = {pair: pair.split("/")[0] + "USDT" for pair in ALLOWED_PAIRS}
 SYMBOL_PAIRS = {symbol: pair for pair, symbol in PAIR_SYMBOLS.items()}
@@ -484,6 +485,65 @@ class BinanceDemoAdapter:
         quantity_text, price_text = self.validate_order(pair, qty, px)
         return {"quantity": quantity_text, "price": price_text}
 
+    def prepare_maker_limit_order(self, pair: str, side: str, quantity: Any,
+                                  reference_price: Any) -> dict[str, Any]:
+        """Prepare a resting GTX quote from a fresh top-of-book observation.
+
+        The paper/reference price remains evidence only.  The submitted price
+        is moved one tick inside the current book whenever the reference would
+        cross the spread, preserving post-only semantics without using a taker
+        order.
+        """
+        book = self.fetch_book_ticker(pair)
+        symbol = _symbol(pair)
+        if symbol not in self._market_rules:
+            self.fetch_exchange_info()
+        filters = {row["filterType"]: row for row in self._market_rules[symbol]["filters"]}
+        price_filter = filters.get("PRICE_FILTER")
+        if price_filter is None:
+            raise DemoSafetyError("Demo price precision unavailable")
+        tick = _decimal(price_filter["tickSize"], positive=True)
+        reference = _decimal(reference_price, positive=True)
+        bid, ask = _decimal(book["bid_price"], positive=True), _decimal(book["ask_price"], positive=True)
+        if side == "buy":
+            maker_limit = min(reference, bid - tick)
+            adjusted = reference > bid - tick
+        elif side == "sell":
+            maker_limit = max(reference, ask + tick)
+            adjusted = reference < ask + tick
+        else:
+            raise DemoSafetyError("invalid order side")
+        if maker_limit <= 0:
+            raise DemoSafetyError("book does not provide a valid maker price")
+        prepared = self.prepare_limit_order(pair, side, quantity, maker_limit)
+        submitted = _decimal(prepared["price"], positive=True)
+        # Measure the actual, exchange-quantized quote against the paper
+        # reference.  Keep it as a decimal string for lossless audit storage.
+        deviation = (((reference - submitted) / reference) * Decimal("10000")).quantize(
+            Decimal("0.000001"))
+        return {
+            **prepared,
+            "reference_price": format(reference, "f"),
+            "bid_price": book["bid_price"],
+            "ask_price": book["ask_price"],
+            "quote_timestamp_ms": book.get("timestamp_ms"),
+            "quote_request_latency_ms": book.get("request_latency_ms"),
+            "quote_adjustment_reason": "inside_top_of_book" if adjusted else "reference_already_maker",
+            "quote_adjustment_applied": adjusted,
+            "limit_deviation_bps": format(deviation.normalize(), "f"),
+            "book_at_submit": {
+                "bid": book["bid_price"],
+                "ask": book["ask_price"],
+                "observed_ms": book.get("timestamp_ms"),
+            },
+            "limit_policy": MAKER_LIMIT_POLICY,
+        }
+
+    def prepare_gtx_entry(self, pair: str, side: str, quantity: Any,
+                          reference_price: Any) -> dict[str, Any]:
+        """Compatibility name for the guarded maker-entry preparation path."""
+        return self.prepare_maker_limit_order(pair, side, quantity, reference_price)
+
     def fetch_orders(self, pair: str, *, since_ms: int | None = None,
                      limit: int = 1000) -> list[dict]:
         params = {"symbol": _symbol(pair), "limit": _limit(limit)}
@@ -698,7 +758,12 @@ class BinanceDemoAdapter:
             kind = exc.error_kind if isinstance(exc, DemoRequestError) else type(exc).__name__
             latency = exc.latency_ms if isinstance(exc, DemoRequestError) else 0
             code = exc.exchange_code if isinstance(exc, DemoRequestError) else None
-            definite_type = kind in {"InvalidOrder", "InsufficientFunds", "BadSymbol",
+            # Post-only matching failures are deterministic exchange
+            # rejections: the order was not accepted as a resting order.
+            # Keep the client id permanently claimed, but do not turn this
+            # into an exposure-unknown lock that blocks every session.
+            definite_type = kind in {"InvalidOrder", "OrderNotFillable",
+                                     "OrderImmediatelyFillable", "InsufficientFunds", "BadSymbol",
                                      "AuthenticationError", "PermissionDenied", "AccountSuspended",
                                      "ArgumentsRequired", "BadRequest", "OperationRejected"}
             # A duplicate-ID error can mean a previous attempt already exists;

@@ -18,8 +18,14 @@ from data_store import _decimal, _serializable, _timestamp
 
 ENVIRONMENT = "binance_demo"
 ENDPOINT_HOST = "demo-fapi.binance.com"
-TERMINAL_STATUSES = frozenset({"filled", "canceled", "rejected", "expired"})
+TERMINAL_STATUSES = frozenset({"filled", "canceled", "rejected", "expired",
+                               "abandoned_after_absent_lookup"})
 PENDING_STATUSES = ("intent", "submitting", "unknown", "open", "partially_filled")
+ABSENT_LOOKUP_TERMINAL_STATUS = "abandoned_after_absent_lookup"
+# A missing client-id lookup is ambiguous. Keep the reservation for a
+# conservative window before releasing the permanent unknown-submission gate.
+ABSENT_LOOKUP_MIN_ATTEMPTS = 3
+ABSENT_LOOKUP_MIN_AGE_MS = 5 * 60 * 1000
 COMPARISON_VIEWS = frozenset({"audit", "signals"})
 ROUTINE_COMPARISON_STAGES = ("binding", "runner_checkpoint", "actual_execution_config")
 MAX_PAYLOAD_BYTES = 262_144
@@ -296,6 +302,101 @@ class DemoStore:
                              "updated_at=CURRENT_TIMESTAMP WHERE environment=%s AND virtual_account_key=%s AND client_id=%s",
                              (self.store._json([evidence]), *self._identity(), client_id))
         return self.get_order(client_id)
+
+    def record_absent_submission_lookup(self, client_id, reason, observed_ms=None):
+        """Record a missing exchange lookup and eventually close its local state.
+
+        An absent lookup never proves that an order was rejected.  The local
+        terminal status is deliberately distinct from Binance terminal states,
+        carries every lookup count in the immutable audit trail, and never
+        creates an exchange order id or fill.
+        """
+        observed_ms = _timestamp(int(time.time() * 1000) if observed_ms is None else observed_ms)
+        with self.store._connection() as conn:
+            row = self._order(conn, client_id, lock=True)
+            if row is None:
+                raise ValueError("unknown client id")
+            if row["status"] not in {"submitting", "unknown"}:
+                return _serializable(row)
+            history = row.get("audit_observations") or []
+            prior = [item for item in history
+                     if item.get("kind") == "submission_lookup_absent"]
+            count = len(prior) + 1
+            claimed = row.get("submission_claimed_ms")
+            base_ms = int(claimed if claimed is not None else row["created_ms"])
+            age_ms = max(0, observed_ms - base_ms)
+            evidence = _payload({
+                "kind": "submission_lookup_absent",
+                "reason": str(reason),
+                "observed_ms": observed_ms,
+                "absent_lookup_count": count,
+                "age_ms_since_submission_claim": age_ms,
+                "exchange_status_observed": False,
+                "terminalized": False,
+                "terminal_status": "unknown",
+            })
+            evidence["observation_id"] = _digest(evidence)
+            conn.execute("UPDATE demo_orders SET status='unknown',audit_observations=audit_observations || %s,"
+                         "updated_at=CURRENT_TIMESTAMP WHERE environment=%s AND virtual_account_key=%s "
+                         "AND client_id=%s AND status IN ('submitting','unknown')",
+                         (self.store._json([evidence]), *self._identity(), client_id))
+            result = self._order(conn, client_id)
+        return _serializable(result)
+
+    def finalize_absent_submission(self, client_id, observed_ms=None, *,
+                                   exchange_position_flat=False,
+                                   exchange_open_order_absent=False):
+        """Atomically close an old, unfilled absent lookup after safe checks.
+
+        The exchange facts are supplied by the just-completed position/open
+        order snapshots. Local fill facts are re-read under the row lock, so a
+        late projection cannot be mistaken for an empty submission.
+        """
+        observed_ms = _timestamp(int(time.time() * 1000) if observed_ms is None else observed_ms)
+        with self.store._connection() as conn:
+            row = self._order(conn, client_id, lock=True)
+            if row is None or row["status"] not in {"submitting", "unknown"}:
+                return _serializable(row) if row is not None else None
+            history = row.get("audit_observations") or []
+            absent = [item for item in history
+                      if item.get("kind") == "submission_lookup_absent"]
+            claimed = row.get("submission_claimed_ms")
+            base_ms = int(claimed if claimed is not None else row["created_ms"])
+            age_ms = max(0, observed_ms - base_ms)
+            fill_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM demo_fills WHERE environment=%s "
+                "AND virtual_account_key=%s AND client_id=%s",
+                (*self._identity(), client_id)).fetchone()["n"]
+            safe = (len(absent) >= ABSENT_LOOKUP_MIN_ATTEMPTS
+                    and age_ms >= ABSENT_LOOKUP_MIN_AGE_MS
+                    and _decimal(row["filled_quantity"], "filled_quantity") == 0
+                    and not row["exchange_order_id"]
+                    and int(fill_count) == 0
+                    and exchange_position_flat
+                    and exchange_open_order_absent)
+            if not safe:
+                return _serializable(row)
+            evidence = _payload({
+                "kind": "submission_unknown_terminalized",
+                "reason": "absent_lookup_threshold_reached",
+                "observed_ms": observed_ms,
+                "absent_lookup_count": len(absent),
+                "age_ms_since_submission_claim": age_ms,
+                "filled_quantity": "0",
+                "local_fill_count": int(fill_count),
+                "exchange_position_flat": True,
+                "exchange_open_order_absent": True,
+                "exchange_status_observed": False,
+                "terminal_status": ABSENT_LOOKUP_TERMINAL_STATUS,
+            })
+            evidence["observation_id"] = _digest(evidence)
+            conn.execute("UPDATE demo_orders SET status=%s,audit_observations=audit_observations || %s,"
+                         "updated_at=CURRENT_TIMESTAMP WHERE environment=%s AND virtual_account_key=%s "
+                         "AND client_id=%s AND status IN ('submitting','unknown')",
+                         (ABSENT_LOOKUP_TERMINAL_STATUS, self.store._json([evidence]),
+                          *self._identity(), client_id))
+            result = self._order(conn, client_id)
+        return _serializable(result)
 
     def append_reconciliation(self, client_id, payload, observed_ms=None):
         """Append a lookup/error finding without rewriting any exchange facts."""
@@ -600,6 +701,8 @@ class DemoStore:
         with self.store._connection() as conn:
             orders = conn.execute("SELECT status,COUNT(*) AS count FROM demo_orders WHERE environment=%s AND "
                                   "virtual_account_key=%s GROUP BY status", self._identity()).fetchall()
+            order_rows = conn.execute("SELECT * FROM demo_orders WHERE environment=%s AND virtual_account_key=%s",
+                                      self._identity()).fetchall()
             fees = conn.execute("SELECT commission_asset,COUNT(*) AS fill_count,"
                                 "CASE WHEN commission_asset IS NOT NULL AND COUNT(commission)=COUNT(*) AND NOT BOOL_OR(commission_conflict) THEN SUM(commission) END AS commission,"
                                 "CASE WHEN commission_asset IS NOT NULL THEN SUM(commission) FILTER (WHERE NOT commission_conflict) END AS known_commission_subtotal,"
@@ -609,21 +712,23 @@ class DemoStore:
                                 "COUNT(*) FILTER (WHERE is_maker IS NULL) AS unknown_maker_count FROM demo_fills "
                                 "WHERE environment=%s AND virtual_account_key=%s GROUP BY commission_asset ORDER BY commission_asset",
                                 self._identity()).fetchall()
-            entry_counts = conn.execute("SELECT COUNT(*) FILTER (WHERE NOT reduce_only AND status IN "
-                                        "('filled','canceled','rejected','expired') AND (submission_attempts=1 OR exchange_order_id IS NOT NULL)) AS terminal_entry_count,"
-                                        "COUNT(*) FILTER (WHERE NOT reduce_only AND status IN "
-                                        "('filled','canceled','rejected','expired') AND filled_quantity=0 AND "
-                                        "(submission_attempts=1 OR exchange_order_id IS NOT NULL)) AS unfilled_entry_count "
-                                        "FROM demo_orders WHERE environment=%s AND virtual_account_key=%s", self._identity()).fetchone()
             latencies = conn.execute("SELECT audit_observations FROM demo_orders WHERE environment=%s AND virtual_account_key=%s",
                                      self._identity()).fetchall()
+            rejection_records = conn.execute(
+                "SELECT observed_ms,payload FROM demo_signal_comparisons WHERE environment=%s "
+                "AND virtual_account_key=%s AND stage='submission_error'",
+                self._identity()).fetchall()
         known_latencies = [float(observation["request_latency_ms"]) for row in latencies
                            for observation in row["audit_observations"] if observation.get("request_latency_ms") is not None]
         counts = {row["status"]: row["count"] for row in orders}
-        terminal, unfilled = entry_counts["terminal_entry_count"], entry_counts["unfilled_entry_count"]
         missing_amount = sum(row["unknown_commission_count"] for row in fees)
         missing_asset = sum(row["unknown_commission_asset_count"] for row in fees)
         conflicts = sum(row["commission_conflict_count"] for row in fees)
+        # Keep the runner status and account-level metrics on one population
+        # definition. Import lazily to avoid a module import cycle at startup.
+        from demo_execution_service import attempted_entry_outcomes
+        entry_metrics = attempted_entry_outcomes(_serializable(order_rows),
+                                                 _serializable(rejection_records))
         return {"environment": self.environment, "virtual_account_key": self.virtual_account_key,
                 "orders_by_status": counts,
                 "actual_commission_by_asset": _serializable(fees),
@@ -632,8 +737,7 @@ class DemoStore:
                 "commission_conflict_count": conflicts,
                 "commission_complete": bool(fees) and missing_amount == 0 and missing_asset == 0 and conflicts == 0,
                 "median_latency_ms": statistics.median(known_latencies) if known_latencies else None,
-                "terminal_entry_count": terminal, "unfilled_entry_count": unfilled,
-                "unfilled_entry_ratio": unfilled / terminal if terminal else None,
+                **entry_metrics,
                 "unresolved_order_count": sum(counts.get(status, 0) for status in PENDING_STATUSES),
                 "has_exposure": any(_number(quantity, "net quantity") != 0 for quantity in self.net_fill_positions().values()),
                 "execution_scope": "Demo results do not prove live execution or live profitability"}

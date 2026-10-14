@@ -439,6 +439,47 @@ class DemoAdapterTests(unittest.TestCase):
             self.adapter.prepare_limit_order(BTC, "buy", "0.0009", "60000.19")
         self.assertFalse(any(call[2] == "POST" for call in self.client.calls))
 
+    def test_prepare_gtx_entry_moves_buy_reference_below_live_bid_by_one_tick(self):
+        self.client.responses[("ticker/bookTicker", "GET")] = book_ticker(
+            bidPrice="60000.10", askPrice="60000.20", time=123456789)
+        result = self.adapter.prepare_maker_limit_order(BTC, "buy", "0.010", "60000.30")
+        self.assertEqual(result["quantity"], "0.010")
+        self.assertEqual(result["price"], "60000.00")
+        self.assertEqual(result["reference_price"], "60000.30")
+        self.assertEqual(result["bid_price"], "60000.10")
+        self.assertEqual(result["ask_price"], "60000.20")
+        self.assertEqual(result["quote_timestamp_ms"], 123456789)
+        self.assertEqual(result["quote_adjustment_reason"], "inside_top_of_book")
+        self.assertIs(result["quote_adjustment_applied"], True)
+        self.assertEqual(result["limit_deviation_bps"], "0.05")
+        self.assertEqual(result["book_at_submit"], {
+            "bid": "60000.10", "ask": "60000.20", "observed_ms": 123456789})
+        self.assertEqual(result["limit_policy"], "ref_capped_by_book_maker_price_v1")
+
+    def test_prepare_gtx_entry_moves_sell_reference_above_live_ask_by_one_tick(self):
+        self.client.responses[("ticker/bookTicker", "GET")] = book_ticker(
+            bidPrice="60000.10", askPrice="60000.20", time=123456789)
+        result = self.adapter.prepare_maker_limit_order(BTC, "sell", "0.010", "60000.00")
+        self.assertEqual(result["quantity"], "0.010")
+        self.assertEqual(result["price"], "60000.30")
+        self.assertEqual(result["reference_price"], "60000.00")
+        self.assertEqual(result["bid_price"], "60000.10")
+        self.assertEqual(result["ask_price"], "60000.20")
+        self.assertEqual(result["quote_timestamp_ms"], 123456789)
+        self.assertEqual(result["quote_adjustment_reason"], "inside_top_of_book")
+        self.assertIs(result["quote_adjustment_applied"], True)
+        self.assertEqual(result["limit_deviation_bps"], "-0.05")
+        self.assertEqual(result["book_at_submit"], {
+            "bid": "60000.10", "ask": "60000.20", "observed_ms": 123456789})
+        self.assertEqual(result["limit_policy"], "ref_capped_by_book_maker_price_v1")
+
+    def test_prepare_gtx_entry_fails_closed_when_live_book_is_invalid(self):
+        crossed = book_ticker(bidPrice="60000.20", askPrice="60000.10", time=123456789)
+        self.client.responses[("ticker/bookTicker", "GET")] = crossed
+        with self.assertRaises(DemoSafetyError):
+            self.adapter.prepare_maker_limit_order(BTC, "buy", "0.010", "60000.10")
+        self.assertFalse(any(call[0] == "order" for call in self.client.calls))
+
     def test_spot_and_other_symbols_are_rejected(self):
         for pair in ["BTC/USDT", "SOL/USDT:USDT", "BTC/USD:BTC"]:
             with self.subTest(pair=pair), self.assertRaises(DemoSafetyError):
@@ -506,6 +547,18 @@ class DemoAdapterTests(unittest.TestCase):
         self.assertEqual(caught.exception.exchange_error_kind, "InvalidOrder")
         self.assertEqual(caught.exception.exchange_code, -5022)
         with self.assertRaises(DemoSafetyError):
+            self.submit()
+
+    def test_order_not_fillable_is_definite_post_only_rejection(self):
+        self.client.responses[("order", "POST")] = ccxt.OrderNotFillable(
+            'Binance {"code":-5022,"msg":"Post Only order will be rejected"}')
+        with self.assertRaises(DemoExchangeRejected) as caught:
+            self.submit()
+        self.assertEqual(caught.exception.error_kind, "exchange_rejected")
+        self.assertEqual(caught.exception.exchange_error_kind, "OrderNotFillable")
+        self.assertEqual(caught.exception.exchange_code, -5022)
+        self.assertEqual(self.adapter._attempts[ORDER_ID], "rejected")
+        with self.assertRaisesRegex(DemoSafetyError, "already attempted"):
             self.submit()
 
     def test_duplicate_exchange_rejection_does_not_hide_existing_exposure(self):

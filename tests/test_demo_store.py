@@ -159,6 +159,24 @@ class DemoStoreIntegrationTests(unittest.TestCase):
         self.assertEqual(row["status"], "open")
         self.assertEqual(row["intent_payload"]["expires_ms"], 990000)
 
+    def test_absent_unknown_terminalizes_only_after_threshold_and_flat_snapshots(self):
+        self.reserve()
+        self.assertTrue(self.demo.claim_submission("client_1", 1000))
+        self.demo.mark_submission_unknown("client_1", "timeout", 1001)
+        for observed in (2000, 3000, 4000):
+            self.demo.record_absent_submission_lookup("client_1", "OrderNotFound", observed)
+        still_unknown = self.demo.finalize_absent_submission(
+            "client_1", observed_ms=301001,
+            exchange_position_flat=False, exchange_open_order_absent=True)
+        self.assertEqual(still_unknown["status"], "unknown")
+        finalized = self.demo.finalize_absent_submission(
+            "client_1", observed_ms=301001,
+            exchange_position_flat=True, exchange_open_order_absent=True)
+        self.assertEqual(finalized["status"], "abandoned_after_absent_lookup")
+        self.assertEqual(finalized["filled_quantity"], "0E-18")
+        self.assertEqual(finalized["audit_observations"][-1]["kind"],
+                         "submission_unknown_terminalized")
+
     def test_order_observations_validate_echoed_identity(self):
         self.reserve()
         for change in ({"clientOrderId": "other"}, {"symbol": "ETHUSDT"}, {"side": "SELL"},

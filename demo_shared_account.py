@@ -67,26 +67,38 @@ class SharedDemoAccount:
         return {"orders": orders, "positions": positions, "owners": owners, "gaps": gaps,
                 "identity_conflicts": identity_conflicts}
 
-    def ownership_conflicts(self, positions, open_orders):
+    def ownership_conflicts(self, positions, open_orders, *, namespace=None):
+        """Return account conflicts, optionally scoped to one member.
+
+        Attach/recovery checks call this without ``namespace`` and retain the
+        account-wide view.  A running member supplies its namespace so an
+        ambiguous submission in another member cannot block unrelated pairs.
+        The pair is included in the scoped conflict because one-way ownership
+        is enforced per pair, not across the whole account.
+        """
+        if namespace is not None and namespace not in self._members:
+            raise ValueError("shared namespace not registered")
         with self.lock:
             state = self._state()
             conflicts, actual, expected = [], {}, {}
             known, known_orders = {}, {}
             exchange_ids = {}
             for row in state["orders"]:
-                namespace, client = row["virtual_account_key"], row["client_id"]
-                if client in known and known[client] != namespace:
+                row_namespace, client = row["virtual_account_key"], row["client_id"]
+                if client in known and known[client] != row_namespace:
                     conflicts.append("shared_client_identity_collision")
-                known[client] = namespace
+                known[client] = row_namespace
                 known_orders[client] = row
                 exchange_id = row.get("exchange_order_id")
                 if exchange_id is not None:
                     key = (row["pair"], str(exchange_id))
-                    if key in exchange_ids and exchange_ids[key] != (namespace, client):
+                    if key in exchange_ids and exchange_ids[key] != (row_namespace, client):
                         conflicts.append("shared_exchange_identity_collision")
-                    exchange_ids[key] = (namespace, client)
-                if row["status"] in {"submitting", "unknown"}:
-                    conflicts.append("unknown_submission")
+                    exchange_ids[key] = (row_namespace, client)
+                if (row["status"] in {"submitting", "unknown"}
+                        and (namespace is None or row_namespace == namespace)):
+                    conflicts.append("unknown_submission" if namespace is None
+                                     else "unknown_submission:" + row["pair"])
             for pair, owners in state["owners"].items():
                 if len(owners) > 1:
                     conflicts.append("shared_pair_multiple_owners:" + pair)

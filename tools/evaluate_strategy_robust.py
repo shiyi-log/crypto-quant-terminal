@@ -81,6 +81,22 @@ def _normal_p(t_stat: float) -> float:
     return math.erfc(abs(t_stat) / math.sqrt(2))
 
 
+def _t_p(t_stat: float, df: int) -> float:
+    """双侧 Student-t 尾概率。
+
+    ⚠️ Round 266：原实现用【正态近似】(_normal_p)，在小样本下【系统性低估 p 值】
+    （对 n=16..60 的族实测低估 4–10 倍）。正态近似只在 n→∞ 时正确。
+    优先用 scipy；不可用时退回正态近似并【明确标注】。
+    """
+    if df <= 0:
+        return _normal_p(t_stat)
+    try:
+        from scipy import stats as _st
+        return float(2 * _st.t.sf(abs(t_stat), df))
+    except Exception:
+        return _normal_p(t_stat)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="策略前向评估（去重 + 稳健统计）")
     parser.add_argument("--risk-cap", type=float, default=50.0,
@@ -123,7 +139,13 @@ def main() -> int:
             continue
         family = sid.split("_R50")[0].split("_R200")[0].split("_R1000")[0]
         family = family.split("_Fnew_Demo")[0]
-        grouped[family][int(opened)].append(float(record["net_pnl"]))
+        # ⚠️⚠️ Round 189 修正: 原用【原始 net_pnl】⇒ 混合 R50/R1000 的不同风险档。
+        #    现改为【归一化收益（千分比）】—— 与报告其它部分及 3.1 节的去重口径一致。
+        #    (Round 189 实测: 两种口径下"显著族"数量相同 13/25，核心结论不变)
+        _nt = float(record["notional"]) if record.get("notional") else 0.0
+        if _nt <= 0:
+            continue
+        grouped[family][int(opened)].append(float(record["net_pnl"]) / _nt * 1000)
         raw_counts[family] += 1
 
     rng = np.random.default_rng(SEED)
@@ -142,7 +164,8 @@ def main() -> int:
         median_ci = np.percentile(median_draws, [2.5, 97.5])
         std = effective.std(ddof=1)
         t_stat = effective.mean() / (std / math.sqrt(n)) if std > 0 else float("nan")
-        p_value = _normal_p(t_stat) if not math.isnan(t_stat) else 1.0
+        # ⚠️ Round 266：改用 t 分布（df=n-1）。原用正态近似，在小样本下低估 p 值 4–10 倍。
+        p_value = _t_p(t_stat, n - 1) if not math.isnan(t_stat) else 1.0
         total_pnl = float(signal_pnl.sum())
         top1_share = float(signal_pnl[0] / total_pnl * 100) if total_pnl else float("nan")
         top3_share = (float(signal_pnl[:3].sum() / total_pnl * 100)

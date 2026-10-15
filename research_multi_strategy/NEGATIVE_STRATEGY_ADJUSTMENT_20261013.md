@@ -101,6 +101,29 @@ stop_distance_pct = min(原 ATR 止损距离, 强平距离 × 0.7)
 - 样本天数少（s02 3 天 · s35 2 天）· 覆盖单一市场环境（10-11~10-13）
 - **不得据此标注「盈利/通过/可用」**；上线是人工闸门
 
+## 附录 F · R50 口径精确复核（2026-10-14）
+
+此前正文中的“859 笔 / 260 笔”是旧快照，且未按 `max_loss_per_trade_usdt` 的精确值
+分组；以下结果覆盖该快照，不改变前向证据的来源限制。
+
+按 `max_loss_per_trade_usdt == 50` 精确筛选：943 笔纸面 `trade_closed` 中，272 笔
+（28.8%）净亏损绝对值超过 50 USDT，最差为 -157.41 USDT（3.15 倍）。78 个 R50
+账户中有 62 个出现过超 50 的交易。该事实证明 R50 是仓位计算目标，不是被执行层强制
+执行的单笔净亏损上限。
+
+当前 Demo 执行模式为收盘确认后由 runner 轮询提交 `reduce-only MARKET`；交易所没有
+预置止损单。因此对外应表述为：
+
+> 50 USDT 是 sizing 目标，不是硬上限。R50 纸面样本 943 笔中有 272 笔（28.8%）
+> 超过 50，最大亏损 157.41 USDT；Demo 侧同样存在轮询延迟、跳空、滑点和手续费
+> 偏差，不能保证每笔亏损不超过 50。
+
+若要把保护前置到交易所，应新增版本化的 `STOP_MARKET`/`closePosition` 或等价
+`reduceOnly` 止损订单、入场成交后的原子挂单/补挂、部分成交数量同步、取消/替换竞态、
+重启对账和触发后保护。该改造能显著缩短 runner 缺口，但即使如此也不能把 ≤50 描述成
+数学保证；跳空、触发价口径、滑点、手续费和强平竞态仍须单独报告。旧 Demo 身份不得
+原地切换执行模式，必须新建并冻结新的 execution identity。
+
 ---
 
 # 附录 A · 诊断修正（2026-10-13 20:1x，经备用3号技术确认 + 分层验证）
@@ -185,3 +208,185 @@ stop_distance_pct = min(原 ATR 止损距离, 强平距离 × 0.7)
 3. 在 `trade_closed` 上筛 `liquidation_price`（该字段属 `position_opened`）⇒ 得到无意义对比
 
 ⇒ 教训：**每加一个筛选维度，都要按该维度分层重验，不能直接聚合。**
+
+## 附录 B · clamp 的副作用（2026-10-13 20:2x，独立发现）
+
+`strategy_simulation.py` 的 `_entry_atr_plan`：
+
+```python
+distance     = multiplier * atr
+distance_pct = distance / price
+notional     = max_loss_per_trade_usdt / (distance_pct + risk_round_trip_fee)
+```
+
+**⇒ clamp（缩短止损距离）会让分母变小 ⇒ `notional` 反而变大。**
+
+算例（s14 · `max_loss=1000` · `risk_round_trip_fee=0.0004`）：
+
+| 情形 | distance_pct | notional |
+|---|---:|---:|
+| 原样 | 1.062% | 90,744 |
+| clamp 到 0.7×1.227%＝0.859% | 0.859% | **111,234（膨胀 23%）** |
+
+**⇒ 与「降低单笔风险」的初衷部分相反。**
+
+因此 clamp policy 必须同时显式选择目标，并在 `execution_hash` 语义中记录：
+
+- **(a)** 保持 `max_loss_per_trade_usdt` 不变 ⇒ 名义变大 23%（跳空风险变大）
+- **(b)** 保持名义不变 ⇒ `max_loss` 变小（风险预算未用满）
+- **(c)** 双限：`notional = min(风险预算名义, 名义上限)`
+
+**⚠️ 若不做此选择，会出现「execution_hash 相同但风险语义不同」⇒ 事后无法归因。**
+**⚠️ 且 clamp 的收益（避免强平）与代价（名义放大）必须成对报告。**
+
+### 教训（第 4 次自我修正）
+改一个风控参数时，必须检查它在该系统的**所有下游公式**。
+我在分层重验中差点把「会让名义膨胀 23%」的改动当成纯收益推荐。
+
+## 附录 C · 未覆盖 intrabar 的负收益族（P0 待办）
+
+`strategy_2x2_scope.py:31-36` 覆盖仅六族：`s05 s06 s08 s12 s14 s17`。
+
+**尚无 intrabar 臂的负收益族（9 个）：**
+`s34 · s09 · s03 · s33 · s01 · s11 · s04 · s18 · s16`
+
+依据：分层显示 intrabar 强平率 **3%** ≪ close_confirmed **17%** / fixed_entry_atr **11%**
+⚠️ 但样本仅 63 / 48 / 1746 ⇒ **须先独立复核显著性，再建臂**（已委托备用2号与备用3号）。
+
+## 附录 D · 撤回附录 C 的 P0 依据（2026-10-13 20:3x，经备用3号统计复核）
+
+### D.1 我的分层对比是**混杂的**（备用3号抓出）
+
+```
+按 stop_execution_mode 的杠杆构成:
+  fixed_entry_atr    n=1746 · 杠杆 【100.0】· {100: 1878} ⇒ 全部 100×
+  intrabar           n=63   · 杠杆 【65.5】· {100: 34, 30: 33} ⇒ 【一半是 30×】
+  close_confirmed    n=48   · 杠杆 【67.7】· {100: 28, 30: 24} ⇒ 【一半是 30×】
+
+⇒ intrabar 组混入一半 30×（强平距离 3.33%，几乎不强平）
+⇒ 附录 C 的「intrabar 3% ≪ close_confirmed 17% / fixed 11%」【是混杂对比】
+⇒ ❌ 据此建九族 intrabar 臂的 P0【依据不成立，撤回】
+
+备用3号的统计复核（我接受）:
+  · 2/63 vs 192/1746: Fisher 双侧 p≈0.0585（边缘）
+  · 2/63 vs 8/48（3% vs 17%）: Fisher p≈0.019，但样本小且族/杠杆构成不同
+    ⇒ 不能外推到未覆盖的九族
+  · 功效估算: 检出 3% vs 11%（双侧 α=.05, power=.8）约需每臂 146 个已开仓样本
+```
+
+### D.2 正确对照**已在跑**，且**显著**
+
+同族同杠杆（100×）的 2×2 纯 stop-timing 对照：
+
+| 臂 | n | 强平 | 强平率 |
+|---|---:|---:|---:|
+| **A_L100_close** | 26 | 8 | **31%** |
+| **C_L100_intrabar** | 32 | 2 | **6%** |
+| B_L30_close | 22 | 0 | 0% |
+| D_L30_intrabar | 31 | 0 | 0% |
+
+```
+A vs C: Fisher 双侧 【p = 0.0321】✅ 显著
+B vs D: 两臂都 0 强平 ⇒ 【30× 存在天花板效应，stop-timing 无从体现】
+⇒ 【两个效应都真实，但 stop-timing 只在 100× 下可观测】
+```
+
+### D.3 采纳备用3号的实验协议（修正后的 P0）
+
+1. **预注册主要终点** = `liquidation rate`（在实验开始前写定，不得事后更换）
+2. **只用同族同杠杆对照**：A(100×,close) vs C(100×,intrabar)，绝不跨族/跨杠杆聚合
+3. **样本目标**：先补齐现有六族 2×2 到每臂 ≥63（严格按 31% vs 6% 的功效则需 ~74/臂）
+4. **达到样本前不得扩展**到九族；若要扩展，须明确标注**探索性 pilot**，并报告混杂风险
+5. **30× 臂**已知天花板 0/0 ⇒ 不再作为 stop-timing 的判据
+
+### D.4 教训（第 5 次自我修正）
+**分层不等于去混杂。** 按一个变量分层后，若该层内另一个变量（杠杆、族）的构成不同，
+对比仍然混杂。必须**固定其它变量**（同族同杠杆）才能做因果推断。
+
+## 附录 E · 备用2号的实验设计要点（2026-10-13 20:4x）
+
+### E.1 结构止损实验 `structural-stop-v1`（复用 2×2 冻结模板）
+
+| 臂 | 止损规则 | 执行时机 |
+|---|---|---|
+| R0 | ATR×mult | close_confirmed（基线） |
+| R1 | structural | close_confirmed（规则对照） |
+| R2 | ATR×mult | intrabar（时序控制） |
+| R3 | structural | intrabar（双因素） |
+
+- 冻结：入场 signal/params · 币池 · 周期 · fee · 杠杆 · `max_loss` · 持仓/名义 · 时窗
+- 每族共享 `canonical_signal_rule_hash`；各臂 `stop_spec` / `rule_hash` / `execution_hash` 唯一
+- `execution_enabled=false`；**禁止原地改账户**
+- 结构 stop：在 entry 用**已收盘 t−1 及更早**数据计算并冻结 `stop_level` / `stop_spec_id`
+- long 必须 `stop < entry`；short 必须 `stop > entry`
+- 历史不足 / 结构无效 ⇒ **预注册为 skip，不回退 ATR**
+- 先记 `raw distance`，再 `clamp = min(raw, 0.7 × liquidation_distance)`，
+  记录 `clamped / raw / clamp_flag`，**所有臂一致**
+
+### E.2 ⚠️ 名义混淆（与附录 B 同一问题，备用2号独立发现）
+
+```
+风险封顶名义 = max_loss/(stop_distance_pct + fee)
+⇒ 止损规则【同时改变 notional】
+⇒ 主估计必须【冻结 signal_id 的数量/名义】，风险缩放作为 secondary
+⇒ 否则 R1−R0 会混入【仓位效应】而非纯止损规则效应
+```
+
+### E.3 主估计与统计
+
+- 主对比：**R1−R0**（结构 vs ATR，同 close）· **R3−R2**（同 intrabar）
+- 时序控制：R2−R0 · 交互：`(R3−R2)−(R1−R0)`
+- 用**同一 `signal_id`×币×时点的配对差**；日期/时间块 bootstrap CI
+- 报告：clamp 率 · 强平/止损比例 · 净收益 · 持有期
+- 6 族因子检验：Bonferroni `α/6 ≈ 0.00833` 或预注册 BH
+
+### E.4 ⚠️ 更正我原文的功效声明
+
+```
+原文（错误）: 「前向样本 ≥ 100 笔后再评估」—— 把最低门槛当成充分样本
+更正（备用2号）:
+  · PREREG N_min = 100 【只是最低观察门槛，不是充分功效】
+  · 功效须按配对差 SD 计算: N ≈ (2.8·σ_D / δ_min)²
+  · 若每族 σ_D≈0.5R、δ=.1R ⇒ 约 【196 有效配对/族】
+  · σ/δ 未知时先用【前导窗】估计
+  · 还需按日期/重叠持仓的【设计效应】放大
+```
+
+### E.5 调整5（方向偏差）的检验协议 — 严禁直接取反
+
+```
+· 发现窗内只【冻结机械的原向/反向规则】，不得先看结果
+· 用【独立的未来 holdout】首次评估
+· H0: E[D = R_reverse − R_original] = 0
+  H1: E[D] > 预注册 δ_min
+· 用同一 signal_id 生成潜在配对收益
+· 事件/日期块 bootstrap + sign-flip permutation
+· 按币 / 族 / 市场状态分层，且【至少覆盖两个市场状态】
+· 只报告研究统计，不作上线判断
+```
+
+### E.6 教训（第 6 次自我修正）
+**「门槛样本量」≠「充分功效」。** 我在提案里写「≥100 笔」，把观察门槛当成了统计功效要求。
+给出样本量时必须写清是门槛还是功效计算，并附 σ/δ 假设。
+
+## 附录 F · 成本过滤与费率版本实现（2026-10-13）
+
+调整 4 已实现为显式、可并行的研究变体，旧账户的定义、`rule_hash` 和
+`execution_hash` 保持不变。用 `strategy_lab_service --cost-adjusted` 才会额外创建
+三个新身份：`s04_btc_eth_pairs_B15m_100x_maker_Cost4bp`、
+`s05_bollinger_fade_B15m_100x_maker_Cost4bp`、
+`s08_wick_rejection_B15m_100x_maker_Cost4bp`。变体参数中固定
+`min_expected_move_bps=4.0`，并使用 `expected-move-gate-v1`；未达到阈值时只拒绝
+新入场，持仓退出逻辑不变，证据记录预期移动值、阈值和
+`expected_gross_move_below_cost_threshold` 原因。
+
+三类预期移动定义分别为：s04 的 `abs(relative_return)-exit_band`，s05 的
+`abs(close-prior_mean)/close`，s08 的 `tp_atr_mult*ATR/close`。比较采用严格的
+`expected_move_bps > 4.0`。这些是可审计的研究代理，不是盈利承诺。
+
+成本变体显式绑定 `binance-demo-commission-20261012-v1`：maker 单边
+`0.0002`（往返 `0.0004`），taker 单边 `0.0004`。历史账户缺少版本标记时继续使用
+原费用合同，包括旧的 `0.0005` 账户；任何费率版本变化都必须创建新身份。若风险止损
+账户按 `max_loss/(stop_distance_pct + fee)` 计算名义，过滤器和费率变化造成的名义变化
+必须单独记录，前向评估不得把仓位效应归因给入场过滤器。新变体至少积累 100 笔前向样本
+后再评估，并与原账户按相同时间段并行对照；在此之前只能标为研究假设。

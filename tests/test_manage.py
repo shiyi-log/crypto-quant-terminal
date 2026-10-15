@@ -58,7 +58,8 @@ class ProcessIdentityTests(unittest.TestCase):
                 self.assertFalse(manage.matches_process(spec, command, self.root / "bot"))
         self.assertEqual(set(self.specs),
                          {"auth", "web", "api", "webserver", "sync", "market", "market-trx",
-                          "market-spot", "market-live", "strategy-lab", "spot-basis", "integrity"})
+                          "market-spot", "market-breadth", "market-live", "strategy-lab",
+                          "spot-basis", "integrity"})
 
     def test_spot_collector_has_isolated_database_stream_configuration(self):
         spec = self.specs["market-spot"]
@@ -88,6 +89,26 @@ class ProcessIdentityTests(unittest.TestCase):
             changed[changed.index(option) + 1] = wrong_value
             self.assertFalse(manage.matches_stream_arguments(spec, changed, self.root), option)
 
+    def test_breadth_collector_is_opt_in_and_uses_lower_timeframes(self):
+        spec = self.specs["market-breadth"]
+        self.assertEqual(spec.enable_env, "QUANT_BREADTH_STREAM_ENABLED")
+        self.assertEqual(spec.stream_market, "futures")
+        self.assertEqual(len(spec.stream_pairs), 17)
+        self.assertIn("SOLUSDT", spec.stream_pairs)
+        self.assertNotIn("BTCUSDT", spec.stream_pairs)
+        self.assertEqual(spec.stream_kline_intervals, ("1m", "5m"))
+        self.assertIn("--kline-intervals", spec.command)
+        self.assertEqual(spec.command[spec.command.index("--kline-intervals") + 1], "1m,5m")
+
+    def test_breadth_collector_process_identity_checks_full_allowlist(self):
+        spec = self.specs["market-breadth"]
+        arguments = list(spec.command[3:])
+        self.assertTrue(manage.matches_stream_arguments(spec, arguments, self.root))
+        changed = list(arguments)
+        pairs_index = changed.index("--pairs") + 1
+        changed[pairs_index] = changed[pairs_index].replace("SOL/USDT", "SOL/USDC")
+        self.assertFalse(manage.matches_stream_arguments(spec, changed, self.root))
+
     def test_integrity_service_checks_native_timeframes_by_default(self):
         command = self.specs["integrity"].command
         self.assertEqual(
@@ -95,6 +116,15 @@ class ProcessIdentityTests(unittest.TestCase):
              if value == "--timeframe"],
             ["5m", "15m", "1h", "1d"],
         )
+        self.assertEqual(sum(value == "--pair" for value in command), 20)
+
+    def test_breadth_collector_requires_explicit_enablement(self):
+        spec = self.specs["market-breadth"]
+        with patch("manage.find_processes", return_value=[]), \
+             patch("manage.subprocess.Popen") as spawn, \
+             patch.dict("os.environ", {"QUANT_BREADTH_STREAM_ENABLED": "false"}, clear=False):
+            self.assertTrue(manage.start_service(spec, self.root))
+        spawn.assert_not_called()
 
     def test_start_reuses_existing_service(self):
         with patch("manage.find_processes", return_value=[42]), \

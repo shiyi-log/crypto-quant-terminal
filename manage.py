@@ -28,6 +28,21 @@ from runtime_config import load_environment
 
 ROOT = Path(__file__).resolve().parent
 
+# The breadth universe is intentionally duplicated here as an operational
+# allowlist.  It must stay aligned with strategy_data.BREADTH_PAIRS; changing
+# membership is a research identity change and requires review.
+BREADTH_FUTURES_PAIRS = (
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
+    "SUI/USDT", "AVAX/USDT", "LTC/USDT", "XRP/USDT",
+    "LINK/USDT", "TRX/USDT", "AAVE/USDT", "DOGE/USDT",
+    "ADA/USDT", "SAND/USDT", "FIL/USDT", "ZEC/USDT",
+    "NEAR/USDT", "APT/USDT", "DOT/USDT", "UNI/USDT",
+)
+BREADTH_SIDECAR_PAIRS = tuple(
+    pair for pair in BREADTH_FUTURES_PAIRS
+    if pair not in {"BTC/USDT", "ETH/USDT", "TRX/USDT"}
+)
+
 
 @dataclass(frozen=True)
 class Service:
@@ -44,6 +59,7 @@ class Service:
     stream_status_document: str | None = None
     stream_market: str | None = None
     stream_kline_intervals: tuple[str, ...] | None = None
+    enable_env: str | None = None
 
 
 def services(root: Path = ROOT) -> dict[str, Service]:
@@ -55,6 +71,12 @@ def services(root: Path = ROOT) -> dict[str, Service]:
     integrity_timeframes = tuple(value.strip() for value in
                                  os.getenv("QUANT_INTEGRITY_TIMEFRAMES", "5m,15m,1h,1d").split(",")
                                  if value.strip()) or ("5m",)
+    integrity_pairs = tuple(value.strip() for value in os.getenv(
+        "QUANT_INTEGRITY_PAIRS", ",".join(BREADTH_FUTURES_PAIRS)).split(",")
+        if value.strip()) or BREADTH_FUTURES_PAIRS
+    breadth_pairs = ",".join(BREADTH_SIDECAR_PAIRS)
+    native_futures_intervals = ("1m", "5m", "15m", "1h", "1d")
+    native_futures_interval_arg = ",".join(native_futures_intervals)
     specs = [
         Service("api", "交易 API", (trading_python, "-m", "freqtrade", "trade", "--config",
                 "user_data/config_trend_live.json", "--config", "config_api_access_log.json",
@@ -95,6 +117,20 @@ def services(root: Path = ROOT) -> dict[str, Service]:
                 stream_pairs=("BTCUSDT", "ETHUSDT", "TRXUSDT"),
                 stream_status_document="market_stream_spot_status.json", stream_market="spot",
                 stream_kline_intervals=("1m", "5m")),
+        # Breadth strategies need a continuous lower-timeframe source.  Keep
+        # this sidecar opt-in because it increases the number of public
+        # streams; higher periods are derived from fresh 5m rows downstream.
+        Service("market-breadth", "白名单合约 K 线与市场采集",
+                (python, "-u", str(root / "market_stream.py"), "--market", "futures",
+                 "--pairs", breadth_pairs, "--kline-intervals", "1m,5m",
+                 "--spool-dir", str(root / "database/runtime/breadth/market_spool"),
+                 "--status-document-key", "market_stream_breadth_status.json"),
+                root, root / "market_stream.py",
+                stream_spool_dir=root / "database/runtime/breadth/market_spool",
+                stream_pairs=tuple(pair.replace("/", "") for pair in BREADTH_SIDECAR_PAIRS),
+                stream_status_document="market_stream_breadth_status.json",
+                stream_market="futures", stream_kline_intervals=("1m", "5m"),
+                enable_env="QUANT_BREADTH_STREAM_ENABLED"),
         Service("market-live", "实时 K 线推送", (python, "-u", str(root / "market_live.py"),
                 "--port", os.getenv("QUANT_LIVE_PORT", "8892")), root,
                 root / "market_live.py", port=int(os.getenv("QUANT_LIVE_PORT", "8892")),
@@ -123,8 +159,8 @@ def services(root: Path = ROOT) -> dict[str, Service]:
         Service("integrity", "K线完整性自检",
                 (python, "-u", str(root / "tools/check_candle_integrity.py"),
                  "--watch", "--interval", os.getenv("QUANT_INTEGRITY_INTERVAL", "300"),
-                 "--pair", "BTC/USDT:USDT", "--pair", "ETH/USDT:USDT",
-                 "--pair", "TRX/USDT:USDT",
+                 *(argument for pair in integrity_pairs
+                   for argument in ("--pair", f"{pair}:USDT" if ":" not in pair else pair)),
                  *(argument for timeframe in integrity_timeframes
                    for argument in ("--timeframe", timeframe)),
                  "--max-age-bars", os.getenv("QUANT_INTEGRITY_MAX_AGE_BARS", "3"),
@@ -154,7 +190,7 @@ def process_cwd(pid: int) -> Path | None:
     return None
 
 
-def matches_process(spec: Service, command: str, cwd: Path | None) -> bool:
+def matches_process(spec: Service, command: str, cwd: Path | None, *, allow_legacy=True) -> bool:
     """命令和目录同时核验，避免误杀其他项目或相同端口上的服务。"""
     try:
         tokens = shlex.split(command)
@@ -316,14 +352,22 @@ def pid_file(root: Path, spec: Service) -> Path:
 
 
 def start_service(spec: Service, root: Path = ROOT) -> bool:
-    existing = find_processes(spec)
+    existing = find_processes(spec, allow_legacy=False)
     if existing:
         print(f"{spec.label}：复用 PID {','.join(map(str, existing))}，{health(spec)}")
         return True
+    legacy = find_processes(spec, allow_legacy=True)
+    if legacy:
+        raise RuntimeError(f"{spec.label}：发现旧配置进程 PID {','.join(map(str, legacy))}，请先执行 restart 以加载当前采集周期")
     if spec.stream_spool_dir is not None and os.getenv("QUANT_STREAM_ENABLED", "true").lower() in {
         "false", "0", "no", "off",
     }:
         print(f"{spec.label}：QUANT_STREAM_ENABLED 已关闭，跳过启动")
+        return True
+    if spec.enable_env is not None and os.getenv(spec.enable_env, "false").lower() in {
+        "false", "0", "no", "off",
+    }:
+        print(f"{spec.label}：{spec.enable_env} 未开启，跳过启动")
         return True
     if spec.port and port_busy(spec.port):
         raise RuntimeError(f"端口 {spec.port} 已被其他进程占用；请查看端口所属服务")

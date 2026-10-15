@@ -94,6 +94,20 @@ uv run python manage.py stop market-trx
 该服务从启动时开始积累真实收到的数据，不补齐此前缺失的历史。现有 `spot-basis`
 继续负责独立的 1h REST 前向喂数；其它现货币种需另外配置后才会实时采集。
 
+横截面白名单中尚无专用源的 17 个合约交易对使用独立的 `market-breadth` 侧车。
+BTC/ETH/TRX 继续由现有专用采集器负责，避免重复订阅和重复写入。侧车写入独立的
+`database/runtime/breadth/market_spool` 与 `market_stream_breadth_status.json`。该服务默认关闭，
+上线前需要确认 WebSocket 带宽、数据库写入量和历史缺口补采计划后显式开启：
+
+```text
+QUANT_BREADTH_STREAM_ENABLED=true uv run python manage.py start market-breadth
+uv run python manage.py status market-breadth
+```
+
+侧车只需持续提供 `1m,5m`；`15m/30m/1h/4h` 应由连续、已收盘的 5m 数据重采样，
+不会依赖按请求写入的 `live:binance-klines` 缓存。启动侧车不会回补启动前的历史缺口，
+断线回补仍由独立的 REST worker 负责，不能阻塞 WebSocket 收包循环。
+
 调试时可直接运行，默认保持采集直到收到 SIGINT 或 SIGTERM：
 
 ```text
@@ -113,6 +127,8 @@ uv run python market_stream.py --help
 | `QUANT_STREAM_TRADE_STREAM` | 合约 `aggTrade`、现货 `trade` | 显式设为 `trade` 时，合约原始成交使用 `trade:<t>` ID |
 | `QUANT_STREAM_KLINE_INTERVALS` | `5m` | 逗号分隔的收盘 K 线周期，例如 `1m,5m` |
 | `QUANT_STREAM_GAP_THRESHOLD_MS` | `60000` | 事件时间缺口阈值；只记录告警，不在 WebSocket 循环内补采 |
+| `QUANT_BREADTH_STREAM_ENABLED` | `false` | 显式开启 17 对缺失白名单合约侧车；默认不启动 |
+| `QUANT_INTEGRITY_PAIRS` | 20 对白名单 | 完整性监控的逗号分隔交易对；使用合约格式或 `BASE/USDT` |
 | `QUANT_STREAM_SPOOL_DIR` | `database/runtime/market_spool` | 故障暂存批次的位置，应置于有足够容量的本地盘 |
 | `QUANT_STREAM_DISK_WARNING_PCT` | `15` | 暂存目录所在分区剩余百分比低于此值时写入 `warning` 告警 |
 | `QUANT_STREAM_DISK_CRITICAL_PCT` | `5` | 暂存目录所在分区剩余百分比低于此值时写入 `critical` 告警 |
@@ -158,7 +174,7 @@ WebSocket 断开时指数退避重连，连接期间的原始消息照实存储�
 
 ## 状态与验证
 
-运行状态同步为数据库文档 `market_stream_status.json`；同时保存本地 `database/runtime/market_stream_status.json`，以便数据库故障时仍能检查采集器。状态中的 `gap_metrics` 按事件类型、市场、交易对和 K 线周期记录上次事件时间、缺口次数、最大缺口和最近缺口；超过阈值会写入日志并设置 `data_gap_possible=true`。这只是发现与告警，历史补采仍需独立工具或 worker。
+运行状态同步为数据库文档 `market_stream_status.json`；同时保存本地 `database/runtime/market_stream_status.json`，以便数据库故障时仍能检查采集器。状态中的 `gap_metrics` 按事件类型、市场、交易对和 K 线周期记录上次事件时间、缺口次数、最大缺口和最近缺口；超过阈值会写入日志、设置 `data_gap_possible=true`，并更新 `gap_alert_count` 与 `last_gap_alert`（`alert=gap_threshold_exceeded`）。这只是发现与告警，历史补采仍需独立工具或 worker；采集器不会在收包循环中直接发 REST 请求或写回补数据。
 
 主要字段包括连接状态、成交类型、盘口类型、收到/写入计数、队列长度、内存批次长度、在写批次长度、暂存批次数、溢出暂存计数、重连计数、最后消息时间、最后写入时间、最后错误、数据库故障次数与下一次重试等待时间。`corrupt_batches`、`corrupt_files`、`storage_warning` 明确报告保留的损坏批次，并跨重启持续提示；`data_gap_possible=true` 说明可能存在行情缺口，损坏批次的缺失条数无法准确推算。`persisted/replayed` 是本次进程成功提交的暂存事件数，包含从前次进程恢复的事件及幂等重播，不能当作数据库新增唯一行数。
 状态发布还会检查暂存目录所在分区，并提供 `disk_total_bytes`、`disk_used_bytes`、`disk_free_bytes`、`disk_free_pct`、`disk_alert_level`、`disk_alert_reason` 和 `disk_checked_at`。`disk_alert_level` 为 `ok`、`warning`、`critical` 或 `unknown`；检查失败时保留 `unknown` 和错误原因，不会把容量误报为正常。数据中心的“实时采集”区域展示剩余容量、检查时间与告警原因。

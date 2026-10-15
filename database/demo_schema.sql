@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS demo_orders (
     time_in_force TEXT, reduce_only BOOLEAN NOT NULL DEFAULT FALSE,
     signal_ms BIGINT NOT NULL CHECK (signal_ms >= 0), created_ms BIGINT NOT NULL,
     status TEXT NOT NULL DEFAULT 'intent' CHECK (status IN
-      ('intent','submitting','unknown','open','partially_filled','filled','canceled','rejected','expired')),
+      ('intent','submitting','unknown','open','partially_filled','filled','canceled','rejected','expired',
+       'abandoned_after_absent_lookup')),
     submission_attempts INTEGER NOT NULL DEFAULT 0 CHECK (submission_attempts BETWEEN 0 AND 1),
     submission_claimed_ms BIGINT, exchange_order_id TEXT,
     filled_quantity NUMERIC(38,18) NOT NULL DEFAULT 0 CHECK (filled_quantity >= 0),
@@ -27,6 +28,30 @@ CREATE TABLE IF NOT EXISTS demo_orders (
     UNIQUE (environment,virtual_account_key,strategy_id,signal_id,intent_key)
 );
 ALTER TABLE demo_orders ADD COLUMN IF NOT EXISTS intent_payload JSONB NOT NULL DEFAULT '{}';
+-- Migration: an absent client-id lookup may be closed only after the runner's
+-- independent position/open-order checks and a conservative time/count gate.
+-- It is a local reconciliation terminal state, never an exchange status.
+DO $demo_unknown_submission_terminal_v1$
+DECLARE check_name TEXT;
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'demo_orders'::regclass AND contype = 'c'
+          AND pg_get_constraintdef(oid) ILIKE '%abandoned_after_absent_lookup%'
+    ) THEN
+        FOR check_name IN
+            SELECT conname FROM pg_constraint
+            WHERE conrelid = 'demo_orders'::regclass AND contype = 'c'
+              AND pg_get_constraintdef(oid) ILIKE '%status%'
+        LOOP
+            EXECUTE format('ALTER TABLE demo_orders DROP CONSTRAINT %I', check_name);
+        END LOOP;
+        ALTER TABLE demo_orders ADD CONSTRAINT demo_orders_status_check CHECK (status IN
+          ('intent','submitting','unknown','open','partially_filled','filled','canceled','rejected','expired',
+           'abandoned_after_absent_lookup'));
+    END IF;
+END;
+$demo_unknown_submission_terminal_v1$;
 CREATE UNIQUE INDEX IF NOT EXISTS demo_orders_exchange_identity ON demo_orders
     (environment,virtual_account_key,pair,exchange_order_id) WHERE exchange_order_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS demo_orders_pending ON demo_orders (environment,virtual_account_key,status,created_ms);

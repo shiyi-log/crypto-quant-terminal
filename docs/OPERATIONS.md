@@ -55,6 +55,16 @@ uv run python manage.py status auth web api webserver sync market market-live
 
 前端的一键登录入口继续保留。`QUANT_STREAM_ENABLED=false` 会使启动命令跳过逐笔与盘口采集。采集交易对通过 `QUANT_STREAM_PAIRS` 指定，默认 BTC 与 ETH；通过 `QUANT_STREAM_MARKET` 选择 `futures` 或 `spot`。
 
+20 对横截面白名单中没有专用源的 17 对使用独立 `market-breadth` 侧车，默认不启动。确认
+网络、数据库写入量和回补方案后再执行：
+
+```text
+QUANT_BREADTH_STREAM_ENABLED=true uv run python manage.py start market-breadth
+```
+
+它不会替代现有 BTC/ETH/TRX 采集器，也不会自动回补历史缺口；完整性服务会按交易对和周期
+报告 `stale_tail`/`timestamp_gaps`，读取端则对无法取得新鲜 5m 源的策略 fail-closed。
+
 行情图表实时连接独立于逐笔/盘口归档。`market-live` 根据所有打开图表的交易对及周期共享订阅交易所 K 线，不受 `QUANT_STREAM_PAIRS` 的 BTC/ETH 范围限制；没有页面订阅时关闭上游连接。`QUANT_LIVE_PORT` 可更改服务端口。`/api/locals/market-stream-info` 需登录，返回浏览器连接地址；本机默认 `ws://127.0.0.1:8892/ws/market`。外部 HTTPS 部署时配置 `QUANT_LIVE_WS_URL=wss://你的域名/行情路径`，由反向代理将该路径转发到本机 8892，并支持 WebSocket Upgrade。登录令牌在连接后的首条认证消息中发送，不放入 URL。
 
 ## 构建与发布前端

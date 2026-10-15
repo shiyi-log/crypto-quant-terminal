@@ -42,6 +42,10 @@ if row["status"] == "intent" and ledger.claim_submission(row["client_id"]):
 `claim_submission` 用数据库条件更新选出唯一提交者，`submission_attempts` 最大为 1。
 提交期间断线或进程退出后，`submitting/unknown` 状态只应按原 client id 查询对账，不能再提交。
 `mark_submission_unknown` 记录不确定状态；`append_reconciliation` 只追加查询事实而不改变成交。
+
+`abandoned_after_absent_lookup` 是 runner 的本地审计终态，不是交易所的取消或拒绝状态。
+只有同一 client ID 连续至少三次查无订单、提交已超过五分钟、无本地成交、无交易所挂单且
+对应交易对仓位为零时才允许迁移；迁移会保留每次查无结果及最终快照的审计记录。
 `abandon_unclaimed_order` 只让从未 claim 的本地意图因暂停或 TTL 到期变为内部 `expired`，
 不会假造交易所状态或 order id，也不会把它计入交易所未成交率；已提交的未知状态仍须对账。
 

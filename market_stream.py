@@ -585,6 +585,10 @@ class MarketCollector:
             "connections": {name: "connecting" for name, _ in config.connections()},
             "gap_threshold_ms": config.gap_threshold_ms,
             "gap_count": 0, "max_gap_ms": 0, "last_gap": None,
+            # Structured alert state lets operators monitor threshold
+            # breaches without parsing log text. REST backfill remains an
+            # independent worker and is not performed in the receive loop.
+            "gap_alert_count": 0, "last_gap_alert": None,
             "gap_metrics": {},
             "connection_gap_metrics": {
                 name: {"gap_count": 0, "max_gap_ms": 0, "last_gap": None}
@@ -677,6 +681,8 @@ class MarketCollector:
             "expected_interval_ms": expected_interval,
             "gap_ms": gap_ms,
             "detected_at": int(time.time() * 1000),
+            "severity": "warning",
+            "alert": "gap_threshold_exceeded",
         }
         if kind == "kline":
             detail["timeframe"] = event.get("timeframe")
@@ -686,6 +692,8 @@ class MarketCollector:
         self.status["gap_count"] += 1
         self.status["max_gap_ms"] = max(self.status["max_gap_ms"], gap_ms)
         self.status["last_gap"] = detail
+        self.status["gap_alert_count"] += 1
+        self.status["last_gap_alert"] = detail
         connection = self._gap_connection_name(kind, self.status["connections"])
         connection_metrics = self.status["connection_gap_metrics"].setdefault(connection, {
             "gap_count": 0, "max_gap_ms": 0, "last_gap": None,

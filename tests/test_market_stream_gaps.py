@@ -52,6 +52,12 @@ class GapMetricTests(unittest.TestCase):
         self.assertEqual(metrics["last_gap"]["expected_interval_ms"], 300_000)
         self.assertEqual(self.collector.status["max_gap_ms"], 120_000)
         self.assertTrue(self.collector.status["data_gap_possible"])
+        self.assertEqual(self.collector.status["gap_alert_count"], 1)
+        self.assertEqual(
+            self.collector.status["last_gap_alert"]["alert"],
+            "gap_threshold_exceeded",
+        )
+        self.assertEqual(self.collector.status["last_gap_alert"]["severity"], "warning")
         self.assertEqual(self.collector.status["connection_gap_metrics"]["trades"]["gap_count"], 1)
 
     def test_tick_and_orderbook_use_event_timestamp_and_keep_identities_separate(self):

@@ -77,7 +77,8 @@ class FnewDefinitionTests(unittest.TestCase):
             self.assertEqual(spec["risk_sizing_mode"], "entry_pair_atr")
             self.assertEqual(spec["risk_budget_scope"], "atomic_pair_portfolio")
             self.assertEqual(spec["paired_execution_policy"], FNEW_PAIR_EXECUTION_POLICY)
-            self.assertIn("4*fee_rate_per_side", spec["paired_notional_formula"])
+            self.assertIn("entry_fee_rate_per_side+exit_fee_rate_per_side",
+                          spec["paired_notional_formula"])
             self.assertEqual(spec["pair_trade_sample_unit"], "one_atomic_group_not_two_independent_legs")
         for number in (33, 34, 35):
             self.assertEqual(self.spec(number)["risk_sizing_mode"], "entry_atr")

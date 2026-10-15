@@ -2,7 +2,9 @@
 
 import unittest
 
-from strategy_fee_schedule import DEMO_FEE_MODEL_VERSION, MAKER_FEE_PER_SIDE
+from strategy_fee_schedule import (
+    DEMO_FEE_MODEL_VERSION, MAKER_FEE_PER_SIDE, TAKER_FEE_PER_SIDE,
+)
 from strategy_lab_service import load_cost_adjusted_specs, load_specs, normalize_account_spec
 from strategy_simulation import execution_identity
 from strategy_signals import BTC, ETH, evaluate
@@ -23,6 +25,8 @@ class CostAdjustedPopulationTests(unittest.TestCase):
         self.assertTrue(all(spec["fee_model_version"] == DEMO_FEE_MODEL_VERSION
                             for spec in adjusted))
         self.assertTrue(all(spec["fee_rate_per_side"] == MAKER_FEE_PER_SIDE
+                            for spec in adjusted))
+        self.assertTrue(all(spec["exit_fee_rate_per_side"] == TAKER_FEE_PER_SIDE
                             for spec in adjusted))
         self.assertTrue(all(spec["execution_enabled"] is False
                             and spec["blocked_execution_reason"] ==
@@ -49,6 +53,8 @@ class CostAdjustedPopulationTests(unittest.TestCase):
                                  DEMO_FEE_MODEL_VERSION)
                 self.assertEqual(new_identity["execution"]["fee_rate_per_side"],
                                  MAKER_FEE_PER_SIDE)
+                self.assertEqual(new_identity["execution"]["exit_fee_rate_per_side"],
+                                 TAKER_FEE_PER_SIDE)
 
     def test_factory_output_is_idempotently_normalizable(self):
         for spec in load_cost_adjusted_specs():

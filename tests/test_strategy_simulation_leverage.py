@@ -115,6 +115,42 @@ class LeveragedTransitionTests(unittest.TestCase):
                          sum(p["entry_fee"] for p in opened["positions"].values()))
         self.assertGreater(_mark(opened)["gross_notional"], 10_000)
 
+    def test_aggregate_risk_cap_allocates_by_signal_weight(self):
+        self.spec = dict(self.spec, strategy_id="test-leverage-aggregate-weighted",
+                         aggregate_risk_cap=True)
+        state = initial_state(self.spec, BAR_MS)
+        weighted = _signal(self.spec, BAR_MS, (1, -1))
+        weighted["signals"][PAIRS[0]]["size_multiplier"] = 0.25
+        weighted["signals"][PAIRS[1]]["size_multiplier"] = 1.0
+        pending, _ = apply_closed_batch(
+            state, self.spec, _bars(BAR_MS), weighted,
+            2 * BAR_MS + 1000, BAR_MS)
+        weighted = _signal(self.spec, 2 * BAR_MS, (None, None))
+        opened, _ = apply_closed_batch(
+            pending, self.spec, _bars(2 * BAR_MS), weighted,
+            3 * BAR_MS + 1000, BAR_MS)
+
+        identity = execution_identity(self.spec)["execution"]
+        planned_loss = sum(
+            position["notional"] * (identity["risk_stop_pct"] +
+                                     identity["risk_round_trip_fee"])
+            for position in opened["positions"].values()
+        )
+        self.assertAlmostEqual(planned_loss,
+                               identity["max_loss_per_trade_usdt"], places=8)
+        self.assertLess(opened["positions"][PAIRS[0]]["notional"],
+                        opened["positions"][PAIRS[1]]["notional"])
+
+    def test_aggregate_risk_cap_rejects_heterogeneous_stop_modes(self):
+        for mode, params in (("entry_atr", {"risk_stop_atr_mult": 1.5}),
+                             ("structural", {})):
+            with self.subTest(mode=mode):
+                definition = dict(self.spec, strategy_id=f"test-aggregate-{mode}",
+                                  aggregate_risk_cap=True,
+                                  risk_sizing_mode=mode, params=params)
+                with self.assertRaisesRegex(ValueError, "supports only fixed-stop"):
+                    execution_identity(definition)
+
     def test_long_low_triggers_liquidation_at_bankruptcy_price(self):
         opened, _ = self.enter((1, None))
         position = opened["positions"][PAIRS[0]]

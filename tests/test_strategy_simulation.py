@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 from data_store import DataStore
 from runtime_config import load_environment
 from strategy_simulation import (BAR_MS, PAIRS, TIMEFRAME_MS, StrategySimulation, _mark,
-                                 apply_closed_batch, initial_state)
+                                 apply_closed_batch, execution_identity, initial_state)
 
 
 load_environment()
@@ -224,6 +224,47 @@ class StrategySimulationTransitionTests(unittest.TestCase):
         self.assertLessEqual(valuation["margin_used"], 10_000 * .30 + 1e-8)
         self.assertEqual(len(opened["positions"]), 2)
 
+    def test_aggregate_risk_cap_limits_independent_entries_on_one_candle(self):
+        definition = copy.deepcopy(self.spec)
+        definition.update(
+            strategy_id="test-aggregate-cap",
+            fee_model_version="binance-demo-commission-20261012-v1",
+            fee_rate_per_side=0.0002,
+            exit_fee_rate_per_side=0.0004,
+            aggregate_risk_cap=True,
+        )
+        state = initial_state(definition, BAR_MS)
+
+        def step(timestamp, state):
+            return apply_closed_batch(
+                state, definition, bars(timestamp),
+                evaluation(definition, timestamp, (1, -1)),
+                timestamp + BAR_MS + 1000, BAR_MS)
+
+        state, _ = step(BAR_MS, state)
+        state, _ = step(2 * BAR_MS, state)
+        identity = execution_identity(definition)
+        planned_loss = sum(
+            position["notional"] * (
+                identity["execution"]["risk_stop_pct"]
+                + identity["execution"]["risk_round_trip_fee"]
+            ) for position in state["positions"].values()
+        )
+        self.assertLessEqual(planned_loss, 50.0 + 1e-8)
+        self.assertAlmostEqual(planned_loss, 50.0, places=8)
+
+    def test_aggregate_cap_is_fail_closed_for_heterogeneous_atr_sizing(self):
+        definition = copy.deepcopy(self.spec)
+        definition.update(
+            strategy_id="test-aggregate-cap-atr",
+            params={"n": 3, "risk_stop_atr_mult": 1.5},
+            risk_sizing_mode="entry_atr",
+            max_loss_per_trade_usdt=50.0,
+            aggregate_risk_cap=True,
+        )
+        with self.assertRaisesRegex(ValueError, "supports only fixed-stop regular"):
+            execution_identity(definition)
+
     def test_atomic_missing_leg_cancels_both_orders(self):
         pending, _ = self.step(BAR_MS, (1, -1), atomic=True)
         result, events = self.step(2 * BAR_MS, state=pending,
@@ -414,6 +455,22 @@ class StrategySimulation2x2ProjectionTests(unittest.TestCase):
         self.assertIn("s05_bollinger_fade_2x2_B_L30_close", result)
         self.assertIn(PAIRS[0], result["s05_bollinger_fade_2x2_B_L30_close"])
         self.assertNotIn("s05_bollinger_fade_2x2_disabled_L30_close", result)
+
+    def test_disabled_ordinary_account_is_excluded_from_active_projections(self):
+        """Retirement flags apply to frozen 100x rows, not only 2x2 arms."""
+        rows = self.rows()
+        retired = self.row("s14_vol_compression_release_B15m_R50_k1.0_100x_maker")
+        retired["execution"] = dict(retired["execution"],
+                                     execution_enabled=False,
+                                     blocked_execution_reason="strategy_retired")
+        rows.append(retired)
+        self.conn.execute.return_value.fetchall.return_value = rows
+
+        ids = {item["strategy_id"] for item in StrategySimulation(self.store).overview()["accounts"]}
+        self.assertNotIn(retired["strategy_id"], ids)
+
+        positions = StrategySimulation(self.store).positions_by_strategy()
+        self.assertNotIn(retired["strategy_id"], positions)
 
 @unittest.skipUnless(os.getenv("QUANT_TEST_DATABASE_URL"), "isolated PostgreSQL test database required")
 class StrategySimulationStorageTests(unittest.TestCase):

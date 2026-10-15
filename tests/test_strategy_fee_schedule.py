@@ -155,6 +155,38 @@ class StrategyFeeScheduleTests(unittest.TestCase):
                     self.assertAlmostEqual(state["fees_paid"], trade["fees"])
                     self.assertAlmostEqual(trade["net_pnl"], -trade["fees"])
 
+    def test_explicit_demo_contract_uses_maker_entry_and_taker_exit(self):
+        definition = {
+            "strategy_id": "test-fee-contract-explicit-demo", "timeframe": "5m",
+            "universe": list(PAIRS), "fee_model_version": DEMO_FEE_MODEL_VERSION,
+            "fee_rate_per_side": MAKER_FEE_PER_SIDE,
+            "exit_fee_rate_per_side": TAKER_FEE_PER_SIDE,
+        }
+        with patch("strategy_simulation._rule_hash", return_value="test-rule"):
+            state = initial_state(definition, BAR_MS)
+            for index, target in ((1, 1), (2, None), (3, 0), (4, None)):
+                stamp = index * BAR_MS
+                candle = {"timestamp": stamp, "open": 100., "high": 100.5,
+                          "low": 99.5, "close": 100., "volume": 10,
+                          "extras": {"closed": True}}
+                signal = {"strategy_id": definition["strategy_id"],
+                          "rule_hash": "test-rule", "ready": True,
+                          "signals": {PAIRS[0]: {"target_side": target}}}
+                state, events = apply_closed_batch(
+                    state, definition, {pair: [copy.deepcopy(candle)] for pair in PAIRS},
+                    signal, stamp + BAR_MS + 1000, BAR_MS)
+                if index == 2:
+                    position = state["positions"][PAIRS[0]]
+                    notional = position["entry_price"] * position["quantity"]
+                    self.assertAlmostEqual(position["entry_fee"], notional * MAKER_FEE_PER_SIDE)
+            trade = next(item["payload"] for item in events
+                         if item["event_type"] == "trade_closed")
+            expected_exit_fee = trade["quantity"] * trade["exit_price"] * TAKER_FEE_PER_SIDE
+            self.assertAlmostEqual(trade["entry_fee"], notional * MAKER_FEE_PER_SIDE)
+            self.assertAlmostEqual(trade["exit_fee"], expected_exit_fee)
+            self.assertAlmostEqual(trade["fees"], trade["entry_fee"] + expected_exit_fee)
+            self.assertAlmostEqual(trade["net_pnl"], -trade["fees"])
+
 
 if __name__ == "__main__":
     unittest.main()

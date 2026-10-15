@@ -123,7 +123,7 @@ class FnewAccountCreationTests(unittest.TestCase):
                              "atomic-pair-equal-notional-ohlc-v1")
             self.assertEqual(enabled[key]["execution"]["pair_trade_count_policy"],
                              "completed_pair_is_one_experimental_sample;leg_events_are_audit_only")
-            self.assertEqual(enabled[key]["execution"]["risk_round_trip_fee"], 0.0008)
+            self.assertAlmostEqual(enabled[key]["execution"]["risk_round_trip_fee"], 0.0012)
         for key in set(enabled) - set(differing):
             self.assertEqual(enabled[key]["execution"]["risk_sizing_mode"], "entry_atr")
 
@@ -132,9 +132,11 @@ class FnewAccountCreationTests(unittest.TestCase):
         basis = execution_identity(specs["s33_basis_momentum_1h"])
         self.assertEqual(basis["execution"]["risk_sizing_mode"], "entry_atr")
         self.assertEqual(basis["execution"]["fee_rate_per_side"], 0.0004)
+        self.assertEqual(basis["execution"]["exit_fee_rate_per_side"], 0.0004)
         self.assertEqual(basis["rule_hash"], specs["s33_basis_momentum_1h"]["rule_hash"])
         maker = execution_identity(specs["s34_vwap_anchor_reversion_15m"])
         self.assertEqual(maker["execution"]["fee_rate_per_side"], 0.0002)
+        self.assertEqual(maker["execution"]["exit_fee_rate_per_side"], 0.0004)
 
 
 if __name__ == "__main__":

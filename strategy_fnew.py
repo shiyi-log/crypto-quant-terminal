@@ -121,6 +121,7 @@ def parse_fnew_identity(strategy_id: Any) -> dict[str, Any] | None:
     }
     if demo_fee_model:
         identity["fee_model_version"] = DEMO_FEE_MODEL_VERSION
+        identity["exit_fee_rate_per_side"] = TAKER_FEE_PER_SIDE
     return identity
 
 
@@ -293,6 +294,12 @@ def normalize_fnew_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("Fnew Demo fee model requires a new Demo-marked strategy identity")
     elif spec.get("fee_model_version", fee_model_version) != fee_model_version:
         raise ValueError("Fnew identity does not match fee_model_version")
+    exit_fee = None
+    if fee_model_version == DEMO_FEE_MODEL_VERSION:
+        exit_fee = _number(spec.get("exit_fee_rate_per_side", TAKER_FEE_PER_SIDE),
+                           "exit_fee_rate_per_side")
+        if exit_fee != TAKER_FEE_PER_SIDE:
+            raise ValueError("Fnew Demo identity requires the verified taker exit fee")
     paired = canonical in PAIR_STRATEGIES
     sizing_mode = "entry_pair_atr" if paired else "entry_atr"
     scope = "atomic_pair_portfolio" if paired else "per_trade_leg"
@@ -346,17 +353,27 @@ def normalize_fnew_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     }
     if fee_model_version is not None:
         economics["fee_model_version"] = fee_model_version
+        economics["exit_fee_rate_per_side"] = exit_fee
     if paired:
         economics.update(
             paired_execution_policy=FNEW_PAIR_EXECUTION_POLICY,
-            paired_notional_formula="per_leg_notional=R/(k*entry_pair_atr_return+4*fee_rate_per_side)",
+            paired_notional_formula=(
+                "per_leg_notional=R/(k*entry_pair_atr_return+"
+                "2*(entry_fee_rate_per_side+exit_fee_rate_per_side))"
+                if fee_model_version == DEMO_FEE_MODEL_VERSION else
+                "per_leg_notional=R/(k*entry_pair_atr_return+4*fee_rate_per_side)"
+            ),
             paired_stop_trigger="signed_sum_return_from_actual_entries<=-k*frozen_entry_pair_atr_return",
             paired_atr_method="synchronous_ohlc_envelope_true_range_actual_entry_v1",
             paired_liquidation_policy="conservative_peer_bar_extreme_after_leg_liquidation",
             pair_trade_sample_unit="one_atomic_group_not_two_independent_legs",
         )
     else:
-        economics["notional_formula"] = "R/(k*entry_atr/entry_price+2*fee_rate_per_side)"
+        economics["notional_formula"] = (
+            "R/(k*entry_atr/entry_price+entry_fee_rate_per_side+exit_fee_rate_per_side)"
+            if fee_model_version == DEMO_FEE_MODEL_VERSION else
+            "R/(k*entry_atr/entry_price+2*fee_rate_per_side)"
+        )
     # Supplied executable convention fields may not silently override the
     # implementation, even if a caller strips the claimed hash.
     for field, expected in economics.items():
@@ -375,9 +392,12 @@ def normalize_fnew_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         "type": "atomic_pair_atr_close_confirmed" if paired else "atr_hard_stop_close_confirmed",
         "k": k, "atr_window": params["atr_window"], "budget_scope": scope,
         "notional": economics.get("paired_notional_formula", economics.get("notional_formula")),
-        "fee_rate_per_side": fee, "execution_policy": stop_policy,
+        "fee_rate_per_side": fee,
+        "execution_policy": stop_policy,
         "actual_loss_limit": False,
     }
+    if exit_fee is not None:
+        result["stop_spec"]["exit_fee_rate_per_side"] = exit_fee
     return result
 
 
@@ -438,6 +458,7 @@ def build_fnew_specs(document: Mapping[str, Any], *, paired_execution_enabled: b
                     canonical_strategy_id=canonical, params=params, params_frozen=copy.deepcopy(params),
                     max_loss_per_trade_usdt=risk,
                     fee_rate_per_side=TAKER_FEE_PER_SIDE if fee_mode == "taker" else MAKER_FEE_PER_SIDE,
+                    exit_fee_rate_per_side=TAKER_FEE_PER_SIDE,
                     fee_model_version=DEMO_FEE_MODEL_VERSION,
                     execution_enabled=enabled, execution_blockers=[] if enabled else [PAIR_BLOCKER],
                     blocked_execution_reason=None if enabled else PAIR_BLOCKER,

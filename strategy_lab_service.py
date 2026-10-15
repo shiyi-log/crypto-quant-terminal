@@ -195,7 +195,9 @@ def load_cost_adjusted_specs(path=None):
     versioned Demo commission contract so they can run in parallel with the
     original accounts.
     """
-    from strategy_fee_schedule import DEMO_FEE_MODEL_VERSION, MAKER_FEE_PER_SIDE
+    from strategy_fee_schedule import (
+        DEMO_FEE_MODEL_VERSION, MAKER_FEE_PER_SIDE, TAKER_FEE_PER_SIDE,
+    )
     from strategy_signals import normalize_spec
 
     selected = [spec for spec in load_specs(path)
@@ -222,6 +224,7 @@ def load_cost_adjusted_specs(path=None):
         spec["params_frozen"] = copy.deepcopy(params)
         spec["fee_model_version"] = DEMO_FEE_MODEL_VERSION
         spec["fee_rate_per_side"] = MAKER_FEE_PER_SIDE
+        spec["exit_fee_rate_per_side"] = TAKER_FEE_PER_SIDE
         normalized = normalize_spec(spec)
         result.append({**spec, **normalized})
     if {spec.get("variant_of") for spec in result} != COST_ADJUSTED_STRATEGIES:

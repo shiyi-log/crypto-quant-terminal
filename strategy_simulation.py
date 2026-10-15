@@ -130,8 +130,13 @@ def _is_active_execution_account(row: dict) -> bool:
     execution = row.get("execution") or {}
     if _is_archived_taker_account(row.get("strategy_id", "")):
         return False
+    # A disabled persisted account remains queryable by ID for audit, but must
+    # be excluded from every active projection.  This applies to retirement
+    # SQL updates as well as the pre-existing 2x2 experiment marker.
+    if execution.get("execution_enabled") is False:
+        return False
     if execution.get("execution_variant") == EXPERIMENTAL_EXECUTION_VARIANT:
-        return execution.get("execution_enabled") is not False
+        return True
     # Preserve the historical active-loop contract for all non-2x2 rows:
     # legacy 100x accounts are selected by leverage, including definitions
     # whose signal-side service marks execution as blocked for its own reason.
@@ -188,7 +193,7 @@ def _rule_hash(spec: dict) -> str:
     return strategy_rule_hash(spec)
 
 
-def _atr_execution_risk(spec: dict, fee: float) -> dict | None:
+def _atr_execution_risk(spec: dict, fee: float, exit_fee: float) -> dict | None:
     """Opt in without changing any frozen legacy execution assumptions."""
     params = spec.get("params", spec.get("params_frozen", {}))
     mode = spec.get("risk_sizing_mode")
@@ -209,8 +214,8 @@ def _atr_execution_risk(spec: dict, fee: float) -> dict | None:
             "risk_stop_atr_mult": _number(params["risk_stop_atr_mult"], "risk_stop_atr_mult", positive=True),
             "max_loss_per_trade_usdt": _number(spec.get("max_loss_per_trade_usdt", 50),
                                                  "max_loss_per_trade_usdt", positive=True),
-            "risk_round_trip_fee": 4 * fee,
-            "risk_sizing": "each_leg_notional * (risk_stop_atr_mult * entry_pair_atr_return + 4 * fee_rate_per_side) <= portfolio_risk_budget",
+            "risk_round_trip_fee": 2 * (fee + exit_fee),
+            "risk_sizing": "each_leg_notional * (risk_stop_atr_mult * entry_pair_atr_return + 2 * (entry_fee_rate_per_side + exit_fee_rate_per_side)) <= portfolio_risk_budget",
             "paired_execution_policy": spec["paired_execution_policy"],
             "pair_atr_policy": "synchronous_ohlc_envelope_true_range_actual_entry_v1",
             "entry_atr_policy": "recompute_signal_pair_ohlc_with_actual_next_open_entries_then_freeze",
@@ -252,7 +257,7 @@ def _atr_execution_risk(spec: dict, fee: float) -> dict | None:
             "risk_sizing_mode": "structural",
             "risk_scope": "signal_frozen_quantity",
             "max_loss_per_trade_usdt": maximum,
-            "risk_round_trip_fee": 2 * fee,
+            "risk_round_trip_fee": fee + exit_fee,
             "risk_sizing": "frozen_signal_quantity;planned_stop_and_fee_only",
             "notional_policy": policy,
             "stop_policy_version": stop_policy_version,
@@ -285,7 +290,7 @@ def _atr_execution_risk(spec: dict, fee: float) -> dict | None:
         "risk_sizing_mode": "entry_atr",
         "risk_stop_atr_mult": multiplier,
         "max_loss_per_trade_usdt": maximum,
-        "risk_round_trip_fee": 2 * fee,
+        "risk_round_trip_fee": fee + exit_fee,
         "risk_sizing": "notional * (risk_stop_atr_mult * entry_atr / entry_price + round_trip_fee) <= max_loss_per_trade_usdt",
         "entry_atr_policy": "freeze_signal_evidence_atr_at_next_open_fill",
         "stop_policy": "fixed_entry_atr_close_confirmed_next_open",
@@ -664,6 +669,11 @@ def execution_identity(spec: dict) -> dict:
         raise ValueError("the frozen execution version requires leverage 100")
     if execution_variant == EXPERIMENTAL_EXECUTION_VARIANT and leverage not in {30, 100}:
         raise ValueError("2x2 execution requires leverage 30 or 100")
+    # ``fee_rate_per_side`` is the entry-leg rate.  The legacy model has no
+    # separate exit field so its persisted hash and historical fills remain
+    # unchanged.  Explicit Demo identities model the observed market exit as
+    # taker and therefore get a distinct execution contract.
+    exit_fee = fee
     model = dict(copy.deepcopy(base_model), initial_capital=initial, fee_rate_per_side=fee,
                  leverage=leverage, timeframe=timeframe,
                  bar_ms=TIMEFRAME_MS[timeframe], execution_universe=list(pairs),
@@ -671,6 +681,20 @@ def execution_identity(spec: dict) -> dict:
                  research_timeframe=str(spec.get("research_timeframe", timeframe)),
                  research_universe=list(spec.get("research_universe",
                                                 spec.get("universe", pairs))))
+    # ``exit_fee_rate_per_side`` is an explicit opt-in so old Demo identities
+    # created before the taker-exit correction keep their persisted hash and
+    # audit history. New Demo definitions should carry this field.
+    explicit_exit_fee = fee_version == DEMO_FEE_MODEL_VERSION and "exit_fee_rate_per_side" in spec
+    if explicit_exit_fee:
+        exit_fee = _number(spec.get("exit_fee_rate_per_side", TAKER_FEE_PER_SIDE),
+                           "exit_fee_rate_per_side")
+        if exit_fee < 0 or exit_fee >= 0.01:
+            raise ValueError("exit_fee_rate_per_side must be in [0, 0.01)")
+        model["exit_fee_rate_per_side"] = exit_fee
+        # The explicit Demo contract charges maker on entry and market-taker
+        # on exit. Bind the combined rate into risk sizing as well as close
+        # accounting; otherwise the cap would still be understated by 2bp.
+        model["risk_round_trip_fee"] = fee + exit_fee
     if execution_variant is not None:
         if execution_variant != EXPERIMENTAL_EXECUTION_VARIANT:
             raise ValueError("unsupported execution_variant")
@@ -683,7 +707,7 @@ def execution_identity(spec: dict) -> dict:
         if stop_mode not in {"close_confirmed", "intrabar"}:
             raise ValueError("stop_execution_mode must be close_confirmed or intrabar")
         model["stop_execution_mode"] = stop_mode
-    atr_risk = _atr_execution_risk(spec, fee)
+    atr_risk = _atr_execution_risk(spec, fee, exit_fee)
     if atr_risk is not None:
         model.update(atr_risk)
         model.pop("risk_stop_pct")
@@ -700,6 +724,15 @@ def execution_identity(spec: dict) -> dict:
                          notional_policy="risk_cap_raw")
         elif model.get("risk_sizing_mode") == "entry_atr" and spec.get("stop_clamp_policy") is not None:
             raise ValueError("stop_clamp_policy requires stop_liquidation_clamp_factor")
+    aggregate_risk_cap = spec.get("aggregate_risk_cap", False)
+    if not isinstance(aggregate_risk_cap, bool):
+        raise ValueError("aggregate_risk_cap must be boolean")
+    if aggregate_risk_cap and model.get("risk_sizing_mode") in {
+        "entry_atr", "structural", "entry_pair_atr"
+    }:
+        raise ValueError(
+            "aggregate_risk_cap currently supports only fixed-stop regular accounts"
+        )
     if stop_mode == "intrabar":
         model["stop_policy"] = (
             "frozen_structural_intrabar_ohlc_stop_first_open_gap"
@@ -716,6 +749,12 @@ def execution_identity(spec: dict) -> dict:
             if not isinstance(reason, str) or not reason.strip():
                 raise ValueError("disabled execution requires blocked_execution_reason")
             model["blocked_execution_reason"] = reason
+    if aggregate_risk_cap:
+        model.update(
+            aggregate_risk_cap=True,
+            aggregate_risk_cap_scope="strategy_id+opened_candle_ms",
+            aggregate_risk_cap_version="planned_loss_v1",
+        )
     # The separate signal-side key is only meaningful for the explicitly
     # versioned 2x2 candidates.  Frozen factorial/Fnew definitions also carry
     # ``signal_rule_hash`` as evidence, but their persisted account identity is
@@ -882,7 +921,8 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         if position is None:
             cancel(order, "position_already_closed")
             return
-        fee = position["quantity"] * price * fee_rate
+        exit_fee_rate = identity["execution"].get("exit_fee_rate_per_side", fee_rate)
+        fee = position["quantity"] * price * exit_fee_rate
         gross = position["direction"] * position["quantity"] * (price - position["entry_price"])
         if liquidation:
             # The bankruptcy-price formula makes the loss exactly the posted
@@ -926,6 +966,7 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                  "liquidation_price": position.get("liquidation_price") if liquidation else None,
                  "opened_candle_ms": position["opened_candle_ms"], "closed_candle_ms": timestamp,
                  "observed_at_ms": observed_at_ms, "gross_pnl": gross, "fees": fees,
+                 "entry_fee": position["entry_fee"], "exit_fee": fee,
                  "net_pnl": net, "return_ratio": net / position["margin"],
                  "entry_order_id": position["paper_order_id"], "exit_order_id": order["paper_order_id"],
                  "group_id": position.get("group_id"),
@@ -1089,6 +1130,32 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         for order in orders:
             if order["kind"] == "exit":
                 close_position(order, open_prices[order["pair"]])
+    # A single candle can contain several independent entry groups.  For the
+    # opt-in regular-account contract, reserve one shared margin budget before
+    # sizing any group so the planned stop-plus-fee loss cannot exceed the
+    # account cap in aggregate.  ATR/structural/pair modes are rejected by
+    # execution_identity until their heterogeneous stop plans have a separate
+    # portfolio allocation contract.
+    aggregate_unit_margin = None
+    if identity["execution"].get("aggregate_risk_cap"):
+        aggregate_weights = []
+        for group_orders in eligible_groups:
+            group_entries = [item for item in group_orders if item["kind"] == "entry"]
+            if not group_entries:
+                continue
+            group_weights = [min(1.0, max(0.0, item.get("size_multiplier", 1.0)))
+                             for item in group_entries]
+            if group_orders[0].get("atomic"):
+                group_weights = [min(group_weights)] * len(group_weights)
+            aggregate_weights.extend(group_weights)
+        total_weight = sum(aggregate_weights)
+        if total_weight > 0:
+            leverage = identity["execution"]["leverage"]
+            risk_denominator = identity["execution"]["risk_stop_pct"] + identity["execution"]["risk_round_trip_fee"]
+            aggregate_unit_margin = (
+                identity["execution"]["max_loss_per_trade_usdt"]
+                / (leverage * risk_denominator * total_weight)
+            )
     for orders in eligible_groups:
         entries = [order for order in orders if order["kind"] == "entry"]
         if not entries:
@@ -1169,7 +1236,10 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
             risk_cap_margin = identity["execution"]["max_loss_per_trade_usdt"] / (
                 leverage * (identity["execution"]["risk_stop_pct"]
                             + identity["execution"]["risk_round_trip_fee"]))
-            unit = min(remaining / slots, risk_cap_margin, cash_unit)
+            limits = [remaining / slots, risk_cap_margin, cash_unit]
+            if aggregate_unit_margin is not None:
+                limits.append(aggregate_unit_margin)
+            unit = min(limits)
             amounts = [unit * weight for weight in weights]
         if any(amount <= 0 for amount in amounts):
             for order in entries:
@@ -1446,7 +1516,9 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
     """
     model, strategy_id = identity["execution"], state["strategy_id"]
     allowed_pairs, bar_ms = tuple(model["execution_universe"]), model["bar_ms"]
-    fee_rate, leverage = model["fee_rate_per_side"], model["leverage"]
+    fee_rate = model["fee_rate_per_side"]
+    exit_fee_rate = model.get("exit_fee_rate_per_side", fee_rate)
+    leverage = model["leverage"]
     events: list[dict] = []
 
     def event(kind: str, payload: dict) -> None:
@@ -1510,7 +1582,7 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
             order = next(item for item in orders if item["pair"] == pair)
             price = prices[pair]
             liquidation = pair in triggered
-            fee = position["quantity"] * price * fee_rate
+            fee = position["quantity"] * price * exit_fee_rate
             gross = (-position["margin"] if liquidation else
                      position["direction"] * position["quantity"] * (price - position["entry_price"]))
             fees = position["entry_fee"] + fee
@@ -1530,6 +1602,7 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
                      "entry_price": position["entry_price"], "exit_price": price,
                      "opened_candle_ms": position["opened_candle_ms"], "closed_candle_ms": timestamp,
                      "observed_at_ms": observed_at_ms, "gross_pnl": gross, "fees": fees,
+                     "entry_fee": position["entry_fee"], "exit_fee": fee,
                      "net_pnl": net, "return_ratio": net / position["margin"],
                      "entry_order_id": position["paper_order_id"], "exit_order_id": order["paper_order_id"],
                      "group_id": position["group_id"], "pair_group": position["pair_group"],
@@ -1893,6 +1966,20 @@ class StrategySimulation:
                     account_timeframe = str((row.get("execution") or {}).get("timeframe", "5m"))
                     if account_timeframe != timeframe:
                         raise ValueError("process batch timeframe does not match strategy account")
+                # The account may have been disabled after the service built
+                # its signal batch (for example, by the retirement SQL). Keep
+                # the append-only row queryable, but fail closed before any
+                # state transition or event append. Existing positions are
+                # deliberately left untouched for an explicit close policy.
+                if not _is_active_execution_account(row):
+                    self._preview_states.pop(strategy_id, None)
+                    processed[strategy_id] = {
+                        "events": 0,
+                        "last_candle_ms": row["state"].get("last_candle_ms"),
+                        "open_position_count": len(row["state"].get("positions", {})),
+                        "execution_skipped": True,
+                    }
+                    continue
                 preview = self._preview_states.get(strategy_id)
                 if preview is not None:
                     preview_identity = execution_identity(row["definition"])

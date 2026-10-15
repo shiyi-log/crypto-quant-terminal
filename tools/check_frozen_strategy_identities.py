@@ -46,7 +46,7 @@ CI_BASELINE_COMMIT = "87a9aaf68773984edad6ad3012286fc138f4feb7"
 CI_IDENTITY_ANCHORS = {
     "legacy": (29, "b91be7b7b4129fe2a5358cc49c6ea960cd9c3c218b4d23c8ac96240ec4d3331b"),
     "factorial": (261, "8d1a86ce9295fc60a300807d66aaf0358373fe4ba242ffac998678575c192725"),
-    "fnew": (45, "82dc236d762f1e355edec3f6ad7c1baaa8dd519a117aa32fc092f6ca7fd7c4f2"),
+    "fnew": (45, "f9ca0599a879f19a654164d1128fcefc9b8691a09786874ae50057857d08e23c"),
     "risk_execution_2x2": (24, "97405c288c1225f1a77d9b8df38f7e510b81fdddbcf3b0b41a6f4e980b6fb631"),
 }
 PROFILES = {

@@ -87,10 +87,10 @@ class PairExecutionTests(unittest.TestCase):
                     spec = self.definition(risk=risk, k=k)
                     state, events = self.enter(spec)
                     a, b = state["positions"][BTC], state["positions"][ETH]
-                    n = min(risk / (k * .004 + .0008), 150000 / (1 + .3 * 100 * .0002))
+                    n = min(risk / (k * .004 + .0012), 150000 / (1 + .3 * 100 * .0002))
                     self.assertAlmostEqual(a["quantity"] * a["entry_price"], n)
                     self.assertAlmostEqual(b["quantity"] * b["entry_price"], n)
-                    self.assertAlmostEqual(a["risk_sizing"]["planned_loss_usdt"], n * (k * .004 + .0008))
+                    self.assertAlmostEqual(a["risk_sizing"]["planned_loss_usdt"], n * (k * .004 + .0012))
                     self.assertLessEqual(a["risk_sizing"]["planned_loss_usdt"], risk + 1e-8)
                     self.assertEqual(a["risk_sizing"], b["risk_sizing"])
                     self.assertEqual(a["group_id"], b["group_id"])
@@ -107,7 +107,7 @@ class PairExecutionTests(unittest.TestCase):
         self.assertEqual(a["pair_entry_reference_prices"], {BTC: 100, ETH: 100})
         self.assertEqual(a["pair_entry_prices"], {BTC: 120, ETH: 80})
         self.assertAlmostEqual(a["quantity"] * 120, b["quantity"] * 80)
-        self.assertAlmostEqual(a["notional"], 50 / (1.5 * atr + .0008))
+        self.assertAlmostEqual(a["notional"], 50 / (1.5 * atr + .0012))
 
     def test_s32_chooses_two_legs_from_three_and_unused_context_may_be_missing(self):
         spec, legs = self.definition(), (ETH, TRX)

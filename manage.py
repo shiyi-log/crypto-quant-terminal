@@ -69,19 +69,22 @@ def services(root: Path = ROOT) -> dict[str, Service]:
                 root, root / "serve_web.py", port=8888),
         Service("sync", "文件同步入库", (python, "-u", str(root / "data_sync.py"), "--daemon"),
                 root, root / "data_sync.py"),
-        Service("market", "逐笔与盘口采集", (python, "-u", str(root / "market_stream.py")),
+        Service("market", "逐笔与盘口采集", (python, "-u", str(root / "market_stream.py"),
+                "--kline-intervals", native_futures_interval_arg),
                 root, root / "market_stream.py",
                 stream_spool_dir=Path(os.getenv("QUANT_STREAM_SPOOL_DIR",
                                                str(root / "database/runtime/market_spool"))),
-                stream_status_document="market_stream_status.json"),
+                stream_status_document="market_stream_status.json",
+                stream_market="futures", stream_kline_intervals=native_futures_intervals),
         Service("market-trx", "TRX 逐笔与盘口采集", (python, "-u", str(root / "market_stream.py"),
-                "--market", "futures", "--pairs", "TRX/USDT", "--spool-dir",
+                "--market", "futures", "--pairs", "TRX/USDT", "--kline-intervals",
+                native_futures_interval_arg, "--spool-dir",
                 str(root / "database/runtime/trx/market_spool"),
                 "--status-document-key", "market_stream_trx_status.json"),
                 root, root / "market_stream.py",
                 stream_spool_dir=root / "database/runtime/trx/market_spool",
                 stream_pairs=("TRXUSDT",), stream_status_document="market_stream_trx_status.json",
-                stream_market="futures"),
+                stream_market="futures", stream_kline_intervals=native_futures_intervals),
         Service("market-spot", "现货逐笔、盘口与 K 线采集",
                 (python, "-u", str(root / "market_stream.py"), "--market", "spot",
                  "--pairs", "BTC/USDT,ETH/USDT,TRX/USDT", "--kline-intervals", "1m,5m",
@@ -174,7 +177,7 @@ def matches_process(spec: Service, command: str, cwd: Path | None) -> bool:
         if script.resolve() != spec.script.resolve():
             return False
         if spec.stream_spool_dir is not None:
-            return matches_stream_arguments(spec, remaining[1:], cwd)
+            return matches_stream_arguments(spec, remaining[1:], cwd, allow_legacy=allow_legacy)
         return True
     # 兼容 python -m freqtrade 和旧 venv 的 freqtrade console script。
     entry = tokens[1:]
@@ -195,7 +198,7 @@ def matches_process(spec: Service, command: str, cwd: Path | None) -> bool:
     return config.resolve() == (spec.cwd / expected).resolve()
 
 
-def matches_stream_arguments(spec: Service, arguments: list[str], cwd: Path) -> bool:
+def matches_stream_arguments(spec: Service, arguments: list[str], cwd: Path, *, allow_legacy=True) -> bool:
     """同一采集脚本按 spool 区分实例，侧车还需匹配独立市场、状态与币池。"""
     names = {"--spool-dir", "--pairs", "--market", "--status-document-key", "--kline-intervals"}
     options: dict[str, str] = {}
@@ -243,14 +246,28 @@ def matches_stream_arguments(spec: Service, arguments: list[str], cwd: Path) -> 
             return False
         if spec.stream_kline_intervals is not None:
             intervals = options.get("--kline-intervals")
+            # Both existing primary and TRX processes may predate the
+            # explicit interval identity. Accept them once so restart can
+            # find and replace them; newly launched commands carry the flag.
             if intervals is None:
-                return False
+                return allow_legacy
             actual_intervals = tuple(dict.fromkeys(
                 interval.strip() for interval in intervals.split(",") if interval.strip()
             ))
             if set(actual_intervals) != set(spec.stream_kline_intervals):
                 return False
         return True
+    if spec.stream_market is not None and options.get("--market", "futures") != spec.stream_market:
+        return False
+    if spec.stream_kline_intervals is not None:
+        intervals = options.get("--kline-intervals")
+        if intervals is None:
+            return allow_legacy and spec.stream_pairs is None
+        actual_intervals = tuple(dict.fromkeys(
+            interval.strip() for interval in intervals.split(",") if interval.strip()
+        ))
+        if set(actual_intervals) != set(spec.stream_kline_intervals):
+            return False
     return True
 
 
@@ -265,13 +282,13 @@ def process_commands() -> dict[int, str]:
     return found
 
 
-def find_processes(spec: Service, commands: dict[int, str] | None = None) -> list[int]:
+def find_processes(spec: Service, commands: dict[int, str] | None = None, *, allow_legacy=True) -> list[int]:
     found = []
     for pid, command in (commands if commands is not None else process_commands()).items():
         # 先筛选命令再调用 lsof，避免每次扫描全机所有进程。
         marker = spec.script.name if spec.script else "freqtrade"
         if pid != os.getpid() and marker in command:
-            if matches_process(spec, command, process_cwd(pid)):
+            if matches_process(spec, command, process_cwd(pid), allow_legacy=allow_legacy):
                 found.append(pid)
     return sorted(found)
 

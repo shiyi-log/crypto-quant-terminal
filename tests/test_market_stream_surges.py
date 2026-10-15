@@ -341,13 +341,41 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
                 collector = MarketCollector(config, store, VolumeSurgeDetector(window_size=2))
                 await collector.seed_surge_detector()
                 await collector.receive(kline())
+                expected_kinds = ["kline", "price_candidate"] if market == "futures" else ["kline"]
                 self.assertEqual([event["kind"] for event in self.pending_events(collector)],
-                                 ["kline", "price_candidate"])
+                                 expected_kinds)
                 self.assertTrue(any(read["market"] == market and read["pair"] == pair
                                     and read["timeframe"] == "5m"
                                     for read in store.surge_reads))
                 await self.flush_all(collector)
                 self.assertEqual(store.surge_attempts, [])
+
+    async def test_spot_closed_candle_never_emits_price_candidate(self):
+        config = replace(self.config, market="spot", pairs=("BTC/USDT",),
+                         spool_dir=Path(self.temporary.name) / "spot")
+        store = SurgeStore()
+        store.history[("spot", "BTC/USDT")] = [
+            archived_candle(0, 10, closed=True), archived_candle(300_000, 10, closed=True),
+        ]
+        collector = MarketCollector(config, store, VolumeSurgeDetector(window_size=2))
+        await collector.seed_surge_detector()
+        await collector.receive(kline())
+        events = self.pending_events(collector)
+        self.assertEqual([event["kind"] for event in events], ["kline", "orderflow_surge"])
+        self.assertEqual(collector.status["price_candidate_observed"], 0)
+
+    def test_loader_rejects_spot_price_candidate(self):
+        event = {
+            "kind": "price_candidate", "market": "spot", "pair": "BTC/USDT",
+            "timeframe": "5m", "row": {"event_id": "candidate", "observation": {},
+            "method_version": "v1", "data_fingerprint": "fingerprint"},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            spool = FileSpool(Path(directory))
+            path = spool.persist([event])
+            with self.assertRaisesRegex(ValueError, "只接受 futures 5m"):
+                spool.load(path)
+            self.assertTrue(path.exists())
 
     async def test_partial_commit_survives_restart_and_does_not_stop_market_ingestion(self):
         await self.seed([archived_candle(0, 10, closed=True),

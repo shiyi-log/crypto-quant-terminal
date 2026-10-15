@@ -33,6 +33,16 @@ KLINE_INTERVALS = frozenset({
     "1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h",
     "8h", "12h", "1d", "3d", "1w", "1M",
 })
+MAX_DETERMINISTIC_BATCH_WRITE_FAILURES = 5
+_DETERMINISTIC_BATCH_ERROR_NAMES = {
+    "DataError", "CheckViolation", "ForeignKeyViolation", "NotNullViolation",
+    "InvalidTextRepresentation", "NumericValueOutOfRange",
+}
+
+
+def _is_deterministic_batch_write_error(exc: Exception) -> bool:
+    return (isinstance(exc, (ValueError, TypeError, KeyError, AttributeError))
+            or type(exc).__name__ in _DETERMINISTIC_BATCH_ERROR_NAMES)
 
 
 class CollectorAlreadyRunning(RuntimeError):
@@ -403,6 +413,8 @@ class FileSpool:
     def __init__(self, directory: Path):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
+        self._retry_directory = self.directory / ".retry"
+        self._dead_letter_directory = self.directory / ".dead-letter"
         self._lock = threading.RLock()
 
     def persist(self, events: list[dict[str, Any]]) -> Path:
@@ -438,6 +450,9 @@ class FileSpool:
                 raise ValueError(f"暂存事件类型错误：{path.name}")
             if event.get("market") not in {"spot", "futures"} or not isinstance(event.get("pair"), str):
                 raise ValueError(f"暂存事件市场或交易对错误：{path.name}")
+            if (event["kind"] == "price_candidate"
+                    and (event["market"] != "futures" or event.get("timeframe") != "5m")):
+                raise ValueError(f"在线价格爆发候选只接受 futures 5m：{path.name}")
             row = event.get("row")
             required = {
                 "tick": {"trade_id", "timestamp", "price", "quantity", "buyer_maker"},
@@ -454,11 +469,22 @@ class FileSpool:
                 raise ValueError(f"暂存订单流观测格式错误：{path.name}")
         return content["events"]
 
-    def quarantine(self, path: Path) -> Path:
+    def quarantine(self, path: Path, metadata: dict[str, Any] | None = None) -> Path:
         with self._lock:
-            target = path.with_name(f"{path.name}.{uuid.uuid4().hex}.corrupt")
+            if metadata is None:
+                target = path.with_name(f"{path.name}.{uuid.uuid4().hex}.corrupt")
+            else:
+                self._dead_letter_directory.mkdir(parents=True, exist_ok=True)
+                target = self._dead_letter_directory / f"{path.name}.{uuid.uuid4().hex}.dead"
             os.replace(path, target)
             self._sync_directory()
+            if target.parent != self.directory:
+                self._sync_directory(target.parent)
+            self.clear_write_failure(path)
+            if metadata is not None:
+                self._write_json_atomic(self._dead_letter_directory / f"{target.name}.json",
+                                        {**metadata, "batch": path.name,
+                                         "quarantined_file": target.name})
             return target
 
     def corrupt_files(self) -> list[Path]:
@@ -468,9 +494,68 @@ class FileSpool:
     def acknowledge(self, path: Path) -> None:
         path.unlink()
         self._sync_directory()
+        self.clear_write_failure(path)
 
-    def _sync_directory(self) -> None:
-        descriptor = os.open(self.directory, os.O_RDONLY)
+    def record_write_failure(self, path: Path, error: Exception, *, now_ms: int | None = None) -> dict[str, Any]:
+        with self._lock:
+            self._retry_directory.mkdir(parents=True, exist_ok=True)
+            metadata_path = self._retry_directory / f"{path.name}.json"
+            if metadata_path.exists():
+                with metadata_path.open(encoding="utf-8") as handle:
+                    previous = json.load(handle)
+            else:
+                previous = {}
+            observed_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+            result = {
+                "batch": path.name,
+                "attempts": int(previous.get("attempts", 0)) + 1,
+                "first_failure_ms": int(previous.get("first_failure_ms", observed_ms)),
+                "last_failure_ms": observed_ms,
+                "error_kind": type(error).__name__,
+                "deterministic": _is_deterministic_batch_write_error(error),
+            }
+            self._write_json_atomic(metadata_path, result)
+            return result
+
+    def write_failures(self) -> list[dict[str, Any]]:
+        with self._lock:
+            records = []
+            if not self._retry_directory.exists():
+                return records
+            for path in sorted(self._retry_directory.glob("*.json")):
+                with path.open(encoding="utf-8") as handle:
+                    records.append(json.load(handle))
+            return records
+
+    def dead_letters(self) -> list[dict[str, Any]]:
+        with self._lock:
+            records = []
+            if not self._dead_letter_directory.exists():
+                return records
+            for path in sorted(self._dead_letter_directory.glob("*.json")):
+                with path.open(encoding="utf-8") as handle:
+                    records.append(json.load(handle))
+            return records
+
+    def clear_write_failure(self, path: Path) -> None:
+        metadata_path = self._retry_directory / f"{path.name}.json"
+        try:
+            metadata_path.unlink()
+        except FileNotFoundError:
+            return
+        self._sync_directory(self._retry_directory)
+
+    def _write_json_atomic(self, path: Path, payload: dict[str, Any]) -> None:
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        self._sync_directory(path.parent)
+
+    def _sync_directory(self, directory: Path | None = None) -> None:
+        descriptor = os.open(directory or self.directory, os.O_RDONLY)
         try:
             os.fsync(descriptor)
         finally:
@@ -509,6 +594,8 @@ class MarketCollector:
             "connection_errors": {}, "last_message": None, "last_flush": None,
             "last_error": None, "last_error_at": None, "database_error": None,
             "quarantined_batches": 0, "corrupt_batches": 0, "storage_warning": None,
+            "dead_letter_batches": 0, "write_failure_batches": 0,
+            "oldest_write_failure_ms": None, "last_dead_letter": None,
         }
         self._retry_at = 0.0
         self._failure_streak = 0
@@ -761,7 +848,7 @@ class MarketCollector:
                            if key not in {"timestamp", "open", "high", "low", "close", "volume"}})
             extras["live_event_timestamp"] = extras["exchange_event_timestamp"]
             batch = [event]
-            if candidate is not None:
+            if candidate is not None and event["market"] == "futures":
                 batch.append({"kind": "price_candidate", "market": event["market"],
                               "pair": event["pair"], "timeframe": event["timeframe"], "row": candidate})
                 self.status["price_candidate_observed"] += 1
@@ -891,10 +978,50 @@ class MarketCollector:
             try:
                 await asyncio.to_thread(self._write, events)
             except Exception as exc:
+                failure = await asyncio.to_thread(self.spool.record_write_failure, path, exc)
                 self._failure_streak += 1
-                self._retry_at = time.monotonic() + min(self.config.retry_max, 2 ** min(self._failure_streak - 1, 10))
                 self.status["database_failures"] += 1
                 self.status["database_error"] = str(exc)
+                self.status["write_failure_batches"] = len(await asyncio.to_thread(self.spool.write_failures))
+                self.status["oldest_write_failure_ms"] = min(
+                    record["first_failure_ms"]
+                    for record in await asyncio.to_thread(self.spool.write_failures)
+                )
+                if (failure["deterministic"]
+                        and failure["attempts"] >= MAX_DETERMINISTIC_BATCH_WRITE_FAILURES):
+                    isolated = await asyncio.to_thread(
+                        self.spool.quarantine, path,
+                        {"reason": "deterministic_write_failure" if failure["deterministic"]
+                         else "write_failure_threshold_reached",
+                         "attempts": failure["attempts"],
+                         "error_kind": failure["error_kind"],
+                         "first_failure_ms": failure["first_failure_ms"],
+                         "last_failure_ms": failure["last_failure_ms"]})
+                    self.status["dead_letter_batches"] += 1
+                    self.status["last_dead_letter"] = {
+                        "file": isolated.name, "reason": "deterministic_write_failure"
+                        if failure["deterministic"] else "write_failure_threshold_reached",
+                        "attempts": failure["attempts"], "error_kind": failure["error_kind"],
+                    }
+                    self.status["storage_warning"] = (
+                        "确定性写入失败批次已隔离到 dead-letter，需人工检查"
+                    )
+                    self.status["data_gap_possible"] = True
+                    self.record_error(f"写入失败批次已隔离：{isolated.name}；{exc}")
+                    await self.publish_status()
+                    return True
+                if failure["attempts"] >= MAX_DETERMINISTIC_BATCH_WRITE_FAILURES:
+                    self.status["state"] = "storage_error"
+                    self.status["storage_warning"] = (
+                        "同一批次连续写入失败 5 次，已停止采集并保留原始批次；"
+                        "请检查数据库/表结构，修复后重启以继续重放"
+                    )
+                    self.record_error(f"写入连续失败达到阈值，原批次保留且采集已停止：{path.name}；{exc}")
+                    self.stop.set()
+                    return False
+                self._retry_at = time.monotonic() + min(
+                    self.config.retry_max, 2 ** min(self._failure_streak - 1, 10)
+                )
                 self.record_error(f"写入失败，批次保留并退避重试：{exc}")
                 return False
             try:
@@ -910,6 +1037,11 @@ class MarketCollector:
             self.status["inflight"] = 0
         self._failure_streak = 0
         self._retry_at = 0.0
+        self.status["write_failure_batches"] = len(await asyncio.to_thread(self.spool.write_failures))
+        failures = await asyncio.to_thread(self.spool.write_failures)
+        self.status["oldest_write_failure_ms"] = (
+            min(record["first_failure_ms"] for record in failures) if failures else None
+        )
         self.status["persisted"] += len(events)
         self.status["replayed"] += len(events)
         surges = sum(event["kind"] == "orderflow_surge" for event in events)
@@ -1006,8 +1138,16 @@ class MarketCollector:
 
     async def _publish_status(self) -> None:
         corrupt = await asyncio.to_thread(self.spool.corrupt_files)
+        dead_letters = await asyncio.to_thread(self.spool.dead_letters)
+        write_failures = await asyncio.to_thread(self.spool.write_failures)
         disk_capacity = await asyncio.to_thread(_disk_capacity, self.config.spool_dir, self.config)
         self.status["corrupt_batches"] = len(corrupt)
+        self.status["dead_letter_batches"] = len(dead_letters)
+        self.status["write_failure_batches"] = len(write_failures)
+        self.status["oldest_write_failure_ms"] = (
+            min(record["first_failure_ms"] for record in write_failures)
+            if write_failures else None
+        )
         if corrupt:
             self.status["storage_warning"] = "暂存批次损坏已隔离保留，部分行情可能缺失，需要人工检查 .corrupt 文件"
             self.status["data_gap_possible"] = True

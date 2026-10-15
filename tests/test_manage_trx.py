@@ -28,10 +28,19 @@ class TrxProcessIdentityTests(unittest.TestCase):
                          "market_stream_trx_status.json")
         self.assertNotEqual(self.primary.stream_spool_dir.parent,
                             self.sidecar.stream_spool_dir.parent)
+        self.assertEqual(self.sidecar.stream_kline_intervals, ("1m", "5m", "15m", "1h", "1d"))
 
     def test_existing_primary_pid_does_not_match_sidecar(self):
         self.assertTrue(manage.matches_process(self.primary, self.primary_command, self.root))
         self.assertFalse(manage.matches_process(self.sidecar, self.primary_command, self.root))
+
+    def test_primary_restart_identity_accepts_legacy_but_validates_new_intervals(self):
+        self.assertEqual(self.primary.stream_kline_intervals, ("1m", "5m", "15m", "1h", "1d"))
+        self.assertTrue(manage.matches_process(self.primary, self.primary_command, self.root))
+        expected = shlex.join(self.primary.command)
+        self.assertTrue(manage.matches_process(self.primary, expected, self.root))
+        self.assertFalse(manage.matches_process(
+            self.primary, expected.replace("1m,5m,15m,1h,1d", "5m"), self.root))
 
     def test_sidecar_pid_does_not_match_primary(self):
         self.assertTrue(manage.matches_process(self.sidecar, self.sidecar_command, self.root))
@@ -45,6 +54,7 @@ class TrxProcessIdentityTests(unittest.TestCase):
 
     def test_relative_spool_and_equal_options_are_recognized(self):
         command = ("python3 market_stream.py --market=futures --pairs=TRX/USDT:USDT "
+                   "--kline-intervals=1m,5m,15m,1h,1d "
                    "--spool-dir=database/runtime/trx/market_spool "
                    "--status-document-key=market_stream_trx_status.json")
         self.assertTrue(manage.matches_process(self.sidecar, command, self.root))

@@ -305,6 +305,36 @@ class CollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.collector.status["last_error"])
         self.assertIsNone(self.collector.status["last_error_at"])
 
+    async def test_deterministic_write_failure_is_dead_lettered_after_threshold(self):
+        await self.collector.persist_batch([normalize_message(trade(), self.config, 100)])
+        with patch.object(self.collector, "_write", side_effect=ValueError("契约字段错误")):
+            for _ in range(4):
+                self.collector._retry_at = 0
+                self.assertFalse(await self.collector.flush_spool())
+                self.assertTrue(self.collector.spool.pending())
+            self.collector._retry_at = 0
+            self.assertTrue(await self.collector.flush_spool())
+        self.assertEqual(self.collector.spool.pending(), [])
+        dead_letters = self.collector.spool.dead_letters()
+        self.assertEqual(len(dead_letters), 1)
+        self.assertEqual(dead_letters[0]["reason"], "deterministic_write_failure")
+        self.assertEqual(dead_letters[0]["attempts"], 5)
+        self.assertEqual(self.collector.status["dead_letter_batches"], 1)
+        self.assertTrue(self.collector.status["data_gap_possible"])
+
+    async def test_transient_write_failures_retry_then_dead_letter_at_threshold(self):
+        await self.collector.persist_batch([normalize_message(trade(), self.config, 100)])
+        with patch.object(self.collector, "_write", side_effect=ConnectionError("数据库暂不可用")):
+            for attempt in range(4):
+                self.collector._retry_at = 0
+                self.assertFalse(await self.collector.flush_spool())
+                self.assertTrue(self.collector.spool.pending())
+            self.collector._retry_at = 0
+            self.assertFalse(await self.collector.flush_spool())
+            self.assertTrue(self.collector.stop.is_set())
+            self.assertTrue(self.collector.spool.pending())
+        self.assertEqual(self.collector.spool.dead_letters(), [])
+
     async def test_database_recovery_preserves_later_unrelated_error(self):
         await self.collector.persist_batch([normalize_message(trade(), self.config, 100)])
         self.store.fail = True

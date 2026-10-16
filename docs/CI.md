@@ -36,3 +36,9 @@ CI 构建仅验证产物能生成；运行中的本机前端发布仍由 Python 
 ## 依赖与工作流维护
 
 GitHub Actions 固定到已核验的完整 commit SHA，并在旁边标明版本。升级 Python 或 Node 时同步更新项目版本声明与锁文件，再确认两个任务都通过。工作流安装方式参考 [Astral setup-uv](https://github.com/astral-sh/setup-uv)、[GitHub setup-node](https://github.com/actions/setup-node) 和 [pnpm action-setup](https://github.com/pnpm/action-setup) 的官方文档。
+
+## CD 发布流
+
+`.github/workflows/cd.yml` 负责构建可审计的发布归档。主分支 CI 成功后自动打包源码、提交 SHA、前端 `web-dist/` 和 SHA-256 校验文件，并将归档上传为 Actions artifact；工作流不连接数据库、不读取交易所凭据，也不直接部署本机服务。
+
+推送符合 `vX.Y.Z` 的 tag 后，只有该提交的 CI 成功，CD 才构建归档并创建 GitHub Release。手动运行 CD 可重新构建指定分支、tag 或提交，但不会绕过 CI 创建版本发布。生产服务器部署需要独立的目标、凭据和授权，本仓库没有配置此类信息。

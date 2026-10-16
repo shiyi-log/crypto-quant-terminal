@@ -1,0 +1,172 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or commit to package"
+        required: false
+        default: main
+        type: string
+
+concurrency:
+  group: cd-${{ github.event.workflow_run.head_sha || inputs.ref || github.run_id }}
+  cancel-in-progress: false
+
+env:
+  CI: "true"
+  TZ: Asia/Shanghai
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: 构建发布归档
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       (github.event.workflow_run.head_branch == 'main' ||
+        github.event.workflow_run.head_branch == null))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      commit_sha: ${{ steps.commit.outputs.commit_sha }}
+      package_name: ${{ steps.package.outputs.package_name }}
+      release_tag: ${{ steps.package.outputs.release_tag }}
+    steps:
+      - name: 解析源码版本
+        id: source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          DISPATCH_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
+            checkout_ref="$WORKFLOW_RUN_SHA"
+          else
+            checkout_ref="${DISPATCH_REF:-main}"
+          fi
+          printf 'checkout_ref=%s\n' "$checkout_ref" >> "$GITHUB_OUTPUT"
+
+      - name: 检出源码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.source.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - name: 记录提交身份
+        id: commit
+        run: |
+          set -euo pipefail
+          commit_sha="$(git rev-parse HEAD)"
+          printf 'commit_sha=%s\n' "$commit_sha" >> "$GITHUB_OUTPUT"
+          printf 'commit_sha=%s\n' "$commit_sha" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 安装 uv 与 Python
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: 校验后端依赖与源码
+        run: |
+          uv lock --check
+          uv sync --locked --group dev
+          uv run --frozen --group dev python -m compileall -q \
+            auth_service.py serve_web.py runtime_config.py manage.py \
+            data_store.py data_sync.py market_stream.py market_live.py candle_archive.py tests
+          uv run --frozen --group dev ruff check \
+            auth_service.py manage.py runtime_config.py data_store.py data_sync.py \
+            market_stream.py market_live.py candle_archive.py tests
+          uv run --frozen --group dev python tools/check_frozen_strategy_identities.py --ci
+
+      - name: 安装锁定的前端依赖
+        uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+        with:
+          package_json_file: vben/package.json
+          run_install: false
+          standalone: true
+
+      - name: 安装项目指定的 Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: vben/.node-version
+          cache: pnpm
+          cache-dependency-path: vben/pnpm-lock.yaml
+
+      - name: 构建前端
+        run: |
+          pnpm --dir vben install --frozen-lockfile
+          python3 -c "from pathlib import Path; from shutil import copyfile; root = Path('vben/apps/web-antd'); copyfile(root / '.env.example', root / '.env')"
+          pnpm --dir vben/apps/web-antd typecheck
+          pnpm --dir vben build:antd
+
+      - name: 打包源码与前端产物
+        id: package
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          COMMIT_SHA: ${{ steps.commit.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          short_sha="${COMMIT_SHA:0:12}"
+          release_tag="$(git tag --points-at HEAD 'v*.*.*' | head -n 1)"
+          if [[ -n "$release_tag" ]]; then
+            package_name="quant-terminal-${release_tag}"
+          else
+            package_name="quant-terminal-main-${short_sha}"
+          fi
+          package_name="${package_name//[^A-Za-z0-9._-]/-}"
+          mkdir -p "release/$package_name"
+          git archive --format=tar --prefix="$package_name/" HEAD | tar -xf - -C release
+          cp -R vben/apps/web-antd/dist "release/$package_name/web-dist"
+          printf '{\n  "commit": "%s",\n  "package": "%s"\n}\n' \
+            "$COMMIT_SHA" "$package_name" > "release/$package_name/build.json"
+          tar -czf "release/$package_name.tar.gz" -C release "$package_name"
+          sha256sum "release/$package_name.tar.gz" > "release/$package_name.tar.gz.sha256"
+          printf 'package_name=%s\n' "$package_name" >> "$GITHUB_OUTPUT"
+          printf 'release_tag=%s\n' "$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: 上传发布归档
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: quant-terminal-release
+          path: |
+            release/*.tar.gz
+            release/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: 发布 GitHub Release
+    needs: package
+    if: needs.package.result == 'success' && needs.package.outputs.release_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: 下载发布归档
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name quant-terminal-release --dir release
+
+      - name: 创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.package.outputs.release_tag }}
+          COMMIT_SHA: ${{ needs.package.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "release tag must match vX.Y.Z" >&2
+            exit 1
+          }
+          gh release create "$RELEASE_TAG" release/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Quant Terminal $RELEASE_TAG" --generate-notes

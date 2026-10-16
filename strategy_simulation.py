@@ -206,6 +206,11 @@ def _atr_execution_risk(spec: dict, fee: float, exit_fee: float) -> dict | None:
         window = _ms(params.get("atr_window", 14), "atr_window")
         if window < 1:
             raise ValueError("pair atr_window must be positive")
+        from strategy_fnew import LEGACY_PAIRED_NOTIONAL_FORMULA
+
+        legacy_paired_formula = (
+            spec.get("paired_notional_formula") == LEGACY_PAIRED_NOTIONAL_FORMULA
+        )
         return {
             "version": "independent-paper-atomic-pair-entry-atr-v1",
             "risk_sizing_mode": "entry_pair_atr",
@@ -215,7 +220,13 @@ def _atr_execution_risk(spec: dict, fee: float, exit_fee: float) -> dict | None:
             "max_loss_per_trade_usdt": _number(spec.get("max_loss_per_trade_usdt", 50),
                                                  "max_loss_per_trade_usdt", positive=True),
             "risk_round_trip_fee": 2 * (fee + exit_fee),
-            "risk_sizing": "each_leg_notional * (risk_stop_atr_mult * entry_pair_atr_return + 2 * (entry_fee_rate_per_side + exit_fee_rate_per_side)) <= portfolio_risk_budget",
+            "risk_sizing": (
+                "each_leg_notional * (risk_stop_atr_mult * entry_pair_atr_return + "
+                "4 * fee_rate_per_side) <= portfolio_risk_budget"
+                if legacy_paired_formula else
+                "each_leg_notional * (risk_stop_atr_mult * entry_pair_atr_return + "
+                "2 * (entry_fee_rate_per_side + exit_fee_rate_per_side)) <= portfolio_risk_budget"
+            ),
             "paired_execution_policy": spec["paired_execution_policy"],
             "pair_atr_policy": "synchronous_ohlc_envelope_true_range_actual_entry_v1",
             "entry_atr_policy": "recompute_signal_pair_ohlc_with_actual_next_open_entries_then_freeze",
@@ -714,8 +725,8 @@ def execution_identity(spec: dict) -> dict:
         clamp_factor = spec.get("stop_liquidation_clamp_factor")
         if model.get("risk_sizing_mode") == "entry_atr" and clamp_factor is not None:
             clamp_factor = _number(clamp_factor, "stop_liquidation_clamp_factor", positive=True)
-            if clamp_factor > 1:
-                raise ValueError("stop_liquidation_clamp_factor must be <= 1")
+            if not math.isclose(clamp_factor, 0.7, rel_tol=0, abs_tol=1e-12):
+                raise ValueError("entry_atr stop clamp factor is fixed at 0.7")
             policy = spec.get("stop_clamp_policy", "liquidation_distance_fraction")
             if policy != "liquidation_distance_fraction":
                 raise ValueError("unsupported stop_clamp_policy")

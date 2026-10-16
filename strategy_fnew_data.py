@@ -59,9 +59,22 @@ def _market_rows(store: Any, pair: str, market: str, *, limit: int,
     if as_of_ms is not None:
         rows = [row for row in rows if row["timestamp"] + interval <= as_of_ms]
     expected = None if as_of_ms is None else (int(as_of_ms) // interval - 1) * interval
-    if len(rows) < limit or (expected is not None and rows and rows[-1]["timestamp"] < expected):
+    # A native window can satisfy both the row-count and the freshness checks
+    # while still containing an internal hole (for example one missing 1h
+    # candle).  ``_continuous_suffix`` below stops at that hole, so the account
+    # would be served only the rows after it and could never accumulate enough
+    # warmup history.  Detect the hole here so the five-minute fallback runs and
+    # can repair it.
+    stamps = [row["timestamp"] for row in rows]
+    has_internal_gap = any(stamps[index] - stamps[index - 1] != interval
+                           for index in range(1, len(stamps)))
+    if (len(rows) < limit or has_internal_gap
+            or (expected is not None and rows and rows[-1]["timestamp"] < expected)):
         source_limit = limit * 12 + 2
-        if len(rows) >= limit and as_of_ms is not None:
+        # With a hole in the native history only the newer tail is needed would
+        # be wrong: the tail starts after the hole and cannot fill it.  Read the
+        # full five-minute window instead.
+        if len(rows) >= limit and as_of_ms is not None and not has_internal_gap:
             source_limit = min(source_limit, max(14, (int(as_of_ms) - rows[-1]["timestamp"])
                                                  // 300_000 + 3))
         source = store.get_candles(exchange, market, pair, "5m", market,

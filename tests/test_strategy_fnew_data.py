@@ -36,6 +36,47 @@ class Store:
                 or item["timestamp"] <= kwargs["end"]][-kwargs["limit"]:]
 
 
+class InternalGapRepairTests(unittest.TestCase):
+    """A native 1h window that is long and current but has an internal hole must
+    still run the five-minute fallback.  Otherwise ``_continuous_suffix``
+    truncates the history to the rows after the hole -- the production defect
+    behind 57 blocked 1h strategies on 2026-10-16.
+
+    Only the s33 basis path reads through ``_market_rows``, so the regression
+    test uses a basis spec and drives both the perpetual and the spot leg.
+    """
+
+    @staticmethod
+    def _datasets():
+        # 1h perpetual: hours 0,1,2,4 -- hour 3 is missing, but both the row
+        # count and the newest stamp still satisfy the loader's freshness checks.
+        perp = [row(i * HOUR, 100 + i) for i in (0, 1, 2, 4)]
+        spot = [row(i * HOUR, 80 + i) for i in (0, 1, 2, 3, 4)]
+        fivemin = [{"timestamp": i * 300_000, "open": 100, "high": 101, "low": 99,
+                    "close": 100, "volume": 1,
+                    "extras": {"closed": True, "quote_volume": 1}}
+                   for i in range(0, 60)]
+        return {("futures", PERP, "1h"): perp,
+                ("futures", PERP, "5m"): fivemin,
+                ("spot", SPOT, "1h"): spot}
+
+    def test_internal_native_gap_triggers_the_full_five_minute_fallback(self):
+        store = Store(self._datasets())
+        spec = basis_spec()
+        result = load_fnew_candles(store, spec, limit=3, as_of_ms=5 * HOUR)
+
+        perpetual_5m = [call for call in store.calls
+                        if call[1] == "futures" and call[3] == "5m"]
+        self.assertTrue(perpetual_5m,
+                        "an internal native gap must trigger the 5m fallback")
+        # The fallback must read the full window, never only the newer tail.
+        self.assertEqual(perpetual_5m[0][5]["limit"], 3 * 12 + 2)
+
+        stamps = [item["timestamp"] for item in result[PERP]]
+        self.assertEqual(stamps, [2 * HOUR, 3 * HOUR, 4 * HOUR])
+        self.assertIn(3 * HOUR, stamps, "the missing hour must be repaired")
+
+
 class FnewDataTests(unittest.TestCase):
     def test_two_actual_markets_exactly_align_without_price_substitution(self):
         futures = [row(i * HOUR, 100 + i) for i in range(4)]

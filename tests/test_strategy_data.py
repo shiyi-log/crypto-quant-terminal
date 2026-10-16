@@ -34,6 +34,47 @@ def candle_store(direct, source, target_timeframe):
     return store
 
 
+class InternalGapRepairTests(unittest.TestCase):
+    """A native window that is long and current but has an internal hole must
+    still run the lower-timeframe fallback.  ``strategy_signals._history`` keeps
+    only the final contiguous suffix, so an unrepaired hole silently shortens the
+    history -- the defect that stopped every non-s33 1h family on 2026-10-16.
+    """
+
+    HOUR = 3_600_000
+    PAIR = "BTC/USDT:USDT"
+
+    @staticmethod
+    def _spec():
+        return {"strategy_id": "probe_1h", "timeframe": "1h", "universe": ["BTC/USDT:USDT"],
+                "execution_universe": ["BTC/USDT:USDT"]}
+
+    def test_internal_native_gap_triggers_the_full_source_fallback(self):
+        hour = self.HOUR
+        # 1h: hours 0,1,2,4 -- hour 3 is missing, while the count and the newest
+        # stamp both satisfy the loader's freshness checks.
+        direct = [candle(i * hour, 100.0 + i) for i in (0, 1, 2, 4)]
+        # 5m: a complete bucket for every hour, so the hole can be repaired.
+        source = [candle(i * 300_000, 100.0) for i in range(0, 60)]
+        store = candle_store(direct, source, "1h")
+
+        result = load_spec_candles(store, self._spec(), limit=3, as_of_ms=5 * hour)
+        stamps = [row["timestamp"] for row in result[self.PAIR]]
+
+        source_calls = [call for call in store.get_candles.call_args_list
+                        if call.args[3] == "5m"]
+        self.assertTrue(source_calls, "an internal native gap must trigger the 5m fallback")
+        # The fallback must read the whole window, never only the newer tail.
+        self.assertEqual(source_calls[0].kwargs["limit"], 3 * 12 + 2)
+
+        self.assertEqual(stamps, [2 * hour, 3 * hour, 4 * hour])
+        self.assertIn(3 * hour, stamps, "the missing hour must be repaired")
+
+        history, reason = _history(result[self.PAIR], 5 * hour, bar_ms=hour)
+        self.assertIsNone(reason)
+        self.assertEqual([row["timestamp"] for row in history], stamps)
+
+
 class StrategyDataTests(unittest.TestCase):
     def test_timeframes_and_frozen_universes(self):
         self.assertEqual(timeframe_milliseconds("15m"), 900_000)

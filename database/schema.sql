@@ -274,7 +274,15 @@ BEGIN
        OR OLD.execution_hash IS DISTINCT FROM NEW.execution_hash
        OR OLD.initial_capital IS DISTINCT FROM NEW.initial_capital
        OR OLD.definition IS DISTINCT FROM NEW.definition
-       OR OLD.execution IS DISTINCT FROM NEW.execution THEN
+       OR (
+            OLD.execution IS DISTINCT FROM NEW.execution
+            AND NOT (
+                (OLD.execution - 'execution_enabled') IS NOT DISTINCT FROM
+                    (NEW.execution - 'execution_enabled')
+                AND OLD.execution->>'execution_enabled' IS DISTINCT FROM 'false'
+                AND NEW.execution->>'execution_enabled' = 'false'
+            )
+          ) THEN
         RAISE EXCEPTION 'Rule or capital change requires a new strategy identity';
     END IF;
     RETURN NEW;

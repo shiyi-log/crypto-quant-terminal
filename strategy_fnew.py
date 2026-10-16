@@ -31,6 +31,10 @@ FNEW_SIGNAL_VERSION = "fnew-causal-native-market-separated-signals-v1"
 FNEW_SINGLE_STOP_POLICY = "frozen_entry_atr_close_trigger_next_open_v1"
 FNEW_PAIR_EXECUTION_POLICY = "atomic-pair-equal-notional-ohlc-v1"
 PAIR_BLOCKER = "paired_atr_stop_policy_unimplemented"
+LEGACY_PAIRED_NOTIONAL_FORMULA = (
+    "per_leg_notional=R/(k*entry_pair_atr_return+4*fee_rate_per_side)"
+)
+LEGACY_NOTIONAL_FORMULA = "R/(k*entry_atr/entry_price+2*fee_rate_per_side)"
 BTC, ETH, TRX = "BTC/USDT:USDT", "ETH/USDT:USDT", "TRX/USDT:USDT"
 ALLOWED_RESEARCH_PAIRS = (BTC, ETH, TRX)
 RISK_BUDGETS = (("R50", 50.0), ("R200", 200.0), ("R1000", 1000.0))
@@ -301,6 +305,10 @@ def normalize_fnew_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         if exit_fee != TAKER_FEE_PER_SIDE:
             raise ValueError("Fnew Demo identity requires the verified taker exit fee")
     paired = canonical in PAIR_STRATEGIES
+    legacy_formula = (
+        spec.get("paired_notional_formula") == LEGACY_PAIRED_NOTIONAL_FORMULA
+        if paired else spec.get("notional_formula") == LEGACY_NOTIONAL_FORMULA
+    )
     sizing_mode = "entry_pair_atr" if paired else "entry_atr"
     scope = "atomic_pair_portfolio" if paired else "per_trade_leg"
     stop_policy = FNEW_PAIR_EXECUTION_POLICY if paired else FNEW_SINGLE_STOP_POLICY
@@ -353,15 +361,20 @@ def normalize_fnew_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     }
     if fee_model_version is not None:
         economics["fee_model_version"] = fee_model_version
-        economics["exit_fee_rate_per_side"] = exit_fee
+        # Demo identities created before taker exits were added do not carry
+        # this field. Keep it out of their legacy hash while retaining the
+        # strict value check above when the field is present.
+        if "exit_fee_rate_per_side" in spec or not legacy_formula:
+            economics["exit_fee_rate_per_side"] = exit_fee
     if paired:
         economics.update(
             paired_execution_policy=FNEW_PAIR_EXECUTION_POLICY,
             paired_notional_formula=(
-                "per_leg_notional=R/(k*entry_pair_atr_return+"
-                "2*(entry_fee_rate_per_side+exit_fee_rate_per_side))"
-                if fee_model_version == DEMO_FEE_MODEL_VERSION else
-                "per_leg_notional=R/(k*entry_pair_atr_return+4*fee_rate_per_side)"
+                LEGACY_PAIRED_NOTIONAL_FORMULA if legacy_formula else
+                ("per_leg_notional=R/(k*entry_pair_atr_return+"
+                 "2*(entry_fee_rate_per_side+exit_fee_rate_per_side))"
+                 if fee_model_version == DEMO_FEE_MODEL_VERSION else
+                 LEGACY_PAIRED_NOTIONAL_FORMULA)
             ),
             paired_stop_trigger="signed_sum_return_from_actual_entries<=-k*frozen_entry_pair_atr_return",
             paired_atr_method="synchronous_ohlc_envelope_true_range_actual_entry_v1",
@@ -370,9 +383,10 @@ def normalize_fnew_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         )
     else:
         economics["notional_formula"] = (
-            "R/(k*entry_atr/entry_price+entry_fee_rate_per_side+exit_fee_rate_per_side)"
-            if fee_model_version == DEMO_FEE_MODEL_VERSION else
-            "R/(k*entry_atr/entry_price+2*fee_rate_per_side)"
+            LEGACY_NOTIONAL_FORMULA if legacy_formula else
+            ("R/(k*entry_atr/entry_price+entry_fee_rate_per_side+exit_fee_rate_per_side)"
+             if fee_model_version == DEMO_FEE_MODEL_VERSION else
+             LEGACY_NOTIONAL_FORMULA)
         )
     # Supplied executable convention fields may not silently override the
     # implementation, even if a caller strips the claimed hash.
@@ -382,6 +396,10 @@ def normalize_fnew_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     rule_hash = _digest(economics)
     if spec.get("rule_hash") not in (None, rule_hash):
         raise ValueError("Fnew rule hash mismatch requires a new strategy identity")
+    if legacy_formula and spec.get("rule_hash") is not None:
+        # Frozen pre-taker-exit definitions must remain byte-for-byte intact;
+        # the checks above still validate every supplied executable field.
+        return copy.deepcopy(dict(spec))
     result = {**copy.deepcopy(dict(spec)), **economics, "params_frozen": copy.deepcopy(params),
               "rule_hash": rule_hash, "arm_id": "Fnew_20261012", "variant_of": canonical,
               "forward_hypothesis": True, "not_profit_claim": True,

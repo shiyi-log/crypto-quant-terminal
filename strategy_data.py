@@ -233,10 +233,21 @@ def load_spec_candles(store: Any, spec: Mapping[str, Any], *, limit: int = 750,
             as_of_ms is not None and rows and
             rows[-1]["timestamp"] < (int(as_of_ms) // target_ms - 1) * target_ms
         )
-        if (len(rows) < limit or direct_is_stale) and timeframe != source_timeframe:
+        # Same reasoning as ``strategy_fnew_data._market_rows``: a window can be
+        # long and current yet still contain an internal hole (for example one
+        # missing 1h candle).  The signal layer keeps only the final contiguous
+        # suffix, so an unrepaired hole silently shortens the history and the
+        # account never reaches its warmup minimum.  Detect the hole so the
+        # lower-timeframe fallback runs and can repair it.
+        stamps = [row["timestamp"] for row in rows]
+        has_internal_gap = any(stamps[index] - stamps[index - 1] != target_ms
+                               for index in range(1, len(stamps)))
+        if (len(rows) < limit or direct_is_stale or has_internal_gap) and timeframe != source_timeframe:
             source_ms = timeframe_milliseconds(source_timeframe)
             source_limit = max(limit * (target_ms // source_ms) + 2, limit + 2)
-            if len(rows) >= limit and as_of_ms is not None:
+            # Only a complete native history may be extended from its newer tail;
+            # a hole starts after the missing bar and cannot fill it.
+            if len(rows) >= limit and as_of_ms is not None and not has_internal_gap:
                 # With complete native history only its newer tail is needed.
                 # Daily inputs must not reread 216,000 five-minute rows per poll.
                 tail_bars = (int(as_of_ms) - rows[-1]["timestamp"] + source_ms - 1) // source_ms

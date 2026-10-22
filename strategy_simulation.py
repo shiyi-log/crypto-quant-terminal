@@ -24,6 +24,53 @@ from strategy_fee_schedule import (
     TAKER_FEE_PER_SIDE,
 )
 
+# 强平口径：两套并存，由账户的执行契约显式选择。
+#   bankruptcy_price —— 冻结契约（历史上的全部账户）。按 1/leverage 定破产价，
+#     损失恒等于该仓保证金。不能改动：它已写入 335 个账户的执行 hash。
+#   binance_tiered  —— 分档维持保证金模型。按币安档位取 mmr，强平价
+#     entry×(1 ∓ (1/leverage - mmr))，并给出含滑点的成交价。
+LIQUIDATION_MODELS = frozenset({"bankruptcy_price", "binance_tiered"})
+DEFAULT_LIQUIDATION_MODEL = "bankruptcy_price"
+
+
+def _tiered_liquidation_price(pair: str, entry_price: float, direction: int,
+                              leverage: float, notional: float) -> tuple[float, dict]:
+    """分档维持保证金模型下的强平价。
+
+    逐仓强平价满足 ``(liq - entry)×qty×direction + margin - liq×qty×mmr = 0``，
+    其中 ``margin = entry×qty/leverage``，解得：
+
+        long : liq = entry × (1 - 1/leverage + mmr)
+        short: liq = entry × (1 + 1/leverage - mmr)
+
+    与破产价口径（``entry×(1 - 1/leverage)``）相比，分档模型会**更早**触发强平：
+    名义价值所在档位的 mmr 越高，强平线越贴近开仓价。这正是旧口径遗漏的成本。
+
+    ⚠️ 当 ``mmr >= 1/leverage`` 时该仓位在本档位已无可维持的保证金（等价于
+    杠杆超过档位上限），真实交易所会直接拒单而不是先开仓再强平。此处按破产价
+    回退并置 ``tier_leverage_exceeded``，让审计能看到这个配置冲突，而不是
+    伪造一个「开仓即强平」的价格。
+    """
+    from decimal import Decimal
+
+    from core.execution.liquidation_model import MaintenanceMarginTier
+
+    tier = MaintenanceMarginTier.get_tier(pair, Decimal(str(notional)))
+    mmr = float(tier.mm_rate)
+    inverse_leverage = 1.0 / leverage
+    evidence = {"maintenance_margin_rate": mmr,
+                "tier_max_leverage": tier.max_leverage,
+                "inverse_leverage": inverse_leverage}
+    if mmr >= inverse_leverage:
+        evidence["tier_leverage_exceeded"] = True
+        evidence["tier_notional_lower"] = float(tier.notional_lower)
+        evidence["tier_notional_upper"] = (float(tier.notional_upper)
+                                           if tier.notional_upper != Decimal("Infinity") else None)
+        return entry_price * (1 - direction * inverse_leverage), evidence
+    evidence["tier_leverage_exceeded"] = False
+    price = entry_price * (1 - direction * (inverse_leverage - mmr))
+    return price, evidence
+
 
 BAR_MS = 300_000
 PAIRS = ("BTC/USDT:USDT", "ETH/USDT:USDT")
@@ -718,6 +765,24 @@ def execution_identity(spec: dict) -> dict:
         if stop_mode not in {"close_confirmed", "intrabar"}:
             raise ValueError("stop_execution_mode must be close_confirmed or intrabar")
         model["stop_execution_mode"] = stop_mode
+    # 同为 opt-in：省略该字段即保留冻结的破产价契约与历史 hash。
+    # 新账户可显式选择分档维持保证金模型。
+    liquidation_model = spec.get("liquidation_model")
+    if liquidation_model is not None:
+        if liquidation_model not in LIQUIDATION_MODELS:
+            raise ValueError(
+                "liquidation_model must be one of " + "/".join(sorted(LIQUIDATION_MODELS)))
+        model["liquidation_model"] = liquidation_model
+        if liquidation_model == "binance_tiered":
+            # 分档模型需要真实的逐仓杠杆档位；把口径写进契约，审计可复现。
+            model["liquidation"] = {
+                **model.get("liquidation", {}),
+                "model": "binance_tiered",
+                "trigger": "closed_candle_low_high_dual_path",
+                "margin_rate_source": "binance_usdt_m_maintenance_tiers",
+                "settlement": "crossing_price_with_adverse_tick_slippage",
+                "fallback": "bankruptcy_price when tier table has no entry",
+            }
     atr_risk = _atr_execution_risk(spec, fee, exit_fee)
     if atr_risk is not None:
         model.update(atr_risk)
@@ -1017,6 +1082,8 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                    "side": position["side"], "quantity": position["quantity"],
                    "margin": position["margin"], "leverage": position["leverage"],
                    "liquidation_price": liquidation_price, "trigger_price": trigger_price,
+                   "liquidation_model": position.get("liquidation_model",
+                                                     DEFAULT_LIQUIDATION_MODEL),
                    "reason": "liquidation"}
         if identity["execution"].get("risk_sizing_mode") in {"entry_atr", "structural"}:
             liquidation_order["liquidation_phase"] = phase
@@ -1026,6 +1093,8 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
 
     fee_rate = identity["execution"]["fee_rate_per_side"]
     stop_mode = identity["execution"].get("stop_execution_mode", "close_confirmed")
+    liquidation_model = identity["execution"].get("liquidation_model",
+                                                  DEFAULT_LIQUIDATION_MODEL)
     open_prices = {pair: candle["open"] for pair, candle in candles.items()}
     liquidated_at_open = {}
     stopped_at_open: dict[str, str] = {}
@@ -1269,6 +1338,10 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                         if structural_sizing else margin * leverage / price)
             notional = quantity * price
             liquidation_price = price * (1 - direction / leverage)
+            liquidation_evidence = None
+            if liquidation_model == "binance_tiered":
+                liquidation_price, liquidation_evidence = _tiered_liquidation_price(
+                    pair, price, direction, leverage, notional)
             state["cash"] -= margin + fee
             state["fees_paid"] += fee
             position = {"strategy_id": strategy_id, "pair": pair, "direction": direction,
@@ -1276,6 +1349,7 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                         "leverage": leverage, "notional": notional,
                         "entry_price": price, "mark_price": price, "margin": margin,
                         "liquidation_price": liquidation_price,
+                        "liquidation_model": liquidation_model,
                         "opened_candle_ms": timestamp, "entry_fee": fee,
                         "entry_evidence": copy.deepcopy(order.get("evidence", {})),
                         "entry_atr": order.get("evidence", {}).get("atr"),
@@ -1308,10 +1382,14 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
             elif stop_mode == "intrabar" and not structural_sizing:
                 position["stop_level"] = price * (1 - direction * identity["execution"]["risk_stop_pct"])
             state["positions"][pair] = position
+            liquidation_payload = ({"liquidation_model": liquidation_model,
+                                    "liquidation_tier": liquidation_evidence}
+                                   if liquidation_evidence is not None else
+                                   {"liquidation_model": liquidation_model})
             event("order_filled", dict(order, status="filled", fill_price=price, quantity=quantity,
                   margin=margin, leverage=leverage, notional=notional,
                   liquidation_price=liquidation_price, fee=fee, observed_at_ms=observed_at_ms,
-                  fill_candle_ms=timestamp,
+                  fill_candle_ms=timestamp, **liquidation_payload,
                   fill_model=EXECUTION_MODEL["fill_model"], simulation_fill_model=True, **risk_payload))
             event("position_opened", position)
 
@@ -1530,6 +1608,7 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
     fee_rate = model["fee_rate_per_side"]
     exit_fee_rate = model.get("exit_fee_rate_per_side", fee_rate)
     leverage = model["leverage"]
+    liquidation_model = model.get("liquidation_model", DEFAULT_LIQUIDATION_MODEL)
     events: list[dict] = []
 
     def event(kind: str, payload: dict) -> None:
@@ -1752,12 +1831,18 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
             fee, quantity = notional * fee_rate, notional / price
             state["cash"] -= margin + fee
             state["fees_paid"] += fee
+            pair_liquidation_price = price * (1 - direction / leverage)
+            if liquidation_model == "binance_tiered":
+                # 配对账户同样按档位取强平价；两条腿名义相同，但档位可能不同
+                pair_liquidation_price, _ = _tiered_liquidation_price(
+                    pair, price, direction, leverage, notional)
             position = {"strategy_id": strategy_id, "pair": pair, "direction": direction,
                         "side": "long" if direction == 1 else "short", "quantity": quantity,
                         "leverage": leverage, "notional": notional, "entry_price": price,
                         "entry_notional": notional,
                         "mark_price": price, "margin": margin, "entry_fee": fee,
-                        "liquidation_price": price * (1 - direction / leverage),
+                        "liquidation_price": pair_liquidation_price,
+                        "liquidation_model": liquidation_model,
                         "opened_candle_ms": timestamp, "entry_evidence": copy.deepcopy(order["evidence"]),
                         "group_id": order["group_id"], "paper_order_id": order["paper_order_id"],
                         "exchange_order_id": None, "trade_id": "trade-" + order["order_id"],

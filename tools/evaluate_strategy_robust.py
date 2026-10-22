@@ -77,6 +77,66 @@ def _bh_fdr(p_values: list[float]) -> list[float]:
     return adjusted
 
 
+VERDICT_KILL = "KILL"
+VERDICT_KEEP = "KEEP"
+VERDICT_UNDECIDED = "UNDECIDED"
+VERDICT_INSUFFICIENT = "样本不足"
+
+
+def _verdict(row: dict, *, n_min: int) -> tuple[str, str]:
+    """按预注册 §1 的三条规则裁定单个策略族。
+
+    返回 (裁定, 理由)。
+
+    §1 原文：
+      - 样本不足：有效 n < N_min ⇒ 不动，禁止下任何结论
+      - KILL：n ≥ N_min 且净收益均值 ≤ 0
+      - KEEP：n ≥ N_min 且均值 > 0 且 bootstrap 95% CI 下界 > 0
+              （注意：KEEP 只等于「继续观察」，**不等于**盈利/通过/可用）
+      - UNDECIDED：n ≥ N_min 且均值 > 0 但 CI 含 0
+
+    ⚠️ 这里用**时间块去重后的有效 n**（唯一入场时刻），不是原始笔数。
+    同一入场时刻的 9 个变体是相关样本，按笔数计数会把 n 膨胀 3~9 倍。
+    """
+    if row["n"] < n_min:
+        return VERDICT_INSUFFICIENT, f"有效 n={row['n']} < N_min={n_min}，禁止下结论"
+    lo, hi = row["mean_ci"]
+    if row["mean"] <= 0:
+        return VERDICT_KILL, f"均值 {row['mean']:+.3f} ≤ 0（95% CI [{lo:+.3f}, {hi:+.3f}]）"
+    if lo > 0:
+        return VERDICT_KEEP, (f"均值 {row['mean']:+.3f} > 0 且 CI 下界 {lo:+.3f} > 0"
+                              "（仅表示继续观察，不等于可用）")
+    return VERDICT_UNDECIDED, f"均值 {row['mean']:+.3f} > 0 但 CI [{lo:+.3f}, {hi:+.3f}] 含 0"
+
+
+def _print_verdicts(results: list[dict], *, n_min: int) -> None:
+    """打印预注册 §1 裁定表。"""
+    buckets: dict[str, list[tuple[dict, str]]] = {
+        VERDICT_KEEP: [], VERDICT_KILL: [],
+        VERDICT_UNDECIDED: [], VERDICT_INSUFFICIENT: [],
+    }
+    for row in results:
+        name, reason = _verdict(row, n_min=n_min)
+        buckets[name].append((row, reason))
+
+    print()
+    print(f"  ══ 预注册 §1 裁定（N_min={n_min} 个唯一入场时刻）══")
+    for name in (VERDICT_KEEP, VERDICT_KILL, VERDICT_UNDECIDED, VERDICT_INSUFFICIENT):
+        items = buckets[name]
+        print(f"    {name}: {len(items)} 个")
+        for row, reason in sorted(items, key=lambda x: -x[0]["mean"]):
+            print(f"      · {row['family'][:40]:<40} n={row['n']:<4} {reason}")
+
+    if buckets[VERDICT_KEEP]:
+        print()
+        print("    ⚠️ KEEP 只等于「观察继续」，不等于盈利、不等于通过、不可据此上线；")
+        print("       上线仍需人工闸门与独立复核。")
+
+    if not buckets[VERDICT_KEEP] and not buckets[VERDICT_KILL]:
+        print()
+        print("    ⇒ 没有任何族达到裁定门槛。此时说\"有信号\"或\"没信号\"都不成立。")
+
+
 def _normal_p(t_stat: float) -> float:
     return math.erfc(abs(t_stat) / math.sqrt(2))
 
@@ -102,8 +162,13 @@ def main() -> int:
     parser.add_argument("--risk-cap", type=float, default=50.0,
                         help="只评估 execution.max_loss_per_trade_usdt 等于该值的账户（默认 50）")
     parser.add_argument("--min-n", type=int, default=10,
-                        help="族级最小【有效】样本量（默认 10）")
+                        help="族级最小【有效】样本量（默认 10）。"
+                             "裁定需要 N_min=100（见 --verdict）；此参数只控制是否打印")
     parser.add_argument("--bootstrap", type=int, default=BOOTSTRAP_ROUNDS)
+    parser.add_argument("--verdict", action="store_true",
+                        help="按预注册 §1 输出 KILL/KEEP/UNDECIDED 裁定（要求有效 n>=100）")
+    parser.add_argument("--n-min", type=int, default=100,
+                        help="裁定所需最小有效样本量（预注册 §2 固定为 100）")
     args = parser.parse_args()
 
     url = _database_url()
@@ -249,6 +314,14 @@ def main() -> int:
     print("     直接用原始笔数做 bootstrap/BH-FDR 会把 n 膨胀 3~9 倍并产生假显著。")
     print("     top1/top3 是该族【唯一信号时刻】净 P&L 中最大 1/3 个占总 P&L 的比例；")
     print("     top1>100% 意味着去掉最好的那一个信号观测，该族就转负。")
+
+    if args.verdict:
+        _print_verdicts(results, n_min=args.n_min)
+    else:
+        print()
+        print(f"  ⚠️ 未输出裁定。预注册 §1 要求有效 n ≥ {args.n_min} 后再做 "
+              "KILL/KEEP/UNDECIDED 分类；加 --verdict 打印裁定表。")
+        print("     上面这些族目前都没有达到裁定门槛时，任何\"有信号/没信号\"的说法都不成立。")
     return 0
 
 

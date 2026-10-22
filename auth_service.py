@@ -258,6 +258,19 @@ def make_token(username):
     return f"{body}.{sig}"
 
 
+def _research_id_of(event):
+    """从账本事件中解析研究ID。
+
+    账本条目本身不带 research_id 列；研究ID写在 payload 里（风险门控/规格冻结等
+    事件都用 ``research_id`` 标记）。缺失时返回 None，不能用空串冒充某个研究。
+    """
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("research_id")
+    return value if isinstance(value, str) and value else None
+
+
 def verify_token(token):
     if not token or "." not in token:
         return None
@@ -484,6 +497,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._local_strategy_lab()
         if urllib.parse.urlsplit(self.path).path == "/api/locals/research-ledger":
             return self._local_research_ledger()
+        if urllib.parse.urlsplit(self.path).path == "/api/locals/research-ledger-events":
+            return self._local_research_ledger_events()
+        if urllib.parse.urlsplit(self.path).path == "/api/locals/liquidation-events":
+            return self._local_liquidation_events()
         if self.path.startswith("/api/locals/research"):
             return self._local_research()
         if self.path.startswith("/api/locals/ops"):
@@ -503,6 +520,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith(FT_WEB_PREFIX + "/"):
             return self._proxy_web()
         # 必须排在通用 /api/ 代理之前，否则会被转发给 Freqtrade（那边没有这个路径）
+        # Research ledger API (must be before generic /api/ proxy)
+        if self.path.startswith("/api/research-ledger"):
+            return self._local_research_ledger()
         if self.path.startswith("/api/ws-token"):
             return self._ws_token()
         if self.path.startswith("/run_progress.json"):
@@ -523,6 +543,61 @@ class Handler(BaseHTTPRequestHandler):
     def _unsupported_demo_method(self):
         self.close_connection = True
         return self._send(405, {"detail": "demo_method_not_allowed"})
+
+    def _local_research_ledger_events(self):
+        """研究账本事件列表（供前端时间线使用）。
+
+        与 ``_local_research_ledger`` 的区别：后者返回研究证据账的完整投影
+        （模型代际、实际成交、方向），这里只返回按事件类型/研究ID筛选后的事件
+        时间线，供「研究账本」页面渲染。
+        """
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+        try:
+            import research_ledger
+
+            store = get_store()
+            query = urllib.parse.parse_qs(
+                urllib.parse.urlsplit(self.path).query, keep_blank_values=True
+            )
+            for name in ("research_id", "event_type", "limit"):
+                if len(query.get(name, [])) > 1:
+                    return self._send(400, {"detail": f"{name} 只能指定一次"})
+
+            research_id = (query.get("research_id") or [None])[0] or None
+            event_type = (query.get("event_type") or [None])[0] or None
+            raw_limit = (query.get("limit") or ["200"])[0]
+            try:
+                limit = max(1, min(int(raw_limit), 1000))
+            except ValueError:
+                return self._send(400, {"detail": "limit 必须是整数"})
+
+            events = research_ledger._all_events(store)
+            if event_type:
+                events = [item for item in events if item["event_type"] == event_type]
+            if research_id:
+                events = [
+                    item for item in events
+                    if _research_id_of(item) == research_id
+                ]
+            events = events[::-1][:limit]
+
+            projected = []
+            for item in events:
+                created = item.get("created_at")
+                projected.append({
+                    "event_id": item["event_id"],
+                    "timestamp": (created.isoformat() if hasattr(created, "isoformat")
+                                  else str(created)),
+                    "event_type": item["event_type"],
+                    "research_id": _research_id_of(item),
+                    "gate_type": (item.get("payload") or {}).get("gate_type"),
+                    "payload": item.get("payload") or {},
+                })
+            return self._send(200, {"events": projected, "total": len(projected)})
+        except (OSError, ValueError, RuntimeError, psycopg.Error, PoolTimeout) as exc:
+            print(f"[auth] 研究账本事件查询失败: {type(exc).__name__}", file=sys.stderr)
+            return self._send(503, {"detail": "研究账本暂时不可用，请稍后重试"})
 
     def _local_database(self):
         """数据中心只提供受认证保护的查询，不接受任意 SQL 或文件路径。"""
@@ -1155,6 +1230,35 @@ class Handler(BaseHTTPRequestHandler):
             # 不把本地路径或源文件内容返回给浏览器；数据库异常由外层统一转 503。
             print(f"[auth] 研究证据账同步失败: {type(exc).__name__}", file=sys.stderr)
             return self._send(503, {"detail": "研究证据账暂时不可用，请检查同步源"})
+
+    def _local_liquidation_events(self):
+        """返回强平事件列表
+
+        支持查询参数:
+        - strategy_id: 可选的策略ID过滤
+        - limit: 返回的最大事件数量 (默认100)
+        """
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+        try:
+            import research_ledger
+
+            store = get_store()
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            strategy_id = (query.get("strategy_id") or [None])[0]
+            limit_str = (query.get("limit") or ["100"])[0]
+            try:
+                limit = int(limit_str) if limit_str else 100
+            except ValueError:
+                return self._send(400, {"detail": "limit必须是整数"})
+
+            events = research_ledger.get_liquidation_events(
+                store, strategy_id=strategy_id, limit=limit
+            )
+            return self._send(200, {"events": events, "count": len(events)})
+        except (OSError, ValueError, RuntimeError, psycopg.Error, PoolTimeout) as exc:
+            print(f"[auth] 强平事件查询失败: {type(exc).__name__}", file=sys.stderr)
+            return self._send(503, {"detail": "强平事件暂时不可用,请稍后重试"})
 
     def _local_forward_paper(self):
         """Read a forward-paper run from the fixed artifact root.

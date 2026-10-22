@@ -17,6 +17,38 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import List, Tuple
 
+# ── Taker 滑点：盘口实测（2026-10-22）──
+# 来源：quant.orderbooks（20 档、约 100ms 快照）逐档吃单累计，取最近 400 个快照的
+# 中位数。数值是「相对中间价的加权成交价偏移」，不含手续费。
+#
+#   交易对             1k USDT   10k USDT   100k USDT
+#   BTC/USDT:USDT      0.01bp     0.01bp      0.01bp
+#   ETH/USDT:USDT      0.02bp     0.02bp      0.35bp (p95)
+#   TRX/USDT:USDT      0.15bp     0.23bp      3.26bp
+#
+# ⚠️ 局限（必须随结果一起报告，不能当作已验证的实盘成本）：
+#  1. 这是**盘口快照静态吃单**，未模拟撤单、抢跑与成交过程中的盘口变化；
+#  2. 只覆盖单一 7 小时窗口（13:37–17:06 CST），未覆盖高波动时段；
+#  3. 20 档之外的部分按未成交处理，深度不足时该样本被丢弃（TRX 100k 只剩 308/400）；
+#  4. BTC/ETH 的 0.01bp 量级意味着在此窗口内该规模几乎无冲击——这本身是
+#     窗口特性，不能外推为长期结论。
+#
+# 因为上述局限会导致**低估**，对外报告时一律使用 stress 档（2×）而非中位数。
+HISTORICAL_SLIPPAGE = {
+    'BTCUSDT': {
+        'maker': Decimal('0'),          # 挂单不跨价差
+        'taker': Decimal('0.0000001'),  # 0.01bp（实测中位数）
+    },
+    'ETHUSDT': {
+        'maker': Decimal('0'),
+        'taker': Decimal('0.0000002'),  # 0.02bp（实测中位数）
+    },
+    'TRXUSDT': {
+        'maker': Decimal('0'),
+        'taker': Decimal('0.000033'),   # 3.26bp（100k 档，取最差流动性）
+    },
+}
+
 
 @dataclass
 class OrderbookSnapshot:
@@ -94,17 +126,7 @@ class SlippageEstimator:
 
     def __init__(self):
         """初始化滑点估算器"""
-        # 历史滑点统计（待实测数据填充）
-        self.historical_slippage = {
-            'BTCUSDT': {
-                'maker': Decimal('0.0001'),  # 1bp
-                'taker': Decimal('0.0001'),  # 1bp
-            },
-            'ETHUSDT': {
-                'maker': Decimal('0.0001'),
-                'taker': Decimal('0.0001'),
-            },
-        }
+        self.historical_slippage = dict(HISTORICAL_SLIPPAGE)
 
     def estimate_from_orderbook(
         self,

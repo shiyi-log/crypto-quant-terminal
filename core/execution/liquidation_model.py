@@ -236,10 +236,22 @@ class LiquidationModel:
         TODO: 实现完整强平检查逻辑
         """
         # 计算强平价
+        #
+        # ⚠️ 必须包含杠杆项。Binance 逐仓强平价（名义为 entry×qty）满足
+        #     (liq - entry)×qty×direction + margin - liq×qty×mmr = 0
+        # 其中 margin = entry×qty/leverage，解得：
+        #     long : liq = entry × (1 - 1/leverage + mmr)
+        #     short: liq = entry × (1 + 1/leverage - mmr)
+        # 旧实现漏掉 1/leverage，在 100× 下把强平线放在 entry×(1-0.4%)≈0.996，
+        # 而真实应在 entry×0.994；漏项会让强平提前约 0.6% 触发，系统性高估强平损失。
+        leverage = position.leverage if position.leverage and position.leverage > 0 else Decimal('1')
+        inverse_leverage = Decimal('1') / leverage
         if position.side == 'long':
-            liq_price = position.entry_price * (Decimal('1') - maintenance_margin_rate)
+            liq_price = position.entry_price * (
+                Decimal('1') - inverse_leverage + maintenance_margin_rate)
         else:  # short
-            liq_price = position.entry_price * (Decimal('1') + maintenance_margin_rate)
+            liq_price = position.entry_price * (
+                Decimal('1') + inverse_leverage - maintenance_margin_rate)
 
         # 检查标记价触发
         is_liquidated_by_mark = False

@@ -116,13 +116,16 @@ class TestLiquidationModel:
             leverage=Decimal('100'),
         )
 
-        # mm_rate=0.4%: liq_price = 50000 × (1 - 0.004) = 49800
+        # 强平价必须含杠杆项：liq = entry × (1 - 1/leverage + mmr)
+        #   = 50000 × (1 - 0.01 + 0.004) = 49700
+        # 旧公式漏掉 1/leverage，会得到 49800——在 100× 下把强平线提前 0.2%，
+        # 系统性高估强平频率与损失。
         bar = Candle(
             timestamp=1001000,
             mark_open=Decimal('50100'),
             mark_high=Decimal('50100'),
-            mark_low=Decimal('49700'),  # ← 穿过强平价
-            mark_close=Decimal('49800'),
+            mark_low=Decimal('49650'),  # ← 穿过强平价 49700
+            mark_close=Decimal('49700'),
             trade_open=Decimal('50100'),
             trade_high=Decimal('50100'),
             trade_low=Decimal('49900'),  # 交易价未穿过
@@ -133,7 +136,7 @@ class TestLiquidationModel:
 
         assert check.is_liquidated_by_mark is True
         assert check.is_liquidated_by_trade is False
-        assert check.liquidation_price == Decimal('49800')
+        assert check.liquidation_price == Decimal('49700')
         # realized_loss应为保证金（5000/100=50 USDT）
         assert check.realized_loss is not None
 
@@ -149,11 +152,12 @@ class TestLiquidationModel:
             leverage=Decimal('100'),
         )
 
-        # mm_rate=0.4%: liq_price = 3000 × (1 + 0.004) = 3012
+        # 空头强平价含杠杆项：liq = entry × (1 + 1/leverage - mmr)
+        #   = 3000 × (1 + 0.01 - 0.004) = 3018
         bar = Candle(
             timestamp=1001000,
             mark_open=Decimal('2990'),
-            mark_high=Decimal('3005'),  # 标记价未穿过
+            mark_high=Decimal('3005'),  # 标记价未穿过 3018
             mark_low=Decimal('2980'),
             mark_close=Decimal('3000'),
             trade_open=Decimal('2995'),
@@ -165,9 +169,9 @@ class TestLiquidationModel:
         check = model.check_position(position, bar, maintenance_margin_rate=Decimal('0.004'))
 
         assert check.is_liquidated_by_trade is True
-        assert check.liquidation_price == Decimal('3012')
-        # 不利滑点：空头买入，应该 >= 3012
-        assert check.liquidation_fill_price >= Decimal('3012')
+        assert check.liquidation_price == Decimal('3018')
+        # 不利滑点：空头买入，应该 >= 3018
+        assert check.liquidation_fill_price >= Decimal('3018')
 
     def test_no_liquidation_within_maintenance_margin(self, model):
         """在维持保证金范围内不触发强平"""

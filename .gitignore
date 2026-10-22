@@ -77,3 +77,4 @@ __pycache__/
 /artifacts/*backup*.jsonl
 /test_quant.db
 /lefthook.yml
+/量化/

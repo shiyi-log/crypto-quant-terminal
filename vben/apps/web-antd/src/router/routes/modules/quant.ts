@@ -145,6 +145,15 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        name: 'QuantResearchLedger',
+        path: 'research-ledger',
+        component: () => import('#/views/quant/research-ledger/index.vue'),
+        meta: {
+          icon: 'lucide:book-open-check',
+          title: '研究账本',
+        },
+      },
+      {
         name: 'QuantIteration',
         path: 'iteration',
         component: () => import('#/views/quant/iteration/index.vue'),

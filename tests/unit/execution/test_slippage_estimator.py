@@ -129,9 +129,12 @@ class TestSlippageEstimator:
             notional=Decimal('10000'),
         )
 
-        # 应使用历史滑点（1bp）
-        assert estimate.estimated_slippage_bps == Decimal('0.0001')
-        assert estimate.estimated_slippage_usdt == Decimal('10000') * Decimal('0.0001')
+        # 应使用盘口实测的历史滑点（BTC 中位数 0.01bp）
+        from core.execution.slippage_estimator import HISTORICAL_SLIPPAGE
+
+        expected_bps = HISTORICAL_SLIPPAGE['BTCUSDT']['taker']
+        assert estimate.estimated_slippage_bps == expected_bps
+        assert estimate.estimated_slippage_usdt == Decimal('10000') * expected_bps
         assert estimate.confidence == 'low'
         assert estimate.method == 'conservative'
 
@@ -178,15 +181,21 @@ class TestSlippageEstimator:
 class TestSlippageScenarios:
     """测试不同滑点场景"""
 
-    def test_btc_vs_eth_slippage(self):
-        """BTC vs ETH：历史滑点对比"""
+    def test_slippage_is_per_symbol_from_measurement(self):
+        """滑点按币种分别实测，不再共用一个拍脑袋的 1bp。
+
+        TRX 的 20 档深度远薄于 BTC/ETH，实测中位数相差三个数量级；
+        若仍用统一常数，等于系统性低估 TRX 的执行成本。
+        """
         estimator = SlippageEstimator()
 
         btc_est = estimator.estimate_conservative('BTCUSDT', 'buy', Decimal('10000'))
-        eth_est = estimator.estimate_conservative('ETHUSDT', 'buy', Decimal('10000'))
+        trx_est = estimator.estimate_conservative('TRXUSDT', 'buy', Decimal('10000'))
 
-        # 两者应有相同的基准滑点（当前实现）
-        assert btc_est.estimated_slippage_bps == eth_est.estimated_slippage_bps
+        assert trx_est.estimated_slippage_bps > btc_est.estimated_slippage_bps
+        # 未知交易对回退到 1bp 保守值，而不是 0
+        unknown = estimator.estimate_conservative('UNKNOWNUSDT', 'buy', Decimal('10000'))
+        assert unknown.estimated_slippage_bps == Decimal('0.0001')
 
     def test_large_order_slippage_scaling(self):
         """大订单滑点应线性增长（保守估计）"""

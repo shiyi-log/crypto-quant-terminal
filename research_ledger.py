@@ -898,6 +898,90 @@ def sync(store, registry_path: str, trials_path: str | None = None, *, source_id
     return ledger_payload(store, source_id=source_id, registry_path=registry_path)
 
 
+LIQUIDATION_EVENT_TYPE = "liquidation"
+LIQUIDATION_DETAIL_EVENT_TYPE = "liquidation_model_details"
+
+
+def get_liquidation_events(store, *, strategy_id: str | None = None,
+                           limit: int | None = 100) -> list[dict[str, Any]]:
+    """读取策略模拟账户的强平事件。
+
+    这些事件由 ``strategy_simulation.apply_closed_batch`` 写入
+    ``strategy_sim_events``（**不是** research_ledger_events——账本记录的是研究
+    决策，强平属于账户执行事实）。事件类型：
+
+    * ``liquidation`` —— ``liquidate()`` 写入，含交易对、方向、保证金、强平价
+    * ``liquidation_model_details`` —— 强平模型检查命中后写入，含维持保证金率、
+      标记价/成交价双路径触发标志、含滑点成交价
+
+    两者按 ``(strategy_id, candle_ms, pair)`` 关联：同一根 K 线、同一交易对、
+    同一账户只会发生一次强平。
+
+    ``strategy_id`` 是表列，可直接过滤。
+    """
+    conditions = ["event_type = ANY(%s)"]
+    params: list[Any] = [[LIQUIDATION_EVENT_TYPE, LIQUIDATION_DETAIL_EVENT_TYPE]]
+    if strategy_id:
+        conditions.append("strategy_id = %s")
+        params.append(strategy_id)
+
+    query = ("SELECT event_id, strategy_id, event_type, candle_ms, payload, observed_at_ms "
+             "FROM strategy_sim_events WHERE " + " AND ".join(conditions)
+             + " ORDER BY sequence_id DESC")
+    if limit is not None:
+        # 明细事件与主事件成对出现，取 2 倍上限以覆盖二者
+        query += " LIMIT %s"
+        params.append(max(2, int(limit) * 2))
+
+    with store._connection() as conn:
+        rows = conn.execute(query, tuple(params)).fetchall()
+
+    base: dict[tuple, dict[str, Any]] = {}
+    details: dict[tuple, dict[str, Any]] = {}
+    for row in rows:
+        item = dict(row) if isinstance(row, dict) else {
+            "event_id": row[0], "strategy_id": row[1], "event_type": row[2],
+            "candle_ms": row[3], "payload": row[4], "observed_at_ms": row[5]
+        }
+        payload = item["payload"] if isinstance(item["payload"], dict) else {}
+        key = (item["strategy_id"], item["candle_ms"], payload.get("pair"))
+        if item["event_type"] == LIQUIDATION_EVENT_TYPE:
+            base.setdefault(key, item)
+        else:
+            details.setdefault(key, item)
+
+    events: list[dict[str, Any]] = []
+    for key, item in base.items():
+        payload = item["payload"] if isinstance(item["payload"], dict) else {}
+        detail = details.get(key)
+        detail_payload = (detail["payload"]
+                          if detail and isinstance(detail["payload"], dict) else {})
+        events.append({
+            "event_id": item["event_id"],
+            "strategy_id": item["strategy_id"],
+            "candle_ms": item["candle_ms"],
+            "pair": payload.get("pair"),
+            "side": payload.get("side"),
+            "quantity": payload.get("quantity"),
+            "leverage": payload.get("leverage"),
+            "margin": payload.get("margin"),
+            "liquidation_price": payload.get("liquidation_price"),
+            "trigger_price": payload.get("trigger_price"),
+            "liquidation_phase": payload.get("liquidation_phase"),
+            # 以下来自强平模型明细；缺失时为 None，不能用 0 冒充
+            "maintenance_margin_rate": detail_payload.get("maintenance_margin_rate"),
+            "liquidation_price_theory": detail_payload.get("liquidation_price_theory"),
+            "triggered_by_mark": detail_payload.get("triggered_by_mark"),
+            "triggered_by_trade": detail_payload.get("triggered_by_trade"),
+            "fill_price_with_slippage": detail_payload.get("fill_price_with_slippage"),
+            "realized_loss_estimate": detail_payload.get("realized_loss_estimate"),
+            "model_detail_available": detail is not None,
+        })
+
+    events.sort(key=lambda item: (-int(item["candle_ms"] or 0), item["strategy_id"]))
+    return events[:limit] if limit is not None else events
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="sync research/deployment evidence ledger")
     parser.add_argument("--sync", action="store_true")

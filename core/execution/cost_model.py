@@ -20,10 +20,38 @@ BINANCE_FEES = {
     'taker': Decimal('0.0004'),   # 0.04% - 吃单成交
 }
 
+# ── Maker 成交与逆向选择：盘口实测（2026-10-22）──
+# 来源：tools/measure_maker_adverse_real.py，quant.orderbooks 的 5 秒桶
+# 判定口径：挂单价 P = mid×(1+δ)，成交 = 后续桶 max(bid) ≥ P —— 这是【乐观上界】，
+# 未计排队；真实成交率只会更低。
+#
+#   pair            δ=0.5bp  δ=1.0bp  δ=2.0bp  δ=5.0bp
+#   BTC/USDT:USDT     65.1%    57.7%    43.3%    12.6%
+#   ETH/USDT:USDT     78.8%    72.4%    59.9%    26.6%
+#
+# 1bp 档取两币较保守值（BTC 57.7%），因为成本模型必须偏保守才不会被前向结果推翻。
+MEASURED_MAKER_FILLABILITY = {
+    '1bp': Decimal('0.58'),
+    '0.5bp': Decimal('0.65'),
+    '2bp': Decimal('0.43'),
+    '5bp': Decimal('0.13'),
+}
+MEASURED_MAKER_FILLABILITY_SOURCE = (
+    "orderbook 5s buckets, max(bid)>=limit price, optimistic upper bound "
+    "(queue position not modeled); sample 2026-10-22 BTC/ETH 7-day window"
+)
+
 # 典型滑点估计（基点）
+#
+# 说明：这里的 slip 指【跨越价差/冲击】成本，不含手续费。
+# - taker 必须跨价差：BTC 盘口实测 1 tick = 0.5 USDT ≈ 0.6bp（price 81739.5），
+#   ETH 同量级；取 1bp 作为小额单基准，2bp 作为压力。
+# - maker 不跨价差（挂单），其代价是【逆向选择】而非滑点：实测 +5m 逆向为
+#   -3.2 ~ -4.5bp 且方向为负（对挂单有利），因此单列 0bp 滑点并在
+#   `_calculate_maker_base` 里用成交率折算降级成本，不重复计一次滑点。
 TYPICAL_SLIPPAGE = {
-    'maker_base': Decimal('0.0001'),    # 1bp - Maker小额订单
-    'taker_base': Decimal('0.0001'),    # 1bp - Taker小额订单
+    'maker_base': Decimal('0'),         # 粘单不跨价差
+    'taker_base': Decimal('0.0001'),    # 1bp - 跨价差（盘口实测 1 tick ≈ 0.6bp）
     'stress': Decimal('0.0002'),        # 2bp - 压力场景
 }
 
@@ -98,16 +126,31 @@ class CostModel:
 
     def __init__(
         self,
-        maker_fillability: Decimal = Decimal('0.70'),  # Maker成交率（待实测）
+        maker_fillability: Decimal | None = None,
+        *,
+        quote_distance: str = '1bp',
     ):
-        """
-        初始化成本模型
+        """初始化成本模型。
 
-        参数：
-            maker_fillability: Maker订单成交概率（0-1）
-                              实测前保守估计70%
+        参数:
+            maker_fillability: Maker 订单成交概率（0-1）。默认取盘口实测的
+                ``MEASURED_MAKER_FILLABILITY['1bp']``（BTC 57.7%、ETH 72.4%，
+                保守取 0.58）。该实测是「桶内 max(bid) ≥ 挂单价」的**乐观上界**，
+                真实成交率只会更低，因此默认值不应调高。
+            quote_distance: 挂单距中间价的档位（'0.5bp'/'1bp'/'2bp'/'5bp'），
+                仅在未显式给 maker_fillability 时生效。
         """
-        self.maker_fillability = maker_fillability
+        if maker_fillability is None:
+            if quote_distance not in MEASURED_MAKER_FILLABILITY:
+                raise ValueError(
+                    f"未知挂单档位: {quote_distance}，"
+                    f"可选 {sorted(MEASURED_MAKER_FILLABILITY)}"
+                )
+            maker_fillability = MEASURED_MAKER_FILLABILITY[quote_distance]
+        if not Decimal(0) <= Decimal(str(maker_fillability)) <= Decimal(1):
+            raise ValueError("maker_fillability 必须在 [0,1] 之间")
+        self.maker_fillability = Decimal(str(maker_fillability))
+        self.fillability_source = MEASURED_MAKER_FILLABILITY_SOURCE
 
     def calculate_round_trip_cost(
         self,

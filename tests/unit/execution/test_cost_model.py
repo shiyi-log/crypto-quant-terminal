@@ -17,7 +17,12 @@ class TestCostModel:
         return CostModel(maker_fillability=Decimal('0.70'))
 
     def test_maker_base_scenario(self, model):
-        """Maker基准场景：70%成交率"""
+        """Maker基准场景：成交率加权手续费，且不跨价差
+
+        maker 挂单不吃对手盘，因此不计「跨价差滑点」——它的真实代价是
+        未成交时降级为 taker（已体现在 fillability 加权费率里）以及逆向选择。
+        旧版本在这里断言 slippage > 0，等于把 maker 当成半个 taker 重复计费。
+        """
         cost = model.calculate_round_trip_cost(
             entry_notional=Decimal('10000'),
             exit_notional=Decimal('10000'),
@@ -32,9 +37,24 @@ class TestCostModel:
         ) * Decimal('2')
 
         assert abs(cost.total_fee - expected_fee) < Decimal('0.01')
-        assert cost.total_slippage > Decimal('0')  # 应有滑点
+        # 挂单不跨价差：滑点必须为 0，否则与成交率降级重复计费
+        assert cost.total_slippage == Decimal('0')
         assert cost.funding_cost > Decimal('0')    # 应有资金费用
-        assert cost.total_cost > cost.total_fee    # 总成本 > 手续费
+        assert cost.total_cost == cost.total_fee + cost.funding_cost
+
+    def test_default_fillability_is_measured_not_guessed(self):
+        """默认成交率来自盘口实测，不得回退到未经验证的 70%"""
+        from core.execution.cost_model import MEASURED_MAKER_FILLABILITY
+
+        model = CostModel()
+        assert model.maker_fillability == MEASURED_MAKER_FILLABILITY['1bp']
+        # 实测是乐观上界（未计排队），因此必须严格低于 taker 全成交的假设
+        assert model.maker_fillability < Decimal('1')
+
+    def test_rejects_unknown_quote_distance(self):
+        """未知挂单档位必须报错，而不是静默使用某个默认值"""
+        with pytest.raises(ValueError):
+            CostModel(quote_distance='3bp')
 
     def test_taker_base_scenario(self, model):
         """全Taker场景"""

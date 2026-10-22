@@ -19,10 +19,11 @@ import { errText, getAutoIterate, getOps } from '#/api/freqtrade';
 
 import { Tabs, TabPane } from 'ant-design-vue';
 
-// 合并进来：实盘统计（原为独立菜单，2026-10-09 合并）
+// 合并进来:实盘统计(原为独立菜单,2026-10-09 合并)
 import LivePage from '#/views/quant/live/index.vue';
 import LegacyInspectionCard from './LegacyInspectionCard.vue';
-/** 合并后的分页（2026-10-09）：运维 / 实盘统计 */
+import LiquidationEventsCard from './LiquidationEventsCard.vue';
+/** 合并后的分页(2026-10-09):运维 / 实盘统计 */
 const tab = ref('ops');
 
 const ops = ref<any>(null);
@@ -217,6 +218,9 @@ onUnmounted(() => clearInterval(timer));
             </div>
           </div>
         </Card>
+
+        <!-- 强平事件监控 -->
+        <LiquidationEventsCard />
             </template>
           </Spin>
             </TabPane>

@@ -119,6 +119,150 @@ class ResearchLedgerTests(unittest.TestCase):
         return {"event_type": event_type, "run_id": run_id,
                 "event_id": event_id, **fields}
 
+    @staticmethod
+    def _risk_gate(research_id="research-1", *, state="open", preflight="not_estimable",
+                   previous_event_id=None, **fields):
+        payload = {
+            "research_id": research_id,
+            "risk_segment_status": state,
+            "preflight_status": preflight,
+            "boundary_hash": "boundary-sha256",
+            "inputs_hash": "inputs-sha256",
+            "reviewer": "DeepSeek",
+            "evidence_hashes": ["evidence-sha256"],
+            "timestamp_utc": "2026-10-21T00:00:00Z",
+            "previous_event_id": previous_event_id,
+        }
+        if preflight == "not_estimable":
+            payload["risk_data_acquisition_plan"] = {
+                "source": "Binance official public data",
+                "owner": "Codex",
+                "deadline": "2026-10-27",
+            }
+        payload.update(fields)
+        return payload
+
+    def test_risk_gate_not_estimable_is_idempotent_and_namespaced(self):
+        store = FakeStore()
+        event = self._risk_gate()
+
+        first = ledger.append_risk_gate_event(store, event)
+        retry = ledger.append_risk_gate_event(store, event)
+
+        self.assertEqual(first, retry)
+        self.assertEqual(len(store.events), 1)
+        row = next(iter(store.events.values()))
+        self.assertEqual(row["event_type"], "risk_gate")
+        self.assertEqual(row["source_id"], "research-risk/research-1")
+        self.assertEqual(ledger.read_risk_gate_events(store, "research-1")[0]["event_id"], first)
+
+    def test_risk_gate_closes_only_after_open_preflight_pass(self):
+        store = FakeStore()
+        opened = ledger.append_risk_gate_event(store, self._risk_gate())
+        with self.assertRaisesRegex(ValueError, "close only"):
+            ledger.append_risk_gate_event(
+                store,
+                self._risk_gate(state="closed", preflight="fail",
+                                previous_event_id=opened,
+                                timestamp_utc="2026-10-21T00:00:30Z"),
+            )
+        self.assertEqual(len(store.events), 1)
+        closed = self._risk_gate(
+            state="closed", preflight="pass", previous_event_id=opened,
+            timestamp_utc="2026-10-21T00:01:00Z",
+        )
+
+        closed_id = ledger.append_risk_gate_event(store, closed)
+        self.assertEqual(len(ledger.read_risk_gate_events(store, "research-1")), 2)
+        self.assertEqual(ledger.read_risk_gate_events(store, "research-1")[-1]["event_id"], closed_id)
+
+        with self.assertRaisesRegex(ValueError, "closed risk segment"):
+            ledger.append_risk_gate_event(
+                store,
+                self._risk_gate(state="closed", preflight="not_estimable",
+                                previous_event_id=closed_id),
+            )
+        self.assertEqual(len(store.events), 2)
+
+    def test_risk_gate_rejects_bad_chain_and_missing_plan_without_insert(self):
+        store = FakeStore()
+        with self.assertRaisesRegex(ValueError, "previous_event_id"):
+            ledger.append_risk_gate_event(store, self._risk_gate(previous_event_id="wrong"))
+        self.assertEqual(len(store.events), 0)
+
+        missing_plan = self._risk_gate()
+        missing_plan.pop("risk_data_acquisition_plan")
+        with self.assertRaisesRegex(ValueError, "risk_data_acquisition_plan"):
+            ledger.append_risk_gate_event(store, missing_plan)
+        self.assertEqual(len(store.events), 0)
+
+        with self.assertRaisesRegex(ValueError, "evidence_hashes"):
+            ledger.append_risk_gate_event(store, self._risk_gate(evidence_hashes=[]))
+        self.assertEqual(len(store.events), 0)
+
+    def test_risk_gate_rejects_boundary_revision_and_backdated_timestamp(self):
+        store = FakeStore()
+        opened = ledger.append_risk_gate_event(store, self._risk_gate())
+
+        with self.assertRaisesRegex(ValueError, "boundary_hash cannot change"):
+            ledger.append_risk_gate_event(
+                store,
+                self._risk_gate(
+                    previous_event_id=opened,
+                    boundary_hash="new-boundary-sha256",
+                    timestamp_utc="2026-10-21T00:01:00Z",
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "timestamp_utc must be monotonic"):
+            ledger.append_risk_gate_event(
+                store,
+                self._risk_gate(
+                    previous_event_id=opened,
+                    timestamp_utc="2026-10-20T23:59:00Z",
+                ),
+            )
+        self.assertEqual(len(store.events), 1)
+
+    def test_risk_gate_rejects_non_utc_or_non_iso_plan_deadline(self):
+        store = FakeStore()
+        with self.assertRaisesRegex(ValueError, "UTC offset"):
+            ledger.append_risk_gate_event(
+                store, self._risk_gate(timestamp_utc="2026-10-21T08:00:00+08:00")
+            )
+        with self.assertRaisesRegex(ValueError, "ISO-8601"):
+            ledger.append_risk_gate_event(
+                store,
+                self._risk_gate(
+                    risk_data_acquisition_plan={
+                        "source": "Binance official public data",
+                        "owner": "Codex",
+                        "deadline": "TBD",
+                    }
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "risk_data_acquisition_plan.source"):
+            ledger.append_risk_gate_event(
+                store,
+                self._risk_gate(
+                    risk_data_acquisition_plan={
+                        "source": " Binance official public data",
+                        "owner": "Codex",
+                        "deadline": "2026-10-27",
+                    }
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "evidence_hashes"):
+            ledger.append_risk_gate_event(
+                store, self._risk_gate(evidence_hashes=[" evidence-sha256"])
+            )
+        with self.assertRaisesRegex(ValueError, "non-empty string"):
+            ledger.append_risk_gate_event(store, self._risk_gate(research_id=" research-1"))
+        self.assertEqual(len(store.events), 0)
+
+    def test_risk_gate_rejects_non_object_payload(self):
+        with self.assertRaisesRegex(ValueError, "payload must be an object"):
+            ledger.append_risk_gate_event(FakeStore(), [])
+
     def test_forward_paper_retries_use_stable_ids_and_preserve_source_id(self):
         store = FakeStore()
         event = self._forward_event("run-1", "decision", "decision-1", pair="BTC/USDT")

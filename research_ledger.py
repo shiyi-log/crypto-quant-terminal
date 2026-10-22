@@ -87,6 +87,151 @@ def _record_event(store, event_type: str, payload: dict[str, Any], source_id: st
     return event_id
 
 
+_RISK_GATE_STATES = frozenset({"open", "closed"})
+_RISK_GATE_PREFLIGHT_STATUSES = frozenset({"pass", "fail", "not_estimable"})
+
+
+def _risk_gate_text(value: Any, name: str) -> str:
+    """Validate a required risk-gate text field without normalizing evidence."""
+    if (not isinstance(value, str) or not value.strip() or value != value.strip()
+            or any(ord(char) < 32 for char in value)):
+        raise ValueError(f"risk_gate {name} must be a non-empty string")
+    return value
+
+
+def _risk_gate_timestamp(value: Any) -> datetime:
+    """Require an explicit UTC timestamp rather than accepting local time."""
+    value = _risk_gate_text(value, "timestamp_utc")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("risk_gate timestamp_utc must be an ISO-8601 UTC timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise ValueError("risk_gate timestamp_utc must include a UTC offset")
+    return parsed.astimezone(timezone.utc)
+
+
+def _risk_gate_deadline(value: Any) -> None:
+    """Require an ISO-8601 date or timestamp for an acquisition deadline."""
+    value = _risk_gate_text(value, "risk_data_acquisition_plan.deadline")
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            "risk_gate risk_data_acquisition_plan.deadline must be an ISO-8601 date or timestamp"
+        ) from exc
+
+
+def _risk_gate_plan_is_complete(plan: Any) -> bool:
+    """A not-estimable gate must name its source, owner, and deadline."""
+    if not isinstance(plan, dict):
+        return False
+    required = ("source", "owner", "deadline")
+    for key in required:
+        _risk_gate_text(plan.get(key), f"risk_data_acquisition_plan.{key}")
+    _risk_gate_deadline(plan["deadline"])
+    return True
+
+
+def _risk_gate_events(store, research_id: str) -> list[dict[str, Any]]:
+    """Read risk-gate events for one research id in append order."""
+    source_id = f"research-risk/{research_id}"
+    return [
+        event for event in _all_events(store)
+        if event.get("event_type") == "risk_gate" and event.get("source_id") == source_id
+    ]
+
+
+def validate_risk_gate_transition(store, payload: dict[str, Any]) -> None:
+    """Validate one append-only risk-gate event before it is persisted.
+
+    The existing ledger deliberately accepts generic evidence events.  This
+    validator is scoped to the new research protocol so old model and
+    forward-paper records retain their historical behavior.  The first event
+    opens a research risk segment; a later event may close it only after a
+    passing preflight and an exact previous-event link.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("risk_gate payload must be an object")
+    research_id = _risk_gate_text(payload.get("research_id"), "research_id")
+    state = payload.get("risk_segment_status")
+    if state not in _RISK_GATE_STATES:
+        raise ValueError("risk_gate risk_segment_status must be open or closed")
+    preflight = payload.get("preflight_status")
+    if preflight not in _RISK_GATE_PREFLIGHT_STATUSES:
+        raise ValueError("risk_gate preflight_status must be pass, fail, or not_estimable")
+    _risk_gate_text(payload.get("boundary_hash"), "boundary_hash")
+    _risk_gate_text(payload.get("inputs_hash"), "inputs_hash")
+    _risk_gate_text(payload.get("reviewer"), "reviewer")
+    timestamp = _risk_gate_timestamp(payload.get("timestamp_utc"))
+    evidence_hashes = payload.get("evidence_hashes")
+    if (not isinstance(evidence_hashes, list) or not evidence_hashes
+            or any(not isinstance(item, str) or item != item.strip() or not item.strip()
+                   for item in evidence_hashes)):
+        raise ValueError("risk_gate evidence_hashes must be a non-empty list of strings")
+    if "previous_event_id" not in payload:
+        raise ValueError("risk_gate previous_event_id is required")
+    previous_event_id = payload.get("previous_event_id")
+    if previous_event_id is not None:
+        _risk_gate_text(previous_event_id, "previous_event_id")
+    if preflight == "not_estimable" and not _risk_gate_plan_is_complete(
+        payload.get("risk_data_acquisition_plan")
+    ):
+        raise ValueError(
+            "risk_gate not_estimable requires risk_data_acquisition_plan source, owner, and deadline"
+        )
+
+    events = _risk_gate_events(store, research_id)
+    if not events:
+        if state != "open":
+            raise ValueError("first risk_gate event must open the risk segment")
+        if previous_event_id is not None:
+            raise ValueError("first risk_gate event must have previous_event_id=null")
+        return
+
+    prior = events[-1]
+    prior_payload = prior.get("payload")
+    if not isinstance(prior_payload, dict):
+        raise ValueError("prior risk_gate payload is invalid")
+    prior_event_id = prior.get("event_id")
+    if previous_event_id != prior_event_id:
+        raise ValueError("risk_gate previous_event_id must reference the latest risk_gate event")
+    if prior_payload.get("risk_segment_status") == "closed":
+        raise ValueError("a closed risk segment cannot receive another risk_gate event")
+    if prior_payload.get("boundary_hash") != payload.get("boundary_hash"):
+        raise ValueError("risk_gate boundary_hash cannot change within a research chain")
+    prior_timestamp = _risk_gate_timestamp(prior_payload.get("timestamp_utc"))
+    if timestamp < prior_timestamp:
+        raise ValueError("risk_gate timestamp_utc must be monotonic within a research chain")
+    if state == "closed" and preflight != "pass":
+        raise ValueError("risk_gate may close only with preflight_status=pass")
+
+
+def append_risk_gate_event(store, payload: dict[str, Any]) -> str:
+    """Append one immutable, validated risk-gate event and return its id."""
+    if not isinstance(payload, dict):
+        raise ValueError("risk_gate payload must be an object")
+    research_id = _risk_gate_text(payload.get("research_id"), "research_id")
+    event_id = _event_id("risk_gate", payload)
+
+    # Idempotent retries must succeed even though the first event is now the
+    # latest state and therefore cannot pass the transition check again.
+    for event in _all_events(store):
+        if event.get("event_id") == event_id:
+            if event.get("event_type") != "risk_gate" or _json(event.get("payload")) != _json(payload):
+                raise ValueError(f"immutable risk_gate event conflict: {event_id}")
+            return event_id
+
+    validate_risk_gate_transition(store, payload)
+    return _record_event(store, "risk_gate", payload, f"research-risk/{research_id}")
+
+
+def read_risk_gate_events(store, research_id: str) -> list[dict[str, Any]]:
+    """Return one research id's risk-gate chain in append order."""
+    research_id = _risk_gate_text(research_id, "research_id")
+    return _risk_gate_events(store, research_id)
+
+
 _FORWARD_PAPER_TYPES = frozenset({"manifest", "snapshot", "decision", "fill", "checkpoint"})
 
 

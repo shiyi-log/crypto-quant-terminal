@@ -5,6 +5,8 @@
 > 目的：**在结果出现之前**把「用什么标准裁定」写死，避免事后合理化。
 > 状态：全部 29 项策略均为**前向研究假设**，本文件不构成盈利判断、不推任何候选上线。
 
+> **适用范围说明（2026-10-20）：**本文件的 `N_min=100` 和原裁定规则仅保留为按本版本事前冻结的既有账户/实验之历史口径，不适用于 2026-10-20 起的新策略候选或盈利晋级。新候选及其统计、成本、风险、复现与样本门槛统一以 [`PROFITABLE_STRATEGY_RESEARCH_TEMPLATE.md`](PROFITABLE_STRATEGY_RESEARCH_TEMPLATE.md) 和 [`JOINT_DEV_TASK_20261020_PROFITABLE_STRATEGY.md`](JOINT_DEV_TASK_20261020_PROFITABLE_STRATEGY.md) 为准；不得用本文件的 `N_min=100` 代替新模板的 `n_required`。
+
 ---
 
 ## 0. 为什么需要这份文件

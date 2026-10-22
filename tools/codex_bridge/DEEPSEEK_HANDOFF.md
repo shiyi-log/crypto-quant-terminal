@@ -6,6 +6,50 @@
 
 ---
 
+## 0. 2026-10-20 状态重置（本节优先于下文全部内容）
+
+**工作区已迁移**：`/Users/shiyi/DeepSeek/量化` → **`/Users/shiyi/Documents/ChatGPT/量化`**；
+下文所有旧路径、旧会话 ID、旧端口与"通道中断"结论**全部作废**，仅留作历史记录。
+
+| 项 | 当前值 |
+|---|---|
+| DSH 会话 | `session-2f91d371-064a-453c-af7b-a85f23d13889`（标题「打通与Codex联合开发」）|
+| Harness | `http://127.0.0.1:51680`（2026-10-20 15:04 复核；端口随桌面重启变化，**一律以 `DSH_WEB_URL` 为准**）|
+| Codex 会话 | `01a1556b-983b-71e3-866c-f6524a8497a8`（`cwd` = 本工作区）|
+| 命名 link | `quant`（同时写了默认绑定 `desktop.json`）；旧的 4 条 standby 通道已不存在 |
+
+**连通验收（2026-10-20 02:29 +0800，双向、原生直投）**
+
+- Codex → DSH：`quant-connect-20261020-codex-01` → `status=accepted`
+- DSH → Codex：`quant-connect-20261020-dsh-ack-01` → `turn/steer` 受理，
+  `turn_id=01a1556c-f721-74d1-a1ce-1f76bff9c8aa`
+- `status --link quant` → `ready: true` · `delivery_mode: direct` · `transport: desktop-native-ipc`
+
+**常用命令（在 `cwd` 为工作区的 DSH shell 内）**
+
+```bash
+python3 tools/codex_bridge/desktop_link.py status --link quant
+python3 tools/codex_bridge/desktop_link.py send --to codex --link quant --id <唯一id> --text '<内容>'
+python3 tools/codex_bridge/desktop_link.py history --limit 10
+```
+
+**DSH 桌面重启后的恢复**：端口会变，`bind`/`sessions` 现在默认读取 `DSH_WEB_URL`
+（不再写死 19387）。两条 `bind` 刷新命名 link 与默认绑定的端口，Codex 线程保持不变：
+
+```bash
+# 命名 link（Codex 侧 --link quant 走这条）
+python3 tools/codex_bridge/desktop_link.py bind --link quant --dsh-session "$DSH_SESSION_ID"
+# 默认绑定（Codex 不带 link 的 send_to_dsh 走这条），用同一对会话刷新
+python3 tools/codex_bridge/desktop_link.py bind \
+  --codex-thread 01a1556b-983b-71e3-866c-f6524a8497a8 --dsh-session "$DSH_SESSION_ID"
+python3 tools/codex_bridge/desktop_link.py status --link quant   # 期望 ready: true
+```
+
+**协作约定（DSH 侧）**：收到跨助手消息先核对 `id` 与 `reply_to`；仅连接验收时不改业务文件；
+跨会话协作前先约定职责与文件范围，避免双方同时改同一文件；不覆盖 `quant` 绑定、不使用旧会话。
+
+---
+
 ## 1. 会话与通道
 
 - **Harness session ID**：`session-0978bb79-024d-4f21-b25a-1a5d485b5d00`

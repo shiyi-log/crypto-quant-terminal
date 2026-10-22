@@ -423,5 +423,22 @@ class DeliveryJournalTests(unittest.TestCase):
         self.assertIsNone(row["error"])
 
 
+class DefaultHarnessUrlTests(unittest.TestCase):
+    """A restarted desktop changes port; the frozen default must not win twice."""
+
+    def test_running_desktop_url_is_preferred(self):
+        with mock.patch.dict(os.environ, {"DSH_WEB_URL": "http://127.0.0.1:52132"}):
+            self.assertEqual(desktop_link.default_dsh_url(), "http://127.0.0.1:52132")
+
+    def test_static_default_survives_missing_or_empty_env(self):
+        for value in (None, "", "   "):
+            with mock.patch.dict(os.environ, {}, clear=False):
+                if value is None:
+                    os.environ.pop("DSH_WEB_URL", None)
+                else:
+                    os.environ["DSH_WEB_URL"] = value
+                self.assertEqual(desktop_link.default_dsh_url(), desktop_link.DEFAULT_URL)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

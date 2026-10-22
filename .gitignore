@@ -72,3 +72,8 @@ __pycache__/
 # 本地行情缓存和闭盘修复的私有回滚日志。
 /research_data/
 /artifacts/closed-candle-*/
+
+# 本地启动与演示产物（2026-10-22）
+/artifacts/*backup*.jsonl
+/test_quant.db
+/lefthook.yml

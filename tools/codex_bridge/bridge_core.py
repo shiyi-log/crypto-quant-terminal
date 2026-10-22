@@ -21,8 +21,8 @@ MAX_CONSUMED_IDS = 500
 
 DIRECTIONS = ("to_chatgpt", "to_dsh")
 
-#: 默认 cwd：Codex 只在该目录下持久化会话（config.toml 中 trust_level = "trusted"）。
-DEFAULT_CODEX_CWD = "/Users/shiyi/DeepSeek/量化"
+#: 跟随仓库位置，恢复或迁移工作区后不再指向旧机器的绝对路径。
+DEFAULT_CODEX_CWD = str(Path(__file__).resolve().parents[2])
 
 #: 默认监听端口（仅 127.0.0.1）。
 DEFAULT_HTTP_PORT = 8899

@@ -1,0 +1,2606 @@
+{
+  "capture": {
+    "fetched_at_utc": "2026-10-20T16:25:20Z",
+    "window_start_utc": "2024-01-01T00:00:00Z",
+    "window_end_exclusive_utc": "2026-10-20T00:00:00Z",
+    "interval": "15m",
+    "request_counts": {
+      "binance_vision_monthly_archives": 99,
+      "binance_vision_checksum_files": 99,
+      "binance_rest_kline_pages": 6,
+      "binance_rest_mark_price_kline_pages": 198
+    },
+    "rest_request_weight_basis": {
+      "limit": 1500,
+      "weight_per_request": 10,
+      "total_weight": 2040,
+      "source": "https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data"
+    },
+    "retry_observability": "not recorded separately by the collector; final failed pages=0",
+    "raw_snapshot_archive": "raw_snapshot.tar.gz",
+    "raw_snapshot_archive_sha256": "d012129359a134155c0fa80b1ffb599025ef79a2006943742cff56b172697052"
+  },
+  "method": {
+    "gap": "(next_open - prior_close) / prior_close; only adjacent valid rows exactly 900000 ms apart",
+    "long_adverse": "max(-gap, 0), count only nonzero",
+    "short_adverse": "max(gap, 0), count only nonzero",
+    "percentile": "nearest-rank ascending adverse nonzero gaps; rank=ceil(0.99*N)",
+    "data_quality": "invalid OHLC/time rows skipped; duplicate open times deduplicated; gaps in timestamp grid break the adjacent-pair calculation"
+  },
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "TRXUSDT"
+  ],
+  "failures": [],
+  "series": [
+    {
+      "symbol": "BTCUSDT",
+      "dataset": "mark_ohlc",
+      "first_open_utc": "2024-01-01T00:00:00+00:00",
+      "last_open_utc": "2026-10-19T23:45:00+00:00",
+      "expected_rows": 98208,
+      "raw_rows": 98208,
+      "valid_unique_rows": 98208,
+      "invalid_rows": 0,
+      "duplicate_rows": 0,
+      "conflicting_duplicate_rows": 0,
+      "missing_expected_bars": 0,
+      "out_of_range_rows": 0,
+      "non_contiguous_adjacencies": 0,
+      "nonzero_adverse_gap_pairs": {
+        "long": 36364,
+        "short": 31940
+      },
+      "p99_nearest_rank": {
+        "long": {
+          "n": 36364,
+          "rank_1_indexed": 36001,
+          "fraction": 0.00023438737230460684,
+          "percent": 0.023438737230460683,
+          "bp": 2.3438737230460682
+        },
+        "short": {
+          "n": 31940,
+          "rank_1_indexed": 31621,
+          "fraction": 0.0002748361764105778,
+          "percent": 0.02748361764105778,
+          "bp": 2.7483617641057783
+        }
+      },
+      "max_adverse_gap": {
+        "long": {
+          "fraction": 0.0016625135447242178,
+          "percent": 0.1662513544724218,
+          "bp": 16.62513544724218,
+          "from_close_utc": "2024-03-05T22:30:00+00:00",
+          "to_open_utc": "2024-03-05T22:45:00+00:00",
+          "signed_gap_fraction": -0.0016625135447242178
+        },
+        "short": {
+          "fraction": 0.002292313511605563,
+          "percent": 0.2292313511605563,
+          "bp": 22.92313511605563,
+          "from_close_utc": "2026-04-01T12:30:00+00:00",
+          "to_open_utc": "2026-04-01T12:45:00+00:00",
+          "signed_gap_fraction": 0.002292313511605563
+        }
+      },
+      "canonical_valid_rows_sha256": "5113ac7fcd476a32b2fea18197f9bfa0f10e8bdae1ed9a8206af4f269811f636",
+      "part_count": 66,
+      "source_url_pattern": "https://fapi.binance.com/fapi/v1/markPriceKlines",
+      "parts_manifest": [
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1704067200000&endTime=1705417199999&limit=1500",
+          "start_ms": 1704067200000,
+          "end_exclusive_ms": 1705417200000,
+          "rows": 1500,
+          "response_sha256": "d7955aa70f823b678111392cdd432c68318a1df1f5937e7ece989bf7ba8c3097"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1705417200000&endTime=1706767199999&limit=1500",
+          "start_ms": 1705417200000,
+          "end_exclusive_ms": 1706767200000,
+          "rows": 1500,
+          "response_sha256": "332adf14247cce59672567eba27a8179cd8be984eeac29dc8f24df7bd5e165d2"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1706767200000&endTime=1708117199999&limit=1500",
+          "start_ms": 1706767200000,
+          "end_exclusive_ms": 1708117200000,
+          "rows": 1500,
+          "response_sha256": "2a9de69168bb8e4424ea454c91be782c8396b9439fc47256048fcbeaef04fe9f"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1708117200000&endTime=1709467199999&limit=1500",
+          "start_ms": 1708117200000,
+          "end_exclusive_ms": 1709467200000,
+          "rows": 1500,
+          "response_sha256": "b679fd139b1bb9f04fdac54a9a844347c5ce06a84766cbdf5f1ee82f62a41e5e"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1709467200000&endTime=1710817199999&limit=1500",
+          "start_ms": 1709467200000,
+          "end_exclusive_ms": 1710817200000,
+          "rows": 1500,
+          "response_sha256": "6335c6456285b49d439ae76964c66266f4382f63476c8ddf6cf54986480cf1fc"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1710817200000&endTime=1712167199999&limit=1500",
+          "start_ms": 1710817200000,
+          "end_exclusive_ms": 1712167200000,
+          "rows": 1500,
+          "response_sha256": "885afca9cdee4219b079711de0a6f850c96820527622544802ce22c0d4e1b766"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1712167200000&endTime=1713517199999&limit=1500",
+          "start_ms": 1712167200000,
+          "end_exclusive_ms": 1713517200000,
+          "rows": 1500,
+          "response_sha256": "a562c6806e388497e01a79866e3412bdc85f43fc54af22b85ff75ac17ed41906"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1713517200000&endTime=1714867199999&limit=1500",
+          "start_ms": 1713517200000,
+          "end_exclusive_ms": 1714867200000,
+          "rows": 1500,
+          "response_sha256": "c4bab13505f31b370f46375e154ce9dc004d487803da09ba44363a6d2d32395d"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1714867200000&endTime=1716217199999&limit=1500",
+          "start_ms": 1714867200000,
+          "end_exclusive_ms": 1716217200000,
+          "rows": 1500,
+          "response_sha256": "5d8328b906bd43ddfc684ad94382901723d52a32ca94fad46973583e51de032b"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1716217200000&endTime=1717567199999&limit=1500",
+          "start_ms": 1716217200000,
+          "end_exclusive_ms": 1717567200000,
+          "rows": 1500,
+          "response_sha256": "49a5a7a9cf22829b95718cca3ab4c1905ab3cb81e559ebb326a9b7be26ae5846"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1717567200000&endTime=1718917199999&limit=1500",
+          "start_ms": 1717567200000,
+          "end_exclusive_ms": 1718917200000,
+          "rows": 1500,
+          "response_sha256": "b8822deca8f3818e0531a7a9d11140fb83886f83b9d4c29c671c062e02d075d9"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1718917200000&endTime=1720267199999&limit=1500",
+          "start_ms": 1718917200000,
+          "end_exclusive_ms": 1720267200000,
+          "rows": 1500,
+          "response_sha256": "539205846cefe0bf5d4d00ccb0d759967e048d28b3c24f07191e2eaaa27b1b3a"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1720267200000&endTime=1721617199999&limit=1500",
+          "start_ms": 1720267200000,
+          "end_exclusive_ms": 1721617200000,
+          "rows": 1500,
+          "response_sha256": "0225335b987e270547e6641faeccf4784f72a7384db105fce72997c6d7ec2953"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1721617200000&endTime=1722967199999&limit=1500",
+          "start_ms": 1721617200000,
+          "end_exclusive_ms": 1722967200000,
+          "rows": 1500,
+          "response_sha256": "9ca1e7247d75de348688aa0d5e7c909595535c3ee2c776a481d3438c8cdbbb90"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1722967200000&endTime=1724317199999&limit=1500",
+          "start_ms": 1722967200000,
+          "end_exclusive_ms": 1724317200000,
+          "rows": 1500,
+          "response_sha256": "4e98a0c110fa99857ef0d0777fd48036beaf5f18e55791da70b018f081dd487b"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1724317200000&endTime=1725667199999&limit=1500",
+          "start_ms": 1724317200000,
+          "end_exclusive_ms": 1725667200000,
+          "rows": 1500,
+          "response_sha256": "0aac491a59464b3a7514baead59fee6b0856280d1a8e5672ce8fed910f0b1430"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1725667200000&endTime=1727017199999&limit=1500",
+          "start_ms": 1725667200000,
+          "end_exclusive_ms": 1727017200000,
+          "rows": 1500,
+          "response_sha256": "e5fc4005350fbd02f08225d228a01ad22b939f27e4f6dbb86a66503bffd62676"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1727017200000&endTime=1728367199999&limit=1500",
+          "start_ms": 1727017200000,
+          "end_exclusive_ms": 1728367200000,
+          "rows": 1500,
+          "response_sha256": "2b34985210056167580875d2df621524f655185d8851fbdc747ba189963f63b8"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1728367200000&endTime=1729717199999&limit=1500",
+          "start_ms": 1728367200000,
+          "end_exclusive_ms": 1729717200000,
+          "rows": 1500,
+          "response_sha256": "ad66ef318d500785e54c39a020885d53a381053ad5d51a903c5ba3f8c09a6ff7"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1729717200000&endTime=1731067199999&limit=1500",
+          "start_ms": 1729717200000,
+          "end_exclusive_ms": 1731067200000,
+          "rows": 1500,
+          "response_sha256": "4b547e90eaa79a1f2d285f7d1cab31b213de3457a958e9eaec4b0a9edb018d86"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1731067200000&endTime=1732417199999&limit=1500",
+          "start_ms": 1731067200000,
+          "end_exclusive_ms": 1732417200000,
+          "rows": 1500,
+          "response_sha256": "d1f02331e910e64af43159e96b9445774c4c66a3f973ea200f8b318832d9d837"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1732417200000&endTime=1733767199999&limit=1500",
+          "start_ms": 1732417200000,
+          "end_exclusive_ms": 1733767200000,
+          "rows": 1500,
+          "response_sha256": "069c762b48e55927235c50515f75ea36266ed4fed9e89cd57e0b2479a5696acc"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1733767200000&endTime=1735117199999&limit=1500",
+          "start_ms": 1733767200000,
+          "end_exclusive_ms": 1735117200000,
+          "rows": 1500,
+          "response_sha256": "a45b078923662bc51829edfd6c93327bf1ac050979c0a04cb6ecc5976e2b86c4"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1735117200000&endTime=1736467199999&limit=1500",
+          "start_ms": 1735117200000,
+          "end_exclusive_ms": 1736467200000,
+          "rows": 1500,
+          "response_sha256": "a53bd727bef5dc352d4a8a8646f7c5cf87055612cee6e4bd325ecc4321cd65a4"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1736467200000&endTime=1737817199999&limit=1500",
+          "start_ms": 1736467200000,
+          "end_exclusive_ms": 1737817200000,
+          "rows": 1500,
+          "response_sha256": "f3a29350aa982c8bd4548ac51cf3becfd62db1e497d3b130d4ca16f121a41f73"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1737817200000&endTime=1739167199999&limit=1500",
+          "start_ms": 1737817200000,
+          "end_exclusive_ms": 1739167200000,
+          "rows": 1500,
+          "response_sha256": "e503c540bceb7e9638c3d5a1eab9a3ad23191818d81d2d8d1150521305e10334"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1739167200000&endTime=1740517199999&limit=1500",
+          "start_ms": 1739167200000,
+          "end_exclusive_ms": 1740517200000,
+          "rows": 1500,
+          "response_sha256": "7b8452c73f08560e53edc3101d0bf4e549b854e99d6494fc21c7935f398a4a5c"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1740517200000&endTime=1741867199999&limit=1500",
+          "start_ms": 1740517200000,
+          "end_exclusive_ms": 1741867200000,
+          "rows": 1500,
+          "response_sha256": "86fcd314227ee44c789a25aed2a040af7ecbcddc7b697b879d14578230a76b7a"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1741867200000&endTime=1743217199999&limit=1500",
+          "start_ms": 1741867200000,
+          "end_exclusive_ms": 1743217200000,
+          "rows": 1500,
+          "response_sha256": "062eb4fb8fed4327a75b47718e2f861c321c53bc8a8d101af18af85d27dda722"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1743217200000&endTime=1744567199999&limit=1500",
+          "start_ms": 1743217200000,
+          "end_exclusive_ms": 1744567200000,
+          "rows": 1500,
+          "response_sha256": "7e078250f203893d2b4e730d643e6fc303970950d43ed7d0d1bcd42b5862f0f9"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1744567200000&endTime=1745917199999&limit=1500",
+          "start_ms": 1744567200000,
+          "end_exclusive_ms": 1745917200000,
+          "rows": 1500,
+          "response_sha256": "a10adcd037ce6416921e08fc4be52795e927a659ec2ae0ab20bcbcbc1d0069c2"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1745917200000&endTime=1747267199999&limit=1500",
+          "start_ms": 1745917200000,
+          "end_exclusive_ms": 1747267200000,
+          "rows": 1500,
+          "response_sha256": "090a20719176653790aadf30d3d0b698905d1fd6f4c838ec2aaa11747a305e24"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1747267200000&endTime=1748617199999&limit=1500",
+          "start_ms": 1747267200000,
+          "end_exclusive_ms": 1748617200000,
+          "rows": 1500,
+          "response_sha256": "e8c354ac1ae475a933418a22b4e18963c420ebd49ccf929ca69ec3985771e89c"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1748617200000&endTime=1749967199999&limit=1500",
+          "start_ms": 1748617200000,
+          "end_exclusive_ms": 1749967200000,
+          "rows": 1500,
+          "response_sha256": "9ae252a301d58ba74d041d87a4fbea397b4c08fc274f6b12343262523481b37c"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1749967200000&endTime=1751317199999&limit=1500",
+          "start_ms": 1749967200000,
+          "end_exclusive_ms": 1751317200000,
+          "rows": 1500,
+          "response_sha256": "d14e78d9dcf181030309d32f3329e4447184657470949644ac139d395dcbe7cc"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1751317200000&endTime=1752667199999&limit=1500",
+          "start_ms": 1751317200000,
+          "end_exclusive_ms": 1752667200000,
+          "rows": 1500,
+          "response_sha256": "3dfd192f5893fe00fcb6624825309830937085b855fab38fdc7a1112cc7496ac"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1752667200000&endTime=1754017199999&limit=1500",
+          "start_ms": 1752667200000,
+          "end_exclusive_ms": 1754017200000,
+          "rows": 1500,
+          "response_sha256": "46a3a63ba15a1a4ccffe317b3b86b5de073e420a2d4893755aed9048ece8e22c"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1754017200000&endTime=1755367199999&limit=1500",
+          "start_ms": 1754017200000,
+          "end_exclusive_ms": 1755367200000,
+          "rows": 1500,
+          "response_sha256": "7c60cda63f29615b6c386fc67111bc589db0591b5f4e65b344c2a5a22a21b848"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1755367200000&endTime=1756717199999&limit=1500",
+          "start_ms": 1755367200000,
+          "end_exclusive_ms": 1756717200000,
+          "rows": 1500,
+          "response_sha256": "10c7470239dd3bfb5ff3efaec01cf42c943260495aefd1969f3ec06082b0805b"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1756717200000&endTime=1758067199999&limit=1500",
+          "start_ms": 1756717200000,
+          "end_exclusive_ms": 1758067200000,
+          "rows": 1500,
+          "response_sha256": "d2bfe6c675c0a649bb0d2e81aaeab47da7d436a3c444a9b7a1930caf1a062c3f"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1758067200000&endTime=1759417199999&limit=1500",
+          "start_ms": 1758067200000,
+          "end_exclusive_ms": 1759417200000,
+          "rows": 1500,
+          "response_sha256": "694a5da045ef1b768ec745992d320f3a00060f86574a564728b482b452189364"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1759417200000&endTime=1760767199999&limit=1500",
+          "start_ms": 1759417200000,
+          "end_exclusive_ms": 1760767200000,
+          "rows": 1500,
+          "response_sha256": "e5f448fd55d7ae5c9c5c7124eebc1f8da07e8ae1e876740ce1f4fdae6395c8ec"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1760767200000&endTime=1762117199999&limit=1500",
+          "start_ms": 1760767200000,
+          "end_exclusive_ms": 1762117200000,
+          "rows": 1500,
+          "response_sha256": "05b05f7ee9eaf885b9c34dbaa57745000c74335b0c61eca79f2cfdb13b0361ca"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1762117200000&endTime=1763467199999&limit=1500",
+          "start_ms": 1762117200000,
+          "end_exclusive_ms": 1763467200000,
+          "rows": 1500,
+          "response_sha256": "b67b31fd25feaea67fd0a4d972288643f90f3a7559b4ffc561f225b9b8792bed"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1763467200000&endTime=1764817199999&limit=1500",
+          "start_ms": 1763467200000,
+          "end_exclusive_ms": 1764817200000,
+          "rows": 1500,
+          "response_sha256": "c1321751dc182f3b922b67d26122fd8cc894909f3b2122dd929dea98a3a62d97"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1764817200000&endTime=1766167199999&limit=1500",
+          "start_ms": 1764817200000,
+          "end_exclusive_ms": 1766167200000,
+          "rows": 1500,
+          "response_sha256": "4fc9827eaa30be9c7017be68a184696eca08e481a7a0acb4e169d8c99d04da20"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1766167200000&endTime=1767517199999&limit=1500",
+          "start_ms": 1766167200000,
+          "end_exclusive_ms": 1767517200000,
+          "rows": 1500,
+          "response_sha256": "3ccddea661636fc37a2ef573f167e363c81fc118937a828f71d5d9f25e746bf4"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1767517200000&endTime=1768867199999&limit=1500",
+          "start_ms": 1767517200000,
+          "end_exclusive_ms": 1768867200000,
+          "rows": 1500,
+          "response_sha256": "9f4a03692bcf6fa77b2ac767cc3727c347d23c94b4bbb8f913d0ace7ba74e478"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1768867200000&endTime=1770217199999&limit=1500",
+          "start_ms": 1768867200000,
+          "end_exclusive_ms": 1770217200000,
+          "rows": 1500,
+          "response_sha256": "71aca4e5c3de05cf57687b1cb39c0d84c9df173deee6168933206ba53879c6eb"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1770217200000&endTime=1771567199999&limit=1500",
+          "start_ms": 1770217200000,
+          "end_exclusive_ms": 1771567200000,
+          "rows": 1500,
+          "response_sha256": "3fc604b6586cfa5441c32613630ddc6576b76f3a3ff0e43aa97e162e9d43b208"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1771567200000&endTime=1772917199999&limit=1500",
+          "start_ms": 1771567200000,
+          "end_exclusive_ms": 1772917200000,
+          "rows": 1500,
+          "response_sha256": "ac52122abd5f8101dc133ca31f3317a85c250bdd1dfbf5eba57144a7dc635dcd"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1772917200000&endTime=1774267199999&limit=1500",
+          "start_ms": 1772917200000,
+          "end_exclusive_ms": 1774267200000,
+          "rows": 1500,
+          "response_sha256": "bf56ec14b6f13ad956c421d0c8c65c3d60897dc49e73f31c40ab7f880a3445d6"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1774267200000&endTime=1775617199999&limit=1500",
+          "start_ms": 1774267200000,
+          "end_exclusive_ms": 1775617200000,
+          "rows": 1500,
+          "response_sha256": "a9fb8f54606fa41fee1e93dcdc0bd709eb613d93c781198cf8d3bf9dcf73784a"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1775617200000&endTime=1776967199999&limit=1500",
+          "start_ms": 1775617200000,
+          "end_exclusive_ms": 1776967200000,
+          "rows": 1500,
+          "response_sha256": "7922d3b5f2330bfc48b018e29962d2cd469492cdc44890ccbbe540c28e18bee2"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1776967200000&endTime=1778317199999&limit=1500",
+          "start_ms": 1776967200000,
+          "end_exclusive_ms": 1778317200000,
+          "rows": 1500,
+          "response_sha256": "f0494a63c820634a359998601c1db03b51e5ca0d80e64d4a64956e3f2f8c384f"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1778317200000&endTime=1779667199999&limit=1500",
+          "start_ms": 1778317200000,
+          "end_exclusive_ms": 1779667200000,
+          "rows": 1500,
+          "response_sha256": "2cc220ed7076fabfa3a6b89bb7cb08df869f8a389997cab53c12c4c9cc5a27b6"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1779667200000&endTime=1781017199999&limit=1500",
+          "start_ms": 1779667200000,
+          "end_exclusive_ms": 1781017200000,
+          "rows": 1500,
+          "response_sha256": "14707649a798a54d3cc15085c93e15893310084d08d7aa75eb6e73a9bbcdf9df"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1781017200000&endTime=1782367199999&limit=1500",
+          "start_ms": 1781017200000,
+          "end_exclusive_ms": 1782367200000,
+          "rows": 1500,
+          "response_sha256": "3dce153c27fb72a4aea14b5eddb8d3a08ca39518ce4c1d62f79b1d8e320c8347"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1782367200000&endTime=1783717199999&limit=1500",
+          "start_ms": 1782367200000,
+          "end_exclusive_ms": 1783717200000,
+          "rows": 1500,
+          "response_sha256": "c4bd1f969d26d0b99405c3088165a3ae075affa0b87fe64d5d4b7985f7c0f14b"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1783717200000&endTime=1785067199999&limit=1500",
+          "start_ms": 1783717200000,
+          "end_exclusive_ms": 1785067200000,
+          "rows": 1500,
+          "response_sha256": "a7a370ac7c4416d61f99e056e3c174986fb2d37b83413be6216d97384a11ae75"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1785067200000&endTime=1786417199999&limit=1500",
+          "start_ms": 1785067200000,
+          "end_exclusive_ms": 1786417200000,
+          "rows": 1500,
+          "response_sha256": "6463e5741c0ed43e1b777f92469827863a07bf6febd59ef5779dcc688d9e4f89"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1786417200000&endTime=1787767199999&limit=1500",
+          "start_ms": 1786417200000,
+          "end_exclusive_ms": 1787767200000,
+          "rows": 1500,
+          "response_sha256": "cadc3c9ecaba6df0f48316637c5022a2b2db0678608c5c888a7c79f942627ed1"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1787767200000&endTime=1789117199999&limit=1500",
+          "start_ms": 1787767200000,
+          "end_exclusive_ms": 1789117200000,
+          "rows": 1500,
+          "response_sha256": "efe953e03587ff6c711627d3e577d3c9d3491407601a1984dead0317700be006"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1789117200000&endTime=1790467199999&limit=1500",
+          "start_ms": 1789117200000,
+          "end_exclusive_ms": 1790467200000,
+          "rows": 1500,
+          "response_sha256": "aea259ef7b07f73dc888dc91728c2c92aa15dee3b25483ade46bf8b6ed85074e"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1790467200000&endTime=1791817199999&limit=1500",
+          "start_ms": 1790467200000,
+          "end_exclusive_ms": 1791817200000,
+          "rows": 1500,
+          "response_sha256": "a89f0ac3be0133cacf6448edf9e26a4999c743ec6334db0e635c7e60cc558b06"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=15m&startTime=1791817200000&endTime=1792454399999&limit=1500",
+          "start_ms": 1791817200000,
+          "end_exclusive_ms": 1792454400000,
+          "rows": 708,
+          "response_sha256": "7dc010f52d92a166cc7e75ce1669b26a69afe001fee59367605cc223e1a28e59"
+        }
+      ]
+    },
+    {
+      "symbol": "BTCUSDT",
+      "dataset": "trade_ohlc",
+      "first_open_utc": "2024-01-01T00:00:00+00:00",
+      "last_open_utc": "2026-10-19T23:45:00+00:00",
+      "expected_rows": 98208,
+      "raw_rows": 98208,
+      "valid_unique_rows": 98208,
+      "invalid_rows": 0,
+      "duplicate_rows": 0,
+      "conflicting_duplicate_rows": 0,
+      "missing_expected_bars": 0,
+      "out_of_range_rows": 0,
+      "non_contiguous_adjacencies": 0,
+      "nonzero_adverse_gap_pairs": {
+        "long": 23852,
+        "short": 23921
+      },
+      "p99_nearest_rank": {
+        "long": {
+          "n": 23852,
+          "rank_1_indexed": 23614,
+          "fraction": 0.000016024716522764713,
+          "percent": 0.0016024716522764714,
+          "bp": 0.16024716522764712
+        },
+        "short": {
+          "n": 23921,
+          "rank_1_indexed": 23682,
+          "fraction": 0.000017055605537862046,
+          "percent": 0.0017055605537862045,
+          "bp": 0.17055605537862045
+        }
+      },
+      "max_adverse_gap": {
+        "long": {
+          "fraction": 0.0014021800116145275,
+          "percent": 0.14021800116145275,
+          "bp": 14.021800116145275,
+          "from_close_utc": "2025-01-29T01:15:00+00:00",
+          "to_open_utc": "2025-01-29T01:30:00+00:00",
+          "signed_gap_fraction": -0.0014021800116145275
+        },
+        "short": {
+          "fraction": 0.001206047198276088,
+          "percent": 0.1206047198276088,
+          "bp": 12.06047198276088,
+          "from_close_utc": "2024-10-28T20:45:00+00:00",
+          "to_open_utc": "2024-10-28T21:00:00+00:00",
+          "signed_gap_fraction": 0.001206047198276088
+        }
+      },
+      "canonical_valid_rows_sha256": "648135e89ca46aba123fdbece8fc2a6ffa9c632cc63d9649aadf4b397541f20f",
+      "part_count": 35,
+      "source_url_pattern": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-YYYY-MM.zip + official CHECKSUM; https://fapi.binance.com/fapi/v1/klines REST for partial month",
+      "parts_manifest": [
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-01.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-01.zip.CHECKSUM",
+          "range_month": "2024-01",
+          "rows": 2976,
+          "archive_sha256": "76953983fcd4cc35ac181c4a1c69d28cbb4ef8b983021aac84a111ea4e82ef69",
+          "official_checksum": "76953983fcd4cc35ac181c4a1c69d28cbb4ef8b983021aac84a111ea4e82ef69"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-02.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-02.zip.CHECKSUM",
+          "range_month": "2024-02",
+          "rows": 2784,
+          "archive_sha256": "f6a9399826f593aa23746d920e595e9705addd1154d4ec53fcf7a2564755e67b",
+          "official_checksum": "f6a9399826f593aa23746d920e595e9705addd1154d4ec53fcf7a2564755e67b"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-03.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-03.zip.CHECKSUM",
+          "range_month": "2024-03",
+          "rows": 2976,
+          "archive_sha256": "0f7dbdf7859f36d41c1444065409b2c9c4d66f5b3008647436fbc1b7a0d9f080",
+          "official_checksum": "0f7dbdf7859f36d41c1444065409b2c9c4d66f5b3008647436fbc1b7a0d9f080"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-04.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-04.zip.CHECKSUM",
+          "range_month": "2024-04",
+          "rows": 2880,
+          "archive_sha256": "e1e52aa89d7004e4b93af4cfa5d8f03826881604bf2a990fd2f6979ed754c7ff",
+          "official_checksum": "e1e52aa89d7004e4b93af4cfa5d8f03826881604bf2a990fd2f6979ed754c7ff"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-05.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-05.zip.CHECKSUM",
+          "range_month": "2024-05",
+          "rows": 2976,
+          "archive_sha256": "180775c3969d5e1a4f80dab6d62639945db50ed26b7fb240e66cc384d572295b",
+          "official_checksum": "180775c3969d5e1a4f80dab6d62639945db50ed26b7fb240e66cc384d572295b"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-06.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-06.zip.CHECKSUM",
+          "range_month": "2024-06",
+          "rows": 2880,
+          "archive_sha256": "ff353ea993bd5db2ac704c7ab30b0f706216208da92089875daed06177b7a805",
+          "official_checksum": "ff353ea993bd5db2ac704c7ab30b0f706216208da92089875daed06177b7a805"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-07.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-07.zip.CHECKSUM",
+          "range_month": "2024-07",
+          "rows": 2976,
+          "archive_sha256": "13cdc84f34becfaaaa9736896a0a0c92fa64bb20e84492569a1c1bb401634095",
+          "official_checksum": "13cdc84f34becfaaaa9736896a0a0c92fa64bb20e84492569a1c1bb401634095"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-08.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-08.zip.CHECKSUM",
+          "range_month": "2024-08",
+          "rows": 2976,
+          "archive_sha256": "7db2001bc9958a0f42748ab56319a067be0610eb3f69ae7360251f9c54b933e1",
+          "official_checksum": "7db2001bc9958a0f42748ab56319a067be0610eb3f69ae7360251f9c54b933e1"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-09.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-09.zip.CHECKSUM",
+          "range_month": "2024-09",
+          "rows": 2880,
+          "archive_sha256": "ccc54f637eb90c3dd2bb190b3bfa40340c3812917726d203b5a9c94b8d27c727",
+          "official_checksum": "ccc54f637eb90c3dd2bb190b3bfa40340c3812917726d203b5a9c94b8d27c727"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-10.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-10.zip.CHECKSUM",
+          "range_month": "2024-10",
+          "rows": 2976,
+          "archive_sha256": "64c3283e3e1020fb99916e908ec129c7ed2829319889db87319f3b48c72f6217",
+          "official_checksum": "64c3283e3e1020fb99916e908ec129c7ed2829319889db87319f3b48c72f6217"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-11.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-11.zip.CHECKSUM",
+          "range_month": "2024-11",
+          "rows": 2880,
+          "archive_sha256": "e54cdf3523373e2011ca133f12ee18ed54cf0e5a1a59426a9746fd2c39313a54",
+          "official_checksum": "e54cdf3523373e2011ca133f12ee18ed54cf0e5a1a59426a9746fd2c39313a54"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-12.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2024-12.zip.CHECKSUM",
+          "range_month": "2024-12",
+          "rows": 2976,
+          "archive_sha256": "717d3e617fdc6f5c486c16d2f2c0e3e0929fd9158f75827bc603c003ad709544",
+          "official_checksum": "717d3e617fdc6f5c486c16d2f2c0e3e0929fd9158f75827bc603c003ad709544"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-01.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-01.zip.CHECKSUM",
+          "range_month": "2025-01",
+          "rows": 2976,
+          "archive_sha256": "0867b0b8e22069621de45df42cc49a8df1b8217cf777529b1df6d43253927588",
+          "official_checksum": "0867b0b8e22069621de45df42cc49a8df1b8217cf777529b1df6d43253927588"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-02.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-02.zip.CHECKSUM",
+          "range_month": "2025-02",
+          "rows": 2688,
+          "archive_sha256": "44280cf80923ec6ee42e28e4606723b2f36909eab5c334ee5aee132ff989f12b",
+          "official_checksum": "44280cf80923ec6ee42e28e4606723b2f36909eab5c334ee5aee132ff989f12b"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-03.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-03.zip.CHECKSUM",
+          "range_month": "2025-03",
+          "rows": 2976,
+          "archive_sha256": "aea345f1561a16710812658f2d435f0e02de5fc25d7ba8ad821526d67b2ab229",
+          "official_checksum": "aea345f1561a16710812658f2d435f0e02de5fc25d7ba8ad821526d67b2ab229"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-04.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-04.zip.CHECKSUM",
+          "range_month": "2025-04",
+          "rows": 2880,
+          "archive_sha256": "6a5166823a9e80e25f520a8e7e26f34550c975e26bd1c5bb95a20d530b89bfa5",
+          "official_checksum": "6a5166823a9e80e25f520a8e7e26f34550c975e26bd1c5bb95a20d530b89bfa5"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-05.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-05.zip.CHECKSUM",
+          "range_month": "2025-05",
+          "rows": 2976,
+          "archive_sha256": "303a174c2d15248fe00342ac2b01bec41bb4e11c4a5d26d480e2a382808bc020",
+          "official_checksum": "303a174c2d15248fe00342ac2b01bec41bb4e11c4a5d26d480e2a382808bc020"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-06.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-06.zip.CHECKSUM",
+          "range_month": "2025-06",
+          "rows": 2880,
+          "archive_sha256": "4c980922647b630dbf146cb80934776930f8b4a9b419967710ecb8ce398e036d",
+          "official_checksum": "4c980922647b630dbf146cb80934776930f8b4a9b419967710ecb8ce398e036d"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-07.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-07.zip.CHECKSUM",
+          "range_month": "2025-07",
+          "rows": 2976,
+          "archive_sha256": "dd5bb32a02e5a3dc93717530abe572f41e1bc50b920daad6e226bb6024e52b51",
+          "official_checksum": "dd5bb32a02e5a3dc93717530abe572f41e1bc50b920daad6e226bb6024e52b51"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-08.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-08.zip.CHECKSUM",
+          "range_month": "2025-08",
+          "rows": 2976,
+          "archive_sha256": "b8965932ae4008e4f1f8ec1ed344f11fbd1f743b44679dacfab665f05414aced",
+          "official_checksum": "b8965932ae4008e4f1f8ec1ed344f11fbd1f743b44679dacfab665f05414aced"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-09.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-09.zip.CHECKSUM",
+          "range_month": "2025-09",
+          "rows": 2880,
+          "archive_sha256": "fcfe6d1c17890b82788b13707bbdc99694361f701a49f15347c8f0e85e55fd1f",
+          "official_checksum": "fcfe6d1c17890b82788b13707bbdc99694361f701a49f15347c8f0e85e55fd1f"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-10.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-10.zip.CHECKSUM",
+          "range_month": "2025-10",
+          "rows": 2976,
+          "archive_sha256": "14f11249137327f5ecadfaceab1eea9ba87f819298af645998fc9bd2cde02b77",
+          "official_checksum": "14f11249137327f5ecadfaceab1eea9ba87f819298af645998fc9bd2cde02b77"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-11.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-11.zip.CHECKSUM",
+          "range_month": "2025-11",
+          "rows": 2880,
+          "archive_sha256": "66c714d54807c313814d0aef6ee2ef21e07e311605b47c23ae32978c721a4b23",
+          "official_checksum": "66c714d54807c313814d0aef6ee2ef21e07e311605b47c23ae32978c721a4b23"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-12.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2025-12.zip.CHECKSUM",
+          "range_month": "2025-12",
+          "rows": 2976,
+          "archive_sha256": "d497e319364b0c13a0cd59e0192568ea1542e8f430844046189a8cf534895805",
+          "official_checksum": "d497e319364b0c13a0cd59e0192568ea1542e8f430844046189a8cf534895805"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-01.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-01.zip.CHECKSUM",
+          "range_month": "2026-01",
+          "rows": 2976,
+          "archive_sha256": "065fc8cf21f51ad6bd043fa670ba2dbc8c6030efd5dff63d5d4a9d99e0b88d0b",
+          "official_checksum": "065fc8cf21f51ad6bd043fa670ba2dbc8c6030efd5dff63d5d4a9d99e0b88d0b"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-02.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-02.zip.CHECKSUM",
+          "range_month": "2026-02",
+          "rows": 2688,
+          "archive_sha256": "983c066f0cf0171466e89d7596433f5ac717ea8c805fe5b650a83b3176cd92c1",
+          "official_checksum": "983c066f0cf0171466e89d7596433f5ac717ea8c805fe5b650a83b3176cd92c1"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-03.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-03.zip.CHECKSUM",
+          "range_month": "2026-03",
+          "rows": 2976,
+          "archive_sha256": "ea25e84ddffdcc8b7ba68fb47363daee6a9ef53941f152c9ebf6d4e165d32bf8",
+          "official_checksum": "ea25e84ddffdcc8b7ba68fb47363daee6a9ef53941f152c9ebf6d4e165d32bf8"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-04.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-04.zip.CHECKSUM",
+          "range_month": "2026-04",
+          "rows": 2880,
+          "archive_sha256": "0bc151133aa47be76f535539e25c04970bd6d0afd54e532951638dc8330fcc58",
+          "official_checksum": "0bc151133aa47be76f535539e25c04970bd6d0afd54e532951638dc8330fcc58"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-05.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-05.zip.CHECKSUM",
+          "range_month": "2026-05",
+          "rows": 2976,
+          "archive_sha256": "1c0a865f62ddca9890f5d7bbe901b7261a3818785594d960f5fce36ee7ce81f5",
+          "official_checksum": "1c0a865f62ddca9890f5d7bbe901b7261a3818785594d960f5fce36ee7ce81f5"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-06.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-06.zip.CHECKSUM",
+          "range_month": "2026-06",
+          "rows": 2880,
+          "archive_sha256": "54369ae74f8122e0d3c8152807f78ec3ced435a8b0ab59c5efcea2cbad878857",
+          "official_checksum": "54369ae74f8122e0d3c8152807f78ec3ced435a8b0ab59c5efcea2cbad878857"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-07.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-07.zip.CHECKSUM",
+          "range_month": "2026-07",
+          "rows": 2976,
+          "archive_sha256": "10df439d8404a31fc55ed91fe0169b79db3fa3e7a8c83bc2eb704004eadea1c2",
+          "official_checksum": "10df439d8404a31fc55ed91fe0169b79db3fa3e7a8c83bc2eb704004eadea1c2"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-08.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-08.zip.CHECKSUM",
+          "range_month": "2026-08",
+          "rows": 2976,
+          "archive_sha256": "0702d68a42de591fb39929d10327f1258ce1d59b9d81158c07e412029eb36306",
+          "official_checksum": "0702d68a42de591fb39929d10327f1258ce1d59b9d81158c07e412029eb36306"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-09.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/15m/BTCUSDT-15m-2026-09.zip.CHECKSUM",
+          "range_month": "2026-09",
+          "rows": 2880,
+          "archive_sha256": "e879fa6903fd905201bd1f59e456773638cdf8c13848da79331cee89b0046964",
+          "official_checksum": "e879fa6903fd905201bd1f59e456773638cdf8c13848da79331cee89b0046964"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=15m&startTime=1790812800000&endTime=1792162799999&limit=1500",
+          "start_ms": 1790812800000,
+          "end_exclusive_ms": 1792162800000,
+          "rows": 1500,
+          "response_sha256": "fe7d3e42e68e0255b3451864f80931ddba82652e08995b730b9d65178eae3c4b"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=15m&startTime=1792162800000&endTime=1792454399999&limit=1500",
+          "start_ms": 1792162800000,
+          "end_exclusive_ms": 1792454400000,
+          "rows": 324,
+          "response_sha256": "e807083a4f7ccf597d1e7a29a7c4dd3f6fcf449845b03e5d38417e70270875fe"
+        }
+      ]
+    },
+    {
+      "symbol": "ETHUSDT",
+      "dataset": "mark_ohlc",
+      "first_open_utc": "2024-01-01T00:00:00+00:00",
+      "last_open_utc": "2026-10-19T23:45:00+00:00",
+      "expected_rows": 98208,
+      "raw_rows": 98208,
+      "valid_unique_rows": 98208,
+      "invalid_rows": 0,
+      "duplicate_rows": 0,
+      "conflicting_duplicate_rows": 0,
+      "missing_expected_bars": 0,
+      "out_of_range_rows": 0,
+      "non_contiguous_adjacencies": 0,
+      "nonzero_adverse_gap_pairs": {
+        "long": 37237,
+        "short": 32764
+      },
+      "p99_nearest_rank": {
+        "long": {
+          "n": 37237,
+          "rank_1_indexed": 36865,
+          "fraction": 0.0002899910346331455,
+          "percent": 0.028999103463314548,
+          "bp": 2.899910346331455
+        },
+        "short": {
+          "n": 32764,
+          "rank_1_indexed": 32437,
+          "fraction": 0.0003395175527687018,
+          "percent": 0.03395175527687018,
+          "bp": 3.395175527687018
+        }
+      },
+      "max_adverse_gap": {
+        "long": {
+          "fraction": 0.004488607166650823,
+          "percent": 0.44886071666508226,
+          "bp": 44.88607166650823,
+          "from_close_utc": "2024-12-20T10:00:00+00:00",
+          "to_open_utc": "2024-12-20T10:15:00+00:00",
+          "signed_gap_fraction": -0.004488607166650823
+        },
+        "short": {
+          "fraction": 0.004580193811055492,
+          "percent": 0.4580193811055492,
+          "bp": 45.801938110554914,
+          "from_close_utc": "2026-04-01T12:30:00+00:00",
+          "to_open_utc": "2026-04-01T12:45:00+00:00",
+          "signed_gap_fraction": 0.004580193811055492
+        }
+      },
+      "canonical_valid_rows_sha256": "3e68e7c80effb586ac4b2219e3954df8563b7685995eb71b421961033a5198f9",
+      "part_count": 66,
+      "source_url_pattern": "https://fapi.binance.com/fapi/v1/markPriceKlines",
+      "parts_manifest": [
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1704067200000&endTime=1705417199999&limit=1500",
+          "start_ms": 1704067200000,
+          "end_exclusive_ms": 1705417200000,
+          "rows": 1500,
+          "response_sha256": "3f917c5e7e837d5416fa9e2a378d199a0477ef4435baa52f818f0b5c141c1b66"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1705417200000&endTime=1706767199999&limit=1500",
+          "start_ms": 1705417200000,
+          "end_exclusive_ms": 1706767200000,
+          "rows": 1500,
+          "response_sha256": "1094abbf4b059d682fc24f8717a1fda78b61af437fb6585e2ccf96045278768f"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1706767200000&endTime=1708117199999&limit=1500",
+          "start_ms": 1706767200000,
+          "end_exclusive_ms": 1708117200000,
+          "rows": 1500,
+          "response_sha256": "0c52bf78c2748a98c08d95d6ab40c2011182852f3269c7325cf9c0d09ddcdbe4"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1708117200000&endTime=1709467199999&limit=1500",
+          "start_ms": 1708117200000,
+          "end_exclusive_ms": 1709467200000,
+          "rows": 1500,
+          "response_sha256": "d3688eb4b43fc00ff68a5d84ae7bb0f1b5a3f66c64d6f139cec6cb6f2f9474a5"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1709467200000&endTime=1710817199999&limit=1500",
+          "start_ms": 1709467200000,
+          "end_exclusive_ms": 1710817200000,
+          "rows": 1500,
+          "response_sha256": "0c03c29ff2de55ba200932cb39adc8f34386f993b490f86a5739a83cb397be64"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1710817200000&endTime=1712167199999&limit=1500",
+          "start_ms": 1710817200000,
+          "end_exclusive_ms": 1712167200000,
+          "rows": 1500,
+          "response_sha256": "54f146484ce0fb9228190c9f1ed961c5295b34c8b3a3b848bf3dc09dd403ec3c"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1712167200000&endTime=1713517199999&limit=1500",
+          "start_ms": 1712167200000,
+          "end_exclusive_ms": 1713517200000,
+          "rows": 1500,
+          "response_sha256": "ddd71a818606638d99be52a7e9bfc176c4cf8184e3dabedf7aa93389e9d686d8"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1713517200000&endTime=1714867199999&limit=1500",
+          "start_ms": 1713517200000,
+          "end_exclusive_ms": 1714867200000,
+          "rows": 1500,
+          "response_sha256": "a71e1b6cb8bd8f4066b2fa889418e5a1c99d80618a0f15fe2a198203993b865b"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1714867200000&endTime=1716217199999&limit=1500",
+          "start_ms": 1714867200000,
+          "end_exclusive_ms": 1716217200000,
+          "rows": 1500,
+          "response_sha256": "7ded7d9b8d0b01167d53755d477aaf139f38701522ba18554c4a6ea5ca378433"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1716217200000&endTime=1717567199999&limit=1500",
+          "start_ms": 1716217200000,
+          "end_exclusive_ms": 1717567200000,
+          "rows": 1500,
+          "response_sha256": "8e599a9617731d837510cf3aa265bd784ecb2510caf4c2f275166d25b616fdca"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1717567200000&endTime=1718917199999&limit=1500",
+          "start_ms": 1717567200000,
+          "end_exclusive_ms": 1718917200000,
+          "rows": 1500,
+          "response_sha256": "a66ba9c84ad5798f21c2b5ec7d8d3eda36ca21c432a47fd5461c1d06cc8e32b9"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1718917200000&endTime=1720267199999&limit=1500",
+          "start_ms": 1718917200000,
+          "end_exclusive_ms": 1720267200000,
+          "rows": 1500,
+          "response_sha256": "e85c6aae842b695e44a8c05bdb3bb07ecbf891034b13f22aa45c1592126864e8"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1720267200000&endTime=1721617199999&limit=1500",
+          "start_ms": 1720267200000,
+          "end_exclusive_ms": 1721617200000,
+          "rows": 1500,
+          "response_sha256": "e499dbeb92b921a77958790467cbaa8af956f86afde46e59d22f10a424e9da64"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1721617200000&endTime=1722967199999&limit=1500",
+          "start_ms": 1721617200000,
+          "end_exclusive_ms": 1722967200000,
+          "rows": 1500,
+          "response_sha256": "01f9c86bdb8010050a0abfffc76ab8d9e42253e80d352d38289c9b23aa00a48a"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1722967200000&endTime=1724317199999&limit=1500",
+          "start_ms": 1722967200000,
+          "end_exclusive_ms": 1724317200000,
+          "rows": 1500,
+          "response_sha256": "5fdda269c06eceaa45b65ef4fc69c2a6601c2bf2d9b0acdbbdebb8229e161ee5"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1724317200000&endTime=1725667199999&limit=1500",
+          "start_ms": 1724317200000,
+          "end_exclusive_ms": 1725667200000,
+          "rows": 1500,
+          "response_sha256": "0e69435de98db11980b3139354000858efd15bfa555e9e19410fa6879e663e8b"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1725667200000&endTime=1727017199999&limit=1500",
+          "start_ms": 1725667200000,
+          "end_exclusive_ms": 1727017200000,
+          "rows": 1500,
+          "response_sha256": "d93b0b9afedb885f43955ad27b996211f1c344407095b8a9f308f899f6c2e73c"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1727017200000&endTime=1728367199999&limit=1500",
+          "start_ms": 1727017200000,
+          "end_exclusive_ms": 1728367200000,
+          "rows": 1500,
+          "response_sha256": "3ad296cf786ff84807a8985998b5a7c102f0d7097439db84b59936307fd72d9c"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1728367200000&endTime=1729717199999&limit=1500",
+          "start_ms": 1728367200000,
+          "end_exclusive_ms": 1729717200000,
+          "rows": 1500,
+          "response_sha256": "d9dd0c84e3526e55f37cb89e69ba089187f04a3cb18fd58fb0cd1a6f046aa6ce"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1729717200000&endTime=1731067199999&limit=1500",
+          "start_ms": 1729717200000,
+          "end_exclusive_ms": 1731067200000,
+          "rows": 1500,
+          "response_sha256": "d04879ab77d26609e4c52fd64f0d23e6bba892cef2031d566058d3876f6fd0e1"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1731067200000&endTime=1732417199999&limit=1500",
+          "start_ms": 1731067200000,
+          "end_exclusive_ms": 1732417200000,
+          "rows": 1500,
+          "response_sha256": "fd6d151e7592860824e142d6160148ec4c98ee1a53e36f37e69a0251f08dfd37"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1732417200000&endTime=1733767199999&limit=1500",
+          "start_ms": 1732417200000,
+          "end_exclusive_ms": 1733767200000,
+          "rows": 1500,
+          "response_sha256": "cdae8dd7299cc38197e79415f45a5e133a6949b5e66404c6ab6ddf3a5cc28111"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1733767200000&endTime=1735117199999&limit=1500",
+          "start_ms": 1733767200000,
+          "end_exclusive_ms": 1735117200000,
+          "rows": 1500,
+          "response_sha256": "7256c5fb447cd42ef3d557724ac2bd47434b2b2f43a578163bbfd0e2ec253909"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1735117200000&endTime=1736467199999&limit=1500",
+          "start_ms": 1735117200000,
+          "end_exclusive_ms": 1736467200000,
+          "rows": 1500,
+          "response_sha256": "eb64192e516d61b6b71ce675243cd6f9829d069e0c79135acfeb0d93463de1e2"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1736467200000&endTime=1737817199999&limit=1500",
+          "start_ms": 1736467200000,
+          "end_exclusive_ms": 1737817200000,
+          "rows": 1500,
+          "response_sha256": "20c7e795289b3e411f38a67ff5db522a65dd0012e1d7f0cdbff878dbea0478c3"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1737817200000&endTime=1739167199999&limit=1500",
+          "start_ms": 1737817200000,
+          "end_exclusive_ms": 1739167200000,
+          "rows": 1500,
+          "response_sha256": "61fe2dc9faaba413e422b806542f7809cecc9679170d68a44eb047c79026bacb"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1739167200000&endTime=1740517199999&limit=1500",
+          "start_ms": 1739167200000,
+          "end_exclusive_ms": 1740517200000,
+          "rows": 1500,
+          "response_sha256": "a4a271c38dfd4c9c326163c511d528fe100a849ae98ad2223808f780aa43e422"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1740517200000&endTime=1741867199999&limit=1500",
+          "start_ms": 1740517200000,
+          "end_exclusive_ms": 1741867200000,
+          "rows": 1500,
+          "response_sha256": "866b98de67a800e320ebd40169c63f14614c9cc34c5452b19d2fb7e412d0a4aa"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1741867200000&endTime=1743217199999&limit=1500",
+          "start_ms": 1741867200000,
+          "end_exclusive_ms": 1743217200000,
+          "rows": 1500,
+          "response_sha256": "76b544c175cea0950c771d33875e379ad225fa40468187127e7922f0737dcfac"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1743217200000&endTime=1744567199999&limit=1500",
+          "start_ms": 1743217200000,
+          "end_exclusive_ms": 1744567200000,
+          "rows": 1500,
+          "response_sha256": "93958df2759ef43d49aa8c0abca1873ce2fd85230b51898f7a470a4c0311c44c"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1744567200000&endTime=1745917199999&limit=1500",
+          "start_ms": 1744567200000,
+          "end_exclusive_ms": 1745917200000,
+          "rows": 1500,
+          "response_sha256": "b8f94049a3df14b52b5867aca316ab058c75b8aefcc9247cda52d26e2352992d"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1745917200000&endTime=1747267199999&limit=1500",
+          "start_ms": 1745917200000,
+          "end_exclusive_ms": 1747267200000,
+          "rows": 1500,
+          "response_sha256": "8606d18068e9edf49d889264385771cec87149784de7251e67d9e8030f1975dd"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1747267200000&endTime=1748617199999&limit=1500",
+          "start_ms": 1747267200000,
+          "end_exclusive_ms": 1748617200000,
+          "rows": 1500,
+          "response_sha256": "8520298040dd055946961141aec2273592a323cc7fd67509606144b6faa590b2"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1748617200000&endTime=1749967199999&limit=1500",
+          "start_ms": 1748617200000,
+          "end_exclusive_ms": 1749967200000,
+          "rows": 1500,
+          "response_sha256": "c9e6161fadfdfb0554998fdcf0c080e30d39251ccf722c3a58ab5ced468b1b13"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1749967200000&endTime=1751317199999&limit=1500",
+          "start_ms": 1749967200000,
+          "end_exclusive_ms": 1751317200000,
+          "rows": 1500,
+          "response_sha256": "14a99dc70d2795e9c825b1464692857c85123c4edf44f37903c1b3fe3e0d6f71"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1751317200000&endTime=1752667199999&limit=1500",
+          "start_ms": 1751317200000,
+          "end_exclusive_ms": 1752667200000,
+          "rows": 1500,
+          "response_sha256": "507c9b4b314887a55654af4068d482d4628c587245edc46f308024913f6e2917"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1752667200000&endTime=1754017199999&limit=1500",
+          "start_ms": 1752667200000,
+          "end_exclusive_ms": 1754017200000,
+          "rows": 1500,
+          "response_sha256": "2f28e1d2f44d6344c9dbcfbc6029fbc5a883ec93569aaa5779e997a1c3884e1c"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1754017200000&endTime=1755367199999&limit=1500",
+          "start_ms": 1754017200000,
+          "end_exclusive_ms": 1755367200000,
+          "rows": 1500,
+          "response_sha256": "ce89564d05c44e1a9ef5900a5fe9abe8d9a34e0b96abe89a139e61177e557e6c"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1755367200000&endTime=1756717199999&limit=1500",
+          "start_ms": 1755367200000,
+          "end_exclusive_ms": 1756717200000,
+          "rows": 1500,
+          "response_sha256": "9d3ab6054676f9ad65ab5d3c35700e062e203e04999c02c7d1cc2511ee80833e"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1756717200000&endTime=1758067199999&limit=1500",
+          "start_ms": 1756717200000,
+          "end_exclusive_ms": 1758067200000,
+          "rows": 1500,
+          "response_sha256": "849db6033bea59ecdedae25ced5505782ebcba1101ebdbd043035d2c8cd87f11"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1758067200000&endTime=1759417199999&limit=1500",
+          "start_ms": 1758067200000,
+          "end_exclusive_ms": 1759417200000,
+          "rows": 1500,
+          "response_sha256": "00699089d6c55cea7c0ac2611d8dc4783102019c35cb6dacd5b50286927ad365"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1759417200000&endTime=1760767199999&limit=1500",
+          "start_ms": 1759417200000,
+          "end_exclusive_ms": 1760767200000,
+          "rows": 1500,
+          "response_sha256": "0d3e814bd1b584b0d5d53083b5d55209f46195641d1583cbe0fe9c7a8a57c058"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1760767200000&endTime=1762117199999&limit=1500",
+          "start_ms": 1760767200000,
+          "end_exclusive_ms": 1762117200000,
+          "rows": 1500,
+          "response_sha256": "d2bec334f6445ea7fef802663634d1bc31c5398563b4efbcd6769bb4f4741059"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1762117200000&endTime=1763467199999&limit=1500",
+          "start_ms": 1762117200000,
+          "end_exclusive_ms": 1763467200000,
+          "rows": 1500,
+          "response_sha256": "7a3072b4ea622d3e08c969268b7587e53357509e396c067af85eab1b51d54bfc"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1763467200000&endTime=1764817199999&limit=1500",
+          "start_ms": 1763467200000,
+          "end_exclusive_ms": 1764817200000,
+          "rows": 1500,
+          "response_sha256": "6a004727ce11e6e1a106189c56d973db33e01f2c183c5c254e4a9b2611d6d700"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1764817200000&endTime=1766167199999&limit=1500",
+          "start_ms": 1764817200000,
+          "end_exclusive_ms": 1766167200000,
+          "rows": 1500,
+          "response_sha256": "aaf03e30d049d1cc7e15389e188ad1174ae0a387f3a6c42ccf90b4d54252547f"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1766167200000&endTime=1767517199999&limit=1500",
+          "start_ms": 1766167200000,
+          "end_exclusive_ms": 1767517200000,
+          "rows": 1500,
+          "response_sha256": "47de547f574369e00b0da230ed4d3b98f495cdd89aa13c823dfa5c63fdcffeb3"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1767517200000&endTime=1768867199999&limit=1500",
+          "start_ms": 1767517200000,
+          "end_exclusive_ms": 1768867200000,
+          "rows": 1500,
+          "response_sha256": "73f3a05bfb082c85f164b17f33bc274de8ec13207427bd623419bd022b7229b7"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1768867200000&endTime=1770217199999&limit=1500",
+          "start_ms": 1768867200000,
+          "end_exclusive_ms": 1770217200000,
+          "rows": 1500,
+          "response_sha256": "60a1dbd32fb6ab56af6c4db94a4e1808c6e6032e04cb63522f9c4b09e677f8a2"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1770217200000&endTime=1771567199999&limit=1500",
+          "start_ms": 1770217200000,
+          "end_exclusive_ms": 1771567200000,
+          "rows": 1500,
+          "response_sha256": "56248c5a01603904bfd2fc248e7df61b98afe3b757d74e983c2bbc7713fb4981"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1771567200000&endTime=1772917199999&limit=1500",
+          "start_ms": 1771567200000,
+          "end_exclusive_ms": 1772917200000,
+          "rows": 1500,
+          "response_sha256": "eefda036bbbced676f420bf064321139ceb41f69f80c90df96165e3c79c0b3cf"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1772917200000&endTime=1774267199999&limit=1500",
+          "start_ms": 1772917200000,
+          "end_exclusive_ms": 1774267200000,
+          "rows": 1500,
+          "response_sha256": "095086bfcab4ca6432d7e8624cef8296094c6436a49a2181d498cbda5635c284"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1774267200000&endTime=1775617199999&limit=1500",
+          "start_ms": 1774267200000,
+          "end_exclusive_ms": 1775617200000,
+          "rows": 1500,
+          "response_sha256": "edb4b8d31cda829191df5c8b13ca6c863a0178c32f6ed0a20886f48c705c6cd4"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1775617200000&endTime=1776967199999&limit=1500",
+          "start_ms": 1775617200000,
+          "end_exclusive_ms": 1776967200000,
+          "rows": 1500,
+          "response_sha256": "715369f6a31f76dc1535e40b35de4c0efc0b015ff64594de22a1e18f9e11b4fc"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1776967200000&endTime=1778317199999&limit=1500",
+          "start_ms": 1776967200000,
+          "end_exclusive_ms": 1778317200000,
+          "rows": 1500,
+          "response_sha256": "f8380d50643621719bba76c40d8fa345697717f6a70c96ad932972fbdf76532d"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1778317200000&endTime=1779667199999&limit=1500",
+          "start_ms": 1778317200000,
+          "end_exclusive_ms": 1779667200000,
+          "rows": 1500,
+          "response_sha256": "86a743457271d4fa9b574249b8d6148c5c3612f102977852c0c944eecb069a7f"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1779667200000&endTime=1781017199999&limit=1500",
+          "start_ms": 1779667200000,
+          "end_exclusive_ms": 1781017200000,
+          "rows": 1500,
+          "response_sha256": "2e413ca3ba14eb68b2101762f8dbd937370a9e1924df9e7dd0ecc764f31e25f9"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1781017200000&endTime=1782367199999&limit=1500",
+          "start_ms": 1781017200000,
+          "end_exclusive_ms": 1782367200000,
+          "rows": 1500,
+          "response_sha256": "6b2717b1ac9981d80ec6c49e5cfd9f7c6dfccf1e390951753c6541c2b71b1088"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1782367200000&endTime=1783717199999&limit=1500",
+          "start_ms": 1782367200000,
+          "end_exclusive_ms": 1783717200000,
+          "rows": 1500,
+          "response_sha256": "d88c2aa055faafa9d1e35581cea6cfe44fc84c044930e8c03ad821f6d363e645"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1783717200000&endTime=1785067199999&limit=1500",
+          "start_ms": 1783717200000,
+          "end_exclusive_ms": 1785067200000,
+          "rows": 1500,
+          "response_sha256": "47c0703c70d50090a072c97ec3ae5650634723ba8e41ddcbac36117e07804ab6"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1785067200000&endTime=1786417199999&limit=1500",
+          "start_ms": 1785067200000,
+          "end_exclusive_ms": 1786417200000,
+          "rows": 1500,
+          "response_sha256": "0be52f7d62ca6e0691603976f2f0defbad4f6f67e86de507b0fb923e89b23262"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1786417200000&endTime=1787767199999&limit=1500",
+          "start_ms": 1786417200000,
+          "end_exclusive_ms": 1787767200000,
+          "rows": 1500,
+          "response_sha256": "ac9734024e47b90034b73087b405a7bc19d1be9c2007c3a6204749597675cfc7"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1787767200000&endTime=1789117199999&limit=1500",
+          "start_ms": 1787767200000,
+          "end_exclusive_ms": 1789117200000,
+          "rows": 1500,
+          "response_sha256": "6ccd8861a660be8aadd1f3643783a821592d31b568707728b34c62f95671157b"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1789117200000&endTime=1790467199999&limit=1500",
+          "start_ms": 1789117200000,
+          "end_exclusive_ms": 1790467200000,
+          "rows": 1500,
+          "response_sha256": "a7bf94205184e4ffb92c0c8f84a4e39939b50dd19bf9086620ef1272dad3ac0a"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1790467200000&endTime=1791817199999&limit=1500",
+          "start_ms": 1790467200000,
+          "end_exclusive_ms": 1791817200000,
+          "rows": 1500,
+          "response_sha256": "0a7acedb10f2a4ae260c3cd4a09d0d112390051dd94979b13a2077f84bb677c7"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=ETHUSDT&interval=15m&startTime=1791817200000&endTime=1792454399999&limit=1500",
+          "start_ms": 1791817200000,
+          "end_exclusive_ms": 1792454400000,
+          "rows": 708,
+          "response_sha256": "0e432d01246fc44012bbc1d40f8ecb8e829e8f6de2bee9bfea9d679a657143b2"
+        }
+      ]
+    },
+    {
+      "symbol": "ETHUSDT",
+      "dataset": "trade_ohlc",
+      "first_open_utc": "2024-01-01T00:00:00+00:00",
+      "last_open_utc": "2026-10-19T23:45:00+00:00",
+      "expected_rows": 98208,
+      "raw_rows": 98208,
+      "valid_unique_rows": 98208,
+      "invalid_rows": 0,
+      "duplicate_rows": 0,
+      "conflicting_duplicate_rows": 0,
+      "missing_expected_bars": 0,
+      "out_of_range_rows": 0,
+      "non_contiguous_adjacencies": 0,
+      "nonzero_adverse_gap_pairs": {
+        "long": 24433,
+        "short": 23832
+      },
+      "p99_nearest_rank": {
+        "long": {
+          "n": 24433,
+          "rank_1_indexed": 24189,
+          "fraction": 0.000028616151528349677,
+          "percent": 0.002861615152834968,
+          "bp": 0.28616151528349676
+        },
+        "short": {
+          "n": 23832,
+          "rank_1_indexed": 23594,
+          "fraction": 0.00003413498836311166,
+          "percent": 0.0034134988363111658,
+          "bp": 0.34134988363111657
+        }
+      },
+      "max_adverse_gap": {
+        "long": {
+          "fraction": 0.0020675241157555742,
+          "percent": 0.20675241157555743,
+          "bp": 20.675241157555742,
+          "from_close_utc": "2025-01-29T01:15:00+00:00",
+          "to_open_utc": "2025-01-29T01:30:00+00:00",
+          "signed_gap_fraction": -0.0020675241157555742
+        },
+        "short": {
+          "fraction": 0.00605087528007768,
+          "percent": 0.605087528007768,
+          "bp": 60.5087528007768,
+          "from_close_utc": "2024-10-28T20:45:00+00:00",
+          "to_open_utc": "2024-10-28T21:00:00+00:00",
+          "signed_gap_fraction": 0.00605087528007768
+        }
+      },
+      "canonical_valid_rows_sha256": "d580f077dd788e272c3a024701938f4a878cbd47998b396e76200241ae3963d3",
+      "part_count": 35,
+      "source_url_pattern": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-YYYY-MM.zip + official CHECKSUM; https://fapi.binance.com/fapi/v1/klines REST for partial month",
+      "parts_manifest": [
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-01.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-01.zip.CHECKSUM",
+          "range_month": "2024-01",
+          "rows": 2976,
+          "archive_sha256": "297428b35c676c697975fb7e9e9d3ca4c00f89ac7796df5560854822764b0d1c",
+          "official_checksum": "297428b35c676c697975fb7e9e9d3ca4c00f89ac7796df5560854822764b0d1c"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-02.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-02.zip.CHECKSUM",
+          "range_month": "2024-02",
+          "rows": 2784,
+          "archive_sha256": "ace924d4afcd55ee43df9ed33423196099ffa83df6043c1310a110df0b3752d5",
+          "official_checksum": "ace924d4afcd55ee43df9ed33423196099ffa83df6043c1310a110df0b3752d5"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-03.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-03.zip.CHECKSUM",
+          "range_month": "2024-03",
+          "rows": 2976,
+          "archive_sha256": "9f3b2fc59cc0e30fe2baf0d27dd1f561672f1daf9575b0e7b24fab22e0231734",
+          "official_checksum": "9f3b2fc59cc0e30fe2baf0d27dd1f561672f1daf9575b0e7b24fab22e0231734"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-04.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-04.zip.CHECKSUM",
+          "range_month": "2024-04",
+          "rows": 2880,
+          "archive_sha256": "e9c10a021e622dd6728b6114dab2c3549e3d52d7d75ca9aea4530cf8e1313413",
+          "official_checksum": "e9c10a021e622dd6728b6114dab2c3549e3d52d7d75ca9aea4530cf8e1313413"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-05.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-05.zip.CHECKSUM",
+          "range_month": "2024-05",
+          "rows": 2976,
+          "archive_sha256": "b29d1019e7c8e01eaf9ef096b7e85932918ec652e7b67afeee86e877de6453e6",
+          "official_checksum": "b29d1019e7c8e01eaf9ef096b7e85932918ec652e7b67afeee86e877de6453e6"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-06.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-06.zip.CHECKSUM",
+          "range_month": "2024-06",
+          "rows": 2880,
+          "archive_sha256": "8185a2fec997ba390b15af9c10bfcd1373c9e2cea18eec0e1a24f2380e99de36",
+          "official_checksum": "8185a2fec997ba390b15af9c10bfcd1373c9e2cea18eec0e1a24f2380e99de36"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-07.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-07.zip.CHECKSUM",
+          "range_month": "2024-07",
+          "rows": 2976,
+          "archive_sha256": "c2fded10ec36eddc4e87df6850c87d7e0d2d8b21992eb6ab693ee7913e3dd426",
+          "official_checksum": "c2fded10ec36eddc4e87df6850c87d7e0d2d8b21992eb6ab693ee7913e3dd426"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-08.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-08.zip.CHECKSUM",
+          "range_month": "2024-08",
+          "rows": 2976,
+          "archive_sha256": "9dbda411a4624f5546de5f42c7f49fdc50e91878d59fcd1f0cf331cb42f8a3d8",
+          "official_checksum": "9dbda411a4624f5546de5f42c7f49fdc50e91878d59fcd1f0cf331cb42f8a3d8"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-09.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-09.zip.CHECKSUM",
+          "range_month": "2024-09",
+          "rows": 2880,
+          "archive_sha256": "57e07af5a0862da969e4b69e8ea0f9d303a7fb691e3b75280ed4e919aa09001a",
+          "official_checksum": "57e07af5a0862da969e4b69e8ea0f9d303a7fb691e3b75280ed4e919aa09001a"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-10.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-10.zip.CHECKSUM",
+          "range_month": "2024-10",
+          "rows": 2976,
+          "archive_sha256": "43e59e7052b1851de4718a041695d437b7d1839382db260002c5c184823dbf95",
+          "official_checksum": "43e59e7052b1851de4718a041695d437b7d1839382db260002c5c184823dbf95"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-11.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-11.zip.CHECKSUM",
+          "range_month": "2024-11",
+          "rows": 2880,
+          "archive_sha256": "f44d3cbcc68e41841d473bcd04394b3479fa0ebbe7390395294f1fd177f1420c",
+          "official_checksum": "f44d3cbcc68e41841d473bcd04394b3479fa0ebbe7390395294f1fd177f1420c"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-12.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2024-12.zip.CHECKSUM",
+          "range_month": "2024-12",
+          "rows": 2976,
+          "archive_sha256": "9a6a745d78d3820463c93eb39e8d566f399cd6632facc5331333d8820c1ee16c",
+          "official_checksum": "9a6a745d78d3820463c93eb39e8d566f399cd6632facc5331333d8820c1ee16c"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-01.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-01.zip.CHECKSUM",
+          "range_month": "2025-01",
+          "rows": 2976,
+          "archive_sha256": "e4583eaeb9f60a36f51edc0c420c5dae46ada08a95a2e187cc37a6d4ca01da2c",
+          "official_checksum": "e4583eaeb9f60a36f51edc0c420c5dae46ada08a95a2e187cc37a6d4ca01da2c"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-02.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-02.zip.CHECKSUM",
+          "range_month": "2025-02",
+          "rows": 2688,
+          "archive_sha256": "0ffea7062a8ddcce2cc352a37f0329cdb172cab2128da90f00d4e4faa276e70b",
+          "official_checksum": "0ffea7062a8ddcce2cc352a37f0329cdb172cab2128da90f00d4e4faa276e70b"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-03.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-03.zip.CHECKSUM",
+          "range_month": "2025-03",
+          "rows": 2976,
+          "archive_sha256": "b85a8fdf1e969d04b4035672b2f3e04e42dfbadf2697e103f1ce8556c9df33ba",
+          "official_checksum": "b85a8fdf1e969d04b4035672b2f3e04e42dfbadf2697e103f1ce8556c9df33ba"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-04.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-04.zip.CHECKSUM",
+          "range_month": "2025-04",
+          "rows": 2880,
+          "archive_sha256": "e0425f5d963857b2a66ed2a5a8da635182633a33d8388c723fe9e255ae9e783a",
+          "official_checksum": "e0425f5d963857b2a66ed2a5a8da635182633a33d8388c723fe9e255ae9e783a"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-05.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-05.zip.CHECKSUM",
+          "range_month": "2025-05",
+          "rows": 2976,
+          "archive_sha256": "08a8b62945c67b1c6cb7852290865421033e6b629585d222d0120927938b3c0e",
+          "official_checksum": "08a8b62945c67b1c6cb7852290865421033e6b629585d222d0120927938b3c0e"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-06.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-06.zip.CHECKSUM",
+          "range_month": "2025-06",
+          "rows": 2880,
+          "archive_sha256": "9cf0b46281a62106d755ca9ee79b91b456dd71fad45f9e63d967f1e59fe44955",
+          "official_checksum": "9cf0b46281a62106d755ca9ee79b91b456dd71fad45f9e63d967f1e59fe44955"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-07.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-07.zip.CHECKSUM",
+          "range_month": "2025-07",
+          "rows": 2976,
+          "archive_sha256": "474a1539ea3341ecd1225144d447a0e465a5bdf104a773d1466b2a69b9b285a9",
+          "official_checksum": "474a1539ea3341ecd1225144d447a0e465a5bdf104a773d1466b2a69b9b285a9"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-08.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-08.zip.CHECKSUM",
+          "range_month": "2025-08",
+          "rows": 2976,
+          "archive_sha256": "22be96c56c387830ba231b125faef3d5dca790d5bba400be1c7943e76828859f",
+          "official_checksum": "22be96c56c387830ba231b125faef3d5dca790d5bba400be1c7943e76828859f"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-09.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-09.zip.CHECKSUM",
+          "range_month": "2025-09",
+          "rows": 2880,
+          "archive_sha256": "a13d3ec67f1d3a3a0f64958c0ebf44408f586c0763b98ad61d5a053b38e4140b",
+          "official_checksum": "a13d3ec67f1d3a3a0f64958c0ebf44408f586c0763b98ad61d5a053b38e4140b"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-10.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-10.zip.CHECKSUM",
+          "range_month": "2025-10",
+          "rows": 2976,
+          "archive_sha256": "791ea1d15568f9654251e133166b5811ed9dd2a870d0430a1f770ae1d4be9634",
+          "official_checksum": "791ea1d15568f9654251e133166b5811ed9dd2a870d0430a1f770ae1d4be9634"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-11.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-11.zip.CHECKSUM",
+          "range_month": "2025-11",
+          "rows": 2880,
+          "archive_sha256": "c990b42346cfa801272495c3eab589298df0f53df7bf503b64c6407c8148e87e",
+          "official_checksum": "c990b42346cfa801272495c3eab589298df0f53df7bf503b64c6407c8148e87e"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-12.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2025-12.zip.CHECKSUM",
+          "range_month": "2025-12",
+          "rows": 2976,
+          "archive_sha256": "976ec3149859d3dfcb1fad77e61765fa54e515b16191c0acc068c68a8410f344",
+          "official_checksum": "976ec3149859d3dfcb1fad77e61765fa54e515b16191c0acc068c68a8410f344"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-01.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-01.zip.CHECKSUM",
+          "range_month": "2026-01",
+          "rows": 2976,
+          "archive_sha256": "447a9db9356fac7d162cf485d5ac4488a587dc053ac0a59f35f24cae84e6403d",
+          "official_checksum": "447a9db9356fac7d162cf485d5ac4488a587dc053ac0a59f35f24cae84e6403d"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-02.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-02.zip.CHECKSUM",
+          "range_month": "2026-02",
+          "rows": 2688,
+          "archive_sha256": "71de116aeb4643bad5eba4537673f1b1aea22f33064780bf6fa636429f63415a",
+          "official_checksum": "71de116aeb4643bad5eba4537673f1b1aea22f33064780bf6fa636429f63415a"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-03.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-03.zip.CHECKSUM",
+          "range_month": "2026-03",
+          "rows": 2976,
+          "archive_sha256": "8070870b512ab7c312329a7fc1a45217fc7aff5ed7bbb4f805d96caf7c99fd5d",
+          "official_checksum": "8070870b512ab7c312329a7fc1a45217fc7aff5ed7bbb4f805d96caf7c99fd5d"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-04.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-04.zip.CHECKSUM",
+          "range_month": "2026-04",
+          "rows": 2880,
+          "archive_sha256": "d9974b77eb5b1b37c1b6b82f064a4edbb8c0b2a0531fbee487e3a34e519da6be",
+          "official_checksum": "d9974b77eb5b1b37c1b6b82f064a4edbb8c0b2a0531fbee487e3a34e519da6be"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-05.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-05.zip.CHECKSUM",
+          "range_month": "2026-05",
+          "rows": 2976,
+          "archive_sha256": "3db40bf90a856aa0977bcac53c46750c174b58c9e0a438ea9803948e81d42260",
+          "official_checksum": "3db40bf90a856aa0977bcac53c46750c174b58c9e0a438ea9803948e81d42260"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-06.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-06.zip.CHECKSUM",
+          "range_month": "2026-06",
+          "rows": 2880,
+          "archive_sha256": "d4d7c7087b6813c219c39c1cfcb7b3f5c493551b94d33a8d7c6ee0b7201f010a",
+          "official_checksum": "d4d7c7087b6813c219c39c1cfcb7b3f5c493551b94d33a8d7c6ee0b7201f010a"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-07.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-07.zip.CHECKSUM",
+          "range_month": "2026-07",
+          "rows": 2976,
+          "archive_sha256": "6d35d18663150fc242eec9fb2f4d3ed220081c849994020f728e93556f7a9f50",
+          "official_checksum": "6d35d18663150fc242eec9fb2f4d3ed220081c849994020f728e93556f7a9f50"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-08.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-08.zip.CHECKSUM",
+          "range_month": "2026-08",
+          "rows": 2976,
+          "archive_sha256": "468f78cf3a11df085e538ae44edfe73ad9bf69ba8ab7bed83788aad26ad538bb",
+          "official_checksum": "468f78cf3a11df085e538ae44edfe73ad9bf69ba8ab7bed83788aad26ad538bb"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-09.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/ETHUSDT/15m/ETHUSDT-15m-2026-09.zip.CHECKSUM",
+          "range_month": "2026-09",
+          "rows": 2880,
+          "archive_sha256": "1dc572ea53979b37c55d950b2a8ad337eb3846cdcfd85864a609c70c526d934a",
+          "official_checksum": "1dc572ea53979b37c55d950b2a8ad337eb3846cdcfd85864a609c70c526d934a"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/klines?symbol=ETHUSDT&interval=15m&startTime=1790812800000&endTime=1792162799999&limit=1500",
+          "start_ms": 1790812800000,
+          "end_exclusive_ms": 1792162800000,
+          "rows": 1500,
+          "response_sha256": "a0d9068d6fc24c2ad478b51aba326785c1b325b46c0c6091f43fe2d3d02c03d8"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/klines?symbol=ETHUSDT&interval=15m&startTime=1792162800000&endTime=1792454399999&limit=1500",
+          "start_ms": 1792162800000,
+          "end_exclusive_ms": 1792454400000,
+          "rows": 324,
+          "response_sha256": "a42ecc60b34256e7c8279f0258ef29639e233a90a898965ac940ef969353a508"
+        }
+      ]
+    },
+    {
+      "symbol": "TRXUSDT",
+      "dataset": "mark_ohlc",
+      "first_open_utc": "2024-01-01T00:00:00+00:00",
+      "last_open_utc": "2026-10-19T23:45:00+00:00",
+      "expected_rows": 98208,
+      "raw_rows": 98208,
+      "valid_unique_rows": 98208,
+      "invalid_rows": 0,
+      "duplicate_rows": 0,
+      "conflicting_duplicate_rows": 0,
+      "missing_expected_bars": 0,
+      "out_of_range_rows": 0,
+      "non_contiguous_adjacencies": 0,
+      "nonzero_adverse_gap_pairs": {
+        "long": 21827,
+        "short": 20961
+      },
+      "p99_nearest_rank": {
+        "long": {
+          "n": 21827,
+          "rank_1_indexed": 21609,
+          "fraction": 0.0003442149865412642,
+          "percent": 0.034421498654126415,
+          "bp": 3.4421498654126417
+        },
+        "short": {
+          "n": 20961,
+          "rank_1_indexed": 20752,
+          "fraction": 0.00036345779241881137,
+          "percent": 0.036345779241881135,
+          "bp": 3.6345779241881138
+        }
+      },
+      "max_adverse_gap": {
+        "long": {
+          "fraction": 0.003223386800576996,
+          "percent": 0.3223386800576996,
+          "bp": 32.23386800576996,
+          "from_close_utc": "2024-02-21T08:30:00+00:00",
+          "to_open_utc": "2024-02-21T08:45:00+00:00",
+          "signed_gap_fraction": -0.003223386800576996
+        },
+        "short": {
+          "fraction": 0.00470823756209681,
+          "percent": 0.470823756209681,
+          "bp": 47.0823756209681,
+          "from_close_utc": "2025-05-12T09:30:00+00:00",
+          "to_open_utc": "2025-05-12T09:45:00+00:00",
+          "signed_gap_fraction": 0.00470823756209681
+        }
+      },
+      "canonical_valid_rows_sha256": "7eb9fb7dac70c35825c3b04346e76db0566ee05058796c3d05cdfda7e72b00c2",
+      "part_count": 66,
+      "source_url_pattern": "https://fapi.binance.com/fapi/v1/markPriceKlines",
+      "parts_manifest": [
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1704067200000&endTime=1705417199999&limit=1500",
+          "start_ms": 1704067200000,
+          "end_exclusive_ms": 1705417200000,
+          "rows": 1500,
+          "response_sha256": "3c15a6d7b6f6e6c241ed3fc24f6b181ef4a022df9c06d674c1cfa1472740833a"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1705417200000&endTime=1706767199999&limit=1500",
+          "start_ms": 1705417200000,
+          "end_exclusive_ms": 1706767200000,
+          "rows": 1500,
+          "response_sha256": "b09ea5093f24fd62376e9f10db3fefb2aca4506a588cc69e5028d5ce73d754ce"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1706767200000&endTime=1708117199999&limit=1500",
+          "start_ms": 1706767200000,
+          "end_exclusive_ms": 1708117200000,
+          "rows": 1500,
+          "response_sha256": "6259b4bc715c2a84f437e78d74c9bda70122064db0f1a80b6868dbfffdda8b48"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1708117200000&endTime=1709467199999&limit=1500",
+          "start_ms": 1708117200000,
+          "end_exclusive_ms": 1709467200000,
+          "rows": 1500,
+          "response_sha256": "fbe957e2ecb937fdbca335bad179f827c808955f0977ee0657c008ad496c07fc"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1709467200000&endTime=1710817199999&limit=1500",
+          "start_ms": 1709467200000,
+          "end_exclusive_ms": 1710817200000,
+          "rows": 1500,
+          "response_sha256": "7c0f9763c0461520a3f19398c8f99248605a9909068b7b46275e94a19a742413"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1710817200000&endTime=1712167199999&limit=1500",
+          "start_ms": 1710817200000,
+          "end_exclusive_ms": 1712167200000,
+          "rows": 1500,
+          "response_sha256": "1e7203e6c7df01489cdcf1f0f8facbc3faa8bf39b32690ed8050fd6b7a2c5ad9"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1712167200000&endTime=1713517199999&limit=1500",
+          "start_ms": 1712167200000,
+          "end_exclusive_ms": 1713517200000,
+          "rows": 1500,
+          "response_sha256": "17c592e7c1c2098f782d42571104ea981a1cefb64b7b103f01d0f5d2c5fbfa2f"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1713517200000&endTime=1714867199999&limit=1500",
+          "start_ms": 1713517200000,
+          "end_exclusive_ms": 1714867200000,
+          "rows": 1500,
+          "response_sha256": "5ae9c6bc94504ef4456c866b38eaea437cd9f0ec9da299ee5940e0114c7dd4a1"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1714867200000&endTime=1716217199999&limit=1500",
+          "start_ms": 1714867200000,
+          "end_exclusive_ms": 1716217200000,
+          "rows": 1500,
+          "response_sha256": "38140d13a58b48777c887d637eea02a9696f9420af15ea432982558d605ebce7"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1716217200000&endTime=1717567199999&limit=1500",
+          "start_ms": 1716217200000,
+          "end_exclusive_ms": 1717567200000,
+          "rows": 1500,
+          "response_sha256": "87b94a0b60cd8d2d2182eaaa7daaa14ab8ad506343eb69a1c51becceec933765"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1717567200000&endTime=1718917199999&limit=1500",
+          "start_ms": 1717567200000,
+          "end_exclusive_ms": 1718917200000,
+          "rows": 1500,
+          "response_sha256": "10e18dc0998d8f4c03e8c8a20078e73e50cc028f4efc58fab0e742dfde36e289"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1718917200000&endTime=1720267199999&limit=1500",
+          "start_ms": 1718917200000,
+          "end_exclusive_ms": 1720267200000,
+          "rows": 1500,
+          "response_sha256": "7a4518e5591a7bb6e9b1691f668ab63c012f3a87671b9dbe7285e1763177335a"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1720267200000&endTime=1721617199999&limit=1500",
+          "start_ms": 1720267200000,
+          "end_exclusive_ms": 1721617200000,
+          "rows": 1500,
+          "response_sha256": "2f5c621aab65d5499010956ff27ac488ca9a1b670baa2cdbd5ecd7e2afcfaecd"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1721617200000&endTime=1722967199999&limit=1500",
+          "start_ms": 1721617200000,
+          "end_exclusive_ms": 1722967200000,
+          "rows": 1500,
+          "response_sha256": "9e55a51d3645dc21bc3c1a9309b0b683bf8333ab597f72f51523e5d6716c2cea"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1722967200000&endTime=1724317199999&limit=1500",
+          "start_ms": 1722967200000,
+          "end_exclusive_ms": 1724317200000,
+          "rows": 1500,
+          "response_sha256": "5248399ac3f63df067de0eba1a10ce76e43942a4f951107a8909f1aab9b0f4a0"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1724317200000&endTime=1725667199999&limit=1500",
+          "start_ms": 1724317200000,
+          "end_exclusive_ms": 1725667200000,
+          "rows": 1500,
+          "response_sha256": "de6ba3aa2c58d323ab74a31b270ae487c9413da90023326168605b83bdcc9440"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1725667200000&endTime=1727017199999&limit=1500",
+          "start_ms": 1725667200000,
+          "end_exclusive_ms": 1727017200000,
+          "rows": 1500,
+          "response_sha256": "6a11a1563b9c49826ce7ad6219e562f76811d6e7eb26963931f2f905df0e0647"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1727017200000&endTime=1728367199999&limit=1500",
+          "start_ms": 1727017200000,
+          "end_exclusive_ms": 1728367200000,
+          "rows": 1500,
+          "response_sha256": "405c586ef5fe64f4f73bf4b37bf4f4171380845a61dbb20ddf53c46512eb2398"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1728367200000&endTime=1729717199999&limit=1500",
+          "start_ms": 1728367200000,
+          "end_exclusive_ms": 1729717200000,
+          "rows": 1500,
+          "response_sha256": "eb9224e784d99318802d7fc1ecdaca6083702e7e222279f4eaea9ec6c807da52"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1729717200000&endTime=1731067199999&limit=1500",
+          "start_ms": 1729717200000,
+          "end_exclusive_ms": 1731067200000,
+          "rows": 1500,
+          "response_sha256": "e408aa41e6abe797734911da6da3d10c6b69414d6159bed27b39b797e7b7eb39"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1731067200000&endTime=1732417199999&limit=1500",
+          "start_ms": 1731067200000,
+          "end_exclusive_ms": 1732417200000,
+          "rows": 1500,
+          "response_sha256": "e833be846d82f690f529e23d748e5e4d4f1308d08106ab77fe2a62ec599acb60"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1732417200000&endTime=1733767199999&limit=1500",
+          "start_ms": 1732417200000,
+          "end_exclusive_ms": 1733767200000,
+          "rows": 1500,
+          "response_sha256": "71dad30e1958db9413cb48a0961b290b60b263eca8c52f4ca7207c91a21a6826"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1733767200000&endTime=1735117199999&limit=1500",
+          "start_ms": 1733767200000,
+          "end_exclusive_ms": 1735117200000,
+          "rows": 1500,
+          "response_sha256": "c37314e9e7248be4b642a29a3721fe9cc94ed362c75707f6be9f836bbc66fa42"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1735117200000&endTime=1736467199999&limit=1500",
+          "start_ms": 1735117200000,
+          "end_exclusive_ms": 1736467200000,
+          "rows": 1500,
+          "response_sha256": "f86ae54a972c201c6b81ce5da7eda0dcd5663045ccd9f3250e8b3dfd5f844955"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1736467200000&endTime=1737817199999&limit=1500",
+          "start_ms": 1736467200000,
+          "end_exclusive_ms": 1737817200000,
+          "rows": 1500,
+          "response_sha256": "d6610b448347113c20b05c0a2bd66c6e02d43e6074d2d16b573b4c849b7eb5ae"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1737817200000&endTime=1739167199999&limit=1500",
+          "start_ms": 1737817200000,
+          "end_exclusive_ms": 1739167200000,
+          "rows": 1500,
+          "response_sha256": "0ebaa23334a9a1d8bb101519c3a951d46340a96f03ffc099c56de79ccd131188"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1739167200000&endTime=1740517199999&limit=1500",
+          "start_ms": 1739167200000,
+          "end_exclusive_ms": 1740517200000,
+          "rows": 1500,
+          "response_sha256": "57488652b5ec75134be5f2d05225f10a68ba6c0a3c55e5c1d5d7a09e2441a4d4"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1740517200000&endTime=1741867199999&limit=1500",
+          "start_ms": 1740517200000,
+          "end_exclusive_ms": 1741867200000,
+          "rows": 1500,
+          "response_sha256": "324dce73ebfffa6820fd9a7d9e8054795d9c52e843772bbb65e41c15d92091ae"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1741867200000&endTime=1743217199999&limit=1500",
+          "start_ms": 1741867200000,
+          "end_exclusive_ms": 1743217200000,
+          "rows": 1500,
+          "response_sha256": "53f13322387cadb8e251921a59c88d63b2be19b8918fb07531d3dd8464219e13"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1743217200000&endTime=1744567199999&limit=1500",
+          "start_ms": 1743217200000,
+          "end_exclusive_ms": 1744567200000,
+          "rows": 1500,
+          "response_sha256": "fa8f6c88b1db8523f0286b0039bfbbcd7e9b87149048150d8b4cc6d4d7de972c"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1744567200000&endTime=1745917199999&limit=1500",
+          "start_ms": 1744567200000,
+          "end_exclusive_ms": 1745917200000,
+          "rows": 1500,
+          "response_sha256": "cede90e4662e93262d0ff845bd40bf791100745153530738d538edd4e4cccca8"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1745917200000&endTime=1747267199999&limit=1500",
+          "start_ms": 1745917200000,
+          "end_exclusive_ms": 1747267200000,
+          "rows": 1500,
+          "response_sha256": "7fe1d7d57971519ba8f502643257c6bf687ae923e8c8b51166a4ddc67ea83bc7"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1747267200000&endTime=1748617199999&limit=1500",
+          "start_ms": 1747267200000,
+          "end_exclusive_ms": 1748617200000,
+          "rows": 1500,
+          "response_sha256": "51aa45b4f2e3c3f556684462e376b86bed829df07688affb664abd64e9e5a60e"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1748617200000&endTime=1749967199999&limit=1500",
+          "start_ms": 1748617200000,
+          "end_exclusive_ms": 1749967200000,
+          "rows": 1500,
+          "response_sha256": "6169f23d346fbf499fec9571fbe208cd4dada9cd0ef4e3e22da4542c9df0d5c4"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1749967200000&endTime=1751317199999&limit=1500",
+          "start_ms": 1749967200000,
+          "end_exclusive_ms": 1751317200000,
+          "rows": 1500,
+          "response_sha256": "157c24f18e65f1c5c474f6d43e0114bf53b0e3050370659eb4c9a05b6bbf35be"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1751317200000&endTime=1752667199999&limit=1500",
+          "start_ms": 1751317200000,
+          "end_exclusive_ms": 1752667200000,
+          "rows": 1500,
+          "response_sha256": "95e8aa243744c65f7aaaa1209d1430066bad55606387591081e5907d2bc9f43d"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1752667200000&endTime=1754017199999&limit=1500",
+          "start_ms": 1752667200000,
+          "end_exclusive_ms": 1754017200000,
+          "rows": 1500,
+          "response_sha256": "d1a1dfce32c377b7058f7b13c3b2fd502aed30ee2dd01e119c415f540a3f68c6"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1754017200000&endTime=1755367199999&limit=1500",
+          "start_ms": 1754017200000,
+          "end_exclusive_ms": 1755367200000,
+          "rows": 1500,
+          "response_sha256": "11dd976f07e6752948fa993ef6ca69bd80bf3f5e27b18505b173b6a76aaf2433"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1755367200000&endTime=1756717199999&limit=1500",
+          "start_ms": 1755367200000,
+          "end_exclusive_ms": 1756717200000,
+          "rows": 1500,
+          "response_sha256": "c1dc1c39a3c38194b988f7970aa98207a66e7a7fd330dccb77a65bb8d14743a2"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1756717200000&endTime=1758067199999&limit=1500",
+          "start_ms": 1756717200000,
+          "end_exclusive_ms": 1758067200000,
+          "rows": 1500,
+          "response_sha256": "4fa62724608b100fdd05440ae1a2e29dbcb48fc3b263e5a1213375a976e944d1"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1758067200000&endTime=1759417199999&limit=1500",
+          "start_ms": 1758067200000,
+          "end_exclusive_ms": 1759417200000,
+          "rows": 1500,
+          "response_sha256": "46a8429e377dd75adbfbdd6670d5b49f8cc29b26a6110dce6c54d84ee18e4dad"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1759417200000&endTime=1760767199999&limit=1500",
+          "start_ms": 1759417200000,
+          "end_exclusive_ms": 1760767200000,
+          "rows": 1500,
+          "response_sha256": "685ffa2153853e8b581e7a31f895a9c406722b17273d5251d650a47ae78254eb"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1760767200000&endTime=1762117199999&limit=1500",
+          "start_ms": 1760767200000,
+          "end_exclusive_ms": 1762117200000,
+          "rows": 1500,
+          "response_sha256": "cfdb60d8245a19a40978d4256ced4adfd010d7478c68bf5dc4c238fa5ccf3e97"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1762117200000&endTime=1763467199999&limit=1500",
+          "start_ms": 1762117200000,
+          "end_exclusive_ms": 1763467200000,
+          "rows": 1500,
+          "response_sha256": "f5dd7b800833f15f56622350fdfbf228b53740508f7e0bad7cfc7a697c16e299"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1763467200000&endTime=1764817199999&limit=1500",
+          "start_ms": 1763467200000,
+          "end_exclusive_ms": 1764817200000,
+          "rows": 1500,
+          "response_sha256": "78ab7face31de25a1b2583b8c8e818343a86b1a2755d1fef7b0429c2343dd50f"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1764817200000&endTime=1766167199999&limit=1500",
+          "start_ms": 1764817200000,
+          "end_exclusive_ms": 1766167200000,
+          "rows": 1500,
+          "response_sha256": "6ff70465fe4e39e62c8b692b7be20a3fee5340e431d78752f09f88ecb4d79ac1"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1766167200000&endTime=1767517199999&limit=1500",
+          "start_ms": 1766167200000,
+          "end_exclusive_ms": 1767517200000,
+          "rows": 1500,
+          "response_sha256": "0cb8673aa68232383e683cd4e03bd820f2a33d3d085ec3072e84fc8ede60621e"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1767517200000&endTime=1768867199999&limit=1500",
+          "start_ms": 1767517200000,
+          "end_exclusive_ms": 1768867200000,
+          "rows": 1500,
+          "response_sha256": "3496b57e038425f7fa9d049a152dbb2aee99b3a458139436538a2653cf18150f"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1768867200000&endTime=1770217199999&limit=1500",
+          "start_ms": 1768867200000,
+          "end_exclusive_ms": 1770217200000,
+          "rows": 1500,
+          "response_sha256": "a2ff41891c52b2f948a319ff3fa690c8cf14ea9368e092860a2f1bbf27c485ab"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1770217200000&endTime=1771567199999&limit=1500",
+          "start_ms": 1770217200000,
+          "end_exclusive_ms": 1771567200000,
+          "rows": 1500,
+          "response_sha256": "47391771ed55b7698f74f6a2ae86101b786c22d8529b3fdff7b92e843fe0257a"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1771567200000&endTime=1772917199999&limit=1500",
+          "start_ms": 1771567200000,
+          "end_exclusive_ms": 1772917200000,
+          "rows": 1500,
+          "response_sha256": "705d87021551e6c2e233dddd8f134140d3ef2948794e89328cad1d35c773a0d6"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1772917200000&endTime=1774267199999&limit=1500",
+          "start_ms": 1772917200000,
+          "end_exclusive_ms": 1774267200000,
+          "rows": 1500,
+          "response_sha256": "408195d3aaf219f438882b1f65b846808dff9a646f2964a965e1c54ce7266ddb"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1774267200000&endTime=1775617199999&limit=1500",
+          "start_ms": 1774267200000,
+          "end_exclusive_ms": 1775617200000,
+          "rows": 1500,
+          "response_sha256": "d74091e71204892685b899ed9de55593e77ded06f3801ceea62d038cc215d692"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1775617200000&endTime=1776967199999&limit=1500",
+          "start_ms": 1775617200000,
+          "end_exclusive_ms": 1776967200000,
+          "rows": 1500,
+          "response_sha256": "77538b629b3893d896e967f60009deaedbadb75594f6cd031ad32b2cc021eff8"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1776967200000&endTime=1778317199999&limit=1500",
+          "start_ms": 1776967200000,
+          "end_exclusive_ms": 1778317200000,
+          "rows": 1500,
+          "response_sha256": "45b36997bd7a4ddaeb3eeeeb2b8c8aaee6dd9057ad6d349553fe71694c154453"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1778317200000&endTime=1779667199999&limit=1500",
+          "start_ms": 1778317200000,
+          "end_exclusive_ms": 1779667200000,
+          "rows": 1500,
+          "response_sha256": "9eb66dc0eb94c2dea9f9e92cd95d49d59e6f92dc5f91379fc858eec90f286f58"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1779667200000&endTime=1781017199999&limit=1500",
+          "start_ms": 1779667200000,
+          "end_exclusive_ms": 1781017200000,
+          "rows": 1500,
+          "response_sha256": "8760a44fc5568dd03b519d257ab5c01f0d03acb6d0ec83479d8c97dd2c865ed2"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1781017200000&endTime=1782367199999&limit=1500",
+          "start_ms": 1781017200000,
+          "end_exclusive_ms": 1782367200000,
+          "rows": 1500,
+          "response_sha256": "6aa11e9007e28d75e8352d6a5dc813550a513dfb02f60d2e66d131b656a794b9"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1782367200000&endTime=1783717199999&limit=1500",
+          "start_ms": 1782367200000,
+          "end_exclusive_ms": 1783717200000,
+          "rows": 1500,
+          "response_sha256": "629d2765ecd3bc3bf3c1840f303b308f014873c1b7662d1a14721d29b0d2d2c7"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1783717200000&endTime=1785067199999&limit=1500",
+          "start_ms": 1783717200000,
+          "end_exclusive_ms": 1785067200000,
+          "rows": 1500,
+          "response_sha256": "2d51fe20055d4280fce49b7f8bbbebdf879dd43850176e8df905363d683c0789"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1785067200000&endTime=1786417199999&limit=1500",
+          "start_ms": 1785067200000,
+          "end_exclusive_ms": 1786417200000,
+          "rows": 1500,
+          "response_sha256": "deaca2fd1a4433b00a759097832a302f2f2718f23c69da65f2656f4e9fbd485e"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1786417200000&endTime=1787767199999&limit=1500",
+          "start_ms": 1786417200000,
+          "end_exclusive_ms": 1787767200000,
+          "rows": 1500,
+          "response_sha256": "c7b00f6acb4432087cab6d2c56e93ca255937406c226b197bac2d3c4b278d5c0"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1787767200000&endTime=1789117199999&limit=1500",
+          "start_ms": 1787767200000,
+          "end_exclusive_ms": 1789117200000,
+          "rows": 1500,
+          "response_sha256": "89eb632306e27a905141916b0de1744eb3dd482ad7a19c955560d65c8e20ea18"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1789117200000&endTime=1790467199999&limit=1500",
+          "start_ms": 1789117200000,
+          "end_exclusive_ms": 1790467200000,
+          "rows": 1500,
+          "response_sha256": "7df42c3bd839dc24643d7f8f39c6d033ff8fb6275f1a826f074f5afc54dc2a4a"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1790467200000&endTime=1791817199999&limit=1500",
+          "start_ms": 1790467200000,
+          "end_exclusive_ms": 1791817200000,
+          "rows": 1500,
+          "response_sha256": "044f09d795ca32bc01ad903a0f0889c889e22c66299228d245aa5e6a913b9514"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=TRXUSDT&interval=15m&startTime=1791817200000&endTime=1792454399999&limit=1500",
+          "start_ms": 1791817200000,
+          "end_exclusive_ms": 1792454400000,
+          "rows": 708,
+          "response_sha256": "39b9a5d0056b82464c7358f90840c4fa4d773e1eb389252a26b5b10ed7d9570e"
+        }
+      ]
+    },
+    {
+      "symbol": "TRXUSDT",
+      "dataset": "trade_ohlc",
+      "first_open_utc": "2024-01-01T00:00:00+00:00",
+      "last_open_utc": "2026-10-19T23:45:00+00:00",
+      "expected_rows": 98208,
+      "raw_rows": 98208,
+      "valid_unique_rows": 98208,
+      "invalid_rows": 0,
+      "duplicate_rows": 0,
+      "conflicting_duplicate_rows": 0,
+      "missing_expected_bars": 0,
+      "out_of_range_rows": 0,
+      "non_contiguous_adjacencies": 0,
+      "nonzero_adverse_gap_pairs": {
+        "long": 22751,
+        "short": 23255
+      },
+      "p99_nearest_rank": {
+        "long": {
+          "n": 22751,
+          "rank_1_indexed": 22524,
+          "fraction": 0.00013479511143063555,
+          "percent": 0.013479511143063555,
+          "bp": 1.3479511143063556
+        },
+        "short": {
+          "n": 23255,
+          "rank_1_indexed": 23023,
+          "fraction": 0.0001396453009357632,
+          "percent": 0.01396453009357632,
+          "bp": 1.396453009357632
+        }
+      },
+      "max_adverse_gap": {
+        "long": {
+          "fraction": 0.0009147457006951061,
+          "percent": 0.09147457006951061,
+          "bp": 9.147457006951061,
+          "from_close_utc": "2024-10-28T20:45:00+00:00",
+          "to_open_utc": "2024-10-28T21:00:00+00:00",
+          "signed_gap_fraction": -0.0009147457006951061
+        },
+        "short": {
+          "fraction": 0.0005350931953982387,
+          "percent": 0.053509319539823866,
+          "bp": 5.3509319539823865,
+          "from_close_utc": "2025-01-14T14:45:00+00:00",
+          "to_open_utc": "2025-01-14T15:00:00+00:00",
+          "signed_gap_fraction": 0.0005350931953982387
+        }
+      },
+      "canonical_valid_rows_sha256": "3ac7de7b9a11a660fdb905fc3fff7453dcd2583b82bf1d81577a1016617770e6",
+      "part_count": 35,
+      "source_url_pattern": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-YYYY-MM.zip + official CHECKSUM; https://fapi.binance.com/fapi/v1/klines REST for partial month",
+      "parts_manifest": [
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-01.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-01.zip.CHECKSUM",
+          "range_month": "2024-01",
+          "rows": 2976,
+          "archive_sha256": "24b622e16affd6969a932f775ea781dd6f3a0f3d7db8c6f26adbadff00dee395",
+          "official_checksum": "24b622e16affd6969a932f775ea781dd6f3a0f3d7db8c6f26adbadff00dee395"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-02.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-02.zip.CHECKSUM",
+          "range_month": "2024-02",
+          "rows": 2784,
+          "archive_sha256": "c45d0b9765f2e01dd6414066b2c945cf7a916cc0f051a544542be3f44e381933",
+          "official_checksum": "c45d0b9765f2e01dd6414066b2c945cf7a916cc0f051a544542be3f44e381933"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-03.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-03.zip.CHECKSUM",
+          "range_month": "2024-03",
+          "rows": 2976,
+          "archive_sha256": "6478772078885cff6458afd65976a8c6c5657384d33fd4e8ee91cdc6e8476dbb",
+          "official_checksum": "6478772078885cff6458afd65976a8c6c5657384d33fd4e8ee91cdc6e8476dbb"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-04.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-04.zip.CHECKSUM",
+          "range_month": "2024-04",
+          "rows": 2880,
+          "archive_sha256": "acb1cca70b6f63a111820adf56ec406288a42d2a99ad632bc0570730d489af96",
+          "official_checksum": "acb1cca70b6f63a111820adf56ec406288a42d2a99ad632bc0570730d489af96"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-05.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-05.zip.CHECKSUM",
+          "range_month": "2024-05",
+          "rows": 2976,
+          "archive_sha256": "1d5eeacaecb8789795796b91c8ace87cbe2ede7eaf7e505718bd608600684c7c",
+          "official_checksum": "1d5eeacaecb8789795796b91c8ace87cbe2ede7eaf7e505718bd608600684c7c"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-06.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-06.zip.CHECKSUM",
+          "range_month": "2024-06",
+          "rows": 2880,
+          "archive_sha256": "b614d8d5e2d32bf59f3d3f38fd842586d5fc203570e51947d4e00510823938a0",
+          "official_checksum": "b614d8d5e2d32bf59f3d3f38fd842586d5fc203570e51947d4e00510823938a0"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-07.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-07.zip.CHECKSUM",
+          "range_month": "2024-07",
+          "rows": 2976,
+          "archive_sha256": "248c436a629d72919e9af683d0ebd75aca1b458c1c26f5aee4601ad037e7f9bf",
+          "official_checksum": "248c436a629d72919e9af683d0ebd75aca1b458c1c26f5aee4601ad037e7f9bf"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-08.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-08.zip.CHECKSUM",
+          "range_month": "2024-08",
+          "rows": 2976,
+          "archive_sha256": "a4ce12a203ac80c4d05c22e483165712e23084a350dc63c74db89ffc2a429e96",
+          "official_checksum": "a4ce12a203ac80c4d05c22e483165712e23084a350dc63c74db89ffc2a429e96"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-09.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-09.zip.CHECKSUM",
+          "range_month": "2024-09",
+          "rows": 2880,
+          "archive_sha256": "5f80ba160bd64606adf6f889f61ca26a63a2e3e6464049c356e1162db47a1260",
+          "official_checksum": "5f80ba160bd64606adf6f889f61ca26a63a2e3e6464049c356e1162db47a1260"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-10.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-10.zip.CHECKSUM",
+          "range_month": "2024-10",
+          "rows": 2976,
+          "archive_sha256": "85523cd41a5891f160a9187c18bea26c8b8db4244b27dbaeb85d6f68b3453261",
+          "official_checksum": "85523cd41a5891f160a9187c18bea26c8b8db4244b27dbaeb85d6f68b3453261"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-11.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-11.zip.CHECKSUM",
+          "range_month": "2024-11",
+          "rows": 2880,
+          "archive_sha256": "7c6b8c3891c805562c1f10d90822ed66e8505d02e8658218703571525a3b1616",
+          "official_checksum": "7c6b8c3891c805562c1f10d90822ed66e8505d02e8658218703571525a3b1616"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-12.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2024-12.zip.CHECKSUM",
+          "range_month": "2024-12",
+          "rows": 2976,
+          "archive_sha256": "e2001c1fee0e0f5c20f8479169ffb3f7f53817467fd3df29fdf969bdb1e9dcc4",
+          "official_checksum": "e2001c1fee0e0f5c20f8479169ffb3f7f53817467fd3df29fdf969bdb1e9dcc4"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-01.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-01.zip.CHECKSUM",
+          "range_month": "2025-01",
+          "rows": 2976,
+          "archive_sha256": "6723e7db300da1a8d9fef5fb297fcf392d6029f59efa20768b0bc3747ba08b02",
+          "official_checksum": "6723e7db300da1a8d9fef5fb297fcf392d6029f59efa20768b0bc3747ba08b02"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-02.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-02.zip.CHECKSUM",
+          "range_month": "2025-02",
+          "rows": 2688,
+          "archive_sha256": "34660d51900d8d6ae248cf736d5e4c003715ee0e673b9f2a4a80ad34e18f0b15",
+          "official_checksum": "34660d51900d8d6ae248cf736d5e4c003715ee0e673b9f2a4a80ad34e18f0b15"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-03.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-03.zip.CHECKSUM",
+          "range_month": "2025-03",
+          "rows": 2976,
+          "archive_sha256": "553a1edf78b55ce7655224994f267207141b505a2573698f975c1b686aa25656",
+          "official_checksum": "553a1edf78b55ce7655224994f267207141b505a2573698f975c1b686aa25656"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-04.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-04.zip.CHECKSUM",
+          "range_month": "2025-04",
+          "rows": 2880,
+          "archive_sha256": "605c1094e39a7756e7cc331489b06cf88b0ff3aca77ce85133fbcf9e301a7af9",
+          "official_checksum": "605c1094e39a7756e7cc331489b06cf88b0ff3aca77ce85133fbcf9e301a7af9"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-05.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-05.zip.CHECKSUM",
+          "range_month": "2025-05",
+          "rows": 2976,
+          "archive_sha256": "3de31a94262b6c010d45f9e874df04735ca63b21863e72417cfbf21375aec37d",
+          "official_checksum": "3de31a94262b6c010d45f9e874df04735ca63b21863e72417cfbf21375aec37d"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-06.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-06.zip.CHECKSUM",
+          "range_month": "2025-06",
+          "rows": 2880,
+          "archive_sha256": "fe621a145901345aa2669ee25563af361aa8eba08c22cd873413e976825a3bdd",
+          "official_checksum": "fe621a145901345aa2669ee25563af361aa8eba08c22cd873413e976825a3bdd"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-07.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-07.zip.CHECKSUM",
+          "range_month": "2025-07",
+          "rows": 2976,
+          "archive_sha256": "10c01df596560239c981e35aabb6ff57bf0b4a05f5b991dcbd0bca792cb7f464",
+          "official_checksum": "10c01df596560239c981e35aabb6ff57bf0b4a05f5b991dcbd0bca792cb7f464"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-08.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-08.zip.CHECKSUM",
+          "range_month": "2025-08",
+          "rows": 2976,
+          "archive_sha256": "553a9b3cecf1c4158be0f657244153b3d97a17655f70542ca4a0b984babfb7ec",
+          "official_checksum": "553a9b3cecf1c4158be0f657244153b3d97a17655f70542ca4a0b984babfb7ec"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-09.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-09.zip.CHECKSUM",
+          "range_month": "2025-09",
+          "rows": 2880,
+          "archive_sha256": "3947b292e11be6ee3b3649b798d2f8097f80fd75b5203d7e45424f2a9c40c230",
+          "official_checksum": "3947b292e11be6ee3b3649b798d2f8097f80fd75b5203d7e45424f2a9c40c230"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-10.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-10.zip.CHECKSUM",
+          "range_month": "2025-10",
+          "rows": 2976,
+          "archive_sha256": "6644df0946703e9e6cc226b17eb0c2f519eb8045a6ee11c3418bafe85172f671",
+          "official_checksum": "6644df0946703e9e6cc226b17eb0c2f519eb8045a6ee11c3418bafe85172f671"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-11.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-11.zip.CHECKSUM",
+          "range_month": "2025-11",
+          "rows": 2880,
+          "archive_sha256": "aededa11d6f167a454f4f4af8768aaed7c9243f805aa840b056ad74a1fb3710a",
+          "official_checksum": "aededa11d6f167a454f4f4af8768aaed7c9243f805aa840b056ad74a1fb3710a"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-12.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2025-12.zip.CHECKSUM",
+          "range_month": "2025-12",
+          "rows": 2976,
+          "archive_sha256": "796b14ed90704ee714e9187960ddb6ba64bfe3dd3ed4bd3baefad5a039be3263",
+          "official_checksum": "796b14ed90704ee714e9187960ddb6ba64bfe3dd3ed4bd3baefad5a039be3263"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-01.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-01.zip.CHECKSUM",
+          "range_month": "2026-01",
+          "rows": 2976,
+          "archive_sha256": "9db35f0e6d21354be0307738f3fc0294fd1ee8d5929a8938c43e661c1aa38c33",
+          "official_checksum": "9db35f0e6d21354be0307738f3fc0294fd1ee8d5929a8938c43e661c1aa38c33"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-02.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-02.zip.CHECKSUM",
+          "range_month": "2026-02",
+          "rows": 2688,
+          "archive_sha256": "52c1910b57cdd1e837c3467f1e5ab740dafe8d2d4e44840001b85aaa0f97fcad",
+          "official_checksum": "52c1910b57cdd1e837c3467f1e5ab740dafe8d2d4e44840001b85aaa0f97fcad"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-03.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-03.zip.CHECKSUM",
+          "range_month": "2026-03",
+          "rows": 2976,
+          "archive_sha256": "40e7d1156cdf2d9f3bff050e28de2bdbdb02365e097aed08a5d3925f83be7728",
+          "official_checksum": "40e7d1156cdf2d9f3bff050e28de2bdbdb02365e097aed08a5d3925f83be7728"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-04.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-04.zip.CHECKSUM",
+          "range_month": "2026-04",
+          "rows": 2880,
+          "archive_sha256": "c7252c61c349ad111ce1692c2d0d94b5d1de373fe9802c3c892d6aed0fa7c481",
+          "official_checksum": "c7252c61c349ad111ce1692c2d0d94b5d1de373fe9802c3c892d6aed0fa7c481"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-05.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-05.zip.CHECKSUM",
+          "range_month": "2026-05",
+          "rows": 2976,
+          "archive_sha256": "81142ce2dba78ff63c5106ae8171e5a80110ffc90dea8b8c26d5e0868701732e",
+          "official_checksum": "81142ce2dba78ff63c5106ae8171e5a80110ffc90dea8b8c26d5e0868701732e"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-06.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-06.zip.CHECKSUM",
+          "range_month": "2026-06",
+          "rows": 2880,
+          "archive_sha256": "c4f5ee79c9f7f7c7170f0fc3bbaefe88090d628371d70b17f007b2e3d1bc92e1",
+          "official_checksum": "c4f5ee79c9f7f7c7170f0fc3bbaefe88090d628371d70b17f007b2e3d1bc92e1"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-07.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-07.zip.CHECKSUM",
+          "range_month": "2026-07",
+          "rows": 2976,
+          "archive_sha256": "61227357ab5a39a7c8a96d21a79daece70dc7cc9a52414aceb84e00862f09349",
+          "official_checksum": "61227357ab5a39a7c8a96d21a79daece70dc7cc9a52414aceb84e00862f09349"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-08.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-08.zip.CHECKSUM",
+          "range_month": "2026-08",
+          "rows": 2976,
+          "archive_sha256": "85ef7ec9a16a2b1e473cdd567db62aa877f4869b414d82999a4d8820aad63da9",
+          "official_checksum": "85ef7ec9a16a2b1e473cdd567db62aa877f4869b414d82999a4d8820aad63da9"
+        },
+        {
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-09.zip",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/TRXUSDT/15m/TRXUSDT-15m-2026-09.zip.CHECKSUM",
+          "range_month": "2026-09",
+          "rows": 2880,
+          "archive_sha256": "cbb5f523b02633bec8e303d112ecf22777a134338d2471b2c7fae8ad4c2cdfa7",
+          "official_checksum": "cbb5f523b02633bec8e303d112ecf22777a134338d2471b2c7fae8ad4c2cdfa7"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/klines?symbol=TRXUSDT&interval=15m&startTime=1790812800000&endTime=1792162799999&limit=1500",
+          "start_ms": 1790812800000,
+          "end_exclusive_ms": 1792162800000,
+          "rows": 1500,
+          "response_sha256": "ebfe51b747a654b81ee3b81e6f7b4ef20ebfcef5e31f5d3faf8f7d93b691f327"
+        },
+        {
+          "url": "https://fapi.binance.com/fapi/v1/klines?symbol=TRXUSDT&interval=15m&startTime=1792162800000&endTime=1792454399999&limit=1500",
+          "start_ms": 1792162800000,
+          "end_exclusive_ms": 1792454400000,
+          "rows": 324,
+          "response_sha256": "172c87f416c722e48754d81d7e37ba9ba9daa386f4d16285e5f3c6b24cec2351"
+        }
+      ]
+    }
+  ]
+}

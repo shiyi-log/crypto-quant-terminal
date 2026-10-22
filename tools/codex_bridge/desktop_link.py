@@ -25,6 +25,16 @@ import link_registry
 from direct_codex import DirectCodexError, deliver_codex, inspect_codex
 
 DEFAULT_URL = "http://127.0.0.1:19387"
+
+
+def default_dsh_url():
+    """The running desktop's own address, so restart-changed ports are picked up.
+
+    A DSH restart picks a new loopback port; the cookie name is derived from it.
+    Callers running inside DSH get `DSH_WEB_URL` in their environment, so an
+    omitted `--dsh-url` must not fall back to a port frozen in the source.
+    """
+    return os.environ.get("DSH_WEB_URL", "").strip() or DEFAULT_URL
 DEFAULT_COOKIE_DB = Path.home() / "Library/Application Support/@deepseek-ai/dsh-desktop/Cookies"
 DEFAULT_CODEX = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
 MAX_TEXT_BYTES = 48 * 1024
@@ -454,13 +464,13 @@ def main(argv=None):
     bind = commands.add_parser("bind", help="绑定现有双方桌面会话；--link 写入命名 link")
     bind.add_argument("--codex-thread", help="Codex 会话 UUID；--link 首次创建部分绑定时可省略")
     bind.add_argument("--dsh-session")
-    bind.add_argument("--dsh-url", default=DEFAULT_URL)
+    bind.add_argument("--dsh-url", default=default_dsh_url())
     bind.add_argument("--cookie-db", default=str(DEFAULT_COOKIE_DB))
     bind.add_argument("--codex-binary", default=DEFAULT_CODEX, help="旧绑定兼容字段；直接投递不启动 CLI")
     bind.add_argument("--link", help="写入命名 link（多项目并存），而不是覆盖默认绑定")
     bind.add_argument("--note", help="link 备注，写入 links.json")
     sessions = commands.add_parser("sessions", help="查看 Harness 根会话")
-    sessions.add_argument("--dsh-url", default=DEFAULT_URL)
+    sessions.add_argument("--dsh-url", default=default_dsh_url())
     sessions.add_argument("--cookie-db", default=str(DEFAULT_COOKIE_DB))
     links_cmd = commands.add_parser("links", help="查看命名 link（多项目并存）")
     links_cmd.add_argument("--link", help="只看某一个 link")

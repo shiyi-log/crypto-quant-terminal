@@ -26,7 +26,9 @@ from data_sync import candle_close_timestamp, candle_identity, public_source
 IDENTITY = ("exchange", "market", "pair", "timeframe", "candle_type")
 OHLCV = ("open", "high", "low", "close", "volume")
 REST_URL = "https://fapi.binance.com/fapi/v1/klines"
-REST_INTERVALS = {"5m": 300_000, "15m": 900_000, "1h": 3_600_000}
+# 1d 必须与其它周期走同一条已审计路径：日线策略族（s13/s22-s30）的预热
+# 只能由官方收盘日线满足，5m 重采样需要 216,000 根才能覆盖 750 天。
+REST_INTERVALS = {"5m": 300_000, "15m": 900_000, "1h": 3_600_000, "1d": 86_400_000}
 ALLOWED_PAIRS = {coin + "/USDT:USDT" for coin in ("BTC", "ETH", "TRX")}
 FLOW_FIELDS = {"quote_volume", "num_trades", "taker_buy_base", "taker_buy_quote",
                "avg_trade_sz", "buy_ratio", "sell_volume", "flow_imbal", "flow_imbal_q"}

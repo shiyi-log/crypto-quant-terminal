@@ -137,7 +137,7 @@ class SwitchTests(unittest.TestCase):
     def make_controller(self):
         controller = DemoRunnerController(self.data, self.old, self.provider, self.adapter_factory,
             paper_source=self.paper, lock_path=Path(self.temp.name) / "demo.lock",
-            ledger_factory=self.ledger_factory)
+            ledger_factory=self.ledger_factory, risk_gate_required=False)
         # The worker lifecycle itself is exercised by handoff tests. These
         # tests explicitly control joins and candidate preparation boundaries.
         controller._start_worker = Mock()
@@ -153,6 +153,7 @@ class SwitchTests(unittest.TestCase):
             with self.assertRaises(BlockingIOError):
                 fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.assertTrue(self.controller.status()["accountLockOwned"])
+
 
     def refused(self, code):
         with self.assertRaises(DemoHandoffError) as result:
@@ -440,6 +441,189 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(resumed["selectedAccountId"], "new")
         self.assertFalse(resumed["accountLockOwned"])
         self.assertIsNone(restarted.service)
+
+
+class RiskGateTests(unittest.TestCase):
+    @staticmethod
+    def _binding(strategy_id="frozen", account_scope="acct-1"):
+        import research_ledger
+        return research_ledger.build_risk_gate_target_binding(account_scope, [{
+            "strategy_id": strategy_id, "rule_hash": "a" * 64,
+            "execution_hash": "b" * 64,
+        }])
+
+    @classmethod
+    def _gate(cls, strategy_id="frozen", account_scope="acct-1", **fields):
+        import research_ledger
+        binding = cls._binding(strategy_id, account_scope)
+        return {"research_id": "r1", "event_id": "e1", "risk_segment_status": "closed",
+                "preflight_status": "pass", "boundary_hash": "b1", "inputs_hash": "i1",
+                "evidence_hashes": ["h1"], "target_binding": binding,
+                "target_binding_hash": research_ledger.risk_gate_target_binding_hash(binding),
+                **fields}
+
+    @staticmethod
+    def _paper(strategy_id="frozen"):
+        return Mock(account=Mock(return_value={"strategy_id": strategy_id,
+            "rule_hash": "a" * 64, "execution_hash": "b" * 64,
+            "execution": {"risk_sizing_mode": "entry_atr"}}))
+
+    def test_default_controller_requires_gate_before_credentials(self):
+        data = Documents()
+        ledger = Ledger("demo_default")
+        credentials = Mock(return_value=SimpleNamespace(api_key="key", secret="secret"))
+        adapter_factory = Mock()
+        with tempfile.TemporaryDirectory() as temp:
+            controller = DemoRunnerController(
+                data, ledger, credentials, adapter_factory,
+                paper_source=Mock(), lock_path=Path(temp) / "demo.lock",
+            )
+            with self.assertRaises(DemoHandoffError) as error:
+                controller.start("frozen")
+            self.assertEqual(error.exception.code, "risk_gate_not_closed")
+            credentials.assert_not_called()
+            adapter_factory.assert_not_called()
+
+    def test_restart_start_uses_frozen_gate_when_research_id_is_omitted(self):
+        data = Documents()
+        ledger = Ledger("demo_default")
+        gate = self._gate()
+        data.put_document(STATE_KEY, {"selectedAccountId": "frozen", "virtualAccountKey": "demo_default",
+                                      "researchId": "r1", "riskGate": gate,
+                                      "entriesEnabled": False})
+        credentials = Mock(return_value=SimpleNamespace(api_key="key", secret="secret"))
+        adapter = Mock()
+        adapter_factory = Mock(return_value=adapter)
+        paper = Mock()
+        paper.account.return_value = {"strategy_id": "frozen", "rule_hash": "a" * 64,
+                                     "execution_hash": "b" * 64,
+                                     "execution": {"risk_sizing_mode": "entry_atr"}}
+        service = Service(adapter, ledger, Mock(), SimpleNamespace(
+            strategy_id="frozen", virtual_account_key="demo_default", max_notional_usdt="1000"))
+        with tempfile.TemporaryDirectory() as temp, patch(
+                "demo_runner_controller.DemoExecutionService", return_value=service), patch(
+                "research_ledger.require_closed_risk_gate", return_value=gate) as require_gate:
+            controller = DemoRunnerController(
+                data, ledger, credentials, adapter_factory, paper_source=paper,
+                lock_path=Path(temp) / "demo.lock", risk_account_scope="acct-1",
+            )
+            controller._start_worker = Mock()
+            result = controller.start("frozen")
+            require_gate.assert_called_once_with(
+                data, "r1", expected_binding=self._binding())
+            self.assertEqual(result["researchId"], "r1")
+            self.assertTrue(service.entries_enabled)
+            adapter_factory.assert_called_once()
+            controller.stop()
+            controller.close_if_flat(join_timeout=0)
+
+    def test_legacy_session_cannot_be_rebound_to_a_new_gate(self):
+        data = Documents()
+        ledger = Ledger("demo_default", binding={"strategy_id": "frozen"})
+        data.put_document(STATE_KEY, {"selectedAccountId": "frozen", "virtualAccountKey": "demo_default"})
+        with tempfile.TemporaryDirectory() as temp, patch(
+                "research_ledger.require_closed_risk_gate") as require_gate:
+            controller = DemoRunnerController(
+                data, ledger, Mock(), Mock(), paper_source=Mock(),
+                lock_path=Path(temp) / "demo.lock",
+            )
+            with self.assertRaises(DemoHandoffError) as error:
+                controller.start("frozen", research_id="r2")
+            self.assertEqual(error.exception.code, "risk_gate_identity_missing")
+            require_gate.assert_not_called()
+
+    def test_missing_state_pointer_with_ledger_history_cannot_start_as_new(self):
+        data = Documents()
+        ledger = Ledger("demo_default", binding={"strategy_id": "frozen"})
+        credentials = Mock(return_value=SimpleNamespace(api_key="key", secret="secret"))
+        adapter_factory = Mock()
+        with tempfile.TemporaryDirectory() as temp, patch(
+                "research_ledger.require_closed_risk_gate", return_value={
+                    "research_id": "r1", "event_id": "e1", "boundary_hash": "b1", "inputs_hash": "i1"}):
+            controller = DemoRunnerController(
+                data, ledger, credentials, adapter_factory,
+                paper_source=Mock(), lock_path=Path(temp) / "demo.lock",
+            )
+            with self.assertRaises(DemoHandoffError) as error:
+                controller.start("frozen", research_id="r1")
+            self.assertEqual(error.exception.code, "risk_gate_identity_missing")
+            credentials.assert_not_called()
+            adapter_factory.assert_not_called()
+
+    def test_open_gate_blocks_before_credentials_or_adapter(self):
+        data = Documents()
+        ledger = Ledger("demo_default")
+        credentials = Mock(return_value=SimpleNamespace(api_key="key", secret="secret"))
+        adapter_factory = Mock()
+        with tempfile.TemporaryDirectory() as temp, patch(
+                "research_ledger.require_closed_risk_gate", side_effect=RuntimeError("open")):
+            controller = DemoRunnerController(
+                data, ledger, credentials, adapter_factory,
+                paper_source=self._paper(), lock_path=Path(temp) / "demo.lock",
+                risk_gate_required=True, risk_account_scope="acct-1",
+            )
+            with self.assertRaises(DemoHandoffError) as error:
+                controller.start("frozen", research_id="r1")
+            self.assertEqual(error.exception.code, "risk_gate_not_closed")
+            credentials.assert_not_called()
+            adapter_factory.assert_not_called()
+            self.assertIsNone(controller.status()["riskGate"])
+
+    def test_closed_gate_is_persisted_in_controller_status(self):
+        data = Documents()
+        ledger = Ledger("demo_default")
+        gate = self._gate()
+        with tempfile.TemporaryDirectory() as temp, patch(
+                "research_ledger.require_closed_risk_gate", return_value=gate):
+            controller = DemoRunnerController(
+                data, ledger, Mock(), Mock(), paper_source=self._paper(),
+                lock_path=Path(temp) / "demo.lock", risk_gate_required=True,
+                risk_account_scope="acct-1",
+            )
+            controller._require_risk_gate("r1", account_id="frozen")
+            self.assertEqual(controller.status()["riskGate"], gate)
+            controller.service = SimpleNamespace(
+                config=SimpleNamespace(strategy_id="r1", virtual_account_key="demo_default",
+                                       max_notional_usdt="1000"),
+                policy_hash="policy", status=lambda: {"entries_enabled": False})
+            controller._save()
+            self.assertEqual(data.items[STATE_KEY]["riskGate"], gate)
+
+    def test_gate_event_identity_cannot_change_for_a_session(self):
+        data = Documents()
+        ledger = Ledger("demo_default")
+        first = self._gate()
+        second = {**first, "event_id": "e2"}
+        with tempfile.TemporaryDirectory() as temp, patch(
+                "research_ledger.require_closed_risk_gate", side_effect=[first, second]):
+            controller = DemoRunnerController(
+                data, ledger, Mock(), Mock(), paper_source=self._paper(),
+                lock_path=Path(temp) / "demo.lock", risk_gate_required=True,
+                risk_account_scope="acct-1",
+            )
+            controller._require_risk_gate("r1", account_id="frozen")
+            with self.assertRaises(DemoHandoffError) as error:
+                controller._require_risk_gate("r1", account_id="frozen")
+            self.assertEqual(error.exception.code, "risk_gate_identity_mismatch")
+
+    def test_temporary_gate_read_failure_preserves_binding_for_same_gate_retry(self):
+        data = Documents()
+        ledger = Ledger("demo_default")
+        gate = self._gate()
+        with tempfile.TemporaryDirectory() as temp, patch(
+                "research_ledger.require_closed_risk_gate",
+                side_effect=[gate, RuntimeError("temporary read failure"), gate]):
+            controller = DemoRunnerController(
+                data, ledger, Mock(), Mock(), paper_source=self._paper(),
+                lock_path=Path(temp) / "demo.lock", risk_gate_required=True,
+                risk_account_scope="acct-1",
+            )
+            self.assertEqual(controller._require_risk_gate("r1", account_id="frozen"), gate)
+            with self.assertRaises(DemoHandoffError) as error:
+                controller._require_risk_gate("r1", account_id="frozen")
+            self.assertEqual(error.exception.code, "risk_gate_not_closed")
+            self.assertEqual(controller.status()["riskGate"], gate)
+            self.assertEqual(controller._require_risk_gate("r1", account_id="frozen"), gate)
 
 
 if __name__ == "__main__":

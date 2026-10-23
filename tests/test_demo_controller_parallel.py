@@ -90,6 +90,25 @@ class Service:
                 "forward_boundary_ms": binding.get("forward_boundary_ms")}
 
 
+def target_binding(strategy_ids=("s35", "s07"), account_scope="acct-demo"):
+    import research_ledger
+    return research_ledger.build_risk_gate_target_binding(account_scope, [
+        {"strategy_id": strategy_id, "rule_hash": "a" * 64,
+         "execution_hash": "b" * 64}
+        for strategy_id in strategy_ids
+    ])
+
+
+def gate(strategy_ids=("s35", "s07"), account_scope="acct-demo", **fields):
+    import research_ledger
+    binding = target_binding(strategy_ids, account_scope)
+    return {"research_id": "r1", "event_id": "e1", "risk_segment_status": "closed",
+            "preflight_status": "pass", "boundary_hash": "b1", "inputs_hash": "i1",
+            "target_binding": binding,
+            "target_binding_hash": research_ledger.risk_gate_target_binding_hash(binding),
+            **fields}
+
+
 class ParallelTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -101,8 +120,10 @@ class ParallelTests(unittest.TestCase):
         self.primary_ledger.binding = {"strategy_id": "s35", "rule_hash": "s35-rule",
                                        "execution_hash": "s35-execution", "forward_boundary_ms": 123}
         self.paper = Mock()
-        self.paper.account.return_value = {"execution": {"execution_enabled": True,
-                                                         "risk_sizing_mode": "entry_atr"}}
+        self.paper.account.side_effect = lambda strategy_id: {
+            "strategy_id": strategy_id, "rule_hash": "a" * 64,
+            "execution_hash": "b" * 64,
+            "execution": {"execution_enabled": True, "risk_sizing_mode": "entry_atr"}}
         self.credentials = SimpleNamespace(api_key="synthetic-shared-key", secret="synthetic-shared-secret")
         self.provider = Mock(return_value=self.credentials)
         self.adapter = Mock()
@@ -140,7 +161,8 @@ class ParallelTests(unittest.TestCase):
     def make_controller(self):
         controller = DemoRunnerController(self.data, self.primary_ledger, self.provider,
             Mock(return_value=self.adapter), paper_source=self.paper,
-            lock_path=Path(self.temp.name) / "demo.lock", ledger_factory=self.ledger_factory)
+            lock_path=Path(self.temp.name) / "demo.lock", ledger_factory=self.ledger_factory,
+            risk_gate_required=False)
         controller._start_worker = Mock()
         return controller
 
@@ -190,6 +212,131 @@ class ParallelTests(unittest.TestCase):
         self.assertEqual(companion.start_calls, [False])
         self.controller.start_session(namespace)
         self.assertTrue(companion.entries_enabled)
+
+    def test_shared_restore_keeps_protection_running_with_entries_paused(self):
+        controller = DemoRunnerController(
+            self.data, self.primary_ledger, self.provider,
+            Mock(return_value=self.adapter), paper_source=self.paper,
+            lock_path=Path(self.temp.name) / "risk-gate-restore.lock",
+            ledger_factory=self.ledger_factory, risk_gate_required=True,
+        )
+        self.addCleanup(controller.close_if_flat, join_timeout=0)
+        controller._start_worker = Mock()
+        record = {"virtualAccountKey": self.primary_ledger.virtual_account_key,
+                  "selectedAccountId": "s35"}
+        persisted = {"sessions": [record], "primaryVirtualAccountKey": record["virtualAccountKey"],
+                     "credentialFingerprint": hashlib.sha256(self.credentials.api_key.encode()).hexdigest()[:16],
+                     "researchId": "r1", "riskGate": {"research_id": "r1"}, "yieldedFlat": False}
+        with patch("research_ledger.require_closed_risk_gate", side_effect=RuntimeError("open")) as require_gate:
+            restored = controller._restore_shared(persisted)
+        require_gate.assert_not_called()
+        self.provider.assert_called_once()
+        self.assertFalse(restored["entriesEnabled"])
+        self.assertFalse(controller.service.entries_enabled)
+        self.assertEqual(controller.service.start_calls, [False])
+
+    def test_shared_primary_start_forwards_research_id_to_session_gate(self):
+        closed_gate = gate()
+        self.controller.risk_gate_required = True
+        self.controller.risk_account_scope = "acct-demo"
+        self.controller._risk_gate = closed_gate
+        self.controller._research_id = "r1"
+        self.controller._shared_enabled = True
+        with patch("research_ledger.require_closed_risk_gate", return_value=closed_gate), \
+                patch.object(self.controller, "start_session", return_value={"status": "started"}) as start_session:
+            self.controller.start("s35", research_id="r1")
+        start_session.assert_called_once_with(self.primary_ledger.virtual_account_key, research_id="r1")
+
+    def test_shared_restart_without_research_id_uses_matching_frozen_identity(self):
+        closed_gate = gate()
+        namespace = self.primary_ledger.virtual_account_key
+        record = {"virtualAccountKey": namespace, "selectedAccountId": "s35",
+                  "researchId": "r1", "riskGate": closed_gate}
+        self.data.put_document(SHARED_STATE_KEY, {
+            "version": 1, "primaryVirtualAccountKey": namespace,
+            "credentialFingerprint": self.controller._credential_fingerprint,
+            "researchId": "r1", "riskGate": closed_gate, "yieldedFlat": False,
+            "sessions": [record],
+        })
+        self.controller._file_lock.close()
+        self.controller._file_lock = None
+        restarted = DemoRunnerController(
+            self.data, self.primary_ledger, self.provider,
+            Mock(return_value=self.adapter), paper_source=self.paper,
+            lock_path=Path(self.temp.name) / "demo.lock", ledger_factory=self.ledger_factory,
+            risk_account_scope="acct-demo",
+        )
+        restarted._start_worker = Mock()
+        self.controllers.append(restarted)
+        with patch("research_ledger.require_closed_risk_gate", return_value=closed_gate) as require_gate:
+            self.assertEqual(restarted.recoverable_research_id("s35"), "r1")
+            result = restarted.start("s35")
+        require_gate.assert_called_once_with(
+            self.data, "r1", expected_binding=target_binding(("s35",), "acct-demo"))
+        self.assertEqual(result["researchId"], "r1")
+        self.assertEqual(restarted.service.start_calls, [False])
+        self.assertTrue(restarted.service.entries_enabled)
+
+    def test_shared_restart_gate_identity_mismatch_keeps_entries_paused(self):
+        closed_gate = gate()
+        member_gate = {**closed_gate, "event_id": "e2"}
+        namespace = self.primary_ledger.virtual_account_key
+        record = {"virtualAccountKey": namespace, "selectedAccountId": "s35",
+                  "researchId": "r1", "riskGate": member_gate}
+        self.data.put_document(SHARED_STATE_KEY, {
+            "version": 1, "primaryVirtualAccountKey": namespace,
+            "credentialFingerprint": self.controller._credential_fingerprint,
+            "researchId": "r1", "riskGate": closed_gate, "yieldedFlat": False,
+            "sessions": [record],
+        })
+        self.controller._file_lock.close()
+        self.controller._file_lock = None
+        restarted = DemoRunnerController(
+            self.data, self.primary_ledger, self.provider,
+            Mock(return_value=self.adapter), paper_source=self.paper,
+            lock_path=Path(self.temp.name) / "demo.lock", ledger_factory=self.ledger_factory,
+            risk_account_scope="acct-demo",
+        )
+        restarted._start_worker = Mock()
+        self.controllers.append(restarted)
+        self.assertIsNone(restarted.recoverable_research_id("s35"))
+        with patch("research_ledger.require_closed_risk_gate", return_value=closed_gate) as require_gate:
+            with self.assertRaises(DemoHandoffError) as error:
+                restarted.start("s35")
+        self.assertEqual(error.exception.code, "risk_gate_identity_missing")
+        require_gate.assert_not_called()
+        self.assertIsNotNone(restarted.service)
+        self.assertEqual(restarted.service.start_calls, [False])
+        self.assertFalse(restarted.service.entries_enabled)
+
+    def test_shared_session_recovery_requires_every_member_to_match_gate_identity(self):
+        closed_gate = gate()
+        namespace = self.primary_ledger.virtual_account_key
+        companion = "demo_strategy_" + "b" * 32
+        shared = {"primaryVirtualAccountKey": namespace, "researchId": "r1", "riskGate": closed_gate,
+                  "sessions": [
+                      {"virtualAccountKey": namespace, "selectedAccountId": "s35",
+                       "researchId": "r1", "riskGate": closed_gate},
+                      {"virtualAccountKey": companion, "selectedAccountId": "s07",
+                       "researchId": "r1", "riskGate": closed_gate},
+                  ]}
+        self.assertEqual(self.controller._shared_research_id(shared, namespace=companion), "r1")
+
+        shared["sessions"][1]["riskGate"] = {**closed_gate, "event_id": "different-event"}
+        self.assertIsNone(self.controller._shared_research_id(shared, namespace=companion))
+
+    def test_start_session_reuses_its_existing_frozen_gate_identity(self):
+        closed_gate = gate(strategy_ids=("s35",))
+        self.controller.risk_gate_required = True
+        self.controller.risk_account_scope = "acct-demo"
+        self.controller._risk_gate = closed_gate
+        self.controller._research_id = "r1"
+        self.controller._start_worker = Mock()
+        with patch("research_ledger.require_closed_risk_gate", return_value=closed_gate) as require_gate:
+            self.controller.start_session(self.primary_ledger.virtual_account_key)
+        require_gate.assert_called_once_with(
+            self.data, "r1", expected_binding=target_binding(("s35",), "acct-demo"))
+        self.assertTrue(self.primary.entries_enabled)
 
     def test_repeat_attach_is_idempotent_and_stop_only_closes_own_gate(self):
         namespace, companion = self.attach()

@@ -5,6 +5,7 @@ import tempfile
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
+import research_ledger
 from strategy_lab_service import (MAX_CLOSE_DELAY_MS, NATIVE_WARMUP_REFRESH_MS,
                                   StrategyLabService)
 
@@ -15,6 +16,13 @@ def candle(timestamp):
 
 
 class NativeCycleTests(TestCase):
+    @staticmethod
+    def target_binding(strategy_id):
+        return research_ledger.build_risk_gate_target_binding("offline-test-account", [{
+            "strategy_id": strategy_id, "rule_hash": "a" * 64,
+            "execution_hash": "b" * 64,
+        }])
+
     def native_service(self, timeframe):
         pair = "BTC/USDT:USDT"
         interval = {"15m": 900_000, "1h": 3_600_000}[timeframe]
@@ -31,6 +39,38 @@ class NativeCycleTests(TestCase):
                   "ready": True, "warmup": {"ready": True},
                   "signals": {pair: {"target_side": None}}}
         return service, rows, signal, interval
+
+    def test_open_risk_gate_blocks_bootstrap_and_cycle(self):
+        pair = "BTC/USDT:USDT"
+        spec = {"strategy_id": "blocked", "timeframe": "15m",
+                "execution_universe": [pair], "universe": [pair]}
+        status_path = Path(tempfile.mkdtemp()) / "status.json"
+        service = StrategyLabService(Mock(), Mock(), [spec], now_ms=1_800_000,
+                                     status_path=status_path, research_id="research-1",
+                                     expected_binding=self.target_binding("blocked"))
+        with patch("strategy_lab_service.research_ledger.require_closed_risk_gate",
+                   side_effect=research_ledger.RiskGateError("open")):
+            self.assertFalse(service.bootstrap())
+            self.assertFalse(service.cycle(1_800_001))
+        self.assertEqual(service.status["status"], "blocked_risk_gate")
+        self.assertEqual(service.status["last_error"], "risk_gate_not_closed")
+        service.simulation.process_batch.assert_not_called()
+
+    def test_closed_risk_gate_is_carried_into_service_status(self):
+        pair = "BTC/USDT:USDT"
+        spec = {"strategy_id": "allowed", "timeframe": "15m",
+                "execution_universe": [pair], "universe": [pair]}
+        status_path = Path(tempfile.mkdtemp()) / "status.json"
+        service = StrategyLabService(Mock(), Mock(), [spec], now_ms=1_800_000,
+                                     status_path=status_path, research_id="research-1",
+                                     expected_binding=self.target_binding("allowed"))
+        gate = {"research_id": "research-1", "event_id": "gate-1",
+                "risk_segment_status": "closed", "preflight_status": "pass",
+                "target_binding_hash": "c" * 64}
+        with patch("strategy_lab_service.research_ledger.require_closed_risk_gate",
+                   return_value=gate):
+            self.assertTrue(service._risk_gate_ready())
+        self.assertEqual(service.status["risk_gate"], gate)
 
     def test_non_five_minute_account_uses_native_window_and_processes(self):
         pair = "BTC/USDT:USDT"

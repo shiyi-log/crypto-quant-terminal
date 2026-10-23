@@ -32,7 +32,8 @@ BTC/USDT:USDT、ETH/USDT:USDT、TRX/USDT:USDT；每笔入口名义上限为 75 U
 ```bash
 uv run python tools/run_binance_demo_fee_capture.py \
   --execute \
-  --session fee_capture_20261012_round1
+  --session fee_capture_20261012_round1 \
+  --research-id "$RESEARCH_ID" --account-scope "$DEMO_ACCOUNT_SCOPE"
 ```
 
 每个币会先提交一笔 GTX post-only 买单（买一价，maker，默认存活 30 秒），终结后
@@ -52,8 +53,14 @@ uv run python tools/run_binance_demo_fee_capture.py \
   --execute \
   --session fee_capture_20261012_round1_ttl60 \
   --maker-ttl-seconds 60 \
+  --research-id "$RESEARCH_ID" --account-scope "$DEMO_ACCOUNT_SCOPE" \
   --total-timeout-seconds 600
 ```
+
+每个新 session 在身份文档中冻结闭合 gate 的 `research_id/event_id/boundary_hash/inputs_hash/target_binding_hash`
+及账户范围别名。
+已经存在的 session 自动进入 recovery-only，复用被冻结身份；不要求当前 gate 可读取，且不会
+首次提交旧的未 claim entry。参数或凭据身份不匹配仍会拒绝恢复。
 
 工具不会把“挂单被接受”当作 maker 成交。只有该币出现实际 `is_maker=true` 的成交，
 且成交手续费和资产完整，才会把该币的 maker 费率标记为已验证。没有 maker 成交时，
@@ -68,7 +75,8 @@ uv run python tools/run_binance_demo_fee_capture.py \
 uv run python tools/run_binance_demo_fee_capture.py \
   --execute \
   --recover-only \
-  --session fee_capture_20261012_round1
+  --session fee_capture_20261012_round1 \
+  --research-id "$RESEARCH_ID" --account-scope "$DEMO_ACCOUNT_SCOPE"
 ```
 
 `--recover-only` 只查询已有 client order ID、撤销已确认的自有未决订单、补取成交，

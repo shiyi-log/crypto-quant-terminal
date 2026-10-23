@@ -341,6 +341,74 @@ class DemoApiTests(unittest.TestCase):
         result = self.api.post("/stop", {}, actor="admin")
         self.assertIn("continue_owned_risk_protection", result["stopPolicy"])
 
+    def test_production_gate_rejects_mutations_before_account_lookup(self):
+        self.controller.risk_gate_required = True
+        account_provider = Mock(return_value=[{"accountId": "selected", "eligible": True}])
+        self.api.account_provider = account_provider
+        for suffix in ("/start", "/switch", "/attach"):
+            with self.subTest(suffix=suffix):
+                with self.assertRaises(DemoApiError) as error:
+                    self.api.post(suffix, {"accountId": "selected"}, actor="admin")
+                self.assertEqual(error.exception.code, "risk_gate_not_closed")
+                self.assertEqual(error.exception.status, 409)
+        account_provider.assert_not_called()
+        self.controller.start.assert_not_called()
+        self.controller.switch.assert_not_called()
+        self.controller.attach.assert_not_called()
+
+    def test_start_without_research_id_resolves_existing_frozen_identity(self):
+        self.controller.risk_gate_required = True
+        self.controller.recoverable_research_id.return_value = "research-1"
+        self.controller.start.return_value = {"status": "paused_flat"}
+        self.api.account_provider = Mock(return_value=[{"accountId": "selected", "eligible": True}])
+        self.api.post("/start", {"accountId": "selected"}, actor="admin")
+        self.controller.recoverable_research_id.assert_called_once_with("selected")
+        self.controller.start.assert_called_once_with("selected", research_id="research-1")
+        self.controller.switch.assert_not_called()
+        self.controller.attach.assert_not_called()
+
+    def test_start_identity_read_failure_is_stable_and_does_not_lookup_account(self):
+        self.controller.risk_gate_required = True
+        self.controller.recoverable_research_id.side_effect = RuntimeError("private storage detail")
+        account_provider = Mock(return_value=[{"accountId": "selected", "eligible": True}])
+        self.api.account_provider = account_provider
+        with self.assertRaises(DemoApiError) as error:
+            self.api.post("/start", {"accountId": "selected"}, actor="admin")
+        self.assertEqual(error.exception.code, "risk_gate_identity_unavailable")
+        self.assertEqual(error.exception.status, 503)
+        self.assertNotIn("private storage detail", str(error.exception))
+        account_provider.assert_not_called()
+        self.controller.start.assert_not_called()
+
+    def test_start_session_without_research_id_resolves_matching_persisted_identity(self):
+        self.controller.risk_gate_required = True
+        self.controller.recoverable_session_research_id.return_value = "research-1"
+        session = "demo_strategy_" + "a" * 32
+        self.api.post("/start-session", {"session": session}, actor="admin")
+        self.controller.recoverable_session_research_id.assert_called_once_with(session)
+        self.controller.start_session.assert_called_once_with(session, research_id="research-1")
+
+    def test_start_session_identity_read_failure_is_stable_and_fails_closed(self):
+        self.controller.risk_gate_required = True
+        self.controller.recoverable_session_research_id.side_effect = RuntimeError("private storage detail")
+        session = "demo_strategy_" + "a" * 32
+        with self.assertRaises(DemoApiError) as error:
+            self.api.post("/start-session", {"session": session}, actor="admin")
+        self.assertEqual(error.exception.code, "risk_gate_identity_unavailable")
+        self.assertEqual(error.exception.status, 503)
+        self.assertNotIn("private storage detail", str(error.exception))
+        self.controller.start_session.assert_not_called()
+
+    def test_start_session_without_a_frozen_identity_is_rejected_before_controller(self):
+        self.controller.risk_gate_required = True
+        self.controller.recoverable_session_research_id.return_value = None
+        session = "demo_strategy_" + "a" * 32
+        with self.assertRaises(DemoApiError) as error:
+            self.api.post("/start-session", {"session": session}, actor="admin")
+        self.assertEqual(error.exception.code, "risk_gate_not_closed")
+        self.assertEqual(error.exception.status, 409)
+        self.controller.start_session.assert_not_called()
+
     def test_flat_handoff_pauses_then_closes_without_start_or_credential_changes(self):
         calls = []
         self.controller.stop.side_effect = lambda: calls.append("stop")

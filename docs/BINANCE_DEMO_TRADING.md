@@ -19,10 +19,25 @@ uv run python tools/setup_binance_demo.py
 该安装命令不创建密钥、不连接交易所、不下单。之后在前端配置 Demo 密钥，点击检查，
 核对 Demo 地址与余额，再选择一个冻结账户并点击开始。服务启动不会自行恢复新入口。
 
-`DemoRunnerController.start(account_id)` 是人工启动闸门。每个运行会话绑定一个
-冻结策略身份和一个 Demo 执行政策；同一个 Demo 账户可并行运行最多六个会话，
+`DemoRunnerController.start(account_id, research_id=...)` 是人工启动闸门。生产 Demo
+入口在加载凭据、创建可交易 adapter、绑定账本或启用 entries 前，必须通过
+`research_ledger.require_closed_risk_gate()`；缺失、open、fail 或
+`not_estimable` 的风险段统一返回 `risk_gate_not_closed`。每个运行会话绑定一个
+账户范围别名、冻结策略身份和风险事件的 `target_binding_hash`；同一个 Demo 账户可并行运行最多六个会话，
 每个会话独立记账，共用交易所保证金和余额。同一币同一时刻只能由一个会话持仓或挂单。
+`QUANT_DEMO_RISK_ACCOUNT_SCOPE` 只保存脱敏范围别名；当前实现仍需要独立的别名到实际
+Demo 凭据/账户映射证据，不能把配置字符串本身当作账户证明。
 首版只支持已启用且冻结 ATR 风险完整的普通单腿账户；配对账户拒绝启动。
+
+重启后，`/start` 可只提交 `accountId`，服务端会从持久化会话恢复
+`research_id/event_id/boundary_hash/inputs_hash/target_binding_hash` 及账户范围别名，
+再次检查同一闭合 gate 后才允许 entries。
+已存在的并行会话也可在 `/start-session` 省略 `researchId`；服务端只从目标 namespace
+解析完整且与共享 registry 顶层、主会话及所有成员一致的冻结身份，并重新检查闭合 gate。
+身份存储不可用或任何成员不一致时，请求保持关闭。
+若请求显式提交 `researchId`，必须与会话冻结 ID 一致。缺少或损坏 gate 身份的旧会话
+仍可启动保护性恢复，但不能重新开启 entries；不能用新的闭合 gate 给旧会话补绑。
+`/switch` 和 `/attach` 创建新会话，仍要求显式提供 `researchId`。
 
 停止会暂停入口并撤销未成交入口，继续核对成交和保护已有仓位。重启后自动恢复核对与
 保护，但入口保持暂停，必须由用户再次开始。显式平仓也只针对可由本地成交记录归属的
@@ -316,8 +331,14 @@ K 线 `order_submitted` 事件。下面是一轮最多八个信号、最多六�
    ```bash
    uv run python tools/run_binance_demo_second_level.py \
      --execute --session second_level_round1_20261012 \
-     --pair BTC --max-signals 8 --duration-seconds 600 --max-notional-usdt 75
+     --pair BTC --max-signals 8 --duration-seconds 600 --max-notional-usdt 75 \
+     --research-id "$RESEARCH_ID" --account-scope "$DEMO_ACCOUNT_SCOPE"
    ```
+
+   Second-level、fee-capture 与 smoke 等直接 Demo operator 的新 session 同样要求
+   一个已关闭且 `preflight_status=pass` 的 `research_id`。session 首次持久化时会冻结
+   `research_id/event_id/boundary_hash/inputs_hash/target_binding_hash` 及账户范围别名；恢复只使用该原身份，不读取或替换
+   成另一个 gate。没有关闭的风险 gate 时，不得启动新 session。
 
    CLI 取得同一把锁后，核查其他 Demo namespace 的所有历史未决订单、净仓和成交
    数量缺口，再从现有加密凭据 provider 加载密钥。首次运行还要求交易所全账户空仓、
@@ -357,8 +378,12 @@ taker 入口为带 10bp 穿透价格上限的 `LIMIT/IOC`，可以部分成交�
 ```bash
 uv run python tools/run_binance_demo_second_level.py \
   --execute --recover-only --session second_level_round1_20261012 \
-  --pair BTC --max-signals 8 --duration-seconds 600 --max-notional-usdt 75
+  --pair BTC --max-signals 8 --duration-seconds 600 --max-notional-usdt 75 \
+  --research-id "$RESEARCH_ID" --account-scope "$DEMO_ACCOUNT_SCOPE"
 ```
+
+已有 checkpoint 的 session 即使未显式指定 `--recover-only` 也只会恢复；损坏或不匹配
+的冻结 gate 身份会拒绝继续，且不会把旧订单归属到新的研究 gate。
 
 来源进度在交给执行器前持久化。策略政策、参数、币对或加载凭据的非秘密身份指纹
 发生变化会拒绝恢复，不能换 session ID 绕过未知提交。下单原子认领后只尝试一次；

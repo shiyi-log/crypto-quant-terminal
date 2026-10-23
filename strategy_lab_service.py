@@ -20,6 +20,8 @@ import time
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
+import research_ledger
+
 ROOT = Path(__file__).resolve().parent
 BAR_MS = 300_000
 MAX_CLOSE_DELAY_MS = 90_000
@@ -407,8 +409,12 @@ def blocked_evaluation(spec, reason="awaiting_native_timeframe_adapter"):
 
 
 class StrategyLabService:
-    def __init__(self, store, simulation, specs, *, now_ms=None, status_path=STATUS_PATH):
+    def __init__(self, store, simulation, specs, *, now_ms=None, status_path=STATUS_PATH,
+                 research_id=None, expected_binding=None):
         self.store, self.simulation, self.specs = store, simulation, specs
+        self.research_id = research_id
+        self.expected_binding = expected_binding
+        self.risk_gate = None
         observed_now = int(time.time() * 1000 if now_ms is None else now_ms)
         self.boundary = observed_now // BAR_MS * BAR_MS
         # Every execution timeframe gets its own startup boundary.  A daily
@@ -447,7 +453,27 @@ class StrategyLabService:
                                                                   and s.get("execution_enabled") is not False for s in specs),
                        "session_boundaries_ms": dict(self.boundaries),
                        "last_cycle_at": None, "last_error": None,
-                       "warmup_source": "official_rest_indicator_only"}
+                       "warmup_source": "official_rest_indicator_only",
+                       "research_id": research_id, "risk_gate": None}
+
+    def _risk_gate_ready(self):
+        """Fail closed before warmup, candle reads, or signal evaluation."""
+        if not self.research_id:
+            return True
+        if self.expected_binding is None:
+            self.publish(status="blocked_risk_gate", last_error="risk_gate_target_binding_missing")
+            return False
+        try:
+            self.risk_gate = research_ledger.require_closed_risk_gate(
+                self.store, self.research_id, expected_binding=self.expected_binding
+            )
+        except Exception as exc:
+            self.risk_gate = None
+            self.publish(status="blocked_risk_gate", last_error="risk_gate_not_closed",
+                         risk_gate_error=type(exc).__name__)
+            return False
+        self.status["risk_gate"] = dict(self.risk_gate)
+        return True
 
     def load_strategy_inputs(self, spec, *, now_ms=None, limit=750):
         """Load one strategy's native closed-candle input window.
@@ -741,6 +767,8 @@ class StrategyLabService:
         return True
 
     def bootstrap(self):
+        if not self._risk_gate_ready():
+            return False
         self.input_cache.clear()
         self._ensure_accounts_by_timeframe()
         evaluations = {}
@@ -778,8 +806,11 @@ class StrategyLabService:
         self.publish(status="waiting_new_closed_candle", last_error=None,
                      warmup_bars={p: len(self.history.get(p, [])) for p in PAIRS},
                      native_warmup_bars=native_warmup_bars)
+        return True
 
     def cycle(self, now_ms=None):
+        if not self._risk_gate_ready():
+            return False
         from strategy_signals import evaluate
         self.input_cache.clear()
         now = int(time.time() * 1000) if now_ms is None else int(now_ms)
@@ -889,6 +920,10 @@ def main():
     parser.add_argument("--cost-adjusted", action=argparse.BooleanOptionalAction,
                         default=False,
                         help="显式启用 s04/s05/s08 4bp 成本过滤研究变体（默认关闭）")
+    parser.add_argument("--research-id", required=True,
+                        help="registered research id whose risk gate must be closed")
+    parser.add_argument("--account-scope", required=True,
+                        help="verified opaque account scope frozen into the risk gate")
     args = parser.parse_args()
     if not 1 <= args.interval <= 60:
         parser.error("interval must be between 1 and 60 seconds")
@@ -935,9 +970,22 @@ def main():
                 raise ValueError("Fnew identities collide with existing accounts")
             requested += fnew_specs
         specs, deferred = resume_frozen_specs(store, requested)
-        service = StrategyLabService(store, StrategySimulation(store), specs)
-        service.publish(identity_changes_deferred=deferred)
-        service.bootstrap()
+        from strategy_simulation import execution_identity
+        expected_binding = research_ledger.build_risk_gate_target_binding(
+            args.account_scope,
+            [{"strategy_id": spec["strategy_id"],
+              "rule_hash": execution_identity(spec)["rule_hash"],
+              "execution_hash": execution_identity(spec)["execution_hash"]}
+             for spec in specs],
+        )
+        gate = research_ledger.require_closed_risk_gate(
+            store, args.research_id, expected_binding=expected_binding)
+        service = StrategyLabService(store, StrategySimulation(store), specs,
+                                     research_id=args.research_id,
+                                     expected_binding=expected_binding)
+        service.publish(identity_changes_deferred=deferred, risk_gate=gate)
+        if not service.bootstrap():
+            raise SystemExit("risk gate is not closed")
         while not stop.is_set():
             try:
                 service.cycle()

@@ -3,7 +3,28 @@ import unittest
 from decimal import Decimal
 
 from binance_demo_adapter import DemoSubmissionUnknown, DemoSafetyError
-from demo_smoke_trade import run_smoke_trade, _common_step
+from demo_smoke_trade import run_smoke_trade, _common_step, VERSION, _hash
+
+
+def smoke_gate_proof(*, account_scope="offline-test-account", max_notional_usdt="75",
+                     entry_wait_seconds=1, reconciliation_seconds=2):
+    """Build the exact closed gate shape accepted by the smoke core."""
+    import research_ledger
+
+    rule_hash = _hash({"version": VERSION, "purpose": "manual_smoke_test"})
+    policy = {"version": VERSION, "max_notional_usdt": str(max_notional_usdt),
+              "entry_wait_seconds": entry_wait_seconds,
+              "reconciliation_seconds": reconciliation_seconds,
+              "entry_post_only": False, "exit_reduce_only": True}
+    binding = research_ledger.build_risk_gate_target_binding(account_scope, [{
+        "strategy_id": "manual_smoke_test", "rule_hash": rule_hash,
+        "execution_hash": _hash(policy),
+    }])
+    return {"research_id": "research-1", "event_id": "event-1",
+            "risk_segment_status": "closed", "preflight_status": "pass",
+            "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+            "target_binding": binding,
+            "target_binding_hash": research_ledger.risk_gate_target_binding_hash(binding)}
 
 
 class Clock:
@@ -79,6 +100,13 @@ class Ledger:
 
     def mark_submission_unknown(self, client, _reason, _time):
         self.orders[client]["status"] = "unknown"
+
+    def abandon_unclaimed_order(self, client, _reason, _time):
+        row = self.orders[client]
+        if row["submission_attempts"] or row["exchange_order_id"] is not None:
+            return False
+        row["status"] = "expired"
+        return True
 
     def append_reconciliation(self, *_args):
         return None
@@ -248,9 +276,18 @@ class SmokeTradeTests(unittest.TestCase):
     def setUp(self):
         self.adapter, self.ledger, self.clock = Adapter(), Ledger(), Clock()
 
-    def run_trade(self):
-        return run_smoke_trade(self.adapter, self.ledger, clock_ms=self.clock.now,
-            sleep=self.clock.sleep, entry_wait_seconds=1, reconciliation_seconds=2)
+    def run_trade(self, **kwargs):
+        options = {"clock_ms": self.clock.now, "sleep": self.clock.sleep,
+                   "entry_wait_seconds": 1, "reconciliation_seconds": 2}
+        options.update(kwargs)
+        if ("risk_gate_proof" not in kwargs and "risk_gate_identity" not in kwargs):
+            options["risk_gate_proof"] = smoke_gate_proof(
+                max_notional_usdt=options.get("max_notional_usdt", "75"),
+                entry_wait_seconds=options["entry_wait_seconds"],
+                reconciliation_seconds=options["reconciliation_seconds"])
+        if self.ledger.runner_orders() and "recovery_only" not in kwargs:
+            options["recovery_only"] = True
+        return run_smoke_trade(self.adapter, self.ledger, **options)
 
     def test_minimal_open_close_actual_fee_and_native_records(self):
         result = self.run_trade()
@@ -263,6 +300,22 @@ class SmokeTradeTests(unittest.TestCase):
         self.assertEqual(Decimal(result["round_trips"][0]["actual_net_trading_pnl_usdt"]), Decimal("-0.025996"))
         self.assertIn("demo_policy_hash", self.ledger.binding)
         self.assertFalse(result["strategy_or_hft_evidence"])
+
+    def test_gate_identity_is_frozen_into_trade_binding_and_report(self):
+        gate = smoke_gate_proof()
+        gate_identity = {key: gate[key] for key in
+                         ("research_id", "event_id", "boundary_hash", "inputs_hash",
+                          "target_binding_hash")}
+        result = self.run_trade(risk_gate_proof=gate)
+        self.assertTrue(result["success"], result)
+        self.assertEqual(self.ledger.binding["risk_gate_identity"], gate_identity)
+        self.assertEqual(result["risk_gate_identity"], gate_identity)
+
+    def test_missing_gate_blocks_before_any_entry_post(self):
+        result = self.run_trade(risk_gate_proof=None, risk_gate_identity=None)
+        self.assertFalse(result["success"])
+        self.assertEqual(self.adapter.post_calls, [])
+        self.assertEqual(self.ledger.orders, {})
 
     def test_partial_entry_cancelled_then_only_actual_long_closed(self):
         self.adapter.partial = True
@@ -334,6 +387,18 @@ class SmokeTradeTests(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertEqual(self.adapter.post_calls, [])
         self.assertNotIn("never-print-this", json_text(result))
+
+    def test_recovery_abandons_unclaimed_entry_without_first_post(self):
+        self.ledger.fail_claim = True
+        first = self.run_trade()
+        self.assertFalse(first["success"])
+        self.assertEqual(self.adapter.post_calls, [])
+        self.ledger.fail_claim = False
+        recovered = self.run_trade()
+        self.assertFalse(recovered["success"])
+        self.assertTrue(recovered["recovery_only"])
+        self.assertEqual(self.adapter.post_calls, [])
+        self.assertEqual({row["status"] for row in self.ledger.orders.values()}, {"expired"})
 
     def test_unknown_exit_not_reposted_and_exposure_reported(self):
         self.adapter.absent_exit = True

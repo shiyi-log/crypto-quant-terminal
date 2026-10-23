@@ -2,8 +2,8 @@
 
 Signals are decisions at a closed bar. The following *received closed bar's open*
 is a paper fill proxy, not an exchange fill. Historical bars never create orders.
-Funding and slippage remain unknown; reported PnL includes modeled fees and,
-at the selected 100x leverage, exchange-forced liquidation losses.
+Funding and slippage remain unknown; reported PnL includes modeled fees and
+exchange-forced liquidation losses under the account's selected leverage model.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import hashlib
 import json
 import math
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from strategy_fee_schedule import (
     DEMO_FEE_MODEL_VERSION,
@@ -33,43 +33,207 @@ LIQUIDATION_MODELS = frozenset({"bankruptcy_price", "binance_tiered"})
 DEFAULT_LIQUIDATION_MODEL = "bankruptcy_price"
 
 
+def _normalize_execution_pair(value: Any) -> str:
+    """Return the canonical USDT-M pair key used by frozen tier snapshots."""
+    text = str(value).strip().upper().replace("-", "")
+    if "/" in text:
+        base, quote = text.split("/", 1)
+        quote = quote.replace(":USDT", "")
+        return f"{base}/{quote}:USDT"
+    if text.endswith("USDT"):
+        return f"{text[:-4]}/USDT:USDT"
+    return text
+
+
+def _tier_snapshot_provider(spec: Mapping[str, Any] | None) -> Any | None:
+    """Load an archived tier snapshot without ever consulting the static table.
+
+    The loader is intentionally imported lazily.  Legacy bankruptcy/static
+    diagnostics must remain importable when the snapshot module is absent, but
+    a matrix execution contract must fail closed at the call site below.
+    """
+    if not isinstance(spec, Mapping):
+        return None
+    raw = spec.get("tier_snapshot")
+    if raw is None:
+        return None
+    try:
+        from core.execution.tier_snapshot import load_tier_snapshot
+    except (ImportError, ModuleNotFoundError):
+        return None
+    try:
+        return load_tier_snapshot(raw)
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _tier_provider_issue(provider: Any | None, model: Mapping[str, Any],
+                         pairs: tuple[str, ...]) -> str | None:
+    """Return an auditable reason a frozen tier provider cannot execute.
+
+    ``binance_tiered`` is an account-specific execution contract.  A static
+    diagnostic table, an unbound provider, or a snapshot for another account
+    must never be silently substituted at order time.
+    """
+    if provider is None:
+        return "tier_snapshot_unavailable"
+    expected_hash = model.get("tier_snapshot_hash")
+    actual_hash = getattr(provider, "snapshot_hash", None)
+    if not isinstance(expected_hash, str) or actual_hash != expected_hash:
+        return "tier_snapshot_hash_mismatch"
+    for pair in pairs:
+        try:
+            schedule = provider.get_schedule(pair)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return f"tier_schedule_missing:{_normalize_execution_pair(pair)}"
+        if schedule is None:
+            return f"tier_schedule_missing:{_normalize_execution_pair(pair)}"
+    return None
+
+
+def _matrix_leverage(model: Mapping[str, Any], pair: str) -> float:
+    values = model.get("leverage_by_symbol")
+    if not values:
+        return float(model["leverage"])
+    wanted = _normalize_execution_pair(pair)
+    for key, value in values.items():
+        if _normalize_execution_pair(key) == wanted:
+            return float(value)
+    raise ValueError(f"missing per-symbol leverage for {pair}")
+
+
+def _pair_execution_model(model: dict, pair: str) -> dict:
+    """Return the stop/risk view for one pair without mutating the identity.
+
+    Matrix execution keeps a global leverage ceiling in the identity, while
+    stop clamps and signal evidence validation must use the selected symbol's
+    actual leverage.  Legacy scalar identities receive the original mapping
+    unchanged so their hashes and behavior remain stable.
+    """
+    if not model.get("leverage_by_symbol"):
+        return model
+    result = dict(model)
+    result["leverage"] = _matrix_leverage(model, pair)
+    return result
+
+
+def _tier_event_fields(evidence: Any) -> dict:
+    """Flatten frozen tier provenance onto new tiered event records."""
+    if not isinstance(evidence, Mapping):
+        return {}
+    result = {}
+    for key in ("tier_snapshot_hash", "account_scope", "tier_evidence_sha256"):
+        value = evidence.get(key)
+        if value is not None:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def _tier_value(tier: Any, *names: str, default: Any = None) -> Any:
+    if isinstance(tier, Mapping):
+        for name in names:
+            if name in tier:
+                return tier[name]
+    else:
+        for name in names:
+            if hasattr(tier, name):
+                return getattr(tier, name)
+    return default
+
+
 def _tiered_liquidation_price(pair: str, entry_price: float, direction: int,
-                              leverage: float, notional: float) -> tuple[float, dict]:
+                              leverage: float, notional: float,
+                              tier_provider: Any | None = None) -> tuple[float, dict]:
     """分档维持保证金模型下的强平价。
 
-    逐仓强平价满足 ``(liq - entry)×qty×direction + margin - liq×qty×mmr = 0``，
-    其中 ``margin = entry×qty/leverage``，解得：
+    逐仓强平价满足 ``(liq - entry)×qty×direction + margin -
+    liq×qty×mmr - cumulative = 0``，其中
+    ``margin = entry×qty/leverage``。累计维持保证金按每单位数量分摊，解得：
 
-        long : liq = entry × (1 - 1/leverage + mmr)
-        short: liq = entry × (1 + 1/leverage - mmr)
+        long : liq = (entry - entry/leverage - cumulative/qty) / (1 - mmr)
+        short: liq = (entry + entry/leverage + cumulative/qty) / (1 + mmr)
 
     与破产价口径（``entry×(1 - 1/leverage)``）相比，分档模型会**更早**触发强平：
     名义价值所在档位的 mmr 越高，强平线越贴近开仓价。这正是旧口径遗漏的成本。
 
-    ⚠️ 当 ``mmr >= 1/leverage`` 时该仓位在本档位已无可维持的保证金（等价于
-    杠杆超过档位上限），真实交易所会直接拒单而不是先开仓再强平。此处按破产价
-    回退并置 ``tier_leverage_exceeded``，让审计能看到这个配置冲突，而不是
-    伪造一个「开仓即强平」的价格。
+    ⚠️ 档位的 ``max_leverage`` 是交易所的直接开仓约束，必须独立于
+    ``mmr >= 1/leverage`` 诊断。任一约束失败时，调用方必须拒绝开仓；这里仍
+    返回破产价作为一个不会被使用的确定性回退值，方便把拒绝证据写入事件账。
     """
     from decimal import Decimal
 
-    from core.execution.liquidation_model import MaintenanceMarginTier
-
-    tier = MaintenanceMarginTier.get_tier(pair, Decimal(str(notional)))
-    mmr = float(tier.mm_rate)
+    try:
+        tier = tier_provider.get_tier(pair, Decimal(str(notional))) if tier_provider is not None else None
+    except (AttributeError, KeyError, TypeError, ValueError):
+        tier = None
+    snapshot_hash = getattr(tier_provider, "snapshot_hash", None) if tier_provider is not None else None
+    account_scope = getattr(tier_provider, "account_scope", None) if tier_provider is not None else None
+    schedule_evidence = None
+    try:
+        schedule = tier_provider.get_schedule(pair) if tier_provider is not None else None
+    except (AttributeError, KeyError, TypeError, ValueError):
+        schedule = None
+    if schedule is not None:
+        schedule_evidence = _tier_value(schedule, "evidence_sha256", "evidence_hash")
+    if tier is None:
+        evidence = {
+            "tier_snapshot_hash": snapshot_hash,
+            "account_scope": account_scope,
+            "tier_evidence_sha256": schedule_evidence,
+            "tier_leverage_exceeded": True,
+            "maintenance_margin_incompatible": False,
+            "tier_rejection_reason": "tier_snapshot_missing_or_unselectable",
+        }
+        return entry_price * (1 - direction / leverage), evidence
+    mmr = float(_tier_value(tier, "maintenance_margin_ratio", "maintenance_margin_rate", "mm_rate"))
+    tier_max = float(_tier_value(tier, "initial_leverage", "max_leverage"))
+    lower = _tier_value(tier, "notional_floor_usdt", "notional_lower_usdt", "notional_lower", default=Decimal("0"))
+    upper = _tier_value(tier, "notional_cap_usdt", "notional_upper_usdt", "notional_upper", default=None)
+    if upper is not None:
+        try:
+            upper = None if not Decimal(str(upper)).is_finite() else float(upper)
+        except (TypeError, ValueError):
+            upper = None
     inverse_leverage = 1.0 / leverage
+    cumulative = float(_tier_value(tier, "cumulative_maintenance_usdt", "cumulative_maintenance", "cum", default=0))
+    quantity = notional / entry_price if entry_price else 0.0
+    cumulative_per_quantity = cumulative / quantity if quantity else 0.0
     evidence = {"maintenance_margin_rate": mmr,
-                "tier_max_leverage": tier.max_leverage,
-                "inverse_leverage": inverse_leverage}
-    if mmr >= inverse_leverage:
-        evidence["tier_leverage_exceeded"] = True
-        evidence["tier_notional_lower"] = float(tier.notional_lower)
-        evidence["tier_notional_upper"] = (float(tier.notional_upper)
-                                           if tier.notional_upper != Decimal("Infinity") else None)
+                "tier_max_leverage": tier_max,
+                "inverse_leverage": inverse_leverage,
+                "tier_notional_lower": float(lower),
+                "tier_notional_upper": upper,
+                "tier_cumulative_maintenance_usdt": cumulative,
+                "tier_leverage_exceeded": leverage > tier_max,
+                "maintenance_margin_incompatible": mmr >= inverse_leverage,
+                "tier_snapshot_hash": snapshot_hash,
+                "account_scope": account_scope,
+                "tier_evidence_sha256": schedule_evidence}
+    if evidence["tier_leverage_exceeded"] or evidence["maintenance_margin_incompatible"]:
+        evidence["tier_rejection_reason"] = (
+            "tier_leverage_exceeded" if evidence["tier_leverage_exceeded"]
+            else "maintenance_margin_incompatible")
         return entry_price * (1 - direction * inverse_leverage), evidence
-    evidence["tier_leverage_exceeded"] = False
-    price = entry_price * (1 - direction * (inverse_leverage - mmr))
+    evidence["tier_rejection_reason"] = None
+    if direction == 1:
+        price = (entry_price - entry_price * inverse_leverage - cumulative_per_quantity) / (1 - mmr)
+    else:
+        price = (entry_price + entry_price * inverse_leverage + cumulative_per_quantity) / (1 + mmr)
     return price, evidence
+
+
+def _entry_quantity(margin: float, leverage: float, price: float, weight: float,
+                    *, structural_sizing: bool, plan: dict | None = None,
+                    dual_limit: bool = False) -> float:
+    """Return the same final quantity for tier validation and fill accounting."""
+    if structural_sizing:
+        if plan is None:
+            raise ValueError("structural sizing requires a frozen plan")
+        if dual_limit:
+            notional = plan.get("notional_adjusted_for_safety", plan["frozen_notional"])
+            return notional / price * weight
+        return plan["frozen_quantity"] * weight
+    return margin * leverage / price
 
 
 BAR_MS = 300_000
@@ -720,12 +884,46 @@ def execution_identity(spec: dict) -> dict:
     pairs = execution_pairs(spec)
     risk = spec.get("position_budget", {})
     leverage = _number(risk.get("leverage", 100), "leverage", positive=True)
+    leverage_by_symbol_raw = risk.get("leverage_by_symbol")
+    matrix_mode = leverage_by_symbol_raw is not None
+    leverage_by_symbol: dict[str, float] = {}
+    if matrix_mode:
+        if not isinstance(leverage_by_symbol_raw, Mapping) or not leverage_by_symbol_raw:
+            raise ValueError("leverage_by_symbol must be a non-empty mapping")
+        for raw_pair, raw_value in leverage_by_symbol_raw.items():
+            pair = _normalize_execution_pair(raw_pair)
+            if pair in leverage_by_symbol:
+                raise ValueError(f"duplicate per-symbol leverage: {pair}")
+            value = _number(raw_value, f"leverage_by_symbol[{raw_pair}]", positive=True)
+            if value > leverage:
+                raise ValueError(f"{pair} leverage exceeds global maximum")
+            leverage_by_symbol[pair] = value
+        expected = {_normalize_execution_pair(pair) for pair in pairs}
+        missing = sorted(expected - set(leverage_by_symbol))
+        extra = sorted(set(leverage_by_symbol) - expected)
+        if missing:
+            raise ValueError("missing per-symbol leverage: " + ", ".join(missing))
+        if extra:
+            raise ValueError("unknown per-symbol leverage: " + ", ".join(extra))
+        if spec.get("liquidation_model") != "binance_tiered":
+            raise ValueError("per-symbol leverage requires liquidation_model binance_tiered")
+        raw_snapshot = spec.get("tier_snapshot")
+        snapshot_hash = (getattr(raw_snapshot, "snapshot_hash", None)
+                         if raw_snapshot is not None else None)
+        if isinstance(raw_snapshot, Mapping):
+            snapshot_hash = raw_snapshot.get("snapshot_hash")
+        if not isinstance(snapshot_hash, str) or not snapshot_hash.strip():
+            raise ValueError("per-symbol leverage requires a frozen tier_snapshot hash")
+    else:
+        snapshot_hash = None
     execution_variant = spec.get("execution_variant")
     if risk.get("target_exposure", .30) != .30 or risk.get("max_positions", 2) != 2:
         raise ValueError("execution requires 30% margin exposure and two slots")
-    if execution_variant != EXPERIMENTAL_EXECUTION_VARIANT and leverage != 100:
+    if (not matrix_mode and execution_variant != EXPERIMENTAL_EXECUTION_VARIANT
+            and leverage != 100):
         raise ValueError("the frozen execution version requires leverage 100")
-    if execution_variant == EXPERIMENTAL_EXECUTION_VARIANT and leverage not in {30, 100}:
+    if (not matrix_mode and execution_variant == EXPERIMENTAL_EXECUTION_VARIANT
+            and leverage not in {30, 100}):
         raise ValueError("2x2 execution requires leverage 30 or 100")
     # ``fee_rate_per_side`` is the entry-leg rate.  The legacy model has no
     # separate exit field so its persisted hash and historical fills remain
@@ -739,6 +937,14 @@ def execution_identity(spec: dict) -> dict:
                  research_timeframe=str(spec.get("research_timeframe", timeframe)),
                  research_universe=list(spec.get("research_universe",
                                                 spec.get("universe", pairs))))
+    if matrix_mode:
+        model["leverage_by_symbol"] = dict(sorted(leverage_by_symbol.items()))
+        model["tier_snapshot_hash"] = snapshot_hash
+        raw_snapshot = spec.get("tier_snapshot")
+        if isinstance(raw_snapshot, Mapping):
+            for key in ("account_scope", "as_of_utc"):
+                if raw_snapshot.get(key) is not None:
+                    model[f"tier_snapshot_{key}"] = raw_snapshot[key]
     # ``exit_fee_rate_per_side`` is an explicit opt-in so old Demo identities
     # created before the taker-exit correction keep their persisted hash and
     # audit history. New Demo definitions should carry this field.
@@ -774,15 +980,33 @@ def execution_identity(spec: dict) -> dict:
                 "liquidation_model must be one of " + "/".join(sorted(LIQUIDATION_MODELS)))
         model["liquidation_model"] = liquidation_model
         if liquidation_model == "binance_tiered":
+            raw_snapshot = spec.get("tier_snapshot")
+            snapshot_hash = (getattr(raw_snapshot, "snapshot_hash", None)
+                             if raw_snapshot is not None else None)
+            if isinstance(raw_snapshot, Mapping):
+                snapshot_hash = raw_snapshot.get("snapshot_hash")
+            if not isinstance(snapshot_hash, str) or not snapshot_hash.strip():
+                raise ValueError("binance_tiered requires a frozen tier_snapshot")
+            model["tier_snapshot_hash"] = snapshot_hash
+            if isinstance(raw_snapshot, Mapping):
+                for key in ("account_scope", "as_of_utc"):
+                    if raw_snapshot.get(key) is not None:
+                        model[f"tier_snapshot_{key}"] = raw_snapshot[key]
             # 分档模型需要真实的逐仓杠杆档位；把口径写进契约，审计可复现。
             model["liquidation"] = {
                 **model.get("liquidation", {}),
                 "model": "binance_tiered",
                 "trigger": "closed_candle_low_high_dual_path",
                 "margin_rate_source": "binance_usdt_m_maintenance_tiers",
-                "settlement": "crossing_price_with_adverse_tick_slippage",
-                "fallback": "bankruptcy_price when tier table has no entry",
+                "settlement": "crossing_price_proxy_without_adverse_tick_slippage",
+                "fallback": "none_for_matrix; legacy scalar diagnostics only",
             }
+            provider = _tier_snapshot_provider(spec)
+            provider_issue = _tier_provider_issue(
+                provider, model, tuple(model["execution_universe"]))
+            if provider_issue is not None:
+                raise ValueError("binance_tiered requires a valid frozen tier snapshot: "
+                                 + provider_issue)
     atr_risk = _atr_execution_risk(spec, fee, exit_fee)
     if atr_risk is not None:
         model.update(atr_risk)
@@ -800,6 +1024,18 @@ def execution_identity(spec: dict) -> dict:
                          notional_policy="risk_cap_raw")
         elif model.get("risk_sizing_mode") == "entry_atr" and spec.get("stop_clamp_policy") is not None:
             raise ValueError("stop_clamp_policy requires stop_liquidation_clamp_factor")
+    if liquidation_model == "binance_tiered":
+        # _atr_execution_risk/_structural_execution_risk carry the legacy
+        # bankruptcy metadata. Restore the selected tier contract after that
+        # merge so the persisted identity describes the actual proxy fill.
+        model["liquidation"] = {
+            **model.get("liquidation", {}),
+            "model": "binance_tiered",
+            "trigger": "closed_candle_low_high_dual_path",
+            "margin_rate_source": "frozen_account_tier_snapshot",
+            "settlement": "crossing_price_proxy_without_adverse_tick_slippage",
+            "fallback": "none",
+        }
     aggregate_risk_cap = spec.get("aggregate_risk_cap", False)
     if not isinstance(aggregate_risk_cap, bool):
         raise ValueError("aggregate_risk_cap must be boolean")
@@ -809,6 +1045,8 @@ def execution_identity(spec: dict) -> dict:
         raise ValueError(
             "aggregate_risk_cap currently supports only fixed-stop regular accounts"
         )
+    if matrix_mode and aggregate_risk_cap:
+        raise ValueError("aggregate_risk_cap is not yet defined for per-symbol leverage")
     if stop_mode == "intrabar":
         model["stop_policy"] = (
             "frozen_structural_intrabar_ohlc_stop_first_open_gap"
@@ -975,6 +1213,10 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                                         session_boundary_ms, identity, timestamp, fingerprint,
                                         previous)
     events: list[dict] = []
+    matrix_mode = bool(identity["execution"].get("leverage_by_symbol"))
+    tier_provider = (_tier_snapshot_provider(spec)
+                     if identity["execution"].get("liquidation_model") == "binance_tiered"
+                     else None)
     strategy_id = state["strategy_id"]
 
     def event(kind: str, payload: dict) -> None:
@@ -1000,14 +1242,15 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         exit_fee_rate = identity["execution"].get("exit_fee_rate_per_side", fee_rate)
         fee = position["quantity"] * price * exit_fee_rate
         gross = position["direction"] * position["quantity"] * (price - position["entry_price"])
-        if liquidation:
+        liquidation_model = position.get("liquidation_model", DEFAULT_LIQUIDATION_MODEL)
+        if liquidation and liquidation_model == "bankruptcy_price":
             # The bankruptcy-price formula makes the loss exactly the posted
             # margin. Do not return the margin to cash; the exit fee is still
             # charged on the forced notional execution.
             gross = -position["margin"]
         fees = position["entry_fee"] + fee
         net = gross - fees
-        if liquidation:
+        if liquidation and liquidation_model == "bankruptcy_price":
             state["cash"] -= fee
         else:
             state["cash"] += position["margin"] + gross - fee
@@ -1018,6 +1261,9 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         filled = dict(order, status="filled", fill_price=price, quantity=position["quantity"],
                       fee=fee, observed_at_ms=observed_at_ms, fill_candle_ms=timestamp,
                       liquidation=liquidation,
+                      liquidation_model=liquidation_model,
+                      liquidation_tier=copy.deepcopy(position.get("liquidation_tier")),
+                      **_tier_event_fields(position.get("liquidation_tier")),
                       fill_model=(order.get("fill_model", "intrabar_liquidation_price") if liquidation
                                   else order.get("fill_model", EXECUTION_MODEL["fill_model"])),
                       simulation_fill_model=True)
@@ -1048,6 +1294,9 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                  "group_id": position.get("group_id"),
                  "exchange_order_id": None, "exit_reason": order["reason"],
                  "funding": "unknown", "slippage": "unknown", "liquidation": liquidation,
+                 "liquidation_model": liquidation_model,
+                 "liquidation_tier": copy.deepcopy(position.get("liquidation_tier")),
+                 **_tier_event_fields(position.get("liquidation_tier")),
                  "rule_hash": state["rule_hash"]}
         if "risk_sizing" in position:
             trade.update(stop_level=position["stop_level"],
@@ -1084,6 +1333,8 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                    "liquidation_price": liquidation_price, "trigger_price": trigger_price,
                    "liquidation_model": position.get("liquidation_model",
                                                      DEFAULT_LIQUIDATION_MODEL),
+                   "liquidation_tier": copy.deepcopy(position.get("liquidation_tier")),
+                   **_tier_event_fields(position.get("liquidation_tier")),
                    "reason": "liquidation"}
         if identity["execution"].get("risk_sizing_mode") in {"entry_atr", "structural"}:
             liquidation_order["liquidation_phase"] = phase
@@ -1258,9 +1509,10 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
             valid_entries = []
             for order in entries:
                 price = open_prices[order["pair"]]
-                plan = (_entry_atr_plan(order, price, identity["execution"])
+                pair_model = _pair_execution_model(identity["execution"], order["pair"])
+                plan = (_entry_atr_plan(order, price, pair_model)
                         if atr_sizing else
-                        _structural_stop_plan(order, price, identity["execution"]))
+                        _structural_stop_plan(order, price, pair_model))
                 if plan is None:
                     rejected = dict(order, evidence=_audit_atr_evidence(order.get("evidence")),
                                     status="rejected", reason=(
@@ -1286,62 +1538,121 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                       reason="entry_data_missing" if not ready else "account_budget_exhausted"))
             continue
         leverage = identity["execution"]["leverage"]
+        leverages = [_matrix_leverage(identity["execution"], order["pair"])
+                     for order in entries]
         # The 30% target is posted margin, per the selected leverage
         # convention. Entry fees are an additional cash cost charged on
         # leveraged notional; only the available cash cap reserves them here.
         weights = [min(1.0, max(0.0, order.get("size_multiplier", 1.0))) for order in entries]
         if orders[0].get("atomic"):
             weights = [min(weights)] * len(weights)
-        leveraged_fee_rate = leverage * fee_rate
         # The configured risk budget limits the planned stop plus modeled
         # round-trip fee. Exposure, slots and cash remain additional caps.
-        cash_unit = state["cash"] / ((1 + leveraged_fee_rate) * max(1, sum(weights)))
+        cash_units = [state["cash"] / ((1 + lev * fee_rate) * max(1, sum(weights)))
+                      for lev in leverages]
         if atr_sizing:
-            amounts = [min(remaining / slots, plan["risk_cap_notional"] / leverage, cash_unit) * weight
-                       for plan, weight in zip(plans, weights, strict=True)]
+            amounts = [min(remaining / slots, plan["risk_cap_notional"] / lev, cash_unit) * weight
+                       for plan, lev, cash_unit, weight in zip(plans, leverages, cash_units, weights, strict=True)]
         elif structural_sizing:
             amounts = [(
                 plan.get("notional_adjusted_for_safety", plan["frozen_notional"])
-                / leverage * weight
+                / lev * weight
                 if identity["execution"].get("notional_policy") == "dual_limit" else
-                plan["frozen_quantity"] * open_prices[order["pair"]] / leverage * weight
-            ) for plan, order, weight in zip(plans, entries, weights, strict=True)]
-            limit = min(remaining / slots, cash_unit)
-            if any(amount > limit for amount in amounts):
+                plan["frozen_quantity"] * open_prices[order["pair"]] / lev * weight
+            ) for plan, order, lev, weight in zip(plans, entries, leverages, weights, strict=True)]
+            if any(amount > min(remaining / slots, cash_unit)
+                   for amount, cash_unit in zip(amounts, cash_units, strict=True)):
                 for order in entries:
                     event("order_rejected", dict(order, status="rejected",
                           reason="structural_frozen_notional_exceeds_budget"))
                 continue
         else:
-            risk_cap_margin = identity["execution"]["max_loss_per_trade_usdt"] / (
-                leverage * (identity["execution"]["risk_stop_pct"]
-                            + identity["execution"]["risk_round_trip_fee"]))
-            limits = [remaining / slots, risk_cap_margin, cash_unit]
+            risk_caps = [identity["execution"]["max_loss_per_trade_usdt"] / (
+                lev * (identity["execution"]["risk_stop_pct"]
+                       + identity["execution"]["risk_round_trip_fee"]))
+                         for lev in leverages]
+            limits = [remaining / slots]
             if aggregate_unit_margin is not None:
                 limits.append(aggregate_unit_margin)
             unit = min(limits)
-            amounts = [unit * weight for weight in weights]
+            amounts = [min(unit, risk_cap, cash_unit) * weight
+                       for risk_cap, cash_unit, weight in zip(risk_caps, cash_units, weights, strict=True)]
         if any(amount <= 0 for amount in amounts):
             for order in entries:
                 event("order_rejected", dict(order, status="rejected", reason="zero_sizing"))
             continue
-        for index, (order, margin) in enumerate(zip(entries, amounts, strict=True)):
+
+        # Validate each order group against the exchange maintenance tier
+        # before touching cash, fees, or positions. Atomic groups are rejected
+        # together; independent non-atomic orders are assessed separately.
+        tiered_entries = {}
+        if liquidation_model == "binance_tiered":
+            provider_issue = _tier_provider_issue(tier_provider, identity["execution"],
+                                                  tuple(order["pair"] for order in entries))
+            if provider_issue is not None:
+                for order in entries:
+                    event("order_rejected", dict(order, status="rejected",
+                          reason="tier_snapshot_unavailable",
+                          group_rejection_reason=provider_issue,
+                          liquidation_model=liquidation_model,
+                          tier_snapshot_hash=identity["execution"].get("tier_snapshot_hash"),
+                          tier_snapshot_issue=provider_issue))
+                continue
+            for index, (order, margin, entry_leverage) in enumerate(
+                    zip(entries, amounts, leverages, strict=True)):
+                pair, direction, price = order["pair"], order["direction"], open_prices[order["pair"]]
+                quantity = _entry_quantity(
+                    margin, entry_leverage, price, weights[index],
+                    structural_sizing=structural_sizing,
+                    plan=plans[index] if structural_sizing else None,
+                    dual_limit=identity["execution"].get("notional_policy") == "dual_limit")
+                notional = quantity * price
+                liquidation_price, liquidation_evidence = _tiered_liquidation_price(
+                    pair, price, direction, entry_leverage, notional, tier_provider)
+                tiered_entries[order["order_id"]] = {
+                    "liquidation_price": liquidation_price,
+                    "liquidation_evidence": liquidation_evidence,
+                }
+            tier_rejections = [
+                entry for entry in tiered_entries.values()
+                if entry["liquidation_evidence"].get("tier_rejection_reason")
+            ]
+            if tier_rejections:
+                group_reason = next(
+                    entry["liquidation_evidence"]["tier_rejection_reason"]
+                    for entry in tiered_entries.values()
+                    if entry["liquidation_evidence"].get("tier_rejection_reason")
+                )
+                for order in entries:
+                    audit = tiered_entries[order["order_id"]]
+                    event("order_rejected", dict(
+                        order, status="rejected", reason=group_reason,
+                        group_rejection_reason=group_reason,
+                        liquidation_model=liquidation_model,
+                        liquidation_tier=audit["liquidation_evidence"],
+                        **_tier_event_fields(audit["liquidation_evidence"]),
+                    ))
+                continue
+
+        for index, (order, margin, entry_leverage) in enumerate(
+                zip(entries, amounts, leverages, strict=True)):
             pair, direction, price = order["pair"], order["direction"], open_prices[order["pair"]]
             if pair in state["positions"]:
                 raise ValueError("pending entry would overwrite an existing position")
+            leverage = entry_leverage
             fee = margin * leverage * fee_rate
-            quantity = (plans[index].get("notional_adjusted_for_safety",
-                                        plans[index]["frozen_notional"]) / price * weights[index]
-                        if structural_sizing and
-                        identity["execution"].get("notional_policy") == "dual_limit" else
-                        plans[index]["frozen_quantity"] * weights[index]
-                        if structural_sizing else margin * leverage / price)
+            quantity = _entry_quantity(
+                margin, leverage, price, weights[index],
+                structural_sizing=structural_sizing,
+                plan=plans[index] if structural_sizing else None,
+                dual_limit=identity["execution"].get("notional_policy") == "dual_limit")
             notional = quantity * price
             liquidation_price = price * (1 - direction / leverage)
             liquidation_evidence = None
             if liquidation_model == "binance_tiered":
-                liquidation_price, liquidation_evidence = _tiered_liquidation_price(
-                    pair, price, direction, leverage, notional)
+                tiered = tiered_entries[order["order_id"]]
+                liquidation_price = tiered["liquidation_price"]
+                liquidation_evidence = tiered["liquidation_evidence"]
             state["cash"] -= margin + fee
             state["fees_paid"] += fee
             position = {"strategy_id": strategy_id, "pair": pair, "direction": direction,
@@ -1350,6 +1661,7 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                         "entry_price": price, "mark_price": price, "margin": margin,
                         "liquidation_price": liquidation_price,
                         "liquidation_model": liquidation_model,
+                        "liquidation_tier": copy.deepcopy(liquidation_evidence),
                         "opened_candle_ms": timestamp, "entry_fee": fee,
                         "entry_evidence": copy.deepcopy(order.get("evidence", {})),
                         "entry_atr": order.get("evidence", {}).get("atr"),
@@ -1383,7 +1695,8 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                 position["stop_level"] = price * (1 - direction * identity["execution"]["risk_stop_pct"])
             state["positions"][pair] = position
             liquidation_payload = ({"liquidation_model": liquidation_model,
-                                    "liquidation_tier": liquidation_evidence}
+                                    "liquidation_tier": liquidation_evidence,
+                                    **_tier_event_fields(liquidation_evidence)}
                                    if liquidation_evidence is not None else
                                    {"liquidation_model": liquidation_model})
             event("order_filled", dict(order, status="filled", fill_price=price, quantity=quantity,
@@ -1608,6 +1921,10 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
     fee_rate = model["fee_rate_per_side"]
     exit_fee_rate = model.get("exit_fee_rate_per_side", fee_rate)
     leverage = model["leverage"]
+    matrix_mode = bool(model.get("leverage_by_symbol"))
+    tier_provider = (_tier_snapshot_provider(spec)
+                     if model.get("liquidation_model") == "binance_tiered"
+                     else None)
     liquidation_model = model.get("liquidation_model", DEFAULT_LIQUIDATION_MODEL)
     events: list[dict] = []
 
@@ -1673,22 +1990,37 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
             price = prices[pair]
             liquidation = pair in triggered
             fee = position["quantity"] * price * exit_fee_rate
-            gross = (-position["margin"] if liquidation else
-                     position["direction"] * position["quantity"] * (price - position["entry_price"]))
+            liquidation_model = position.get("liquidation_model", DEFAULT_LIQUIDATION_MODEL)
+            gross = position["direction"] * position["quantity"] * (
+                price - position["entry_price"])
+            if liquidation and liquidation_model == "bankruptcy_price":
+                # Preserve the historical bankruptcy-price contract only for
+                # legacy accounts. Tiered positions settle at their modeled
+                # liquidation fill and therefore retain price-derived PnL.
+                gross = -position["margin"]
             fees = position["entry_fee"] + fee
             net = gross - fees
-            state["cash"] += (-fee if liquidation else position["margin"] + gross - fee)
+            if liquidation and liquidation_model == "bankruptcy_price":
+                state["cash"] -= fee
+            else:
+                state["cash"] += position["margin"] + gross - fee
             state["fees_paid"] += fee
             state["realized_pnl"] += net
             fill_model = order.get("fill_model", EXECUTION_MODEL["fill_model"])
             event("order_filled", dict(order, status="filled", fill_price=price,
                   quantity=position["quantity"], fee=fee, fill_candle_ms=timestamp,
                   observed_at_ms=observed_at_ms, liquidation=liquidation,
+                  margin=position["margin"], leverage=position["leverage"],
+                  notional=position["quantity"] * position["entry_price"],
+                  liquidation_price=position.get("liquidation_price") if liquidation else None,
+                  liquidation_model=liquidation_model,
+                  liquidation_tier=copy.deepcopy(position.get("liquidation_tier")),
+                  **_tier_event_fields(position.get("liquidation_tier")),
                   fill_model=fill_model, simulation_fill_model=True,
                   risk_sizing=position["risk_sizing"], pair_group=position["pair_group"]))
             trade = {"trade_id": position["trade_id"], "pair": pair, "side": position["side"],
                      "quantity": position["quantity"], "margin": position["margin"],
-                     "leverage": leverage, "notional": position["quantity"] * position["entry_price"],
+                     "leverage": position["leverage"], "notional": position["quantity"] * position["entry_price"],
                      "entry_price": position["entry_price"], "exit_price": price,
                      "opened_candle_ms": position["opened_candle_ms"], "closed_candle_ms": timestamp,
                      "observed_at_ms": observed_at_ms, "gross_pnl": gross, "fees": fees,
@@ -1698,12 +2030,19 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
                      "group_id": position["group_id"], "pair_group": position["pair_group"],
                      "exchange_order_id": None, "exit_reason": order["reason"],
                      "funding": "unknown", "slippage": "unknown", "liquidation": liquidation,
+                     "liquidation_model": liquidation_model,
+                     "liquidation_tier": copy.deepcopy(position.get("liquidation_tier")),
+                     **_tier_event_fields(position.get("liquidation_tier")),
                      "liquidation_phase": phase, "fill_model": fill_model,
                      "risk_sizing": copy.deepcopy(position["risk_sizing"]),
                      "sample_unit": "pair_leg_audit_only", "rule_hash": state["rule_hash"]}
             if liquidation:
                 event("liquidation", {"pair": pair, "trade_id": position["trade_id"],
                       "liquidation_price": price, "margin": position["margin"],
+                      "leverage": position["leverage"],
+                      "liquidation_model": liquidation_model,
+                      "liquidation_tier": copy.deepcopy(position.get("liquidation_tier")),
+                      **_tier_event_fields(position.get("liquidation_tier")),
                       "liquidation_phase": phase, "pair_group": position["pair_group"]})
             event("trade_closed", trade)
             trades.append(trade)
@@ -1723,6 +2062,14 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
               "exit_reason": orders[0]["reason"], "liquidation": bool(triggered),
               "liquidation_phase": phase, "sample_unit": "completed_atomic_pair",
               "legs": trades, "risk_sizing": first["risk_sizing"],
+              "liquidation_models": [trade.get("liquidation_model") for trade in trades],
+              "tier_evidence": [
+                  {key: copy.deepcopy(trade[key]) for key in (
+                      "pair", "liquidation_model", "liquidation_tier",
+                      "tier_snapshot_hash", "account_scope", "tier_evidence_sha256")
+                   if key in trade}
+                  for trade in trades if trade.get("liquidation_model") == "binance_tiered"
+              ],
               "funding": "unknown", "slippage": "unknown",
               "intrabar_peer_timing": "unknown_conservative_adverse_extreme" if phase == "intrabar" else None})
 
@@ -1815,27 +2162,83 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
                 event("order_rejected", dict(order, status="rejected", reason=reason))
             continue
         weight = min(order.get("size_multiplier", 1) for order in entries)
-        margin = min(remaining / (2 * (1 + model["target_exposure"] * leverage * fee_rate)),
-                     plan["risk_cap_notional_per_leg"] / leverage,
-                     state["cash"] / (2 * (1 + leverage * fee_rate))) * weight
-        if margin <= 0:
+        leg_leverages = [_matrix_leverage(model, order["pair"]) for order in entries]
+        if matrix_mode:
+            inverse_margin = sum(1.0 / item for item in leg_leverages)
+            notional = min(
+                remaining / inverse_margin,
+                plan["risk_cap_notional_per_leg"],
+                state["cash"] / (inverse_margin + 2 * fee_rate),
+            ) * weight
+            leg_margins = [notional / item for item in leg_leverages]
+        else:
+            margin = min(remaining / (2 * (1 + model["target_exposure"] * leverage * fee_rate)),
+                         plan["risk_cap_notional_per_leg"] / leverage,
+                         state["cash"] / (2 * (1 + leverage * fee_rate))) * weight
+            notional = margin * leverage
+            leg_margins = [margin, margin]
+        if notional <= 0:
             for order in entries:
                 event("order_rejected", dict(order, status="rejected", reason="zero_sizing"))
             continue
-        notional = margin * leverage
         frozen = dict(plan, actual_notional_per_leg=notional,
                       planned_loss_usdt=notional * (plan["stop_distance_pct"] + plan["round_trip_fee"]),
-                      portfolio_margin=2 * margin, portfolio_gross_notional=2 * notional)
-        for order in entries:
+                      portfolio_margin=sum(leg_margins), portfolio_gross_notional=2 * notional)
+        tiered_entries = {}
+        if liquidation_model == "binance_tiered":
+            provider_issue = _tier_provider_issue(tier_provider, model,
+                                                  tuple(order["pair"] for order in entries))
+            if provider_issue is not None:
+                for order in entries:
+                    event("order_rejected", dict(order, status="rejected",
+                          reason="tier_snapshot_unavailable",
+                          group_rejection_reason=provider_issue,
+                          liquidation_model=liquidation_model,
+                          tier_snapshot_hash=model.get("tier_snapshot_hash"),
+                          tier_snapshot_issue=provider_issue))
+                continue
+            for order, entry_leverage in zip(entries, leg_leverages, strict=True):
+                pair, direction, price = order["pair"], order["direction"], opens[order["pair"]]
+                liquidation_price, liquidation_evidence = _tiered_liquidation_price(
+                    pair, price, direction, entry_leverage, notional, tier_provider)
+                tiered_entries[order["order_id"]] = {
+                    "liquidation_price": liquidation_price,
+                    "liquidation_evidence": liquidation_evidence,
+                }
+            tier_rejections = [
+                entry for entry in tiered_entries.values()
+                if entry["liquidation_evidence"].get("tier_rejection_reason")
+            ]
+            if tier_rejections:
+                group_reason = next(
+                    entry["liquidation_evidence"]["tier_rejection_reason"]
+                    for entry in tiered_entries.values()
+                    if entry["liquidation_evidence"].get("tier_rejection_reason")
+                )
+                for order in entries:
+                    audit = tiered_entries[order["order_id"]]
+                    event("order_rejected", dict(
+                        order, status="rejected", reason=group_reason,
+                        group_rejection_reason=group_reason,
+                        liquidation_model=liquidation_model,
+                        liquidation_tier=audit["liquidation_evidence"],
+                        **_tier_event_fields(audit["liquidation_evidence"]),
+                    ))
+                continue
+        for index, order in enumerate(entries):
             pair, direction, price = order["pair"], order["direction"], opens[order["pair"]]
+            leverage = leg_leverages[index]
+            margin = leg_margins[index]
             fee, quantity = notional * fee_rate, notional / price
             state["cash"] -= margin + fee
             state["fees_paid"] += fee
             pair_liquidation_price = price * (1 - direction / leverage)
+            liquidation_evidence = None
             if liquidation_model == "binance_tiered":
                 # 配对账户同样按档位取强平价；两条腿名义相同，但档位可能不同
-                pair_liquidation_price, _ = _tiered_liquidation_price(
-                    pair, price, direction, leverage, notional)
+                tiered = tiered_entries[order["order_id"]]
+                pair_liquidation_price = tiered["liquidation_price"]
+                liquidation_evidence = tiered["liquidation_evidence"]
             position = {"strategy_id": strategy_id, "pair": pair, "direction": direction,
                         "side": "long" if direction == 1 else "short", "quantity": quantity,
                         "leverage": leverage, "notional": notional, "entry_price": price,
@@ -1843,6 +2246,7 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
                         "mark_price": price, "margin": margin, "entry_fee": fee,
                         "liquidation_price": pair_liquidation_price,
                         "liquidation_model": liquidation_model,
+                        "liquidation_tier": copy.deepcopy(liquidation_evidence),
                         "opened_candle_ms": timestamp, "entry_evidence": copy.deepcopy(order["evidence"]),
                         "group_id": order["group_id"], "paper_order_id": order["paper_order_id"],
                         "exchange_order_id": None, "trade_id": "trade-" + order["order_id"],
@@ -1856,6 +2260,9 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
                   quantity=quantity, margin=margin, leverage=leverage, notional=notional,
                   liquidation_price=position["liquidation_price"], fee=fee,
                   fill_candle_ms=timestamp, observed_at_ms=observed_at_ms,
+                  liquidation_model=liquidation_model,
+                  liquidation_tier=liquidation_evidence,
+                  **_tier_event_fields(liquidation_evidence),
                   fill_model=EXECUTION_MODEL["fill_model"], simulation_fill_model=True,
                   risk_sizing=frozen, pair_group=plan["pair_group"]))
             event("position_opened", position)

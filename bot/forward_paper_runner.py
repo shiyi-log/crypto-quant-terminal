@@ -259,7 +259,8 @@ class ForwardPaperRunner:
                  variants: list[dict[str, Any]], *, top_n: int = 8,
                  max_open: int = 10, exposure: float = 0.30,
                  cost_one: float = 0.0004, wallet: float = 10_000.0,
-                 clock: Any = None, ledger_store: Any = None):
+                 clock: Any = None, ledger_store: Any = None,
+                 risk_gate: dict[str, Any] | None = None):
         if not isinstance(top_n, int) or top_n < 1:
             raise ValueError("top_n must be a positive integer")
         if not isinstance(max_open, int) or max_open < 1:
@@ -276,6 +277,7 @@ class ForwardPaperRunner:
         # an unavailable database can never stop paper observation; failed
         # batches are retried from the outbox on the next update/restart.
         self.ledger_store = ledger_store
+        self.risk_gate = dict(risk_gate) if risk_gate is not None else None
         self._ledger_sync_error: str | None = None
         self._ledger_sync_count = 0
         self.variants = paper.freeze_variants(variants)
@@ -286,7 +288,8 @@ class ForwardPaperRunner:
                       "wallet": float(wallet)}
         self.engine_hash = paper.engine_fingerprint()
         identity = {"schema_version": SCHEMA_VERSION, "rules": self.rules,
-                    "variants": self.variants, "engine_sha256": self.engine_hash}
+                    "variants": self.variants, "engine_sha256": self.engine_hash,
+                    "risk_gate": self.risk_gate}
         self.run_id = sha256(canonical_json(identity))[:24]
         self.manifest_path = self.output_dir / "manifest.jsonl"
         self.decision_path = self.output_dir / "decisions.jsonl"
@@ -309,6 +312,7 @@ class ForwardPaperRunner:
             "cost_completeness": {"fee": "modeled", "slippage": "unknown",
                                    "funding": "unknown"},
             "interpretation": "incremental forward paper replay; not live trading",
+            "risk_gate": self.risk_gate,
         }
 
     def _ensure_manifest(self) -> None:
@@ -1327,20 +1331,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--coins", default="")
+    parser.add_argument("--research-id", required=True,
+                        help="registered research id whose risk gate must be closed")
+    parser.add_argument("--account-scope", required=True,
+                        help="verified opaque account scope frozen into the risk gate")
     args = parser.parse_args(argv)
-    data = paper.load_feather_1h(args.data_dir,
-                                 [x.strip() for x in args.coins.split(",") if x.strip()] or None)
-    # Keep database setup lazy and best-effort.  The local JSONL outbox remains
-    # usable when PostgreSQL or its optional dependencies are unavailable.
+    # Open and validate the research ledger before reading any candidate input.
+    # A missing/open/not-estimable gate must not burn holdout data by merely
+    # constructing a forward run.
     from data_store import DataStore
+    import research_ledger
 
     project_root = Path(__file__).resolve().parents[1]
     store = DataStore(root=project_root)
     try:
-        runner = ForwardPaperRunner(args.output, paper.DEFAULT_VARIANTS,
-                                    ledger_store=store)
-        print(json.dumps(runner.update(data), ensure_ascii=False, indent=2,
-                         allow_nan=False))
+        variants = paper.freeze_variants(paper.DEFAULT_VARIANTS)
+        expected_binding = paper.risk_gate_target_binding(args.account_scope, variants)
+        gate = research_ledger.require_closed_risk_gate(
+            store, args.research_id, expected_binding=expected_binding)
+        data = paper.load_feather_1h(
+            args.data_dir,
+            [x.strip() for x in args.coins.split(",") if x.strip()] or None,
+        )
+        runner = ForwardPaperRunner(args.output, variants,
+                                    ledger_store=store, risk_gate=gate)
+        result = runner.update(data)
+        result["risk_gate"] = gate
+        print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
     finally:
         store.close()
     return 0

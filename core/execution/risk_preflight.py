@@ -1,4 +1,12 @@
-"""
+"""Legacy diagnostic risk checker.
+
+This module is retained for historical, scalar-position diagnostics.  It is
+not the authoritative account-risk gate for executable research accounts:
+``MaintenanceMarginTier`` is a dated static table and ``max_leverage`` is a
+single scalar.  New frozen executions must use
+``core.execution.account_risk_preflight`` together with
+``core.execution.tier_snapshot`` and a verified account API snapshot.
+
 综合风险检查器
 
 职责：
@@ -9,6 +17,12 @@
 """
 
 from __future__ import annotations
+
+# Explicit marker for callers and audits.  Keeping this module importable
+# preserves legacy reports without allowing it to be mistaken for the frozen
+# account-snapshot preflight path.
+LEGACY_DIAGNOSTIC_ONLY = True
+
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import List, Dict, Optional, Literal

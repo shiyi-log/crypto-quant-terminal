@@ -5,7 +5,8 @@ import uuid
 
 from data_store import DataStore
 from demo_second_level_runner import (
-    SecondLevelConfig, recover_second_level_session, run_second_level_session,
+    SecondLevelConfig, expected_risk_gate_target_binding,
+    recover_second_level_session, run_second_level_session,
 )
 from demo_store import DemoStore
 from runtime_config import load_environment
@@ -30,6 +31,15 @@ class SecondLevelStoreIntegrationTests(unittest.TestCase):
         adapter = Adapter(clock)
         config = SecondLevelConfig("contract", max_signals=2,
                                    max_duration_seconds=100, reconciliation_seconds=3)
+        binding = expected_risk_gate_target_binding("offline-test-account", config)
+        import research_ledger
+        risk_gate_proof = {
+            "research_id": "research-1", "event_id": "event-1",
+            "risk_segment_status": "closed", "preflight_status": "pass",
+            "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+            "target_binding": binding,
+            "target_binding_hash": research_ledger.risk_gate_target_binding_hash(binding),
+        }
         ledgers = {arm: DemoStore(data, "second_level_contract_" + arm)
                    for arm in ("maker", "taker")}
         try:
@@ -37,6 +47,7 @@ class SecondLevelStoreIntegrationTests(unittest.TestCase):
             report = run_second_level_session(
                 adapter, ledgers, Source(clock), config=config, clock_ms=clock.now,
                 sleep=clock.sleep, monotonic=clock.mono,
+                risk_gate_proof=risk_gate_proof,
             )
             self.assertTrue(report["success"], report["errors"])
             self.assertTrue(report["position_flat"])

@@ -15,11 +15,28 @@ from tools import run_binance_demo_fee_capture as cli
 
 
 class FeeCaptureCLITests(unittest.TestCase):
+    def run_operator(self, args, data, **dependencies):
+        if not getattr(args, "research_id", None):
+            args.research_id = "research-1"
+        if not getattr(args, "account_scope", None):
+            args.account_scope = "offline-test-account"
+        import research_ledger
+        if isinstance(research_ledger.require_closed_risk_gate, Mock):
+            return cli.run_operator(args, data, **dependencies)
+        binding = cli._expected_target_binding(args.account_scope, cli.config_from_args(args))
+        gate = {"research_id": "research-1", "event_id": "gate-event-1",
+                "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+                "risk_segment_status": "closed", "preflight_status": "pass",
+                "target_binding": binding,
+                "target_binding_hash": research_ledger.risk_gate_target_binding_hash(binding)}
+        with patch("research_ledger.require_closed_risk_gate", return_value=gate):
+            return cli.run_operator(args, data, **dependencies)
+
     def args(self, **changes):
         values = {"session": "fee_capture_offline_test", "execute": True,
                   "max_notional_usdt": "75", "maker_ttl_seconds": 30,
                   "total_timeout_seconds": 600, "reconciliation_seconds": 60,
-                  "recover_only": False}
+                  "recover_only": False, "account_scope": "offline-test-account"}
         return argparse.Namespace(**{**values, **changes})
 
     def dependencies(self, data):
@@ -48,7 +65,7 @@ class FeeCaptureCLITests(unittest.TestCase):
                 data = Data()
                 deps = self.dependencies(data)
                 with self.assertRaises(cli.OperatorPreflightError):
-                    cli.run_operator(self.args(**changes), data, **deps)
+                    self.run_operator(self.args(**changes), data, **deps)
                 deps["api_factory"].assert_not_called()
                 self.assertEqual(data.documents, {})
 
@@ -58,13 +75,61 @@ class FeeCaptureCLITests(unittest.TestCase):
                 data = Data(**counts)
                 deps = self.dependencies(data)
                 with self.assertRaises(cli.OperatorPreflightError) as error:
-                    cli.run_operator(self.args(), data, **deps)
+                    self.run_operator(self.args(), data, **deps)
                 self.assertEqual(error.exception.kind, "other_demo_session_unresolved")
                 deps["api_factory"].assert_not_called()
 
+    def test_production_entry_cannot_skip_gate_with_partial_dependency_injection(self):
+        data = Data()
+        with self.assertRaises(cli.OperatorPreflightError) as error:
+            cli.run_operator(self.args(), data, auth_dir=Path("/offline"), capture=Mock())
+        self.assertEqual(error.exception.kind, "risk_gate_not_closed")
+        self.assertFalse(hasattr(cli, "run_operator_for_test"))
+        with self.assertRaises(cli.OperatorPreflightError) as error:
+            cli.run_operator(self.args(), data, **self.dependencies(data))
+        self.assertEqual(error.exception.kind, "risk_gate_not_closed")
+
+    def test_identity_freezes_gate_and_recovery_does_not_read_current_gate(self):
+        data = Data()
+        deps = self.dependencies(data)
+        gate = {"research_id": "research-1", "event_id": "gate-event-1",
+                "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+                "risk_segment_status": "closed", "preflight_status": "pass",
+                "target_binding_hash": "a" * 64}
+        with patch("research_ledger.require_closed_risk_gate", return_value=gate):
+            self.run_operator(self.args(research_id="research-1"), data, **deps)
+        key = "binance_demo_fee_capture/fee_capture_offline_test.identity.json"
+        saved = data.get_document(key)
+        self.assertEqual(saved["risk_gate_identity"], {
+            "research_id": "research-1", "event_id": "gate-event-1",
+            "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+            "target_binding_hash": "a" * 64})
+        with patch("research_ledger.require_closed_risk_gate", side_effect=RuntimeError("unavailable")) as gate_reader:
+            report = self.run_operator(self.args(research_id="different"), data, **deps)
+        gate_reader.assert_not_called()
+        self.assertTrue(deps["capture"].call_args.kwargs["recovery_only"])
+        self.assertEqual(report["research_id"], "research-1")
+        self.assertEqual(report["risk_gate"], gate)
+
+    def test_corrupt_gate_identity_blocks_recovery_without_credentials(self):
+        data = Data()
+        deps = self.dependencies(data)
+        gate = {"research_id": "research-1", "event_id": "gate-event-1",
+                "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+                "target_binding_hash": "a" * 64}
+        with patch("research_ledger.require_closed_risk_gate", return_value=gate):
+            self.run_operator(self.args(research_id="research-1"), data, **deps)
+        key = "binance_demo_fee_capture/fee_capture_offline_test.identity.json"
+        data.documents[key]["risk_gate_identity"]["event_id"] = "gate-event-other"
+        deps["api_factory"].reset_mock()
+        with self.assertRaises(cli.OperatorPreflightError) as error:
+            self.run_operator(self.args(recover_only=True), data, **deps)
+        self.assertEqual(error.exception.kind, "fee_capture_session_identity_mismatch")
+        deps["api_factory"].assert_not_called()
+
     def test_preflight_excludes_only_this_session(self):
         data = Data()
-        cli.run_operator(self.args(), data, **self.dependencies(data))
+        self.run_operator(self.args(), data, **self.dependencies(data))
         self.assertIn("READ ONLY", data.queries[0][0])
         self.assertTrue(all(params == (["fee_capture_offline_test"],) for _, params in data.queries[1:]))
 
@@ -82,7 +147,7 @@ class FeeCaptureCLITests(unittest.TestCase):
             return adapter
 
         deps["adapter_factory"] = factory
-        report = cli.run_operator(self.args(), data, **deps)
+        report = self.run_operator(self.args(), data, **deps)
         self.assertEqual(data.get_document(report["report_document"]), report)
         self.assertEqual(data.get_document("binance_demo_fee_capture/fee_capture_offline_test.json"), report)
         deps["capture"].assert_called_once()
@@ -91,14 +156,14 @@ class FeeCaptureCLITests(unittest.TestCase):
     def test_credential_rotation_refuses_recovery_before_adapter(self):
         data = Data()
         deps = self.dependencies(data)
-        cli.run_operator(self.args(), data, **deps)
+        self.run_operator(self.args(), data, **deps)
         saved = deepcopy(data.documents)
         deps["api_factory"].return_value.credentials.load_credentials.return_value = SimpleNamespace(
             api_key="rotated-fixture-key", secret="rotated-fixture-secret")
         deps["adapter_factory"].reset_mock()
         deps["capture"].reset_mock()
         with self.assertRaises(cli.OperatorPreflightError) as error:
-            cli.run_operator(self.args(recover_only=True), data, **deps)
+            self.run_operator(self.args(recover_only=True), data, **deps)
         self.assertEqual(error.exception.kind, "fee_capture_credential_identity_mismatch")
         deps["adapter_factory"].assert_not_called()
         deps["capture"].assert_not_called()
@@ -111,7 +176,7 @@ class FeeCaptureCLITests(unittest.TestCase):
                 deps = self.dependencies(data)
                 args = self.args()
                 if change == "ttl":
-                    cli.run_operator(args, data, **deps)
+                    self.run_operator(args, data, **deps)
                     args = self.args(maker_ttl_seconds=60)
                 elif change == "missing":
                     data.counts = (0, 0, 0, 1)
@@ -119,15 +184,15 @@ class FeeCaptureCLITests(unittest.TestCase):
                     args = self.args(recover_only=True)
                 deps["api_factory"].reset_mock()
                 with self.assertRaises(cli.OperatorPreflightError):
-                    cli.run_operator(args, data, **deps)
+                    self.run_operator(args, data, **deps)
                 deps["api_factory"].assert_not_called()
 
     def test_recovery_flag_is_forwarded_without_changing_identity(self):
         data = Data()
         deps = self.dependencies(data)
-        cli.run_operator(self.args(), data, **deps)
+        self.run_operator(self.args(), data, **deps)
         identity = deepcopy(data.documents["binance_demo_fee_capture/fee_capture_offline_test.identity.json"])
-        cli.run_operator(self.args(recover_only=True, max_notional_usdt="75.0"), data, **deps)
+        self.run_operator(self.args(max_notional_usdt="75.0"), data, **deps)
         self.assertTrue(deps["capture"].call_args.kwargs["recovery_only"])
         self.assertEqual(data.documents["binance_demo_fee_capture/fee_capture_offline_test.identity.json"], identity)
         self.assertEqual(sum("/reports/" in key for key in data.documents), 2)
@@ -137,7 +202,7 @@ class FeeCaptureCLITests(unittest.TestCase):
         deps = self.dependencies(data)
         data.put_document = Mock(side_effect=RuntimeError("private exception detail"))
         with self.assertRaises(RuntimeError):
-            cli.run_operator(self.args(), data, **deps)
+            self.run_operator(self.args(), data, **deps)
         deps["adapter_factory"].assert_not_called()
         deps["capture"].assert_not_called()
 
@@ -146,7 +211,8 @@ class FeeCaptureCLITests(unittest.TestCase):
             with patch.object(cli, "ROOT", Path(path)), patch.object(cli, "load_environment"), \
                     patch.object(cli.fcntl, "flock", side_effect=BlockingIOError), \
                     patch.object(cli, "DataStore") as store, redirect_stdout(io.StringIO()) as output:
-                result = cli.main(["--execute", "--session", "fee_capture_offline_test"])
+                result = cli.main(["--execute", "--session", "fee_capture_offline_test",
+                                   "--account-scope", "offline-test-account"])
                 self.assertEqual(result, 2)
                 self.assertIn("demo_account_lock_busy", output.getvalue())
                 store.assert_not_called()
@@ -157,7 +223,8 @@ class FeeCaptureCLITests(unittest.TestCase):
                     patch.object(cli, "DataStore") as store, \
                     patch.object(cli, "run_operator", side_effect=RuntimeError("secret=never-print-this")), \
                     patch.object(cli.fcntl, "flock") as flock, redirect_stdout(io.StringIO()) as output:
-                self.assertEqual(cli.main(["--execute", "--session", "fee_capture_offline_test"]), 2)
+                self.assertEqual(cli.main(["--execute", "--session", "fee_capture_offline_test",
+                                           "--account-scope", "offline-test-account"]), 2)
                 self.assertNotIn("never-print-this", output.getvalue())
                 self.assertIn('"recoveryRequired": true', output.getvalue())
                 store.return_value.close.assert_called_once()

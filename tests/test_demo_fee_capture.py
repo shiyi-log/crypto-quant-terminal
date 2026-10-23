@@ -4,6 +4,7 @@ from decimal import Decimal
 import unittest
 
 from binance_demo_adapter import DemoSafetyError, DemoSubmissionUnknown
+from demo_fee_capture import expected_risk_gate_target_binding
 
 
 PAIR = "BTC/USDT:USDT"
@@ -345,11 +346,29 @@ class FeeCaptureTests(unittest.TestCase):
         self.adapter = Adapter(self.clock)
 
     def run_capture(self, **kwargs):
-        from demo_fee_capture import run_fee_capture
         options = {"clock_ms": self.clock.now, "sleep": self.clock.sleep,
                    "pairs": (PAIR,), "maker_ttl_seconds": 30,
-                   "total_timeout_seconds": 60, "reconciliation_seconds": 2}
+                   "total_timeout_seconds": 60, "reconciliation_seconds": 2,
+                   "max_notional_usdt": "75"}
         options.update(kwargs)
+        recovery_only = bool(options.get("recovery_only") or self.ledger.runner_orders())
+        options["recovery_only"] = recovery_only
+        if not recovery_only and "risk_gate_proof" not in kwargs:
+            binding = expected_risk_gate_target_binding(
+                "offline-test-account", pairs=options["pairs"],
+                max_notional_usdt=options["max_notional_usdt"],
+                maker_ttl_seconds=options["maker_ttl_seconds"],
+                total_timeout_seconds=options["total_timeout_seconds"],
+                reconciliation_seconds=options["reconciliation_seconds"])
+            import research_ledger
+            options["risk_gate_proof"] = {
+                "research_id": "research-1", "event_id": "event-1",
+                "risk_segment_status": "closed", "preflight_status": "pass",
+                "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+                "target_binding": binding,
+                "target_binding_hash": research_ledger.risk_gate_target_binding_hash(binding),
+            }
+        from demo_fee_capture import run_fee_capture
         return run_fee_capture(self.adapter, self.ledger, **options)
 
     def assert_protected_flat(self, report):
@@ -358,6 +377,12 @@ class FeeCaptureTests(unittest.TestCase):
         self.assertFalse(report["recovery_required"], report["errors"])
         self.assertEqual(self.adapter.fetch_positions(), [])
         self.assertEqual(self.adapter.fetch_open_orders(), [])
+
+    def test_missing_gate_blocks_before_any_entry_post(self):
+        report = self.run_capture(risk_gate_proof=None)
+        self.assertFalse(report["success"])
+        self.assertEqual(self.adapter.posts, [])
+        self.assertEqual(self.ledger.runner_orders(), [])
 
     def test_full_capture_uses_native_gtx_ioc_and_reduce_only_market_exits(self):
         report = self.run_capture()
@@ -606,6 +631,18 @@ class FeeCaptureTests(unittest.TestCase):
                 self.assertFalse(report["success"])
                 self.assertEqual(self.adapter.posts, [])
                 self.assertNotIn("never-serialize-this", str(report))
+
+    def test_resumed_unclaimed_entry_is_abandoned_without_first_post(self):
+        self.ledger.fail_claim = True
+        first = self.run_capture()
+        self.assertFalse(first["success"])
+        self.assertEqual(self.adapter.posts, [])
+        self.ledger.fail_claim = False
+        recovered = self.run_capture()
+        self.assertFalse(recovered["success"])
+        self.assertTrue(recovered["recovery_only"])
+        self.assertEqual(self.adapter.posts, [])
+        self.assertEqual({row["status"] for row in self.ledger.orders.values()}, {"expired"})
 
     def test_fill_persistence_failure_keeps_protection_but_cannot_report_success(self):
         self.ledger.fail_fill = True

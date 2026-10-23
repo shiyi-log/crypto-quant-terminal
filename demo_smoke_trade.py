@@ -103,11 +103,13 @@ def _positions(rows):
 
 def run_smoke_trade(adapter, ledger, *, clock_ms=None, sleep=None,
                     max_notional_usdt="75", entry_wait_seconds=15,
-                    reconciliation_seconds=60):
+                    reconciliation_seconds=60, recovery_only=False,
+                    risk_gate_identity=None, risk_gate_proof=None):
     """Submit at most one entry and one reduce-only exit, then reconcile facts.
 
-    This function never retries a POST. Re-running the same ledger namespace can
-    only reconcile its original entry and submit its previously unclaimed exit.
+    This function never retries a POST. A namespace with durable orders is
+    recovery-only: claimed orders are reconciled, unclaimed entry intents are
+    abandoned, and a previously unclaimed protective exit may still be posted.
     Network/storage errors return redacted categories; unresolved exposure is
     explicit. Order/fill projection errors do not prevent a durably claimed
     protective exit based on verified exchange order and position evidence.
@@ -118,12 +120,14 @@ def run_smoke_trade(adapter, ledger, *, clock_ms=None, sleep=None,
     report = {"environment": "binance_demo", "endpoint": DEMO_HOST,
               "experiment_scope": "manual_smoke_test", "strategy_or_hft_evidence": False,
               "virtual_account_key": namespace, "success": False,
+              "recovery_only": bool(recovery_only),
               "entry_submission_attempts": 0, "exit_submission_attempts": 0,
               "position_flat": False, "open_orders_zero": False,
               "fill_reconciliation_complete": False, "persistence_complete": True,
               "orders": [], "fills": [], "round_trips": [], "errors": [],
               "fee_source": "binance_demo_user_trades", "live_launch_allowed": False}
     facts, observed, actual_fills = {}, {}, {}
+    proof = risk_gate_proof if risk_gate_proof is not None else risk_gate_identity
 
     def persist(method, *args, **kwargs):
         try:
@@ -235,6 +239,21 @@ def run_smoke_trade(adapter, ledger, *, clock_ms=None, sleep=None,
                 or not 0 <= entry_wait_seconds <= 30 or not 1 <= reconciliation_seconds <= 120):
             raise DemoSafetyError("invalid diagnostic timing bound")
         existing = ledger.runner_orders()
+        recovery_only = bool(recovery_only or existing)
+        report["recovery_only"] = recovery_only
+        if not recovery_only:
+            import research_ledger
+            if (not isinstance(proof, dict) or proof.get("risk_segment_status") != "closed"
+                    or proof.get("preflight_status") != "pass"):
+                raise DemoSafetyError("risk_gate_not_closed")
+            try:
+                binding = proof["target_binding"]
+                if proof.get("target_binding_hash") != research_ledger.risk_gate_target_binding_hash(binding):
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                raise DemoSafetyError("risk_gate_identity_invalid") from None
+        if recovery_only and not existing:
+            raise DemoSafetyError("smoke recovery has no durable order checkpoint")
         if any(row.get("strategy_id") != "manual_smoke_test" for row in existing) or len(existing) > 2:
             raise DemoSafetyError("diagnostic namespace contains unrelated orders")
         if adapter.fetch_position_mode()["hedged"] is not False:
@@ -256,10 +275,25 @@ def run_smoke_trade(adapter, ledger, *, clock_ms=None, sleep=None,
         report["plan"] = plan
         policy = {"version": VERSION, "max_notional_usdt": format(cap, "f"),
                   "entry_wait_seconds": entry_wait_seconds, "reconciliation_seconds": reconciliation_seconds,
-                  "plan": plan, "entry_post_only": False, "exit_reduce_only": True}
+                  "entry_post_only": False, "exit_reduce_only": True}
         identity = {"strategy_id": "manual_smoke_test", "signal_id": namespace + ":open_close",
                     "rule_hash": _hash({"version": VERSION, "purpose": "manual_smoke_test"}),
                     "execution_hash": _hash(policy), "input_fingerprint": _hash(plan)}
+        if not recovery_only:
+            expected = research_ledger.build_risk_gate_target_binding(
+                proof["target_binding"]["account_scope"], [{
+                    "strategy_id": identity["strategy_id"],
+                    "rule_hash": identity["rule_hash"],
+                    "execution_hash": identity["execution_hash"],
+                }])
+            if proof.get("target_binding") != expected:
+                raise DemoSafetyError("risk_gate_target_mismatch")
+        if proof is not None:
+            identity["risk_gate_identity"] = {
+                key: proof.get(key) for key in
+                ("research_id", "event_id", "boundary_hash", "inputs_hash", "target_binding_hash")
+            }
+            report["risk_gate_identity"] = dict(identity["risk_gate_identity"])
         ledger.bind_account({**identity, "policy": policy, "demo_policy_hash": _hash(policy),
                              "experiment_scope": "manual_smoke_test"})
         if not report["persistence_complete"]:
@@ -267,6 +301,20 @@ def run_smoke_trade(adapter, ledger, *, clock_ms=None, sleep=None,
         old_entry = next((row for row in existing if not row["reduce_only"]), None)
         entry_intent = intent("entry", facts["quantity"], old_entry["signal_ms"] if old_entry else start)
         entry_id = entry_intent["client_id"]
+        if (recovery_only and old_entry is not None
+                and old_entry.get("submission_attempts", 0) == 0
+                and old_entry.get("exchange_order_id") is None):
+            if any(row["reduce_only"] for row in existing):
+                raise DemoSafetyError("unclaimed diagnostic entry conflicts with a durable exit")
+            ledger.abandon_unclaimed_order(entry_id, "recover_only_no_new_entry", now())
+            report["errors"].append({"stage": "recovery", "kind": "unclaimed_entry_abandoned",
+                                     "exchange_code": None})
+            positions, opens = snapshot()
+            report["position_flat"] = not _positions(positions)
+            report["open_orders_zero"] = not opens
+            if not report["position_flat"] or not report["open_orders_zero"]:
+                raise DemoSafetyError("account risk cannot be attributed to an unclaimed diagnostic entry")
+            return report
         if not submit(entry_intent, entry=True):
             positions, opens = snapshot()
             report["position_flat"] = not _positions(positions)

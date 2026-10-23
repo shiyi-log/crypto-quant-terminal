@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -134,19 +135,29 @@ def handle_demo_request(handler, *, method: str, verify_token, allowed_origins,
                                    else "json_object_required", 413 if length > MAX_BODY_BYTES else 400)
             body = _strict_json(handler._read_body())
             expected = ({"apiKey", "secret"} if suffix == "/credentials" else
-                        {"accountId"} if suffix in {"/start", "/switch", "/attach"} else
-                        {"session"} if suffix in {"/adopt-session", "/start-session", "/stop-session"}
+                        ({"accountId"}, {"accountId", "researchId"}) if suffix in {"/start", "/switch", "/attach"} else
+                        ({"session"}, {"session", "researchId"}) if suffix == "/start-session" else
+                        {"session"} if suffix in {"/adopt-session", "/stop-session"}
                         else set())
-            if set(body) != expected:
+            allowed_body_shapes = expected if isinstance(expected, tuple) else (expected,)
+            if set(body) not in allowed_body_shapes:
                 raise DemoApiError("unexpected_or_missing_request_fields")
             if suffix == "/credentials":
                 if not isinstance(body["apiKey"], str) or not isinstance(body["secret"], str):
                     raise DemoApiError("invalid_demo_credentials")
             if suffix in {"/start", "/switch", "/attach"}:
                 _identity(body["accountId"])
+            if suffix in {"/start", "/switch", "/attach"} and "researchId" in body:
+                if (not isinstance(body["researchId"], str) or not body["researchId"].strip()
+                        or body["researchId"] != body["researchId"].strip()):
+                    raise DemoApiError("invalid_research_id")
             if suffix in {"/adopt-session", "/start-session", "/stop-session"}:
                 if not isinstance(body["session"], str) or not _SESSION_KEY.fullmatch(body["session"]):
                     raise DemoApiError("invalid_demo_session")
+            if suffix == "/start-session" and "researchId" in body:
+                if (not isinstance(body["researchId"], str) or not body["researchId"].strip()
+                        or body["researchId"] != body["researchId"].strip()):
+                    raise DemoApiError("invalid_research_id")
             return handler._send(200, api_provider().post(suffix, body, actor=username))
         allowed = {"limit"} if suffix in {"/orders", "/fills", "/comparisons", "/sessions", "/strategies"} else set()
         if suffix in _HISTORY_PATHS:
@@ -437,13 +448,31 @@ class DemoApi:
             return self.check()
         if suffix in {"/start", "/switch", "/attach"}:
             account_id = _identity(body["accountId"])
+            research_id = body.get("researchId")
+            gate_required = getattr(self.controller, "risk_gate_required", False) is True
+            if gate_required:
+                if research_id is None and suffix == "/start":
+                    resolve = getattr(self.controller, "recoverable_research_id", None)
+                    if callable(resolve):
+                        try:
+                            research_id = resolve(account_id)
+                        except Exception:
+                            raise DemoApiError("risk_gate_identity_unavailable", 503) from None
+                if not isinstance(research_id, str) or not research_id.strip():
+                    raise DemoApiError("risk_gate_not_closed", 409)
             item = next((row for row in self.account_provider() if row["accountId"] == account_id), None)
             if item is None or not item["eligible"]:
                 raise DemoApiError("paper_account_not_demo_eligible", 409)
             try:
-                result = (self.controller.attach(account_id) if suffix == "/attach" else
-                          self.controller.switch(account_id) if suffix == "/switch"
-                          else self.controller.start(account_id))
+                if suffix == "/attach":
+                    result = (self.controller.attach(account_id, research_id=research_id)
+                              if research_id is not None else self.controller.attach(account_id))
+                elif suffix == "/switch":
+                    result = (self.controller.switch(account_id, research_id=research_id)
+                              if research_id is not None else self.controller.switch(account_id))
+                else:
+                    result = (self.controller.start(account_id, research_id=research_id)
+                              if research_id is not None else self.controller.start(account_id))
             except DemoHandoffError as exc:
                 raise DemoApiError(exc.code, 409) from None
             response = {"environment": "binance_demo", "runner": result or self._runner_status()}
@@ -458,10 +487,22 @@ class DemoApi:
             session = body.get("session")
             if not isinstance(session, str) or not _SESSION_KEY.fullmatch(session):
                 raise DemoApiError("invalid_demo_session")
+            research_id = body.get("researchId")
+            if suffix == "/start-session" and getattr(self.controller, "risk_gate_required", False) is True:
+                if research_id is None:
+                    resolve = getattr(self.controller, "recoverable_session_research_id", None)
+                    if callable(resolve):
+                        try:
+                            research_id = resolve(session)
+                        except Exception:
+                            raise DemoApiError("risk_gate_identity_unavailable", 503) from None
+                if not isinstance(research_id, str) or not research_id.strip():
+                    raise DemoApiError("risk_gate_not_closed", 409)
             action = {"/adopt-session": "adopt_existing_session", "/start-session": "start_session",
                       "/stop-session": "stop_session"}[suffix]
             try:
-                result = getattr(self.controller, action)(session)
+                result = (getattr(self.controller, action)(session, research_id=research_id)
+                          if suffix == "/start-session" else getattr(self.controller, action)(session))
             except DemoHandoffError as exc:
                 raise DemoApiError(exc.code, 409) from None
             return {"environment": "binance_demo", "runner": result or self._runner_status(),
@@ -533,7 +574,8 @@ def create_demo_api(data_store, *, auth_dir):
     ledger = DemoStore(data_store, virtual_account_key=namespace)
     sources = DemoSignalSources(data_store)
     controller = DemoRunnerController(data_store, ledger, credentials.load_credentials,
-                                      paper_source=sources)
+                                      paper_source=sources, risk_gate_required=True,
+                                      risk_account_scope=os.environ.get("QUANT_DEMO_RISK_ACCOUNT_SCOPE"))
     return DemoApi(data_store, credentials, ledger, controller,
                    ledger_provider=lambda: controller.demo_store,
                    account_provider=lambda: list_paper_accounts(data_store) + sources.additional_accounts())

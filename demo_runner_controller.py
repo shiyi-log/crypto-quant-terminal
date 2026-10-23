@@ -28,7 +28,8 @@ class DemoHandoffError(RuntimeError):
 
 class DemoRunnerController:
     def __init__(self, data_store, demo_store, credential_provider, adapter_factory=None,
-                 *, paper_source=None, lock_path=None, clock_ms=None, ledger_factory=None):
+                 *, paper_source=None, lock_path=None, clock_ms=None, ledger_factory=None,
+                 risk_gate_required=True, risk_account_scope=None):
         self.data_store, self.demo_store = data_store, demo_store
         self.credential_provider = credential_provider
         if adapter_factory is None:
@@ -65,6 +66,82 @@ class DemoRunnerController:
         self._restore_incomplete = False
         self._account_coordinator = None
         self._account_cycle_lock = threading.RLock()
+        self.risk_gate_required = bool(risk_gate_required)
+        self.risk_account_scope = risk_account_scope
+        self._risk_gate = None
+        self._research_id = None
+        self._risk_gate_binding_missing = False
+
+    @staticmethod
+    def _gate_identity(gate):
+        if not isinstance(gate, dict):
+            return None
+        keys = ("research_id", "event_id", "boundary_hash", "inputs_hash",
+                "target_binding_hash")
+        values = tuple(gate.get(key) for key in keys)
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            return None
+        return values
+
+    def _ledger_has_session_history(self):
+        get_binding = getattr(self.demo_store, "get_binding", None)
+        runner_orders = getattr(self.demo_store, "runner_orders", None)
+        return bool((get_binding() if callable(get_binding) else None)
+                    or (runner_orders() if callable(runner_orders) else None))
+
+    def _expected_risk_binding(self, account_id):
+        if not isinstance(self.risk_account_scope, str) or not self.risk_account_scope.strip():
+            raise DemoHandoffError("risk_gate_identity_missing",
+                                   "the verified Demo risk account scope is not configured")
+        try:
+            account = self.paper.account(str(account_id))
+            if account.get("strategy_id") != str(account_id):
+                raise ValueError("frozen strategy identity mismatch")
+            target = {"strategy_id": str(account_id),
+                      "rule_hash": account["rule_hash"],
+                      "execution_hash": account["execution_hash"]}
+            import research_ledger
+            return research_ledger.build_risk_gate_target_binding(
+                self.risk_account_scope, [target])
+        except Exception:
+            raise DemoHandoffError("risk_gate_identity_missing",
+                                   "the frozen Demo strategy identity is unavailable") from None
+
+    def _require_risk_gate(self, research_id=None, *, account_id=None):
+        """Validate the immutable research gate before any Demo entry path."""
+        if not self.risk_gate_required:
+            return None
+        if self._risk_gate_binding_missing:
+            raise DemoHandoffError("risk_gate_identity_missing",
+                                   "an existing Demo session has no frozen risk-gate identity")
+        if not isinstance(research_id, str) or not research_id.strip() or research_id != research_id.strip():
+            raise DemoHandoffError("risk_gate_not_closed", "a research id is required before Demo trading")
+        if self._research_id and research_id != self._research_id:
+            raise DemoHandoffError("risk_gate_identity_mismatch",
+                                   "the Demo session is bound to another research id")
+        import research_ledger
+        try:
+            if account_id is None:
+                raise ValueError("Demo target strategy is required")
+            expected_binding = self._expected_risk_binding(account_id)
+            gate = research_ledger.require_closed_risk_gate(
+                self.data_store, research_id, expected_binding=expected_binding)
+        except DemoHandoffError:
+            raise
+        except Exception:
+            raise DemoHandoffError("risk_gate_not_closed", "the research risk gate is not closed") from None
+        if self.risk_gate_required and self._services() and self._risk_gate is None:
+            raise DemoHandoffError("risk_gate_identity_missing",
+                                   "an existing Demo session is not bound to a risk-gate event")
+        if self._risk_gate is not None:
+            identity = ("research_id", "event_id", "boundary_hash", "inputs_hash",
+                        "target_binding_hash")
+            if any(self._risk_gate.get(key) != gate.get(key) for key in identity):
+                raise DemoHandoffError("risk_gate_identity_mismatch",
+                                       "the Demo session is bound to another risk-gate event")
+        self._risk_gate = dict(gate)
+        self._research_id = research_id
+        return self._risk_gate
 
     def _services(self):
         return ([self.service] if self.service is not None else []) + list(self._parallel_sessions.values())
@@ -95,6 +172,8 @@ class DemoRunnerController:
         return {"version": 1, "policy": SHARED_POLICY,
                 "primaryVirtualAccountKey": primary or self.demo_store.virtual_account_key,
                 "credentialFingerprint": self._credential_fingerprint,
+                "researchId": self._research_id,
+                "riskGate": copy.deepcopy(self._risk_gate),
                 "yieldedFlat": yielded, "sessions": list(records.values()),
                 "recoveryPolicy": "register_all_members_pause_entries_continue_owned_risk_protection"}
 
@@ -184,6 +263,8 @@ class DemoRunnerController:
                 "demoPolicyHash": service.policy_hash,
                 "forwardBoundaryMs": state.get("forward_boundary_ms"),
                 "credentialFingerprint": self._credential_fingerprint,
+                "researchId": self._research_id,
+                "riskGate": copy.deepcopy(self._risk_gate),
                 "entriesEnabled": state["entries_enabled"], "yieldedFlat": False,
                 "status": state, "recoveryPolicy": "pause_entries_continue_owned_risk_protection"}
 
@@ -192,6 +273,98 @@ class DemoRunnerController:
         if namespace != self.demo_store.virtual_account_key:
             self.demo_store = self.ledger_factory(namespace)
         self._credential_fingerprint = persisted.get("credentialFingerprint")
+        research_id = persisted.get("researchId")
+        saved_gate = persisted.get("riskGate")
+        identity = self._gate_identity(saved_gate)
+        self._risk_gate_binding_missing = bool(persisted.get("selectedAccountId")) and (
+            identity is None or identity[0] != research_id)
+        self._research_id = research_id if identity is not None and identity[0] == research_id else None
+        self._risk_gate = copy.deepcopy(saved_gate) if self._research_id else None
+
+    def _shared_research_id(self, shared, *, account_id=None, namespace=None):
+        """Resolve a shared gate only when every persisted member agrees."""
+        if not isinstance(shared, dict):
+            return None
+        records = shared.get("sessions")
+        if not isinstance(records, list) or not 1 <= len(records) <= MAX_SHARED_SESSIONS:
+            return None
+        namespaces = [record.get("virtualAccountKey") for record in records if isinstance(record, dict)]
+        if (len(namespaces) != len(records)
+                or any(not isinstance(value, str) or not value for value in namespaces)
+                or len(set(namespaces)) != len(namespaces)):
+            return None
+        primary = shared.get("primaryVirtualAccountKey")
+        if not isinstance(primary, str):
+            return None
+        by_namespace = {record["virtualAccountKey"]: record for record in records}
+        primary_record = by_namespace.get(primary)
+        identity = self._gate_identity(shared.get("riskGate"))
+        if (primary_record is None or identity is None
+                or identity != self._gate_identity(primary_record.get("riskGate"))
+                or shared.get("researchId") != identity[0]
+                or primary_record.get("researchId") != identity[0]):
+            return None
+        for record in records:
+            if (record.get("researchId") != identity[0]
+                    or self._gate_identity(record.get("riskGate")) != identity
+                    or not isinstance(record.get("selectedAccountId"), str)
+                    or not record["selectedAccountId"]):
+                return None
+        if account_id is not None and primary_record.get("selectedAccountId") != str(account_id):
+            return None
+        if namespace is not None and namespace not in by_namespace:
+            return None
+        return identity[0]
+
+    def recoverable_research_id(self, account_id):
+        """Resolve only a complete frozen identity for an existing /start request."""
+        with self._mutex:
+            account_id = str(account_id)
+            if self.service:
+                if self._shared_enabled:
+                    shared = self.data_store.get_document(SHARED_STATE_KEY, {}) or {}
+                    return self._shared_research_id(shared, account_id=account_id)
+                if (self.service.config.strategy_id != account_id or self._risk_gate_binding_missing
+                        or self._gate_identity(self._risk_gate) is None
+                        or self._risk_gate.get("research_id") != self._research_id):
+                    return None
+                return self._research_id
+            shared = self.data_store.get_document(SHARED_STATE_KEY, {}) or {}
+            if shared.get("sessions"):
+                return self._shared_research_id(shared, account_id=account_id)
+            persisted = self.data_store.get_document(STATE_KEY, {}) or {}
+            if not isinstance(persisted, dict):
+                return None
+            if persisted.get("selectedAccountId"):
+                identity = self._gate_identity(persisted.get("riskGate"))
+                if (persisted.get("selectedAccountId") != account_id or identity is None
+                        or persisted.get("researchId") != identity[0]):
+                    return None
+                return identity[0]
+            if self._ledger_has_session_history():
+                return None
+            return None
+
+    def recoverable_session_research_id(self, namespace):
+        """Resolve the exact frozen identity for an existing session namespace."""
+        with self._mutex:
+            namespace = str(namespace)
+            shared = self.data_store.get_document(SHARED_STATE_KEY, {}) or {}
+            if isinstance(shared, dict) and shared.get("sessions"):
+                return self._shared_research_id(shared, namespace=namespace)
+            if (self.service and self.service.config.virtual_account_key == namespace
+                    and not self._risk_gate_binding_missing
+                    and self._gate_identity(self._risk_gate) is not None
+                    and self._risk_gate.get("research_id") == self._research_id):
+                return self._research_id
+            persisted = self.data_store.get_document(STATE_KEY, {}) or {}
+            if (not isinstance(persisted, dict)
+                    or persisted.get("virtualAccountKey") != namespace):
+                return None
+            identity = self._gate_identity(persisted.get("riskGate"))
+            if identity is None or persisted.get("researchId") != identity[0]:
+                return None
+            return identity[0]
 
     def _adapter(self):
         credentials = self.credential_provider()
@@ -227,7 +400,11 @@ class DemoRunnerController:
             virtual_account_key=ledger.virtual_account_key, trading_enabled=True)
         return DemoExecutionService(adapter, ledger, self.paper, config, clock_ms=self.clock_ms)
 
-    def _create(self, account_id, *, entries_enabled):
+    def _create(self, account_id, *, entries_enabled, research_id=None):
+        if self.risk_gate_required and entries_enabled:
+            self._require_risk_gate(
+                self._research_id if research_id is None else research_id,
+                account_id=account_id)
         self._lock()
         self._yielded_flat = False
         self._validate_account(account_id)
@@ -240,6 +417,8 @@ class DemoRunnerController:
         self.data_store.put_document(STATE_KEY, {"selectedAccountId": str(account_id),
             "virtualAccountKey": self.demo_store.virtual_account_key, "maxNotionalUsdt": "1000",
             "credentialFingerprint": self._credential_fingerprint,
+            "researchId": self._research_id,
+            "riskGate": copy.deepcopy(self._risk_gate),
             "entriesEnabled": False, "recoveryPolicy": "pause_entries_continue_owned_risk_protection"})
         service = self._service(account_id, self.demo_store, adapter)
         if self._shared_enabled:
@@ -276,24 +455,46 @@ class DemoRunnerController:
             raise DemoHandoffError("demo_shared_persistence_unresolved",
                                    "shared session registry must be reconciled before changing entries")
 
-    def start(self, account_id):
+    def start(self, account_id, *, research_id=None):
         """Invoked by the user's frontend start action; never a live start."""
         with self._mutex:
             self._require_not_closing()
             if not self.service:
                 shared = self.data_store.get_document(SHARED_STATE_KEY, {})
+                if not isinstance(shared, dict):
+                    raise DemoHandoffError("demo_shared_recovery_incomplete",
+                                           "shared Demo recovery registry is invalid")
                 if shared.get("sessions"):
                     self._restore_shared({**shared, "yieldedFlat": False})
                     self._require_shared_ready()
+                else:
+                    persisted = self.data_store.get_document(STATE_KEY, {}) or {}
+                    if not isinstance(persisted, dict):
+                        raise DemoHandoffError("risk_gate_identity_missing",
+                                               "the persisted Demo session identity is invalid")
+                    if persisted.get("selectedAccountId"):
+                        if str(persisted["selectedAccountId"]) != str(account_id):
+                            raise DemoHandoffError("risk_gate_identity_mismatch",
+                                                   "the Demo session is bound to another paper identity")
+                        self._restore_active_store(persisted)
+                    elif self._ledger_has_session_history():
+                        self._risk_gate_binding_missing = True
+            if self.risk_gate_required and self._research_id and research_id is not None \
+                    and research_id != self._research_id:
+                raise DemoHandoffError("risk_gate_identity_mismatch",
+                                       "the Demo session is bound to another research id")
+            effective_research_id = self._research_id if research_id is None else research_id
             if self._shared_enabled and self.service:
                 if self.service.config.strategy_id != account_id:
                     raise ValueError("Demo primary session is bound to another frozen identity")
-                return self.start_session(self.service.config.virtual_account_key)
+                return self.start_session(self.service.config.virtual_account_key,
+                                          research_id=effective_research_id)
             self._error = None
             self._recovery_mode = False
             if self.service:
                 if self.service.config.strategy_id != account_id:
                     raise ValueError("Demo account is permanently bound to the selected frozen identity")
+                self._require_risk_gate(effective_research_id, account_id=account_id)
                 # A prior worker-start failure can leave a legally persisted,
                 # paused service. Establish continuous protection before an
                 # explicit start can synchronously submit its next entry.
@@ -301,10 +502,7 @@ class DemoRunnerController:
                 self.service.enable_entries()
                 self._save()
             else:
-                persisted = self.data_store.get_document(STATE_KEY, {})
-                if persisted.get("selectedAccountId"):
-                    self._restore_active_store(persisted)
-                self._create(account_id, entries_enabled=True)
+                self._create(account_id, entries_enabled=True, research_id=effective_research_id)
             self._wake.set()
             return self.status()
 
@@ -319,9 +517,10 @@ class DemoRunnerController:
                 self._wake.set()
             return self.status()
 
-    def attach(self, account_id):
+    def attach(self, account_id, *, research_id=None):
         """Add a new immutable, paused companion; explicit start opens its gate."""
-        return self._attach(account_id)
+        self._require_risk_gate(research_id, account_id=account_id)
+        return self._attach(account_id, research_id=research_id)
 
     def adopt_existing_session(self, namespace):
         """Resume an existing immutable namespace without changing its boundary."""
@@ -334,11 +533,15 @@ class DemoRunnerController:
             binding = binding.get("payload", binding)
             if not binding.get("strategy_id"):
                 raise DemoHandoffError("demo_session_binding_missing", "existing namespace has no strategy binding")
-            return self._attach(binding["strategy_id"], existing_ledger=ledger)
+            return self._attach(binding["strategy_id"], existing_ledger=ledger,
+                                research_id=self._research_id)
 
-    def _attach(self, account_id, *, existing_ledger=None):
+    def _attach(self, account_id, *, existing_ledger=None, research_id=None):
         with self._mutex:
             self._require_not_closing()
+            if existing_ledger is None:
+                self._require_risk_gate(research_id or self._research_id,
+                                        account_id=account_id)
             self._require_shared_ready()
             if not self.service:
                 self.resume_protection()
@@ -407,11 +610,14 @@ class DemoRunnerController:
                     self._start_worker()
                 raise
 
-    def start_session(self, namespace):
+    def start_session(self, namespace, *, research_id=None):
         with self._mutex:
             self._require_not_closing()
+            effective_research_id = self._research_id if research_id is None else research_id
             self._require_shared_ready()
             service = self._find_session(namespace)
+            self._require_risk_gate(effective_research_id,
+                                    account_id=service.config.strategy_id)
             self._start_worker()
             # Persist membership before enable_entries can synchronously post.
             if self._shared_enabled:
@@ -460,6 +666,19 @@ class DemoRunnerController:
         self._shared_enabled = True
         self._shared_records = {record["virtualAccountKey"]: copy.deepcopy(record) for record in records}
         self._credential_fingerprint = persisted.get("credentialFingerprint")
+        research_id = persisted.get("researchId")
+        saved_gate = persisted.get("riskGate")
+        top_identity = self._gate_identity(saved_gate)
+        primary_record = self._shared_records.get(primary, {})
+        primary_identity = self._gate_identity(primary_record.get("riskGate"))
+        member_identities = [self._gate_identity(record.get("riskGate"))
+                             for record in self._shared_records.values()]
+        self._risk_gate_binding_missing = (
+            top_identity is None or top_identity != primary_identity
+            or research_id != top_identity[0]
+            or any(identity != top_identity for identity in member_identities))
+        self._research_id = research_id if not self._risk_gate_binding_missing else None
+        self._risk_gate = copy.deepcopy(saved_gate) if not self._risk_gate_binding_missing else None
         self.demo_store = self.ledger_factory(primary)
         self._selected_account_id = self._shared_records[primary]["selectedAccountId"]
         if persisted.get("yieldedFlat") is True and not self._services():
@@ -571,6 +790,8 @@ class DemoRunnerController:
                     "parallelSessions": sessions, "sharedAccountPolicy": SHARED_POLICY,
                     "maxSharedSessions": MAX_SHARED_SESSIONS,
                     "sharedSessionsEnabled": self._shared_enabled,
+                    "researchId": self._research_id,
+                    "riskGate": copy.deepcopy(self._risk_gate),
                     "allEntriesEnabled": bool(sessions) and all(member["entriesEnabled"] for member in sessions),
                     "sharedRecoveryIncomplete": self._restore_incomplete,
                     "sharedRegistryPersistenceUnresolved": self._shared_persistence_unresolved}
@@ -670,7 +891,7 @@ class DemoRunnerController:
             self._start_worker()
             self._wake.set()
 
-    def switch(self, account_id, *, join_timeout=12):
+    def switch(self, account_id, *, join_timeout=12, research_id=None):
         """Select a new paused session only after a fully flat account boundary.
 
         Old namespace bindings never change. This operation retains the same
@@ -680,6 +901,7 @@ class DemoRunnerController:
         """
         with self._mutex:
             self._require_not_closing()
+            self._require_risk_gate(research_id, account_id=account_id)
             self._assert_companions_paused_flat()
             self._lock()
             self._validate_account(account_id)
@@ -687,7 +909,8 @@ class DemoRunnerController:
                 persisted = self.data_store.get_document(STATE_KEY, {})
                 if persisted.get("selectedAccountId"):
                     self._restore_active_store(persisted)
-                    self._create(persisted["selectedAccountId"], entries_enabled=False)
+                    self._create(persisted["selectedAccountId"], entries_enabled=False,
+                                 research_id=research_id)
             if self.service:
                 with self._account_cycle_lock:
                     self.service.stop()

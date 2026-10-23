@@ -23,8 +23,12 @@
 | `revision` | `<例如 r0>` |
 | `risk_segment_status` | `open` / `closed`；风险输入未齐或预检未通过时必须为 `open` |
 | `risk_data_acquisition_plan` | `<not_estimable 时填写数据来源、负责人、截止日期>` |
-| `max_leverage` | `<该研究允许的最高杠杆>` |
-| `position_leverage` | `<风险预检及每个仓位实际使用的杠杆>` |
+| `max_leverage` | `<该研究允许的全局最高杠杆；首个研究的 100x 只是上限，不是各币统一实际杠杆>` |
+| `position_leverage_by_symbol` | `<冻结的逐币逐档实际杠杆映射；每项记录 symbol、名义档位、bracket_max_leverage、chosen_position_leverage 和 MMR；chosen_position_leverage <= min(max_leverage, bracket_max_leverage)，禁止用一个统一值填充全部 symbol>` |
+| `tier_snapshot_hash` | `<账户适用 Binance leverageBracket 快照 SHA-256；未冻结时留空并保持 not_estimable>` |
+| `tier_snapshot_source` | `<官方 signed USER_DATA 来源、请求范围或脱敏证据路径>` |
+| `tier_snapshot_fetched_at_utc` | `<快照抓取时间；未抓取时留空>` |
+| `tier_snapshot_account_scope` | `<账户/撮合环境/币种档位适用范围；不得省略>` |
 | `initial_equity_usdt` | `<冻结的初始账户权益>` |
 | `account_p99_loss_limit_initial_equity_pct` | `<损失观察单位的 P99 上限；以初始权益比例表示>` |
 | `margin_mode` | `<isolated/cross/其他明确模式>` |
@@ -32,7 +36,11 @@
 | `max_total_notional` | `<全组合最大总绝对名义 N_max>` |
 | `isolated_initial_margin_rule` | `<逐仓抵押金分配规则；须与杠杆和账户余额一致>` |
 
-首个研究的用户确认值和 Codex 按授权确定的合成基准记录在[联合任务卡](JOINT_DEV_TASK_20261020_PROFITABLE_STRATEGY.md)：`max_leverage=100x`、`position_leverage=100x`、`account_p99_loss_limit_initial_equity_pct=5%`、初始权益 `10,000 USDT`、isolated、单笔 cap `100 USDT`、`N_max=50,000 USDT`、单币上限 `25,000 USDT`、币池 BTCUSDT/ETHUSDT/TRXUSDT。逐仓每仓初始保证金按名义/实际杠杆分配，不自动挪用未分配权益。以上只供首个研究风险预检，不是后续研究默认值或真实账户参数。准确维持保证金档、强平成交和压力执行数据未完成前，预检仍为 `not_estimable`，风险段保持 `open`。
+首个研究的用户确认值和 Codex 按授权确定的合成基准记录在[联合任务卡](JOINT_DEV_TASK_20261020_PROFITABLE_STRATEGY.md)：`max_leverage=100x`（全局上限，不是统一实际仓位杠杆）、`account_p99_loss_limit_initial_equity_pct=5%`、初始权益 `10,000 USDT`、isolated、单笔 cap `100 USDT`、`N_max=50,000 USDT`（gross/equity 名义预算为 5x）、单币上限 `25,000 USDT`、币池 BTCUSDT/ETHUSDT/TRXUSDT。`N_max / initial_equity` 是 gross/equity 名义比率；`max_leverage` 是独立的逐仓杠杆上限，两者不可互换。实际杠杆必须按账户适用的 symbol/名义档位写入 `position_leverage_by_symbol`，并绑定 `tier_snapshot_hash`、来源、抓取时间和账户适用范围。逐仓初始保证金按名义/实际杠杆逐项分配，不自动挪用未分配权益。以上只供首个研究风险预检，不是后续研究默认值或真实账户参数。准确账户档位、维持保证金、强平成交和压力执行数据未完成前，预检仍为 `not_estimable`，风险段保持 `open`。仓库当前静态诊断表在 25,000 USDT 名义下显示 BTCUSDT 125x、ETHUSDT 75x、TRXUSDT 25x 的上限，但该表无账户适用范围，不能作为可执行权威，也不能据此宣称三币均可用 100x。
+
+档位快照的 `tier_snapshot_hash` 绑定规范化档位集合；`evidence_sha256`、`request_id`、`response_sha256`、`signed_at_utc` 和 `verified` 用于标识提交的证据账或人工复核状态。这些字段不能单独证明 Binance USER_DATA HMAC 签名真实性，也不能证明解析后的 bands 来自该原始响应。执行前必须独立核验原始响应字节、签名请求元数据和解析载荷之间的绑定；无法完成时保持 `not_estimable` 和 `risk_segment_status=open`。
+
+按该静态表并套用 100x 全局上限，暂定诊断矩阵为 BTCUSDT ≤100x、ETHUSDT ≤75x、TRXUSDT ≤25x（各自 25,000 USDT 档）；`leverageBracket` 的最大杠杆只是允许上限，实际 `chosen_position_leverage` 必须逐币逐档冻结，且不超过研究全局上限与该档位上限的较小者；这些值必须由账户适用快照替换后才能冻结。仅为诊断而假设每币均选用该矩阵允许的最高实际杠杆时，简单名义/选定杠杆计算的单币初始保证金约为 250、333.33、1,000 USDT；满足 `N_max=50,000` 和单币上限时，该“固定静态诊断最高杠杆”假设下所有允许名义分配中的最大简单保证金约为 1,333.33 USDT（集中为 TRX 25,000@25x + ETH 25,000@75x，约为初始权益 13.33%）。若冻结时选择更低实际杠杆，保证金会更高；当前没有账户适用快照和冻结矩阵，不能据此给出 A/B/C 各档保证金诊断。因此该值不是所有可选杠杆矩阵下的通用上界、A/B/C 风险包络、账户级完整保证金上限或预检通过证据。实际 A/B/C 必须在账户绑定快照和冻结的逐币实际杠杆矩阵下重算，缺失时保持 `not_estimable`。
 
 ### 0.2 联合开发职责
 
@@ -99,7 +107,7 @@ H1（研究假设）：在同一冻结口径下，策略的真实净收益期望
 | `code_commit` | `<Git commit SHA；未提交时填工作树补丁哈希>` |
 | `spec_hash` | `<本预注册规格 SHA-256>` |
 | `seed` | `<随机过程种子；无随机过程填 none>` |
-| `risk_feasibility_preflight` | `{status: pass|fail|not_estimable, inputs_hash, strategy_signal_or_return_accessed: false}`；首个 `research_id` 协议冻结时必须记录 |
+| `risk_feasibility_preflight` | `{status: pass\|fail\|not_estimable, config_hash, execution_model_hash, window_data_hash, strategy_signal_or_return_accessed: false}`；使用 `PreflightReport` 的报告字段名，首个 `research_id` 协议冻结时必须记录 |
 | `holdout_reads` | `{global_interval_id, family_id, primary_oos: 0, independent_replication: 0}`；同一区间跨研究族共享预算；任何候选级读取（含探索分析）均须预先记账 |
 | `historical_access_audit` | `{status: clean|not_proven, scope, reviewed_at, evidence_hashes}`；首个预注册必须给出本研究族的历史读取审计结论 |
 
@@ -179,7 +187,7 @@ OOS 访问预算按 `family_id` 共享，并建立全局“区间-研究族”�
 
 - 填完第 1～3 节，生成 `rule_hash`、`code_hash`、`data_hash` 和搜索空间；提交完整的 `historical_access_audit`。
 - 写清唯一主假设、最多允许的候选数量、族定义、多重比较方法和停止日期。`K` 必须包含本轮所有被测配置（包括失败/否决项）及可查到的同族历史搜索；若搜索史无法界定，不能用普通候选数校正，须报告 Hansen SPA 或保持 `undecided`。
-- 首个 `research_id` 协议冻结前必须执行纯风险数据可行性检查，只报告历史跳空、强平滑点、账户权益冲击及预设风险门槛，不计算或查看策略信号/策略收益；读取到的区间按探索访问登记并烧录，不能再作为 OOS。若结果为 `not_estimable`，协议仍可冻结，但必须登记数据来源、负责人和截止日期，且 `risk_segment_status=open`；无数据计划不得冻结。风险段只有在所需数据和用户风险边界（杠杆、保证金模式、单笔风险 cap、初始权益比例 P99 容忍值）齐备且预检通过后才能关闭。在风险段关闭前，不得运行或查看候选策略回测、OOS、前向结果，也不得晋级；预检 `fail` 时须降低风险或终止该风险配置并以新修订重新预注册。
+- 首个 `research_id` 协议冻结前必须执行纯风险数据可行性检查，只报告历史跳空、强平滑点、账户权益冲击及预设风险门槛，不计算或查看策略信号/策略收益；读取到的区间按探索访问登记并烧录，不能再作为 OOS。若结果为 `not_estimable`，协议仍可冻结，但必须登记数据来源、负责人和截止日期，且 `risk_segment_status=open`；无数据计划不得冻结。风险段只有在所需数据、用户风险边界（杠杆、保证金模式、单笔风险 cap、初始权益比例 P99 容忍值）、账户适用签名 `leverageBracket` 快照（哈希、来源、抓取时间、账户范围）和逐币逐档冻结的 `chosen_position_leverage` 矩阵齐备且预检通过后才能关闭；每项实际杠杆必须满足 `chosen_position_leverage <= min(max_leverage, bracket_max_leverage)`，接口返回的档位最大杠杆不得直接当作实际选用杠杆。在风险段关闭前，不得运行或查看候选策略回测、OOS、前向结果，也不得晋级；预检 `fail` 时须降低风险或终止该风险配置并以新修订重新预注册。
 - Codex 自检，DeepSeek 在**未看结果或只看冻结规则**的情况下审查前注册完整性。
 
 ### 阶段 B：实现验证
@@ -327,9 +335,9 @@ OOS 访问预算按 `family_id` 共享，并建立全局“区间-研究族”�
 
 ## 8. `research_ledger.py` 事件登记模板
 
-项目的 `research_ledger.py` 对前向纸面事件支持 `manifest`、`snapshot`、`decision`、`fill`、`checkpoint` 五类，并按 `run_id` 命名空间幂等追加。每次运行至少生成以下事件；事件 payload 要保留原始数值和哈希，不只保存摘要。任何候选级分析在读取数据或向分析层暴露结果前，都必须追加 `snapshot` 访问事件，包含唯一 `read_attempt_id`、`access_type`（train/validation/oos/replication/forward/exploratory）、用途（含绘图/统计/人工检查）、split、时间区间、`global_interval_id`、本次搜索涉及的完整 `family_ids`/`variant_ids`、`K`、`read_no`、burn 状态、data/spec/rule/config hash、seed 和时间戳。OOS 首次揭盲前，必须把共享该区间的所有研究族和变体一次性登记并烧录，追加区间-研究族矩阵及 burn 事件；区间揭盲后不得再由其他族单独读取。对已烧录区间的重复/新增读取必须追加事件并将该运行标为 `invalid_run`，不能因事件幂等而覆盖第一次访问记录。新研究协议还必须为预检和每次风险段转换追加 `risk_gate` 事件；`research_ledger.py` 已提供该事件的字段和状态链校验，当前 forward-paper API 仍不会自动阻止候选运行或晋级。现有实现若尚未强制记录探索读取、全局区间 burn 和访问矩阵，实验不得把对应历史区间认定为未读 OOS。
+项目的 `research_ledger.py` 对前向纸面事件支持 `manifest`、`snapshot`、`decision`、`fill`、`checkpoint` 五类，并按 `run_id` 命名空间幂等追加。每次运行至少生成以下事件；事件 payload 要保留原始数值和哈希，不只保存摘要。任何候选级分析在读取数据或向分析层暴露结果前，都必须追加 `snapshot` 访问事件，包含唯一 `read_attempt_id`、`access_type`（train/validation/oos/replication/forward/exploratory）、用途（含绘图/统计/人工检查）、split、时间区间、`global_interval_id`、本次搜索涉及的完整 `family_ids`/`variant_ids`、`K`、`read_no`、burn 状态、data/spec/rule/config hash、seed 和时间戳。OOS 首次揭盲前，必须把共享该区间的所有研究族和变体一次性登记并烧录，追加区间-研究族矩阵及 burn 事件；区间揭盲后不得再由其他族单独读取。对已烧录区间的重复/新增读取必须追加事件并将该运行标为 `invalid_run`，不能因事件幂等而覆盖第一次访问记录。新研究协议还必须为预检和每次风险段转换追加 `risk_gate` 事件；生产 CLI 的 `forward_paper_runner.py`、`paper_dryrun.py` 与 `strategy_lab_service.py` 现在要求显式 `research_id` 并在读取候选输入前通过 `risk_segment_status=closed` 与 `preflight_status=pass` 闸门。直接构造 `ForwardPaperRunner` 或调用无 `research_id` 的合成测试 API 仍只属于实现回归，不能产生候选研究结论或 OOS 证据。现有实现若尚未强制记录探索读取、全局区间 burn 和访问矩阵，实验不得把对应历史区间认定为未读 OOS。
 
-截至本模板修订时，`research_ledger.py` 已通过 `append_risk_gate_event` 校验必填字段、UTC 时间、`previous_event_id` 链、同一研究链的不可变 `boundary_hash`、单调时间戳，以及 `open -> closed` 只能由 `preflight_status=pass` 完成；`not_estimable` 仍必须带来源、负责人和 ISO-8601 截止日期。它不会自动拒绝 forward-paper API 启动候选运行或晋级，因此候选级风险闸门在专用 runner 接入前仍须人工执行，不得声称账本已经自动阻断。
+截至本模板修订时，`research_ledger.py` 已通过 `append_risk_gate_event` 校验必填字段、UTC 时间、`previous_event_id` 链、同一研究链的不可变 `boundary_hash`、单调时间戳，以及 `open -> closed` 只能由 `preflight_status=pass` 完成；`not_estimable` 仍必须带来源、负责人和 ISO-8601 截止日期。生产 CLI、服务入口和 Binance Demo 交易入口会在候选输入读取、加载凭据或创建可交易 adapter 前调用 `require_closed_risk_gate()`；缺失、open、not_estimable、fail 或读取异常均 fail-closed。直接 API 的无研究身份调用仅用于合成回归，不能被当作候选运行或晋级证据。
 
 `risk_gate` 事件至少包含：`research_id`、`risk_segment_status`、`preflight_status`、风险边界 `boundary_hash`、风险输入 `inputs_hash`、数据获取计划（若未完成）、`reviewer`、证据哈希、UTC 时间和前一状态事件 ID。初次预检与 `open -> closed` 必须分别追加事件；关闭事件只可在 `preflight_status=pass` 且所有风险边界冻结后写入，不得覆盖先前的 `not_estimable`/`fail` 记录。
 
@@ -361,6 +369,33 @@ OOS 访问预算按 `family_id` 共享，并建立全局“区间-研究族”�
   },
   "risk_boundary": {
     "max_leverage": "<research-specific maximum>",
+    "position_leverage_by_symbol": {"<symbol>": {"notional_bracket": "<range>", "bracket_max_leverage": "<max>", "chosen_position_leverage": "<frozen actual <= min(max_leverage, bracket_max_leverage)>", "mmr": "<rate>"}},
+    "tier_snapshot_hash": "<account-applicable leverageBracket sha256>",
+    "tier_snapshot_source": "<claimed official USER_DATA source, pending independent verification, or evidence path>",
+    "tier_snapshot_fetched_at_utc": "<ISO-8601 UTC>",
+    "tier_snapshot_account_scope": "<account/venue/symbol scope>",
+    "tier_snapshot_provenance": {
+      "endpoint": "/fapi/v1/leverageBracket",
+      "http_method": "GET",
+      "security_type": "USER_DATA",
+      "request_id": "<request or evidence id>",
+      "signed_at_utc": "<ISO-8601 UTC>",
+      "response_sha256": "<sha256 of the retained response bytes>",
+      "environment": "<production/testnet/demo>",
+      "verified": false
+    },
+    "tier_snapshot_verification": {
+      "raw_response_artifact": "<immutable artifact path and sha256>",
+      "signature_verification_result": "not_run | pass | fail",
+      "parsed_band_binding_evidence": "<parser/version and reproducible binding evidence>",
+      "reviewer": "<independent reviewer>",
+      "reviewed_at_utc": "<ISO-8601 UTC>",
+      "review_record_sha256": "<sha256>"
+    },
+    "preflight_as_of_utc": "<ISO-8601 UTC; required for freshness evaluation>",
+    "required_n_gap": 100,
+    "required_account_windows": 100,
+    "account_loss_authority_scenario_id": "<A_long/A_short/B/C>",
     "initial_equity_usdt": "<frozen amount>",
     "account_p99_loss_limit_initial_equity_pct": "<frozen percent>",
     "margin_mode": "<isolated/cross/other>",
@@ -369,7 +404,26 @@ OOS 访问预算按 `family_id` 共享，并建立全局“区间-研究族”�
   },
   "risk_feasibility_preflight": {
     "status": "<pass/fail/not_estimable>",
-    "inputs_hash": "<sha256>",
+    "config_hash": "<sha256; PreflightReport.config_hash>",
+    "window_data_hash": "<sha256; PreflightReport.window_data_hash>",
+    "execution_model_hash": "<sha256; PreflightReport.execution_model_hash>",
+    "tier_snapshot_hash": "<sha256>",
+    "tier_evidence_hashes": [["<symbol>", "<sha256>"]],
+    "gap_evidence_hash": "<sha256 or null>",
+    "required_scenario_ids": [
+      "A_long", "A_short", "B", "C",
+      "joint_marginal_p99", "synthetic_max_envelope",
+      "A_long_trade_only", "A_long_mark_only",
+      "A_short_trade_only", "A_short_mark_only",
+      "B_trade_only", "B_mark_only",
+      "C_trade_only", "C_mark_only",
+      "A_long_liquidation_1tick", "A_long_liquidation_5tick",
+      "A_short_liquidation_1tick", "A_short_liquidation_5tick",
+      "B_liquidation_1tick", "B_liquidation_5tick",
+      "C_liquidation_1tick", "C_liquidation_5tick"
+    ],
+    "scenario_evidence_artifact": "<immutable artifact path and sha256; contains one ScenarioEvidence record per required scenario>",
+    "account_loss_authority_scenario_id": "<deterministic worst-P99 A/B/C scenario>",
     "strategy_signal_or_return_accessed": false
   },
   "split": {
@@ -382,6 +436,33 @@ OOS 访问预算按 `family_id` 共享，并建立全局“区间-研究族”�
   "status": "preregistered"
 }
 ```
+
+`risk_feasibility_preflight` 中的报告摘要字段使用 `PreflightReport` 命名，包括 `config_hash`、`execution_model_hash`、`window_data_hash`；`required_scenario_ids`、artifact 路径和访问声明是 manifest 的审计元数据，不传入 dataclass 构造器。输入对象 `ExecutionEvidence` 和每条 `ScenarioEvidence` 使用 `model_sha256`、`window_data_sha256`；不要把输入字段名误当成报告字段名。账本 `risk_gate` 事件另有 `inputs_hash`，它不是 `PreflightReport` 字段。
+
+报告 artifact 须另存完整 `PreflightReport` 快照及文件 SHA-256，包含 `account_window_p99_loss_usdt`、`account_window_max_loss_usdt`、`account_window_sample_size`、`envelopes` 和其余全部报告字段；上面的 manifest 摘要不能替代完整报告。账户档位原始响应可以先按[离线导入流程](../docs/BRACKET_ARTIFACT_IMPORT.md)生成待审产物；`candidate_import` 不构成可执行快照，不能作为风险段关闭或预检通过的证据。
+
+场景 artifact 中的每条记录按 `ScenarioEvidence` 序列化。下面只示范一条记录的字段结构；哈希和数组是占位示意，不能直接作为通过预检的证据。实际 artifact 必须包含全部 `required_scenario_ids`，每条损失与赤字数组至少有 `required_account_windows` 个观测，并令 `evidence_sha256` 等于该条记录除 `evidence_sha256` 外的 canonical payload SHA-256：
+
+```json
+{
+  "scenario_id": "A_long",
+  "config_hash": "<same as RiskConfig.config_hash>",
+  "model_sha256": "<execution model sha256>",
+  "tier_snapshot_hash": "<frozen tier snapshot sha256>",
+  "assumption_hashes": [["<assumption name>", "<sha256>"]],
+  "window_data_sha256": "<same synchronized account-window data sha256>",
+  "account_window_losses_usdt": ["<one Decimal string per account window>"],
+  "uncovered_deficits_usdt": ["<one Decimal string per account window>"],
+  "status": "pass",
+  "execution_path": "trade_mark",
+  "slippage_multiple": "2",
+  "delay_ms": 1000,
+  "liquidation_slippage_ticks": 0,
+  "evidence_sha256": "<canonical SHA-256 of the fields above, excluding this field>"
+}
+```
+
+JSON 中 `Decimal` 写为规范化十进制字符串，tuple 写为数组；加载为 `ScenarioEvidence` 时，金额/倍数字符串必须恢复为有限 `Decimal`，损失、赤字和 `assumption_hashes` 必须恢复为 tuple。哈希计算严格使用 `account_risk_preflight.canonical_sha256(_scenario_payload(item))` 的字段集合和规范化规则（`_scenario_payload` 不含 `evidence_sha256`），不是对含缩进的 artifact 文本直接求哈希；artifact 文件本身另存独立 SHA-256。`status` 只能是 `pass` 或 `fail`；`A_long` 的压力参数如上，其他场景必须逐项匹配 `_scenario_expected_stress` 的冻结定义，不得复制一条记录冒充全部场景。
 
 `decision` 事件必须包含 `decision_stage`、`decision`、`sample_count`、`complete_trade_count`、`mean_net_return`、`ci95`、`drawdown`、`capacity`、`cost_sensitivity`、`rejection_reasons`、`codex_decision` 和 `deepseek_review_id`。`fill` 事件必须能关联实际成交或纸面代理成交，并明确 `execution_mode`；`checkpoint` 必须记录数据截止时间、账户/持仓快照和缺口；运行结束用新的 `decision` 表达结果，不修改旧事件。
 

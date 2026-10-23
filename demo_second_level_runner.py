@@ -35,6 +35,32 @@ def _hash(value):
                                     allow_nan=False).encode()).hexdigest()
 
 
+def expected_risk_gate_target_binding(account_scope, config):
+    """Build the exact target binding used by the second-level core."""
+    import research_ledger
+    return research_ledger.build_risk_gate_target_binding(account_scope, [{
+        "strategy_id": STRATEGY,
+        "rule_hash": POLICY_HASH,
+        "execution_hash": _hash(config.policy()),
+    }])
+
+
+def _validate_risk_gate_proof(proof, expected_binding):
+    import research_ledger
+    if not isinstance(proof, dict) or proof.get("risk_segment_status") != "closed" \
+            or proof.get("preflight_status") != "pass":
+        raise DemoSafetyError("risk_gate_not_closed")
+    try:
+        binding = proof["target_binding"]
+        if proof.get("target_binding_hash") != research_ledger.risk_gate_target_binding_hash(binding):
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise DemoSafetyError("risk_gate_identity_invalid") from None
+    if binding != expected_binding:
+        raise DemoSafetyError("risk_gate_target_mismatch")
+    return dict(proof)
+
+
 def _decimal(value, *, positive=False):
     if isinstance(value, bool):
         raise DemoSafetyError("invalid second-level decimal")
@@ -193,13 +219,15 @@ def build_entry_plan(adapter, pair, side, arm, distance_bp, quote, exchange_info
 
 
 class _Session:
-    def __init__(self, adapter, ledgers, source, config, clock_ms, sleep, monotonic, recovery_only=False):
+    def __init__(self, adapter, ledgers, source, config, clock_ms, sleep, monotonic,
+                 recovery_only=False, risk_gate_proof=None):
         self.adapter, self.ledgers, self.source, self.config = adapter, ledgers, source, config
         self.now = clock_ms or (lambda: int(time.time() * 1000))
         self.sleep = sleep or time.sleep
         self.mono = monotonic or time.monotonic
         self.policy, self.policy_hash = config.policy(), _hash(config.policy())
         self.recovery_only = recovery_only
+        self.risk_gate_proof = risk_gate_proof
         self.observed, self.intents, self.fill_facts = {}, {}, {}
         self.submission_mono = {}
         self.signal_mono_deadlines = {}
@@ -744,6 +772,13 @@ class _Session:
         self.run_deadline = start_mono + self.config.max_duration_seconds
         reasons = Counter()
         try:
+            if not self.recovery_only:
+                account_scope = (self.risk_gate_proof.get("target_binding", {}).get("account_scope")
+                                 if isinstance(self.risk_gate_proof, dict) else "")
+                _validate_risk_gate_proof(
+                    self.risk_gate_proof,
+                    expected_risk_gate_target_binding(account_scope, self.config),
+                )
             self.initialize()
             self.recover()
             if not self.recovery_only and not self.halt_entries:
@@ -877,7 +912,8 @@ class _Session:
             self.sleep(self.config.poll_seconds)
 
 
-def run_second_level_session(adapter, ledgers, source, *, config, clock_ms=None, sleep=None, monotonic=None):
+def run_second_level_session(adapter, ledgers, source, *, config, clock_ms=None, sleep=None,
+                             monotonic=None, risk_gate_proof=None):
     """Run at most the frozen sample/time bound under the caller's account lock.
 
     ``ledgers`` must contain maker/taker DemoStore instances with namespaces
@@ -886,7 +922,8 @@ def run_second_level_session(adapter, ledgers, source, *, config, clock_ms=None,
     The caller must block concurrent account writers and unfinished other
     sessions before invoking this function. All real orders remain native.
     """
-    return _Session(adapter, ledgers, source, config, clock_ms, sleep, monotonic).run()
+    return _Session(adapter, ledgers, source, config, clock_ms, sleep, monotonic,
+                    risk_gate_proof=risk_gate_proof).run()
 
 
 def recover_second_level_session(adapter, ledgers, *, config, clock_ms=None, sleep=None, monotonic=None):

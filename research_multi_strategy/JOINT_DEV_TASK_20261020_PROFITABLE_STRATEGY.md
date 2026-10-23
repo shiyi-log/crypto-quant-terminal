@@ -47,8 +47,12 @@ signal_time: "信号形成的时间边界"
 entry: "价格、方向、订单类型、next-open 或可验证成交规则"
 exit: "止盈、止损、时间、反向信号及其优先级"
 risk:
-  max_leverage: "100x（首个研究上限）"
-  position_leverage: "100x（首个合成风险预检实际测试杠杆）"
+  max_leverage: "100x（首个研究的全局上限；不是各币实际杠杆）"
+  position_leverage_by_symbol: {"BTCUSDT": {"notional_bracket": "待账户快照", "bracket_max_leverage": "待账户快照", "chosen_position_leverage": "待冻结，且 <= min(100x, bracket_max_leverage)"}, "ETHUSDT": {"notional_bracket": "待账户快照", "bracket_max_leverage": "待账户快照", "chosen_position_leverage": "待冻结，且 <= min(100x, bracket_max_leverage)"}, "TRXUSDT": {"notional_bracket": "待账户快照", "bracket_max_leverage": "待账户快照", "chosen_position_leverage": "待冻结，且 <= min(100x, bracket_max_leverage)"}} # 键可写 BTCUSDT 或 BTC/USDT:USDT；规范化后统一为后者
+  tier_snapshot_hash: "待账户适用的 Binance signed leverageBracket 快照冻结"
+  tier_snapshot_source: "Binance USDⓈ-M leverageBracket USER_DATA；当前未调用账户端点"
+  tier_snapshot_fetched_at_utc: "待补"
+  tier_snapshot_account_scope: "待补（账户/撮合环境/币种档位适用范围）"
   initial_equity_usdt: "10000（Codex 选定的合成研究基准，不代表实际账户）"
   account_p99_loss_limit_initial_equity_pct: "5% = 500 USDT（仅首个研究）"
   margin_mode: "isolated（合成研究基准）"
@@ -56,7 +60,7 @@ risk:
   max_total_notional: "50000 USDT = 5x 合成权益"
   per_symbol_notional_cap: "25000 USDT = 2.5x 合成权益；BTCUSDT/ETHUSDT/TRXUSDT 各一项"
   isolated_initial_margin_rule: "逐仓初始抵押金=该仓位名义/实际杠杆；未分配权益不自动补仓"
-  liquidation: "精确维持保证金档和强平成交模型待核实；未完成前风险状态 not_estimable"
+  liquidation: "账户适用杠杆/维持保证金档和强平成交模型待核实；未完成前风险状态 not_estimable"
 cost_model: "maker/taker、手续费、滑点、资金费、价差、延迟"
 parameters: "全部参数及冻结时间"
 data_snapshot: "数据版本、覆盖区间、缺失与修复记录"
@@ -69,7 +73,7 @@ data_hash: "数据快照 SHA-256"
 seed: "随机过程种子；无随机过程填 none"
 risk_segment_status: "open | closed"
 risk_data_acquisition_plan: "not_estimable 时的数据源、负责人和截止日期"
-risk_feasibility_preflight: {status: "not_estimable", reason: "风险行情统计已完成；精确保证金档、强平成交、滑点与延迟冲击模型未完成", strategy_signal_or_return_accessed: false}
+risk_feasibility_preflight: {status: "not_estimable", reason: "风险行情统计已完成；账户适用杠杆/维持保证金档、强平成交、滑点与延迟冲击模型未完成", strategy_signal_or_return_accessed: false}
 runner_version: "回测/前向 runner 版本"
 holdout_reads: {global_interval_id: "venue-timeframe-symbol-set-UTC-range", family_id: "预注册研究族", primary_oos: 0, independent_replication: 0}
 historical_access_audit: {status: "clean | not_proven", scope: "范围", reviewed_at: "UTC时间", evidence_hashes: []}
@@ -77,6 +81,8 @@ evaluation_plan: "IS/OOS/forward 切分和停止规则"
 null_model: "零假设、对照策略或置换方法"
 promotion_status: "hypothesis | insufficient_sample | invalid_run | provisional | undecided | candidate_pending_replication | candidate_pending_forward | profitable_candidate | rejected"
 ```
+
+`tier_snapshot_hash` 绑定规范化档位集合；`evidence_sha256`、`request_id`、`response_sha256`、`signed_at_utc` 和人工 `verified` 标记用于标识提交的证据账或人工复核状态。这些字段不能单独证明 Binance USER_DATA 请求的 HMAC 签名真实性，也不能证明解析后的档位确实来自该原始响应。只有在原始响应字节、签名请求元数据与解析载荷之间完成独立核验并由审查记录确认后，才可把该快照用于执行；否则风险状态必须保持 `not_estimable`、`risk_segment_status=open`。
 
 规则、账户身份、执行策略、成本和数据版本改变时必须生成新的 `strategy_id` 或新的实验版本，不能覆盖旧账。
 
@@ -122,7 +128,7 @@ promotion_status: "hypothesis | insufficient_sample | invalid_run | provisional 
 - 毛收益为正但扣除现实成本后非正，或正收益只来自未成交订单、浮盈或缺失成本。
 - 只报告最赚钱的策略，未报告完整候选集合或未处理多重比较。
 - 回测使用了现实中不可获得的盘口、延迟、成交率或流动性假设，且没有证据支持。
-- 100x 实验未实现强平模型，或风险上限与真实止损口径不一致。
+- 研究声明的杠杆上限或任一币种/名义档位的实际杠杆未实现对应强平模型，或风险上限与真实止损口径不一致。
 - 结果无法由固定数据快照、规则哈希、执行哈希和事件账复现。
 - DeepSeek 指出严重缺陷，Codex 无法用代码或新证据排除。
 
@@ -135,7 +141,7 @@ promotion_status: "hypothesis | insufficient_sample | invalid_run | provisional 
 - 毛收益、净收益、成本分解、交易数、胜率、收益分布、最大回撤、尾部损失、成交率和容量。
 - 样本外/前向原始事件文件及生成报告路径。
 - runner 在任何候选级数据读取（含探索统计/绘图）或结果暴露前，追加 `snapshot` ledger 事件，记录 `access_type`、用途、区间、`family_id`、完整 `variant_ids`、`K`、`read_attempt_id`、`read_no` 和 burn 状态；研究族首次揭盲即烧录该区间的全部预注册变体。重复揭盲标 `invalid_run`，账本缺失或不完整的历史季度按已读处理。
-- 预检和每次风险段转换追加不可变 `risk_gate` 事件，至少包含 `research_id`、风险段状态、预检状态、`boundary_hash`、`inputs_hash`、数据计划、审查者、证据哈希、UTC 时间及前一状态事件 ID；同一研究链的 `boundary_hash` 不得变化，时间戳不得倒签；首次 `open` 与 `open -> closed` 分开记账，关闭必须以预检 `pass` 为前提。`research_ledger.py` 已提供字段与状态链校验，但 forward-paper API 尚未自动接入候选运行阻断；在 runner 接入前仍按人工闸门执行，不声称系统已自动阻断。
+- 预检和每次风险段转换追加不可变 `risk_gate` 事件，至少包含 `research_id`、风险段状态、预检状态、`boundary_hash`、`inputs_hash`、数据计划、审查者、证据哈希、UTC 时间及前一状态事件 ID；同一研究链的 `boundary_hash` 不得变化，时间戳不得倒签；首次 `open` 与 `open -> closed` 分开记账，关闭必须以预检 `pass` 为前提。`research_ledger.py` 提供字段与状态链校验；生产前向/纸面 CLI 和 strategy-lab 服务现在要求显式 `research_id` 并在读取候选输入前通过关闭闸门，缺失或未通过时 fail-closed。无研究身份的直接合成 API 仅用于实现回归，不能作为候选研究入口或盈利证据。
 - Codex 的实现与取舍说明。
 - DeepSeek 的独立审查：`PASS`、`FIX_REQUIRED` 或 `REJECT`，逐项对应第 6、7 节证据。
 - 最终决策：`continue`、`rejected`、`candidate_pending_replication` 或 `user_review_required`。
@@ -170,24 +176,59 @@ promotion_status: "hypothesis | insufficient_sample | invalid_run | provisional 
 ### 2026-10-20 DeepSeek 第四次复审与 Codex 补强
 
 - 第四次复审结论 `PASS`，P1-1/P1-2/P2-1/P2-2/P2-3 均闭环。非阻断建议已纳入首个研究 ID 的前置规范：逐币方向性 15m 跳空 99 分位算法及组合冲击、共享区间的全局族访问矩阵与跨族校正、强制历史访问审计；无法证明历史区间未读时按 2027 前向路径估算。
-- 首个 `research_id` 前执行纯风险数据可行性检查，只报告跳空/强平压力与权益影响，不看策略信号或策略收益；检查暴露的区间记为 exploratory/burned。若 100x 风险档出现超过冻结门槛的未覆盖负权益/穿仓，应降低杠杆或终止该风险档，不得放宽压力标准。
+- 首个 `research_id` 前执行纯风险数据可行性检查，只报告跳空/强平压力与权益影响，不看策略信号或策略收益；检查暴露的区间记为 exploratory/burned。若按账户适用分档杠杆构造的风险配置出现超过冻结门槛的未覆盖负权益/穿仓，应降低实际杠杆、缩小名义或终止该风险档，不得放宽压力标准。
 - 截至该次旧检查，工作区未配置 `QUANT_DATABASE_URL`、没有项目 `.env`，本地未发现原始 15m OHLC；该状态随后由 2026-10-20 公开行情预检更新，见本卡第 185 行和风险预检报告。没有查看策略信号或收益。历史访问审计为 `not_proven`（仓库有既有 15m 研究报告，未发现可证明候选级访问完整性的事件账），因此旧历史季度不作为新候选 holdout；首个研究按纯前向 ETA 规划。
 
 ### 2026-10-20 DeepSeek 补强复核与 Codex 修订
 
 - 组合压力时点按冻结仓位/名义暴露选择总绝对名义敞口最大的 UTC 时点，并列取最早；选择不得读取收益。主档在该时点同时冲击全部币种，另报逐币单独冲击与逐笔入场冲击。
 - 每币、每方向至少需要 100 个有效非零不利 15m 跳空观测；不足时报 `N_gap` 和 `not_estimable`，不得通过风险门槛。
-- `not_estimable` 可以在有数据来源、负责人和截止日期的数据获取计划时冻结协议，但 `risk_segment_status` 保持 `open`。风险数据与用户风险边界齐备且预检通过后才可关闭；关闭前不得运行或查看候选结果。
-- 首个 `research_id` 尚未建立；账户级风险预检仍为 `not_estimable`，历史访问审计为 `not_proven`。Codex 为首个研究选定合成基准：初始权益 10,000 USDT、isolated、单笔风险 cap 为权益 1%（100 USDT）、`N_max=50,000 USDT`（权益 5 倍）、单币上限 25,000 USDT，币池 BTCUSDT/ETHUSDT/TRXUSDT。该组合敞口低于用户确认的 100x 杠杆上限；这些合成值仅用于研究预检，不代表用户真实账户。用户确认的账户损失分布 P99 上限为初始权益 5%（此基准下 500 USDT）。公开行情及原始快照已归档；当前公开合约规则/维持保证金档、完整滑点和 1,000 ms 延迟压力尚未验证/完成，因此状态保持 `not_estimable`、风险段 `open`。不读取账户密钥，不进行真实交易。研究账本现在可以校验并持久化 `risk_gate` 状态链，但 forward-paper API 尚未自动接入候选运行阻断；在 runner 接入前该规则按人工闸门执行，不声称系统已自动阻断。
+- `not_estimable` 可以在有数据来源、负责人和截止日期的数据获取计划时冻结协议，但 `risk_segment_status` 保持 `open`。只有账户适用签名档位快照、逐币逐档的实际杠杆矩阵、风险数据与用户风险边界齐备且预检通过后才可关闭；关闭前不得运行或查看候选结果。
+- 首个 `research_id` 尚未建立；账户级风险预检仍为 `not_estimable`，历史访问审计为 `not_proven`。Codex 为首个研究选定合成基准：初始权益 10,000 USDT、isolated、单笔风险 cap 为权益 1%（100 USDT）、`N_max=50,000 USDT`（相对权益为 5x gross/equity 名义预算）、单币上限 25,000 USDT，币池 BTCUSDT/ETHUSDT/TRXUSDT。`N_max` 是独立的名义预算，不能与用户确认的 `max_leverage=100x` 上限直接比较；实际持仓杠杆必须逐币按账户适用名义档位解析，不能把 100x 当作三币统一仓位杠杆。这些合成值仅用于研究预检，不代表用户真实账户。用户确认的账户损失分布 P99 上限为初始权益 5%（此基准下 500 USDT）。公开行情及原始快照已归档；当前账户适用杠杆/维持保证金档、完整滑点和 1,000 ms 延迟压力尚未验证/完成，因此状态保持 `not_estimable`、风险段 `open`。不读取账户密钥，不进行真实交易。研究账本、前向/纸面 CLI、strategy-lab 服务和 Demo 交易入口均已接入关闭的 `risk_gate` 校验，但当前没有关闭 gate 的 `research_id`，所以不允许候选运行。
 - DeepSeek 对模板 `672fe51e…cf6b`、任务卡 `ab588a27…0108` 的 D1/D2 复审结论为 `PASS`。该次唯一非阻断建议是 A/B/C 每档都叠加完整冻结压力集，已在当时版本补入；该历史 PASS 不覆盖本轮新增的 trade/mark 双路径和单窗口账户 P99 规则。
 
 ### 首个研究风险边界确认
 
-- 实际杠杆补充冻结：首个合成风险预检 `position_leverage=100x`；`N_max=50,000 USDT` 是 Codex 另行确定的名义风险预算，不是按杠杆换算出的最大可开名义。该测试杠杆不代表用户实盘设置。
+- 实际杠杆与档位快照补充冻结：`max_leverage=100x` 只是首个研究的全局上限；`position_leverage_by_symbol` 必须由账户适用的 Binance `leverageBracket` 快照按 symbol、名义档位逐项解析。快照必须落盘 `tier_snapshot_hash`、来源、`fetched_at_utc` 和 `account_scope`；`leverageBracket` 返回的是该档位允许的最大杠杆与维持保证金参数，不是研究实际要采用的仓位杠杆；在任何候选运行前，必须冻结逐币逐档的 `chosen_position_leverage`，且满足 `chosen_position_leverage <= min(max_leverage, bracket_max_leverage)`。在账户适用的 signed USER_DATA 快照取得前，不得把仓库静态档位表当作可执行权威。`tier_snapshot_hash`、请求/响应哈希、`request_id`、`signed_at_utc` 和 `verified` 只能证明提交的证据载荷彼此一致或已被人工复核，不能单独证明 Binance HMAC 签名真实性或解析载荷来自该原始响应；必须另行核验原始响应字节、签名请求和解析绑定。当前代码中的静态诊断表显示 25,000 USDT 名义下 BTCUSDT 可到 125x、ETHUSDT 为 75x、TRXUSDT 为 25x；这些只是待核验的非账户绑定上限，不能据此宣称三币均可用 100x。
+- 待核验杠杆矩阵（静态诊断值，仅用于发现冲突，不是冻结的执行配置）：在每币名义 25,000 USDT 时，BTCUSDT 档位上限 125x、受研究全局 cap 限制后可选实际杠杆最高 100x；ETHUSDT 档位上限 75x；TRXUSDT 档位上限 25x。若仅为诊断而假设每币均选用该矩阵允许的最高实际杠杆，逐仓初始保证金估算分别为 250、333.33、1,000 USDT；三项合计 1,583.33 USDT 是三个单币上限同时占满的值（总名义 75,000，超出 `N_max`），不能当作本研究组合保证金。在这一固定静态诊断最高杠杆矩阵下，并在 `N_max=50,000` 和每币 25,000 上限下，所有允许名义分配中的最大简单名义/杠杆保证金约为 1,333.33 USDT（TRXUSDT 25,000@25x + ETHUSDT 25,000@75x，初始权益 13.33%）；若冻结时选择更低实际杠杆，所需保证金会更高。该数字不是所有可选杠杆矩阵下的通用上界、A/B/C 账户风险包络、账户级完整保证金需求或预检通过证据；当前没有账户适用快照和冻结矩阵，不能据此给出 A/B/C 各档保证金诊断。实际 A/B/C 档必须在账户绑定快照后先冻结逐币实际杠杆矩阵，再逐档重算；快照或实际杠杆矩阵缺失时仍 `not_estimable`。
 - 用户确认（2026-10-20）：首个研究的最高杠杆为 `100x`；同步历史窗口下的账户损失分布 P99 不得超过冻结初始账户权益的 `5%`，结果同时报告权益比例与 USDT。
 - 该边界应用于完整冻结压力集下的 A/B/C 风险包络。最高杠杆是上限，不是仓位目标；`N_max`、单币上限和实际持仓必须受 P99 风险上限约束。5% hard gate 针对同步历史窗口账户损失分布 P99；样本最大跳空单独披露，不因最大值单独超过 5% 自动否决。任何压力场景出现负权益或未覆盖赤字，风险预检均不得通过。
-- Codex 已按用户授权确定首个研究的合成风险基准：初始权益 `10,000 USDT`，isolated 保证金模式，单笔风险 cap `1%`（`100 USDT`），组合 `N_max=50,000 USDT`（`5x` 权益），单币上限 `25,000 USDT`（`2.5x` 权益），风险预检币池为 BTCUSDT/ETHUSDT/TRXUSDT。用户确认的 `100x` 是杠杆上限；不将组合名义按 100x 权益设置。此为合成研究参数，不代表用户实际账户，也不构成真实交易授权。
+- Codex 已按用户授权确定首个研究的合成风险基准：初始权益 `10,000 USDT`，isolated 保证金模式，单笔风险 cap `1%`（`100 USDT`），组合 `N_max=50,000 USDT`（`5x` 权益），单币上限 `25,000 USDT`（`2.5x` 权益），风险预检币池为 BTCUSDT/ETHUSDT/TRXUSDT。用户确认的 `100x` 是全局杠杆上限；不将组合名义按 100x 实际仓位杠杆设置，实际杠杆由账户适用的逐币名义档位决定。此为合成研究参数，不代表用户实际账户，也不构成真实交易授权。
 - 账户级损失分布 P99 上限为初始权益 `5%`，在该合成基准下为 `500 USDT`。六个行情序列的边际跳空 P99 只可作初筛；精确强平/维持保证金、延迟与滑点模型齐备后，才能计算并裁定完整 A/B/C 风险组合。
-- 校准说明：该合成基准按 `position_leverage=100x` 部署全部 `N_max=50,000 USDT` 时，全组合逐仓初始保证金合计上限为 `N_max / position_leverage = 500 USDT`，恰为初始权益的 `5%`。若强平规则能证明总损失封顶于已缴逐仓保证金且无未覆盖赤字，单窗口 P99 的 `5%` 门槛在此基准下本身不具备区分策略优劣的筛选力；这不代表账户级风险预检通过或策略可盈利。强平/赤字模型未核实前仍为 `not_estimable`，且任何压力场景出现负权益或未覆盖赤字均独立判失败。
-- 数据预检计划：行情原始文件、请求/响应哈希和分页清单已保存。Codex 负责在首个 `research_id` 建立前核验 Binance 官方 USDⓈ-M 合约规则/维持保证金档，并为 1,000 ms 延迟、强平成交及 1/5 tick 压力取得足够的逐笔/盘口数据或独立支持的保守成交上界；数据源为 Binance 官方公开市场数据与合约说明，负责人 Codex，目标截止 2026-10-27。若截止时仍无法完成，继续保持 `risk_segment_status=open` / `not_estimable` 并更新计划，不建立 `research_id`、不读取候选结果。
+- 校准说明修订：撤回“按 `position_leverage=100x` 部署全部 `N_max`、总初始保证金恰为权益 `5%`”的旧推导。仅在“采用当前静态诊断矩阵中各档允许的最高实际杠杆”这一固定假设下，符合 `N_max` 与单币上限的所有允许名义分配里，简单名义/杠杆保证金的最大值约为 1,333.33 USDT（13.33% 权益），其集中配置为 TRXUSDT 25,000@25x + ETHUSDT 25,000@75x；若冻结更低的 `chosen_position_leverage`，保证金会更高。该 1,333.33 仅是无账户范围静态诊断矩阵下的全组合算术值，不是账户级保证金上限、任何 A/B/C 档的完整保证金诊断或预检通过证据。实际 A/B/C 初始保证金必须在账户适用 `tier_snapshot_hash`、账户范围、逐币逐档冻结的 `chosen_position_leverage` 矩阵及强平/赤字模型齐备后逐项重算；在此之前不能给出可执行的组合保证金上限，也不能把 `5%` P99 门槛解释为保证金封顶。用户确认的 `5%` 仍是账户损失分布 P99 硬门槛；风险状态保持 `not_estimable`，任一压力场景出现负权益或未覆盖赤字均独立判失败。
+- 数据预检计划：行情原始文件、请求/响应哈希和分页清单已保存。Codex 负责在首个 `research_id` 建立前核验 Binance 官方 USDⓈ-M 合约规则、账户适用的 `leverageBracket` 名义档（需记录 `tier_snapshot_hash`、来源、`fetched_at_utc`、`account_scope`）和维持保证金档，并为 1,000 ms 延迟、强平成交及 1/5 tick 压力取得足够的逐笔/盘口数据或独立支持的保守成交上界；数据源为 Binance 官方市场数据、账户适用的 signed USER_DATA 档位快照与合约说明，负责人 Codex，目标截止 2026-10-27。若截止时仍无法完成，继续保持 `risk_segment_status=open` / `not_estimable` 并更新计划，不建立 `research_id`、不读取候选结果。
 - 2026-10-20 纯行情风险预检已完成并归档于 [`verified/risk_preflight_20261020/REPORT.md`](verified/risk_preflight_20261020/REPORT.md)：BTC/ETH/TRX 交易价与标记价各 98,208 根 15m K 线，2024-01-01 至 2026-10-20 UTC，六个序列均无无效行、重复、缺失或非连续相邻对，每币每方向 `N_gap >= 100`。交易价和标记价 P99、最大跳空、官方请求清单和哈希及原始快照均已归档。首个研究合成参数已确定；完整账户级风险仍为 `not_estimable`，因为精确维持保证金档、强平成交和同步双价格路径下完整滑点/1,000 ms 压力尚未执行，风险段保持 `open`。
+
+### 2026-10-23 执行引擎与预检 schema 收尾
+
+- 执行引擎已完成逐币逐档杠杆接入：普通账户和配对账户都从 `leverage_by_symbol` 计算名义、保证金、数量和档位校验；`binance_tiered` 只接受冻结 `tier_snapshot`，不再回退静态诊断表；档位不可用时在现金、手续费和持仓写入前原子拒单。Fnew 的 `BTCUSDT`、`BTC/USDT`、`BTC/USDT:USDT` 键会归一化为 canonical symbol，重复别名 fail-closed；档位名义 cap 缺失、`None`、Infinity 或仅旧别名输入均 fail-closed。
+- 预检模板的 `risk_feasibility_preflight` 已与 `PreflightReport` 字段统一，并补充完整 `ScenarioEvidence` 单条 JSON 示例、22 个固定场景清单、压力参数、canonical hash、Decimal/tuple 恢复规则和 artifact 约束。DeepSeek 2026-10-23 最终只读复审结论为 `PASS`，无代码阻断项；唯一可选 P3 是报告摘要可继续附带完整 P99/max/sample/envelope 快照，不影响当前门禁。
+- 本轮验证：全仓库 `PYTHONPATH=. .venv/bin/pytest -q tests` 为 **1,903 passed, 64 skipped, 2,997 subtests passed**；本轮受影响执行、导入、预检、Fnew 与模拟器测试为 **253 passed, 90 subtests passed**；`py_compile` 与 `git diff --check` 通过。上述验证只覆盖实现和纯风险数据边界，未运行或查看候选策略信号、收益、回测、OOS 或前向结果。
+- 当前仍缺账户适用的 signed USER_DATA `/fapi/v1/leverageBracket` 原始响应字节、签名请求及 HMAC 核验结果、原始响应到解析档位的绑定证据、冻结的逐币 `chosen_position_leverage` 矩阵，以及与同一执行模型绑定的 8 项假设证据和 22 个 `ScenarioEvidence` 损失/赤字序列。仓库现有风险快照只有公开 trade/mark 行情，不含账户档位或账户成员响应。故 `risk_feasibility_preflight=not_estimable`、`risk_segment_status=open`，不建立 `research_id`，不启动候选策略研究。
+
+### 2026-10-23 离线档位导入与跨层契约复审
+
+- 已新增严格离线 `bracket_response` parser 与 `bracket_import` 导入器，详见[操作契约](../docs/BRACKET_ARTIFACT_IMPORT.md)。精确原始响应 SHA、脱敏元数据、解析档位与完整 pending manifest 可离线重解析核对；导入器不读凭据、不联网、不验证签名或账户归属。产物固定为 `pending_manual_verification`，每条 schedule 为 `verified=false` / `snapshot_kind=candidate_import`，且没有执行 `snapshot_hash`；执行 loader 拒绝直接使用。
+- `symbols.py` 为预检与执行快照提供统一 canonical symbol/hash 契约，compact/CCXT 别名不能改变档位集 hash，重复别名拒绝。Decimal canonical 序列化不依赖调用方精度 context；跨层合成测试覆盖 typed schedule、mapping loader、preflight 与高精度 hash。
+- DeepSeek 独立只读复审 `quant-bracket-import-review-reply-20261023-01` 结论为 `PASS`，无阻断缺陷。Codex 复跑受影响 8 文件 **253 passed / 90 subtests**；全仓库 **1,903 passed / 64 skipped / 2,997 subtests**；`py_compile` 与 `git diff --check` 通过。未运行或查看候选策略信号、收益、回测、OOS 或前向结果。
+- 待真实账户原始响应到位后，先在私有证据目录验证 `notionalCoef` / `cum` 的 JSON 类型及连续性。当前严格契约拒绝字符串数值、非单位系数和非精确连续性；若真实 fixture 不匹配，须先修订 parser 并交独立审查，不临时放宽。哈希/重解析通过仅证明内容绑定，不替代签名请求、响应来源和账户适用性核验。
+- 下一步顺序：取得原始响应与脱敏元数据 → 离线导入并独立核验来源/签名/账户范围/端点归属 → 冻结账户适用档位与实际杠杆矩阵 → 补齐 8 项执行假设和 22 个压力场景 → 账户预检及独立复审。真实材料未到位前继续 `not_estimable/open`；首个 `research_id` 仍未建立，候选研究未开始。数据计划的负责人 Codex、目标截止 2026-10-27 保持不变；不提交、清理、重置或推送现有工作树。
+
+### 2026-10-23 Decimal context 门禁加固与用户输入
+
+- DeepSeek 确认 loader/preflight 的维持保证金负值、档位连续性和初始保证金缓冲会受 Decimal context 舍入影响。现 parser、loader 与 preflight 共用 `tier_math.exact_margin_offset()` 的 `Fraction` 算术，缓冲以精确有理数比较；另修复单币额度合计与 `N_max` 比较中的同类舍入问题。
+- 新增合成测试在 `prec=28/80` 下覆盖 `1e-30` 连续性偏差、精确连续高精度档位、微小负维持保证金、缓冲正负及等值边界，以及额度不足/恰好足额。Codex 验证受影响 8 文件 **273 passed / 90 subtests**、全仓库 **1,923 passed / 64 skipped / 2,997 subtests**，`py_compile` 与 `git diff --check` 通过；本轮精度修复等待 DeepSeek 增量只读复审，既有审查 `PASS` 不自动覆盖新版本。
+- 用户于 2026-10-23 回复账户原始响应与脱敏元数据“尚未采集”。当前无真实账户 fixture 可供导入，不凭公共档位或合成数据替代，不读取凭据或自动发起账户请求。数据计划目标截止仍为 2026-10-27；账户材料与执行假设缺口未闭合前继续 `not_estimable/open`，不建立 `research_id`，不运行或查看候选策略结果。
+- DeepSeek 增量只读复审 `quant-bracket-context-review-reply-20261023-01` 核对五文件 SHA 并判 `PASS`；envelope 报表末位精度和 typed loader 的 Decimal complexity 上限两项 P3 保留为非阻断限制。
+- 后续独立检查发现账户 P99 限值 `equity × pct` 的 Decimal 乘积存在同类边界漂移。场景与顶层 P99 现共用 `_account_p99_loss_limit()` 的精确 `Fraction`，保持严格 `>` 与等值通过语义；新增 `prec=28/80 × 低于/等于/高于 1e-30` 合成回归，覆盖完整 22 场景及顶层原因，旧 5% 等值 fixture 改用精确 `500` 字符串和有理数核验。本次受影响 8 文件 **279 passed / 90 subtests**、全仓库 **1,929 passed / 64 skipped / 2,997 subtests**，`py_compile` 与 `git diff --check` 通过。DeepSeek 增量只读复审 `quant-p99-limit-review-reply-20261023-01` 核对 SHA、复跑 279/90 并判 `PASS`；其唯一新 P3 是私有 helper 可增加直接输入防御，未发现门禁缺陷。
+
+## 2026-10-24 权威预检导出路径
+
+- 为避免账户材料到位后依赖手工调用 Python 对象，新增 `preflight_report_to_mapping()` 与 `tools/export_account_risk_preflight.py`。导出器接受受控 JSON bundle，使用权威 `evaluate_preflight()`，拒绝未知字段、重复 key、浮点金额、超限输入和已有输出目录；报告和清单写入 `700/600` 私有目录，标准输出只含状态和 hash。
+- 当前无账户档位、P99 gap 或执行证据时，导出器仍只能返回 `risk_feasibility_preflight=not_estimable`；它不读凭据、不联网、不创建 `research_id`，也不能把合成输入变成账户通过证据。
+- 新增导出器回归覆盖缺失证据、Decimal 字符串、路径/敏感值不回显和输出目录拒绝；本轮相关测试与既有预检/导入测试共 `100 passed`。
+- 新增 [`ACCOUNT_RISK_PREFLIGHT_BUNDLE.md`](../docs/ACCOUNT_RISK_PREFLIGHT_BUNDLE.md) 作为非证据输入模板，明确十进制字符串、账户档位、8 项执行假设、22 个场景和私有目录边界；空模板只能得到 `not_estimable`。
+
+## 2026-10-24 账户材料仍未提供
+
+用户确认目前仍没有可提供的账户 `leverageBracket` 原始 UTF-8 响应文件和脱敏元数据 JSON。仓库审计未发现可替代的真实账户 fixture；本地账本也没有账户风险事件或 Demo credential 记录。继续保持 `risk_feasibility_preflight=not_estimable`、`risk_segment_status=open`，不读取凭据、不调用 Binance USER_DATA 端点、不建立 `research_id`，也不运行或查看候选策略回测、OOS 或前向收益。现阶段只执行离线 parser、风险门禁和执行契约回归；取得两份私有材料后再按既定顺序进行导入、独立核验和账户级预检。

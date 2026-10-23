@@ -17,6 +17,7 @@ import ccxt
 
 from binance_demo_adapter import ALLOWED_PAIRS, PAIR_SYMBOLS, BinanceDemoAdapter
 from data_store import DataStore
+from demo_fee_capture import expected_risk_gate_target_binding
 from demo_store import DemoStore
 from tests.test_demo_contract_integration import ExchangeStub
 
@@ -196,9 +197,25 @@ class FeeCaptureIntegrationTests(unittest.TestCase):
 
     def run_capture(self, *, pairs=ALLOWED_PAIRS, recovery_only=False):
         from tools.run_binance_demo_fee_capture import run_fee_capture
-        return run_fee_capture(self.adapter(), self.ledger, pairs=pairs,
-            clock_ms=lambda: self.client.now, sleep=self.pause, maker_ttl_seconds=30,
-            total_timeout_seconds=60, reconciliation_seconds=3, recovery_only=recovery_only)
+        recovery_only = bool(recovery_only or self.ledger.runner_orders())
+        options = {"pairs": pairs, "clock_ms": lambda: self.client.now,
+                   "sleep": self.pause, "maker_ttl_seconds": 30,
+                   "total_timeout_seconds": 60, "reconciliation_seconds": 3,
+                   "recovery_only": recovery_only}
+        if not recovery_only:
+            binding = expected_risk_gate_target_binding(
+                "offline-test-account", pairs=pairs, max_notional_usdt="75",
+                maker_ttl_seconds=30, total_timeout_seconds=60,
+                reconciliation_seconds=3)
+            import research_ledger
+            options["risk_gate_proof"] = {
+                "research_id": "research-1", "event_id": "event-1",
+                "risk_segment_status": "closed", "preflight_status": "pass",
+                "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+                "target_binding": binding,
+                "target_binding_hash": research_ledger.risk_gate_target_binding_hash(binding),
+            }
+        return run_fee_capture(self.adapter(), self.ledger, **options)
 
     def posts(self):
         return [params for path, _, method, params in self.client.calls

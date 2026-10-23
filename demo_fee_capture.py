@@ -43,6 +43,41 @@ def _hash(value):
                                      allow_nan=False).encode()).hexdigest()
 
 
+def expected_risk_gate_target_binding(account_scope, *, pairs, max_notional_usdt,
+                                      maker_ttl_seconds, total_timeout_seconds,
+                                      reconciliation_seconds):
+    """Build the exact target binding used by this execution core."""
+    import research_ledger
+    policy = {"version": VERSION, "pairs": list(pairs),
+              "max_notional_usdt": format(_d(max_notional_usdt, positive=True), "f"),
+              "maker_ttl_seconds": maker_ttl_seconds,
+              "total_timeout_seconds": total_timeout_seconds,
+              "reconciliation_seconds": reconciliation_seconds,
+              "maker_entry": "LIMIT_GTX_fresh_bid", "taker_entry": "LIMIT_IOC_protective_cross",
+              "exit": "MARKET_reduce_only"}
+    return research_ledger.build_risk_gate_target_binding(account_scope, [{
+        "strategy_id": STRATEGY_ID,
+        "rule_hash": _hash({"version": VERSION, "pairs": list(pairs)}),
+        "execution_hash": _hash(policy),
+    }])
+
+
+def _validate_risk_gate_proof(proof, expected_binding):
+    import research_ledger
+    if not isinstance(proof, dict) or proof.get("risk_segment_status") != "closed" \
+            or proof.get("preflight_status") != "pass":
+        raise DemoSafetyError("risk_gate_not_closed")
+    try:
+        binding = proof["target_binding"]
+        if proof.get("target_binding_hash") != research_ledger.risk_gate_target_binding_hash(binding):
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise DemoSafetyError("risk_gate_identity_invalid") from None
+    if binding != expected_binding:
+        raise DemoSafetyError("risk_gate_target_mismatch")
+    return dict(proof)
+
+
 def _status(value):
     text = str(value).lower()
     return {"new": "open", "cancelled": "canceled", "partiallyfilled": "partially_filled",
@@ -127,7 +162,8 @@ def _make_plan(adapter, info, pair, book, cap):
 def run_fee_capture(adapter, ledger, *, clock_ms=None, sleep=None,
                     pairs=ALLOWED_PAIRS, max_notional_usdt="75",
                     maker_ttl_seconds=30, total_timeout_seconds=600,
-                    reconciliation_seconds=60, recovery_only=False):
+                    reconciliation_seconds=60, recovery_only=False,
+                    risk_gate_proof=None):
     """Capture actual maker/taker fills for the requested Demo pairs.
 
     Claimed client IDs are lookup-only on every invocation.  An unresolved
@@ -197,6 +233,19 @@ def run_fee_capture(adapter, ledger, *, clock_ms=None, sleep=None,
         plans, windows = {}, {}
         all_orders = ledger.runner_orders()
         comparisons = ledger.list_comparisons(limit=1000)
+        resumed_session = bool(all_orders) or any(
+            row.get("stage") == "fee_capture_pair_start" for row in comparisons)
+        recovery_only = bool(recovery_only or resumed_session)
+        report["recovery_only"] = recovery_only
+        if not recovery_only:
+            expected_binding = expected_risk_gate_target_binding(
+                risk_gate_proof.get("target_binding", {}).get("account_scope")
+                if isinstance(risk_gate_proof, dict) else "",
+                pairs=pairs, max_notional_usdt=cap,
+                maker_ttl_seconds=maker_ttl_seconds,
+                total_timeout_seconds=total_timeout_seconds,
+                reconciliation_seconds=reconciliation_seconds)
+            risk_gate_proof = _validate_risk_gate_proof(risk_gate_proof, expected_binding)
         for pair in pairs:
             book = adapter.fetch_book_ticker(pair)
             plans[pair] = _make_plan(adapter, info, pair, book, cap)
@@ -446,14 +495,9 @@ def run_fee_capture(adapter, ledger, *, clock_ms=None, sleep=None,
                 residual -= _d(next_row.get("filled_qty", 0))
             return residual == 0 and assert_owned_position(entry["pair"], Decimal(0))
 
-        # Restore every durable row first. Old identities are lookup-only unless
-        # an intent was never claimed; recovery-only abandons such stale intents.
-        existing = ledger.runner_orders()
-        # A resumed session is reconciliation-only once it has durable entry
-        # intents.  New entry identities are created only during the original
-        # invocation; recovery must never silently turn an old partial/unknown
-        # attempt into another trade.
-        resumed_session = bool(existing)
+        # Restore every durable row first. Recovery abandons stale unclaimed
+        # entries and only looks up claimed submissions.
+        existing = all_orders
         grouped = defaultdict(list)
         for row in existing:
             grouped[row.get("signal_id")].append(row)

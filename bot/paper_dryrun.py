@@ -285,6 +285,18 @@ def freeze_variants(variants: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(frozen, key=lambda item: item["variant_id"])
 
 
+def risk_gate_target_binding(account_scope: str,
+                             variants: list[dict[str, Any]]) -> dict[str, Any]:
+    """Bind the risk gate to the exact frozen offline-paper variants."""
+    import research_ledger
+
+    frozen = freeze_variants(variants)
+    targets = [{"strategy_id": item["variant_id"], "rule_hash": item["rule_hash"],
+                "execution_hash": sha256(canonical_json(item["execution"]))}
+               for item in frozen]
+    return research_ledger.build_risk_gate_target_binding(account_scope, targets)
+
+
 def _artifact_stems(variants: list[dict[str, Any]]) -> dict[str, str]:
     """Return deterministic, filesystem-safe and collision-free artifact names."""
     stems: dict[str, str] = {}
@@ -431,8 +443,20 @@ def _write_immutable(path: Path, payload: bytes) -> None:
 def run_batch(data: dict[str, pd.DataFrame], variants: list[dict[str, Any]],
               output_dir: str | os.PathLike[str], *, start: str | None = None,
               top_n: int = 8, max_open: int = 10, exposure: float = 0.30,
-              cost_one: float = 0.0004, wallet: float = 10_000.0) -> dict[str, Any]:
+              cost_one: float = 0.0004, wallet: float = 10_000.0,
+              research_id: str | None = None, ledger_store: Any = None,
+              account_scope: str | None = None) -> dict[str, Any]:
     """Replay variants serially on one immutable input snapshot and persist evidence."""
+    gate = None
+    if research_id is not None:
+        if ledger_store is None:
+            raise ValueError("ledger_store is required when research_id is supplied")
+        if not isinstance(account_scope, str) or not account_scope.strip():
+            raise ValueError("account_scope is required when research_id is supplied")
+        import research_ledger
+        expected_binding = risk_gate_target_binding(account_scope, variants)
+        gate = research_ledger.require_closed_risk_gate(
+            ledger_store, research_id, expected_binding=expected_binding)
     top_n = _integer(top_n, "top_n")
     max_open = _integer(max_open, "max_open")
     if not math.isfinite(exposure) or exposure <= 0 or exposure > 1:
@@ -500,6 +524,8 @@ def run_batch(data: dict[str, pd.DataFrame], variants: list[dict[str, Any]],
         "cost_completeness": {"fee": "modeled by run_v2", "slippage": "unknown", "funding": "unknown"},
         "interpretation": "deterministic offline replay; not a live result or net-return estimate",
     }
+    if gate is not None:
+        manifest["risk_gate"] = gate
     manifest["manifest_hash"] = sha256(canonical_json(manifest))
     _write_immutable(output / "manifest.json", (canonical_json(manifest) + "\n").encode())
 
@@ -618,10 +644,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--coins", default="", help="comma-separated symbol list; default is every available 1h futures file")
     parser.add_argument("--start", default=None)
     parser.add_argument("--output", default=str(HERE.parent / "artifacts/paper_dryrun"))
+    parser.add_argument("--research-id", required=True,
+                        help="registered research id whose risk gate must be closed")
+    parser.add_argument("--account-scope", required=True,
+                        help="verified opaque account scope frozen into the risk gate")
     args = parser.parse_args(argv)
     coins = [item.strip() for item in args.coins.split(",") if item.strip()]
-    data = load_feather_1h(args.data_dir, coins or None)
-    result = run_batch(data, DEFAULT_VARIANTS, args.output, start=args.start)
+    from data_store import DataStore
+    from runtime_config import load_environment
+    load_environment(HERE.parent)
+    store = DataStore(root=HERE.parent)
+    try:
+        import research_ledger
+        variants = freeze_variants(DEFAULT_VARIANTS)
+        expected_binding = risk_gate_target_binding(args.account_scope, variants)
+        research_ledger.require_closed_risk_gate(
+            store, args.research_id, expected_binding=expected_binding)
+        data = load_feather_1h(args.data_dir, coins or None)
+        result = run_batch(data, variants, args.output, start=args.start,
+                           research_id=args.research_id, ledger_store=store,
+                           account_scope=args.account_scope)
+    finally:
+        store.close()
     print(json.dumps(_plain(result), ensure_ascii=False, indent=2, allow_nan=False))
     return 0 if result["summary"]["negative_control"]["passed"] else 2
 

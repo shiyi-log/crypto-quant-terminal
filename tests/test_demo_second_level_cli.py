@@ -61,9 +61,28 @@ class Source:
 
 
 class CLITests(unittest.TestCase):
+    def run_operator(self, args, data, **dependencies):
+        if not getattr(args, "research_id", None):
+            args.research_id = "research-1"
+        if not getattr(args, "account_scope", None):
+            args.account_scope = "offline-test-account"
+        import research_ledger
+        if isinstance(research_ledger.require_closed_risk_gate, Mock):
+            return cli.run_operator(args, data, **dependencies)
+        binding = cli._expected_target_binding(
+            args.account_scope, cli.config_from_args(args), cli._PAIR_NAMES[args.pair])
+        gate = {"research_id": "research-1", "event_id": "gate-event-1",
+                "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+                "risk_segment_status": "closed", "preflight_status": "pass",
+                "target_binding": binding,
+                "target_binding_hash": research_ledger.risk_gate_target_binding_hash(binding)}
+        with patch("research_ledger.require_closed_risk_gate", return_value=gate):
+            return cli.run_operator(args, data, **dependencies)
+
     def args(self, **changes):
         values = {"session": "offline_test", "execute": True, "pair": "BTC", "max_signals": 6,
-                  "duration_seconds": 600, "max_notional_usdt": "75", "recover_only": False}
+                  "duration_seconds": 600, "max_notional_usdt": "75", "recover_only": False,
+                  "account_scope": "offline-test-account"}
         return argparse.Namespace(**{**values, **changes})
 
     def dependencies(self, data):
@@ -75,8 +94,9 @@ class CLITests(unittest.TestCase):
                                   fetch_positions=Mock(return_value=[]), fetch_open_orders=Mock(return_value=[]))
         factory = Mock(return_value=adapter)
 
-        def run(_adapter, ledgers, source, *, config):
+        def run(_adapter, ledgers, source, *, config, risk_gate_proof=None):
             self.assertEqual(set(ledgers), {"maker", "taker"})
+            self.assertIsInstance(risk_gate_proof, dict)
             signal = source.latest_signal(100_001)
             data.events.append(("runner_received_signal", signal["signal_id"]))
             return {"success": True, "cycles": [], "recovery_only": False}
@@ -94,9 +114,58 @@ class CLITests(unittest.TestCase):
                 data = Data(**counts)
                 deps = self.dependencies(data)
                 with self.assertRaises(cli.OperatorPreflightError) as raised:
-                    cli.run_operator(self.args(), data, **deps)
+                    self.run_operator(self.args(), data, **deps)
                 self.assertEqual(raised.exception.kind, "other_demo_session_unresolved")
                 deps["api_factory"].assert_not_called()
+
+    def test_production_entry_cannot_skip_gate_with_partial_dependency_injection(self):
+        data = Data()
+        with self.assertRaises(cli.OperatorPreflightError) as raised:
+            cli.run_operator(self.args(), data, auth_dir=Path("/offline"),
+                             snapshot_reader=Mock())
+        self.assertEqual(raised.exception.kind, "risk_gate_not_closed")
+        self.assertFalse(hasattr(cli, "run_operator_for_test"))
+        deps = self.dependencies(data)
+        with self.assertRaises(cli.OperatorPreflightError) as raised:
+            cli.run_operator(self.args(), data, **deps)
+        self.assertEqual(raised.exception.kind, "risk_gate_not_closed")
+
+    def test_checkpoint_freezes_gate_and_recovery_uses_it_without_live_gate_read(self):
+        data = Data()
+        deps = self.dependencies(data)
+        gate = {"research_id": "research-1", "event_id": "gate-event-1",
+                "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+                "risk_segment_status": "closed", "preflight_status": "pass",
+                "target_binding_hash": "a" * 64}
+        with patch("research_ledger.require_closed_risk_gate", return_value=gate):
+            self.run_operator(self.args(research_id="research-1"), data, **deps)
+        checkpoint = data.get_document("binance_demo_second_level/offline_test/source.json")
+        self.assertEqual(checkpoint["risk_gate_identity"], {
+            "research_id": "research-1", "event_id": "gate-event-1",
+            "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+            "target_binding_hash": "a" * 64})
+        with patch("research_ledger.require_closed_risk_gate", side_effect=RuntimeError("unavailable")) as gate_reader:
+            report = self.run_operator(self.args(recover_only=True, research_id="different"), data, **deps)
+        gate_reader.assert_not_called()
+        self.assertEqual(report["research_id"], "research-1")
+        self.assertEqual(report["risk_gate"], gate)
+        deps["recover_session"].assert_called_once()
+
+    def test_checkpoint_gate_identity_corruption_blocks_recovery(self):
+        data = Data()
+        deps = self.dependencies(data)
+        gate = {"research_id": "research-1", "event_id": "gate-event-1",
+                "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+                "target_binding_hash": "a" * 64}
+        with patch("research_ledger.require_closed_risk_gate", return_value=gate):
+            self.run_operator(self.args(research_id="research-1"), data, **deps)
+        key = "binance_demo_second_level/offline_test/source.json"
+        data.documents[key]["risk_gate_identity"]["event_id"] = "gate-event-other"
+        deps["api_factory"].reset_mock()
+        with self.assertRaises(cli.OperatorPreflightError) as raised:
+            self.run_operator(self.args(recover_only=True), data, **deps)
+        self.assertEqual(raised.exception.kind, "second_level_session_identity_mismatch")
+        deps["api_factory"].assert_not_called()
 
     def test_preflight_excludes_exactly_two_own_namespaces(self):
         data = Data()
@@ -111,7 +180,7 @@ class CLITests(unittest.TestCase):
         deps = self.dependencies(data)
         deps["snapshot_reader"] = lambda *_: {"quality": "unknown", "reason": "stale_snapshot"}
         with self.assertRaises(cli.OperatorPreflightError) as raised:
-            cli.run_operator(self.args(), data, **deps)
+            self.run_operator(self.args(), data, **deps)
         self.assertEqual(raised.exception.kind, "second_level_source_unavailable")
         deps["api_factory"].assert_not_called()
         self.assertFalse(data.documents)
@@ -119,7 +188,7 @@ class CLITests(unittest.TestCase):
     def test_checkpoint_committed_before_signal_reaches_runner(self):
         data = Data()
         deps = self.dependencies(data)
-        report = cli.run_operator(self.args(), data, **deps)
+        report = self.run_operator(self.args(), data, **deps)
         checkpoints = [index for index, event in enumerate(data.events) if event[0] == "persist" and event[1].endswith("source.json")]
         received = next(index for index, event in enumerate(data.events) if event[0] == "runner_received_signal")
         self.assertEqual(len(checkpoints), 3)
@@ -134,13 +203,13 @@ class CLITests(unittest.TestCase):
     def test_rotated_credentials_cannot_reuse_session_even_for_recovery(self):
         data = Data()
         deps = self.dependencies(data)
-        cli.run_operator(self.args(), data, **deps)
+        self.run_operator(self.args(), data, **deps)
         saved = data.get_document("binance_demo_second_level/offline_test/source.json")
         credentials = deps["api_factory"].return_value.credentials
         credentials.load_credentials.return_value = SimpleNamespace(api_key="rotated-fixture-key", secret="fixture-secret")
         deps["adapter_factory"].reset_mock()
         with self.assertRaises(cli.OperatorPreflightError) as raised:
-            cli.run_operator(self.args(recover_only=True), data, **deps)
+            self.run_operator(self.args(recover_only=True), data, **deps)
         self.assertEqual(raised.exception.kind, "second_level_credential_identity_mismatch")
         deps["adapter_factory"].assert_not_called()
         deps["recover_session"].assert_not_called()
@@ -159,17 +228,17 @@ class CLITests(unittest.TestCase):
             return adapter
 
         deps["adapter_factory"] = adapter_factory
-        cli.run_operator(self.args(), data, **deps)
+        self.run_operator(self.args(), data, **deps)
 
     def test_orders_without_frozen_credential_identity_cannot_recover(self):
         data = Data()
         deps = self.dependencies(data)
-        cli.run_operator(self.args(), data, **deps)
+        self.run_operator(self.args(), data, **deps)
         data.documents["binance_demo_second_level/offline_test/source.json"]["credential_fingerprint"] = None
         data.counts = (0, 0, 0, 1)
         deps["adapter_factory"].reset_mock()
         with self.assertRaises(cli.OperatorPreflightError) as raised:
-            cli.run_operator(self.args(), data, **deps)
+            self.run_operator(self.args(), data, **deps)
         self.assertEqual(raised.exception.kind, "second_level_credential_identity_missing")
         deps["adapter_factory"].assert_not_called()
 
@@ -186,12 +255,12 @@ class CLITests(unittest.TestCase):
     def test_reusing_existing_session_recovers_without_source_poll_or_flat_requirement(self):
         data = Data()
         deps = self.dependencies(data)
-        cli.run_operator(self.args(), data, **deps)
+        self.run_operator(self.args(), data, **deps)
         saved = data.get_document("binance_demo_second_level/offline_test/source.json")
         deps["snapshot_reader"] = Mock(side_effect=AssertionError("recovery cannot depend on live source"))
         adapter = deps["adapter_factory"].return_value
         adapter.fetch_positions.side_effect = AssertionError("recovery runner must attribute existing risk")
-        recovery_report = cli.run_operator(self.args(), data, **deps)
+        recovery_report = self.run_operator(self.args(), data, **deps)
         self.assertTrue(recovery_report["recovery_only"])
         deps["recover_session"].assert_called_once()
         self.assertEqual(data.get_document("binance_demo_second_level/offline_test/source.json"), saved)
@@ -201,17 +270,17 @@ class CLITests(unittest.TestCase):
         data = Data(own_orders=1)
         deps = self.dependencies(data)
         with self.assertRaises(cli.OperatorPreflightError) as raised:
-            cli.run_operator(self.args(), data, **deps)
+            self.run_operator(self.args(), data, **deps)
         self.assertEqual(raised.exception.kind, "second_level_source_checkpoint_missing")
         deps["api_factory"].assert_not_called()
 
     def test_changed_config_cannot_reuse_session(self):
         data = Data()
         deps = self.dependencies(data)
-        cli.run_operator(self.args(), data, **deps)
+        self.run_operator(self.args(), data, **deps)
         deps["api_factory"].reset_mock()
         with self.assertRaises(cli.OperatorPreflightError) as raised:
-            cli.run_operator(self.args(max_signals=8), data, **deps)
+            self.run_operator(self.args(max_signals=8), data, **deps)
         self.assertEqual(raised.exception.kind, "second_level_session_identity_mismatch")
         deps["api_factory"].assert_not_called()
 
@@ -226,7 +295,7 @@ class CLITests(unittest.TestCase):
                 adapter.fetch_open_orders.return_value = orders
                 adapter.fetch_position_mode.return_value = {"hedged": hedged}
                 with self.assertRaises(cli.OperatorPreflightError):
-                    cli.run_operator(self.args(), data, **deps)
+                    self.run_operator(self.args(), data, **deps)
                 deps["recover_session"].assert_not_called()
 
     def test_busy_account_lock_does_not_open_database(self):
@@ -234,7 +303,8 @@ class CLITests(unittest.TestCase):
             with patch.object(cli, "ROOT", Path(path)), patch.object(cli, "load_environment"), \
                     patch.object(cli.fcntl, "flock", side_effect=BlockingIOError), \
                     patch.object(cli, "DataStore") as store, redirect_stdout(io.StringIO()) as output:
-                result = cli.main(["--execute", "--session", "offline_test"])
+                result = cli.main(["--execute", "--session", "offline_test",
+                                   "--account-scope", "offline-test-account"])
                 self.assertEqual(result, 2)
                 self.assertIn("demo_account_lock_busy", output.getvalue())
                 store.assert_not_called()

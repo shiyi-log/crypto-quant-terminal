@@ -29,7 +29,8 @@ from binance_demo_adapter import BinanceDemoAdapter, DEMO_HOST  # noqa: E402
 from data_store import DataStore  # noqa: E402
 from demo_api import create_demo_api  # noqa: E402
 from demo_second_level_runner import (  # noqa: E402
-    SecondLevelConfig, recover_second_level_session, run_second_level_session,
+    SecondLevelConfig, expected_risk_gate_target_binding,
+    recover_second_level_session, run_second_level_session,
 )
 from demo_second_level_signals import (  # noqa: E402
     FrozenSecondLevelSignalSource, POLICY_HASH, latest_closed_snapshot,
@@ -62,6 +63,9 @@ def parser():
                         help="Maximum quoted notional per entry, at most 75 USDT; cycles are sequential")
     result.add_argument("--recover-only", action="store_true",
                         help="Require an existing session and reconcile/protect without fresh signals")
+    result.add_argument("--research-id", help="Closed research risk-gate identity required for Demo execution")
+    result.add_argument("--account-scope", required=True,
+                        help="verified opaque account scope frozen into the risk gate")
     return result
 
 
@@ -120,6 +124,38 @@ def _checkpoint_identity(config, pair):
     return {"format_version": _CHECKPOINT_VERSION, "environment": "binance_demo",
             "endpoint_host": DEMO_HOST, "session_id": config.session_id, "pair": pair,
             "config": asdict(config), "signal_policy_hash": POLICY_HASH}
+
+
+def _expected_target_binding(account_scope, config, pair):
+    return expected_risk_gate_target_binding(account_scope, config)
+
+
+def _risk_gate_identity(risk_gate):
+    if not isinstance(risk_gate, dict):
+        return None
+    keys = ("research_id", "event_id", "boundary_hash", "inputs_hash",
+            "target_binding_hash")
+    identity = {key: risk_gate.get(key) for key in keys}
+    if any(not isinstance(value, str) or not value.strip() for value in identity.values()):
+        raise OperatorPreflightError("risk_gate_identity_invalid")
+    return identity
+
+
+def _frozen_gate(saved):
+    """Return the gate frozen with a checkpoint; legacy sessions stay recoverable."""
+    if "risk_gate_identity" not in saved:
+        return saved.get("research_id"), saved.get("risk_gate"), None
+    identity = saved.get("risk_gate_identity")
+    gate = saved.get("risk_gate")
+    research_id = saved.get("research_id")
+    if identity is None:
+        if gate is not None or research_id is not None:
+            raise OperatorPreflightError("second_level_session_identity_mismatch")
+        return None, None, None
+    if (not isinstance(identity, dict) or _risk_gate_identity(gate) != identity
+            or research_id != identity.get("research_id")):
+        raise OperatorPreflightError("second_level_session_identity_mismatch")
+    return research_id, gate, identity
 
 
 class CheckpointedSource:
@@ -186,10 +222,10 @@ def _compact_report(report):
     return summary
 
 
-def run_operator(args, data, *, auth_dir, clock_ms=None, api_factory=None,
-                 adapter_factory=None, ledger_factory=None, run_session=None,
-                 recover_session=None, snapshot_reader=None, source_factory=None):
-    """Caller holds the account lock; dependencies permit fully offline tests."""
+def _run_operator(args, data, *, auth_dir, clock_ms=None, api_factory=None,
+                  adapter_factory=None, ledger_factory=None, run_session=None,
+                  recover_session=None, snapshot_reader=None, source_factory=None):
+    """Caller holds the account lock; dependency injection never bypasses the risk gate."""
     now = clock_ms or (lambda: int(time.time() * 1000))
     operator_started_ms = now()
     config = config_from_args(args)
@@ -200,6 +236,30 @@ def run_operator(args, data, *, auth_dir, clock_ms=None, api_factory=None,
     checkpoint_key = prefix + "source.json"
     saved = data.get_document(checkpoint_key)
     identity = _checkpoint_identity(config, pair)
+    identity["account_scope"] = args.account_scope
+    expected_binding = _expected_target_binding(args.account_scope, config, pair)
+    if saved is None and (preflight["sessionOrderCount"] or args.recover_only):
+        raise OperatorPreflightError("second_level_source_checkpoint_missing")
+    if saved is not None:
+        if not isinstance(saved, dict):
+            raise OperatorPreflightError("second_level_session_identity_mismatch")
+        if saved.get("expected_target_binding") != expected_binding:
+            raise OperatorPreflightError("second_level_session_identity_mismatch")
+        research_id, risk_gate, _ = _frozen_gate(saved)
+    else:
+        research_id = getattr(args, "research_id", None)
+        if not isinstance(research_id, str) or not research_id.strip():
+            raise OperatorPreflightError("risk_gate_not_closed")
+        else:
+            try:
+                import research_ledger
+                risk_gate = research_ledger.require_closed_risk_gate(
+                    data, research_id, expected_binding=expected_binding)
+            except Exception:
+                raise OperatorPreflightError("risk_gate_not_closed") from None
+        gate_identity = _risk_gate_identity(risk_gate)
+        if gate_identity is not None and gate_identity["research_id"] != research_id:
+            raise OperatorPreflightError("risk_gate_identity_invalid")
     source_type = source_factory or FrozenSecondLevelSignalSource
     if saved is not None:
         if not isinstance(saved, dict) or any(saved.get(key) != value for key, value in identity.items()):
@@ -216,13 +276,13 @@ def run_operator(args, data, *, auth_dir, clock_ms=None, api_factory=None,
         recovery_only = True
         checkpoint = saved
     else:
-        if preflight["sessionOrderCount"] or args.recover_only:
-            raise OperatorPreflightError("second_level_source_checkpoint_missing")
         start = now()
         source = source_type(data, pair, started_ms=start)
         checkpoint = {**identity, "started_ms": start, "state": source.state,
                       "last_decision": None, "checkpoint_ms": start,
-                      "credential_fingerprint": None}
+                      "credential_fingerprint": None, "research_id": research_id,
+                      "risk_gate": risk_gate, "risk_gate_identity": gate_identity,
+                      "expected_target_binding": expected_binding}
         recovery_only = False
     if not recovery_only:
         observation = (snapshot_reader or latest_closed_snapshot)(data, pair, now())
@@ -267,19 +327,27 @@ def run_operator(args, data, *, auth_dir, clock_ms=None, api_factory=None,
     if recovery_only:
         report = (recover_session or recover_second_level_session)(adapter, ledgers, config=config)
     else:
-        report = (run_session or run_second_level_session)(adapter, ledgers, wrapped, config=config)
+        report = (run_session or run_second_level_session)(adapter, ledgers, wrapped, config=config,
+                                                           risk_gate_proof=risk_gate)
     report["credential_fingerprint"] = fingerprint
     report["operator_started_ms"] = operator_started_ms
     report["source_session_started_ms"] = start
     report["signal_source_state"] = wrapped.state
     report["operator_ledger_preflight"] = preflight
     report["virtual_account_keys"] = names
+    report["research_id"] = research_id
+    report["risk_gate"] = risk_gate
     report_key = prefix + "reports/" + str(now()) + "_" + uuid.uuid4().hex[:12] + ".json"
     report["report_document"] = report_key
     data.put_document(report_key, report)
     data.put_document(prefix + "report.json", report)
     data.put_document("binance_demo_second_level_latest.json", report)
     return report
+
+
+def run_operator(args, data, **kwargs):
+    """Production entry point: every fresh execution must pass the risk gate."""
+    return _run_operator(args, data, **kwargs)
 
 
 def main(argv=None):

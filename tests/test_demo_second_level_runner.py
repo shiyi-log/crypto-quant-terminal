@@ -8,11 +8,23 @@ import unittest
 from binance_demo_adapter import DemoExchangeRejected, DemoSafetyError, DemoSubmissionUnknown
 from demo_second_level_runner import (
     SecondLevelConfig, build_entry_plan, recover_second_level_session,
-    run_second_level_session, _Session,
+    expected_risk_gate_target_binding, run_second_level_session, _Session,
 )
 from demo_second_level_signals import POLICY_HASH, frozen_policy
 
 PAIR = "BTC/USDT:USDT"
+_DEFAULT_GATE = object()
+
+
+def second_level_gate_proof(config, account_scope="offline-test-account"):
+    import research_ledger
+
+    binding = expected_risk_gate_target_binding(account_scope, config)
+    return {"research_id": "research-1", "event_id": "event-1",
+            "risk_segment_status": "closed", "preflight_status": "pass",
+            "boundary_hash": "boundary-1", "inputs_hash": "inputs-1",
+            "target_binding": binding,
+            "target_binding_hash": research_ledger.risk_gate_target_binding_hash(binding)}
 
 
 class Clock:
@@ -318,9 +330,13 @@ class RunnerTests(unittest.TestCase):
         self.ledgers = {arm: Ledger(arm) for arm in ("maker", "taker")}
         self.config = SecondLevelConfig("offline", max_signals=1, max_duration_seconds=15, reconciliation_seconds=3)
 
-    def run_session(self, source=None, config=None):
+    def run_session(self, source=None, config=None, risk_gate_proof=_DEFAULT_GATE):
+        config = config or self.config
+        if risk_gate_proof is _DEFAULT_GATE:
+            risk_gate_proof = second_level_gate_proof(config)
         return run_second_level_session(self.adapter, self.ledgers, source or Source(self.clock),
-            config=config or self.config, clock_ms=self.clock.now, sleep=self.clock.sleep, monotonic=self.clock.mono)
+            config=config, clock_ms=self.clock.now, sleep=self.clock.sleep,
+            monotonic=self.clock.mono, risk_gate_proof=risk_gate_proof)
 
     def recover(self):
         return recover_second_level_session(self.adapter, self.ledgers, config=self.config,
@@ -364,6 +380,12 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(cycle["input_fingerprint"], cycle["paper"]["input_fingerprint"])
         self.assertEqual(cycle["paper"]["status"], "reference_complete")
         self.assertFalse(cycle["paper"]["actual_fill"])
+
+    def test_missing_gate_blocks_before_any_entry_post(self):
+        result = self.run_session(risk_gate_proof=None)
+        self.assertFalse(result["success"])
+        self.assertEqual(self.adapter.posts, [])
+        self.assertEqual(sum(len(ledger.runner_orders()) for ledger in self.ledgers.values()), 0)
 
     def test_two_arms_are_sequential_preassigned(self):
         config = SecondLevelConfig("offline", max_signals=2, max_duration_seconds=100, reconciliation_seconds=3)

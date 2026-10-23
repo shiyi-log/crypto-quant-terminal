@@ -6,10 +6,53 @@ import copy
 import hashlib
 import json
 import unittest
+from decimal import Decimal
 from unittest.mock import patch
 
-from strategy_simulation import (BAR_MS, PAIRS, _mark, apply_closed_batch,
-                                  execution_identity, initial_state)
+from strategy_simulation import (BAR_MS, PAIRS, _mark, _tiered_liquidation_price,
+                                  apply_closed_batch, execution_identity, initial_state)
+
+
+def _tier_snapshot():
+    provenance = {"endpoint": "/fapi/v1/leverageBracket", "http_method": "GET",
+                  "security_type": "USER_DATA", "request_id": "test-request",
+                  "signed_at_utc": "2026-10-23T00:00:00Z", "response_sha256": "b" * 64,
+                  "environment": "testnet"}
+    def schedule(symbol, bands):
+        return {"symbol": symbol, "bands": bands, "source": "test",
+                "effective_at_utc": "2026-10-23T00:00:00Z",
+                "fetched_at_utc": "2026-10-23T00:00:00Z", "account_scope": "test-account",
+                "evidence_sha256": "c" * 64, "verified": True,
+                "snapshot_kind": "account_api_snapshot", "notional_cap_inclusive": False,
+                "provenance": provenance}
+    raw = {"snapshot_hash": "0" * 64, "account_scope": "test-account",
+            "as_of_utc": "2026-10-23T00:00:00Z", "schedules": [
+                schedule("BTCUSDT", [{"initial_leverage": 125, "notional_floor_usdt": "0",
+                                        "notional_cap_usdt": "50000", "maintenance_margin_ratio": "0.004",
+                                        "cumulative_maintenance_usdt": "0"}]),
+                schedule("ETHUSDT", [{"initial_leverage": 100, "notional_floor_usdt": "0",
+                                        "notional_cap_usdt": "10000", "maintenance_margin_ratio": "0.005",
+                                        "cumulative_maintenance_usdt": "0"},
+                                       {"initial_leverage": 75, "notional_floor_usdt": "10000",
+                                        "notional_cap_usdt": "100000", "maintenance_margin_ratio": "0.0065",
+                                        "cumulative_maintenance_usdt": "15"}]),
+                schedule("TRXUSDT", [{"initial_leverage": 75, "notional_floor_usdt": "0",
+                                        "notional_cap_usdt": "5000", "maintenance_margin_ratio": "0.0065",
+                                        "cumulative_maintenance_usdt": "0"}]),
+            ]}
+    from core.execution.tier_snapshot import tier_snapshot_hash
+    raw["snapshot_hash"] = tier_snapshot_hash(raw)
+    return raw
+
+
+def _matrix_spec() -> dict:
+    spec = _spec("test-leverage-matrix")
+    spec["liquidation_model"] = "binance_tiered"
+    spec["position_budget"] = dict(spec["position_budget"], leverage_by_symbol={
+        PAIRS[0]: 100,
+        PAIRS[1]: 75,
+    })
+    return spec
 
 
 def _rule_hash(spec: dict) -> str:
@@ -32,6 +75,7 @@ def _spec(strategy_id: str = "test-leverage") -> dict:
             "sizing": "剩余预算 / 剩余槽位",
             "leverage": 100,
         },
+        "tier_snapshot": _tier_snapshot(),
     }
 
 
@@ -169,6 +213,304 @@ class LeveragedTransitionTests(unittest.TestCase):
         self.assertAlmostEqual(trade["fees"], position["entry_fee"] +
                                position["quantity"] * liq * self.spec["fee_rate_per_side"], places=6)
         self.assertAlmostEqual(_mark(liquidated)["equity"], liquidated["cash"], places=6)
+
+    def test_tiered_liquidation_settles_price_derived_gross_and_provenance(self):
+        spec = copy.deepcopy(self.spec)
+        spec["liquidation_model"] = "binance_tiered"
+        state = initial_state(spec, BAR_MS)
+        self.spec = spec
+        self.state = state
+        opened, _ = self.enter((1, None))
+        position = opened["positions"][PAIRS[0]]
+        liquidation_price = position["liquidation_price"]
+        liquidated, events = self.step(
+            3 * BAR_MS,
+            state=opened,
+            candles=_bars(3 * BAR_MS, open_price=100, high=100.2,
+                          low=liquidation_price, close=100),
+        )
+
+        trade = next(item["payload"] for item in events
+                     if item["event_type"] == "trade_closed")
+        expected_gross = position["direction"] * position["quantity"] * (
+            liquidation_price - position["entry_price"])
+        exit_fee = position["quantity"] * liquidation_price * spec["fee_rate_per_side"]
+        expected_net = expected_gross - position["entry_fee"] - exit_fee
+        self.assertAlmostEqual(trade["gross_pnl"], expected_gross, places=8)
+        self.assertNotAlmostEqual(trade["gross_pnl"], -position["margin"], places=8)
+        self.assertAlmostEqual(trade["net_pnl"], expected_net, places=8)
+        self.assertAlmostEqual(liquidated["cash"], spec["initial_capital"] + expected_net,
+                               places=8)
+
+        expected_provenance = {
+            "tier_snapshot_hash": spec["tier_snapshot"]["snapshot_hash"],
+            "account_scope": "test-account",
+            "tier_evidence_sha256": "c" * 64,
+        }
+        liquidation_event = next(item["payload"] for item in events
+                                 if item["event_type"] == "liquidation")
+        exit_fill = next(item["payload"] for item in events
+                         if item["event_type"] == "order_filled"
+                         and item["payload"].get("liquidation"))
+        for payload in (liquidation_event, exit_fill, trade):
+            with self.subTest(event=payload):
+                for key, value in expected_provenance.items():
+                    self.assertEqual(payload[key], value)
+                self.assertEqual(payload["liquidation_model"], "binance_tiered")
+
+    def test_tiered_model_checks_max_leverage_independently_at_boundaries(self):
+        # The ETH tier changes at exactly 10,000 USDT: 9,999.99 remains a
+        # legal 100x tier-1 position, while 10,000 enters the 75x tier and
+        # must be rejected. The mmr diagnostic is intentionally separate.
+        from core.execution.tier_snapshot import load_tier_snapshot
+        snapshot = load_tier_snapshot(_tier_snapshot())
+        _, legal = _tiered_liquidation_price(
+            "ETH/USDT:USDT", 2_000.0, 1, 100, 9_999.99, snapshot)
+        _, rejected = _tiered_liquidation_price(
+            "ETH/USDT:USDT", 2_000.0, 1, 100, 10_000.0, snapshot)
+        self.assertFalse(legal["tier_leverage_exceeded"])
+        self.assertIsNone(legal["tier_rejection_reason"])
+        self.assertTrue(rejected["tier_leverage_exceeded"])
+        self.assertEqual(rejected["tier_rejection_reason"], "tier_leverage_exceeded")
+
+    def test_tiered_model_accepts_boundary_leverage_from_frozen_snapshot(self):
+        from core.execution.tier_snapshot import load_tier_snapshot
+        snapshot = load_tier_snapshot(_tier_snapshot())
+        price, evidence = _tiered_liquidation_price(
+            "ETH/USDT:USDT", 2_000.0, 1, 75, 10_000.0, snapshot)
+        self.assertGreater(price, 0)
+        self.assertFalse(evidence["tier_leverage_exceeded"])
+        self.assertFalse(evidence["maintenance_margin_incompatible"])
+        self.assertIsNone(evidence["tier_rejection_reason"])
+        self.assertEqual(evidence["tier_max_leverage"], 75)
+
+    def test_frozen_snapshot_rejects_unsorted_bands(self):
+        from core.execution.tier_snapshot import load_tier_snapshot
+
+        raw = copy.deepcopy(_tier_snapshot())
+        # Keep the evidence hash intentionally unchanged: the loader must
+        # reject the malformed serialized order before accepting any hash or
+        # selecting a tier.  Silently sorting here would make the same bytes
+        # produce different execution evidence in different implementations.
+        eth = next(item for item in raw["schedules"] if item["symbol"] == "ETHUSDT")
+        eth["bands"] = list(reversed(eth["bands"]))
+        with self.assertRaisesRegex(ValueError, "ascending notional-floor order"):
+            load_tier_snapshot(raw)
+
+    def test_frozen_snapshot_requires_boolean_cap_boundary(self):
+        from core.execution.tier_snapshot import load_tier_snapshot
+
+        for malformed in (None, "false", 1):
+            with self.subTest(boundary=malformed):
+                raw = copy.deepcopy(_tier_snapshot())
+                raw["schedules"][0]["notional_cap_inclusive"] = malformed
+                with self.assertRaisesRegex(ValueError, "notional_cap_inclusive"):
+                    load_tier_snapshot(raw)
+
+    def test_frozen_snapshot_requires_explicit_finite_notional_cap(self):
+        from core.execution.tier_snapshot import load_tier_snapshot
+
+        for label, replacement in (
+            ("missing", {}),
+            ("null", {"notional_cap_usdt": None}),
+            ("infinite_string", {"notional_cap_usdt": "Infinity"}),
+            ("infinite_decimal", {"notional_cap_usdt": Decimal("Infinity")}),
+            ("alias_only", {"notional_upper_usdt": "50000"}),
+        ):
+            with self.subTest(cap=label):
+                raw = copy.deepcopy(_tier_snapshot())
+                band = raw["schedules"][0]["bands"][0]
+                band.pop("notional_cap_usdt")
+                band.update(replacement)
+                with self.assertRaisesRegex(ValueError, "notional_cap_usdt.*finite"):
+                    load_tier_snapshot(raw)
+
+    def test_tiered_model_uses_cumulative_maintenance_in_liquidation_price(self):
+        class Provider:
+            snapshot_hash = "a" * 64
+            account_scope = "test-account"
+
+            def get_schedule(self, pair):
+                return {"evidence_sha256": "c" * 64}
+
+            def get_tier(self, pair, notional):
+                return {"notional_floor_usdt": "0", "notional_cap_usdt": "100000",
+                        "maintenance_margin_ratio": "0.005", "initial_leverage": 100,
+                        "cumulative_maintenance_usdt": "10"}
+
+        price, evidence = _tiered_liquidation_price(
+            "BTC/USDT:USDT", 100.0, 1, 100, 10_000.0, Provider())
+        # qty=100, cumulative maintenance contributes 0.1 USDT per unit.
+        expected = (100.0 - 1.0 - 0.1) / (1 - 0.005)
+        self.assertAlmostEqual(price, expected)
+        self.assertEqual(evidence["tier_cumulative_maintenance_usdt"], 10.0)
+
+    def test_matrix_requires_frozen_snapshot(self):
+        spec = _spec("test-leverage-matrix-no-snapshot")
+        spec["liquidation_model"] = "binance_tiered"
+        spec["position_budget"] = dict(spec["position_budget"], leverage_by_symbol={
+            PAIRS[0]: 100, PAIRS[1]: 75})
+        spec.pop("tier_snapshot")
+        with self.assertRaisesRegex(ValueError, "frozen tier_snapshot"):
+            execution_identity(spec)
+
+    def test_matrix_entry_uses_per_symbol_margin_and_tier_evidence(self):
+        spec = _matrix_spec()
+        state = initial_state(spec, BAR_MS)
+        self.spec = spec
+        pending, _ = self.step(BAR_MS, (1, -1), state=state)
+        opened, events = self.step(2 * BAR_MS, state=pending)
+        self.assertEqual(set(opened["positions"]), set(PAIRS))
+        for pair, position in opened["positions"].items():
+            expected = 100 if pair == PAIRS[0] else 75
+            with self.subTest(pair=pair):
+                self.assertEqual(position["leverage"], expected)
+                self.assertAlmostEqual(position["margin"],
+                                       position["notional"] / expected)
+                self.assertEqual(position["liquidation_model"], "binance_tiered")
+                self.assertIsNone(position["liquidation_tier"]["tier_rejection_reason"])
+                self.assertEqual(position["liquidation_tier"]["tier_snapshot_hash"],
+                                 spec["tier_snapshot"]["snapshot_hash"])
+        fills = [item["payload"] for item in events if item["event_type"] == "order_filled"]
+        self.assertEqual({item["leverage"] for item in fills}, {75, 100})
+
+    def test_matrix_execution_hash_binds_leverage_map_and_snapshot(self):
+        first = execution_identity(_matrix_spec())
+        changed_leverage = _matrix_spec()
+        changed_leverage["position_budget"] = dict(
+            changed_leverage["position_budget"],
+            leverage_by_symbol={PAIRS[0]: 99, PAIRS[1]: 75})
+        changed_snapshot = _matrix_spec()
+        changed_snapshot["tier_snapshot"] = copy.deepcopy(_tier_snapshot())
+        changed_snapshot["tier_snapshot"]["as_of_utc"] = "2026-10-23T00:01:00Z"
+        from core.execution.tier_snapshot import tier_snapshot_hash
+        changed_snapshot["tier_snapshot"]["snapshot_hash"] = tier_snapshot_hash(
+            changed_snapshot["tier_snapshot"])
+        self.assertNotEqual(first["execution_hash"],
+                            execution_identity(changed_leverage)["execution_hash"])
+        self.assertNotEqual(first["execution_hash"],
+                            execution_identity(changed_snapshot)["execution_hash"])
+
+    def test_tiered_model_reports_maintenance_margin_incompatibility(self):
+        class Provider:
+            snapshot_hash = "a" * 64
+            account_scope = "test-account"
+            def get_tier(self, pair, notional):
+                return {"notional_floor_usdt": "0", "notional_cap_usdt": "100000",
+                        "maintenance_margin_ratio": "0.02", "initial_leverage": 100,
+                        "cumulative_maintenance_usdt": "0"}
+        price, evidence = _tiered_liquidation_price(
+            "BTC/USDT:USDT", 100.0, 1, 50, 5_000.0, Provider())
+        self.assertFalse(evidence["tier_leverage_exceeded"])
+        self.assertTrue(evidence["maintenance_margin_incompatible"])
+        self.assertEqual(evidence["tier_rejection_reason"],
+                         "maintenance_margin_incompatible")
+        self.assertAlmostEqual(price, 100.0 * (1 - 1 / 50))
+
+    def test_tiered_success_records_tier_on_fill_and_position(self):
+        self.spec = copy.deepcopy(self.spec)
+        self.spec["liquidation_model"] = "binance_tiered"
+        self.state = initial_state(self.spec, BAR_MS)
+        opened, events = self.enter((1, None))
+        filled = next(item["payload"] for item in events
+                      if item["event_type"] == "order_filled")
+        position = opened["positions"][PAIRS[0]]
+        self.assertEqual(filled["liquidation_model"], "binance_tiered")
+        self.assertIsInstance(filled["liquidation_tier"], dict)
+        self.assertIsNone(filled["liquidation_tier"]["tier_rejection_reason"])
+        self.assertEqual(filled["liquidation_tier"]["tier_max_leverage"], 125)
+        self.assertEqual(position["liquidation_model"], "binance_tiered")
+
+    def test_non_atomic_tiered_entries_are_rejected_per_order(self):
+        spec = copy.deepcopy(self.spec)
+        spec["liquidation_model"] = "binance_tiered"
+        self.spec = spec
+        pending, _ = self.step(BAR_MS, (1, -1), state=initial_state(spec, BAR_MS))
+        starting_fees = pending["fees_paid"]
+
+        def tiered(pair, entry_price, direction, leverage, notional, tier_provider=None):
+            rejected = pair == PAIRS[1]
+            return entry_price * (0.99 if direction == 1 else 1.01), {
+                "tier_max_leverage": 75 if rejected else 125,
+                "tier_leverage_exceeded": rejected,
+                "maintenance_margin_incompatible": False,
+                "tier_snapshot_hash": spec["tier_snapshot"]["snapshot_hash"],
+                "account_scope": "test-account",
+                "tier_evidence_sha256": "c" * 64,
+                "tier_rejection_reason": ("tier_leverage_exceeded" if rejected else None),
+            }
+
+        with patch("strategy_simulation._tiered_liquidation_price", side_effect=tiered):
+            opened, events = self.step(2 * BAR_MS, state=pending)
+        self.assertEqual(set(opened["positions"]), {PAIRS[0]})
+        rejected = [item["payload"] for item in events
+                    if item["event_type"] == "order_rejected"]
+        self.assertEqual([item["pair"] for item in rejected], [PAIRS[1]])
+        self.assertEqual(rejected[0]["group_rejection_reason"],
+                         "tier_leverage_exceeded")
+        self.assertEqual(rejected[0]["tier_snapshot_hash"],
+                         spec["tier_snapshot"]["snapshot_hash"])
+        self.assertEqual(rejected[0]["account_scope"], "test-account")
+        self.assertEqual(rejected[0]["tier_evidence_sha256"], "c" * 64)
+        filled = [item["payload"] for item in events
+                  if item["event_type"] == "order_filled"]
+        self.assertEqual([item["pair"] for item in filled], [PAIRS[0]])
+        self.assertAlmostEqual(opened["fees_paid"] - starting_fees,
+                               opened["positions"][PAIRS[0]]["entry_fee"])
+
+    def test_tiered_entry_rejects_before_cash_or_position_mutation(self):
+        spec = copy.deepcopy(self.spec)
+        spec["liquidation_model"] = "binance_tiered"
+        self.spec = spec
+        pending, _ = self.step(BAR_MS, (1, None), state=initial_state(spec, BAR_MS))
+        with patch(
+            "strategy_simulation._tiered_liquidation_price",
+            return_value=(99.0, {
+                "tier_max_leverage": 75,
+                "tier_leverage_exceeded": True,
+                "maintenance_margin_incompatible": False,
+                "tier_snapshot_hash": spec["tier_snapshot"]["snapshot_hash"],
+                "account_scope": "test-account",
+                "tier_evidence_sha256": "c" * 64,
+                "tier_rejection_reason": "tier_leverage_exceeded",
+            }),
+        ):
+            refused, events = self.step(2 * BAR_MS, state=pending)
+        self.assertFalse(refused["positions"])
+        self.assertAlmostEqual(refused["cash"], 10_000.0)
+        self.assertEqual(refused["fees_paid"], pending["fees_paid"])
+        self.assertFalse(any(item["event_type"] in {"order_filled", "position_opened"}
+                             for item in events))
+        rejected = [item["payload"] for item in events if item["event_type"] == "order_rejected"]
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0]["reason"], "tier_leverage_exceeded")
+        self.assertEqual(rejected[0]["liquidation_tier"]["tier_max_leverage"], 75)
+        self.assertEqual(rejected[0]["tier_snapshot_hash"],
+                         spec["tier_snapshot"]["snapshot_hash"])
+        self.assertEqual(rejected[0]["account_scope"], "test-account")
+        self.assertEqual(rejected[0]["tier_evidence_sha256"], "c" * 64)
+
+    def test_tiered_entry_provider_early_rejection_does_not_claim_unverified_provenance(self):
+        spec = copy.deepcopy(self.spec)
+        spec["liquidation_model"] = "binance_tiered"
+        self.spec = spec
+        pending, _ = self.step(BAR_MS, (1, None), state=initial_state(spec, BAR_MS))
+        with patch("strategy_simulation._tier_provider_issue",
+                   side_effect=[None, "tier_snapshot_hash_mismatch"]):
+            refused, events = self.step(2 * BAR_MS, state=pending)
+
+        self.assertFalse(refused["positions"])
+        rejected = [item["payload"] for item in events
+                    if item["event_type"] == "order_rejected"]
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0]["reason"], "tier_snapshot_unavailable")
+        self.assertEqual(rejected[0]["group_rejection_reason"],
+                         "tier_snapshot_hash_mismatch")
+        self.assertEqual(rejected[0]["tier_snapshot_hash"],
+                         spec["tier_snapshot"]["snapshot_hash"])
+        self.assertNotIn("account_scope", rejected[0])
+        self.assertNotIn("tier_evidence_sha256", rejected[0])
+        self.assertNotIn("liquidation_tier", rejected[0])
 
     def test_short_high_triggers_liquidation_and_close_is_not_fill_proxy(self):
         opened, _ = self.enter((-1, None))

@@ -49,7 +49,8 @@ class HandoffTests(unittest.TestCase):
         self.ledger.runner_orders.return_value = []
         self.ledger.runner_fills.return_value = []
         self.controller = DemoRunnerController(self.data, self.ledger, Mock(),
-            paper_source=Mock(), lock_path=Path(self.temp.name) / "demo.lock")
+            paper_source=Mock(), lock_path=Path(self.temp.name) / "demo.lock",
+            risk_gate_required=False)
         self.controller._lock()
         self.service = PausedService()
         self.controller.service = self.service
@@ -163,7 +164,7 @@ class HandoffTests(unittest.TestCase):
         self.controller._create.assert_not_called()
         self.assertEqual(result["selectedAccountId"], "frozen-paper")
         restarted = DemoRunnerController(self.data, self.ledger, Mock(), paper_source=Mock(),
-                                        lock_path=self.controller.lock_path)
+                                        lock_path=self.controller.lock_path, risk_gate_required=False)
         restarted._create = Mock()
         result = restarted.resume_protection()
         restarted._create.assert_not_called()

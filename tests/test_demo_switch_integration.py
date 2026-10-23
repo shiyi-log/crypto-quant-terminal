@@ -139,7 +139,8 @@ class DemoSwitchIntegrationTests(unittest.TestCase):
         controller = DemoRunnerController(self.data, DemoStore(self.data, "demo_default"),
             self.credentials.load_credentials, self.adapter_factory, paper_source=self.paper,
             clock_ms=lambda: self.clock,
-            lock_path=Path(self.root.name) / "binance_demo_runner.lock")
+            lock_path=Path(self.root.name) / "binance_demo_runner.lock",
+            risk_gate_required=False)
         controller._start_worker = Mock()
         self.controllers.append(controller)
         return controller

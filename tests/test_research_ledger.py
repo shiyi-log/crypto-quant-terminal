@@ -115,6 +115,15 @@ class FakeStore:
 
 class ResearchLedgerTests(unittest.TestCase):
     @staticmethod
+    def _target_binding(account_scope="acct-demo-1", strategy_id="strategy-1",
+                        rule_hash="a" * 64, execution_hash="b" * 64):
+        return ledger.build_risk_gate_target_binding(account_scope, [{
+            "strategy_id": strategy_id,
+            "rule_hash": rule_hash,
+            "execution_hash": execution_hash,
+        }])
+
+    @staticmethod
     def _forward_event(run_id, event_type, event_id, **fields):
         return {"event_type": event_type, "run_id": run_id,
                 "event_id": event_id, **fields}
@@ -130,6 +139,9 @@ class ResearchLedgerTests(unittest.TestCase):
             "inputs_hash": "inputs-sha256",
             "reviewer": "DeepSeek",
             "evidence_hashes": ["evidence-sha256"],
+            "target_binding": ResearchLedgerTests._target_binding(),
+            "target_binding_hash": ledger.risk_gate_target_binding_hash(
+                ResearchLedgerTests._target_binding()),
             "timestamp_utc": "2026-10-21T00:00:00Z",
             "previous_event_id": previous_event_id,
         }
@@ -156,6 +168,109 @@ class ResearchLedgerTests(unittest.TestCase):
         self.assertEqual(row["source_id"], "research-risk/research-1")
         self.assertEqual(ledger.read_risk_gate_events(store, "research-1")[0]["event_id"], first)
 
+    def test_require_closed_risk_gate_rejects_missing_and_open_chain(self):
+        store = FakeStore()
+        with self.assertRaisesRegex(ledger.RiskGateError, "no risk_gate event"):
+            ledger.require_closed_risk_gate(
+                store, "research-1", expected_binding=self._target_binding())
+        opened = ledger.append_risk_gate_event(store, self._risk_gate())
+        self.assertTrue(opened)
+        with self.assertRaisesRegex(ledger.RiskGateError, "not executable"):
+            ledger.require_closed_risk_gate(
+                store, "research-1", expected_binding=self._target_binding())
+
+    def test_require_closed_risk_gate_returns_latest_passing_event(self):
+        store = FakeStore()
+        opened = ledger.append_risk_gate_event(store, self._risk_gate())
+        closed = self._risk_gate(
+            state="closed", preflight="pass", previous_event_id=opened,
+            timestamp_utc="2026-10-21T00:01:00Z",
+        )
+        closed_id = ledger.append_risk_gate_event(store, closed)
+        result = ledger.require_closed_risk_gate(
+            store, "research-1", expected_binding=self._target_binding())
+        self.assertEqual(result["event_id"], closed_id)
+        self.assertEqual(result["risk_segment_status"], "closed")
+        self.assertEqual(result["preflight_status"], "pass")
+        self.assertEqual(result["boundary_hash"], "boundary-sha256")
+        self.assertEqual(result["target_binding"], self._target_binding())
+
+    def test_require_closed_risk_gate_rechecks_chain_integrity(self):
+        store = FakeStore()
+        opened = ledger.append_risk_gate_event(store, self._risk_gate())
+        closed = self._risk_gate(
+            state="closed", preflight="pass", previous_event_id=opened,
+            timestamp_utc="2026-10-21T00:01:00Z",
+        )
+        closed_id = ledger.append_risk_gate_event(store, closed)
+        latest = store.events[closed_id]["payload"]
+        latest["previous_event_id"] = "forged"
+        store.events[closed_id]["event_id"] = ledger._event_id("risk_gate", latest)
+        with self.assertRaisesRegex(ledger.RiskGateError, "predecessor mismatch"):
+            ledger.require_closed_risk_gate(
+                store, "research-1", expected_binding=self._target_binding())
+
+    def test_require_closed_risk_gate_rejects_payload_changed_under_old_event_id(self):
+        store = FakeStore()
+        opened = ledger.append_risk_gate_event(store, self._risk_gate())
+        closed = self._risk_gate(
+            state="closed", preflight="pass", previous_event_id=opened,
+            timestamp_utc="2026-10-21T00:01:00Z",
+        )
+        closed_id = ledger.append_risk_gate_event(store, closed)
+        row = store.events[closed_id]
+        row["payload"]["inputs_hash"] = "tampered-inputs"
+        with self.assertRaisesRegex(ledger.RiskGateError, "content id mismatch"):
+            ledger.require_closed_risk_gate(
+                store, "research-1", expected_binding=self._target_binding())
+
+    def test_require_closed_risk_gate_rejects_non_object_payload(self):
+        store = FakeStore()
+        opened = ledger.append_risk_gate_event(store, self._risk_gate())
+        closed = ledger.append_risk_gate_event(
+            store,
+            self._risk_gate(
+                state="closed", preflight="pass", previous_event_id=opened,
+                timestamp_utc="2026-10-21T00:01:00Z",
+            ),
+        )
+        store.events[closed]["payload"] = ["malformed"]
+
+        with self.assertRaisesRegex(ledger.RiskGateError, "payload is invalid"):
+            ledger.require_closed_risk_gate(
+                store, "research-1", expected_binding=self._target_binding())
+
+    def test_require_closed_risk_gate_rejects_account_or_strategy_target_mismatch(self):
+        store = FakeStore()
+        opened = ledger.append_risk_gate_event(store, self._risk_gate())
+        ledger.append_risk_gate_event(store, self._risk_gate(
+            state="closed", preflight="pass", previous_event_id=opened,
+            timestamp_utc="2026-10-21T00:01:00Z"))
+        for binding in (
+                self._target_binding(account_scope="another-account"),
+                self._target_binding(strategy_id="another-strategy"),
+                self._target_binding(rule_hash="c" * 64),
+                self._target_binding(execution_hash="d" * 64)):
+            with self.subTest(binding=binding), self.assertRaisesRegex(
+                    ledger.RiskGateError, "does not authorize"):
+                ledger.require_closed_risk_gate(
+                    store, "research-1", expected_binding=binding)
+
+    def test_risk_gate_target_binding_is_immutable_and_hash_checked(self):
+        store = FakeStore()
+        opened_payload = self._risk_gate()
+        opened = ledger.append_risk_gate_event(store, opened_payload)
+        changed = self._target_binding(strategy_id="other-strategy")
+        with self.assertRaisesRegex(ValueError, "target binding cannot change"):
+            ledger.append_risk_gate_event(store, self._risk_gate(
+                state="closed", preflight="pass", previous_event_id=opened,
+                timestamp_utc="2026-10-21T00:01:00Z",
+                target_binding=changed,
+                target_binding_hash=ledger.risk_gate_target_binding_hash(changed)))
+        malformed = self._risk_gate(target_binding_hash="0" * 64)
+        with self.assertRaisesRegex(ValueError, "target_binding_hash"):
+            ledger.append_risk_gate_event(store, malformed)
+
     def test_risk_gate_closes_only_after_open_preflight_pass(self):
         store = FakeStore()
         opened = ledger.append_risk_gate_event(store, self._risk_gate())
@@ -179,10 +294,72 @@ class ResearchLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "closed risk segment"):
             ledger.append_risk_gate_event(
                 store,
-                self._risk_gate(state="closed", preflight="not_estimable",
+                self._risk_gate(state="closed", preflight="pass",
                                 previous_event_id=closed_id),
             )
         self.assertEqual(len(store.events), 2)
+
+    def test_require_closed_risk_gate_rejects_historical_payload_shape_tampering(self):
+        mutations = {
+            "invalid preflight": lambda payload: payload.update(preflight_status="corrupt"),
+            "empty evidence": lambda payload: payload.update(evidence_hashes=[]),
+            "missing acquisition plan": lambda payload: payload.pop("risk_data_acquisition_plan"),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                store = FakeStore()
+                opened = ledger.append_risk_gate_event(store, self._risk_gate())
+                closed = ledger.append_risk_gate_event(
+                    store,
+                    self._risk_gate(
+                        state="closed", preflight="pass", previous_event_id=opened,
+                        timestamp_utc="2026-10-21T00:01:00Z",
+                    ),
+                )
+
+                # Simulate an append-only database retaining internally
+                # consistent links after a historical payload rewrite.  The
+                # reader must still reject the malformed event schema.
+                opened_row = store.events[opened]
+                mutate(opened_row["payload"])
+                rewritten_open_id = ledger._event_id("risk_gate", opened_row["payload"])
+                opened_row["event_id"] = rewritten_open_id
+                closed_row = store.events[closed]
+                closed_row["payload"]["previous_event_id"] = rewritten_open_id
+                closed_row["event_id"] = ledger._event_id("risk_gate", closed_row["payload"])
+
+                with self.assertRaisesRegex(ledger.RiskGateError, "chain is malformed"):
+                    ledger.require_closed_risk_gate(
+                        store, "research-1", expected_binding=self._target_binding())
+
+    def test_require_closed_risk_gate_rejects_event_after_closed_segment(self):
+        store = FakeStore()
+        opened = ledger.append_risk_gate_event(store, self._risk_gate())
+        closed = ledger.append_risk_gate_event(
+            store,
+            self._risk_gate(
+                state="closed", preflight="pass", previous_event_id=opened,
+                timestamp_utc="2026-10-21T00:01:00Z",
+            ),
+        )
+        late_payload = self._risk_gate(
+            previous_event_id=closed,
+            timestamp_utc="2026-10-21T00:02:00Z",
+        )
+        late_id = ledger._event_id("risk_gate", late_payload)
+        store.sequence += 1
+        store.events[late_id] = {
+            "event_id": late_id,
+            "event_type": "risk_gate",
+            "payload": late_payload,
+            "source_id": "research-risk/research-1",
+            "created_at": "2026-10-10T00:00:00+00:00",
+            "sequence_id": store.sequence,
+        }
+
+        with self.assertRaisesRegex(ledger.RiskGateError, "follows a closed segment"):
+            ledger.require_closed_risk_gate(
+                store, "research-1", expected_binding=self._target_binding())
 
     def test_risk_gate_rejects_bad_chain_and_missing_plan_without_insert(self):
         store = FakeStore()

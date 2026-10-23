@@ -34,13 +34,20 @@ class ForwardPaperRunnerTests(unittest.TestCase):
         """A manifest/database error must not leak the CLI's connection pool."""
         store = Mock()
         with patch("forward_paper_runner.paper.load_feather_1h", return_value={}), \
+                patch("research_ledger.require_closed_risk_gate", return_value={
+                    "research_id": "research-1", "event_id": "gate-id",
+                    "risk_segment_status": "closed", "preflight_status": "pass",
+                    "target_binding_hash": "c" * 64,
+                }), \
                 patch("data_store.DataStore", return_value=store), \
                 patch("forward_paper_runner.ForwardPaperRunner",
                       side_effect=ValueError("immutable manifest conflict")):
             with self.assertRaisesRegex(ValueError, "immutable manifest conflict"):
                 from forward_paper_runner import main
 
-                main(["--data-dir", "/tmp/data", "--output", "/tmp/output"])
+                main(["--data-dir", "/tmp/data", "--output", "/tmp/output",
+                      "--research-id", "research-1",
+                      "--account-scope", "offline-test-account"])
         store.close.assert_called_once_with()
 
     def test_same_snapshot_after_observation_gap_records_continuity_loss(self):

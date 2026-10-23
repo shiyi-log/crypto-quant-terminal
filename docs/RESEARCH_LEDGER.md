@@ -48,3 +48,16 @@ uv run python research_ledger.py --sync
 | 持续多变体干跑 | 一个实时数据源、冻结规则、独立账户状态、重启恢复、数据库/页面对比 | runner 已支持 13 个冻结变体与数据库 outbox；尚未启动持续多变体前向服务 |
 
 后续版本必须记录假设、可执行规则变化、代码/规则/数据版本、决策时间、订单及成交、成本缺失项和撤回原因。先验证记录完整及规则可执行，再在预先固定的日期评估收益；不把少量偶然收益当作模型提升。
+
+### 前向运行闸门
+
+`bot/forward_paper_runner.py` 的 CLI 在读取行情目录前要求 `--research-id` 和
+`--account-scope`，并通过
+`research_ledger.require_closed_risk_gate()` 验证该研究账本的最新事件同时满足
+`risk_segment_status=closed` 和 `preflight_status=pass`。没有事件、仍为 `open`、
+`not_estimable` 或 `fail` 时，进程立即拒绝；不会创建输出目录，也不会读取候选行情。
+`--account-scope` 是脱敏的账户范围别名，不是 API key、secret 或账户身份的自动证明。
+Demo 服务的 `QUANT_DEMO_RISK_ACCOUNT_SCOPE` 同样需要独立的别名到实际 Demo 凭据映射证据；
+当前代码不会凭配置字符串自动完成这项映射核验。
+纸面实现测试可以直接使用 `ForwardPaperRunner` 的合成数据，但这不构成候选研究或
+盈利证据。

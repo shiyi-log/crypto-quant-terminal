@@ -158,6 +158,28 @@ def _pairs(value: Any, field: str) -> list[str]:
     return result
 
 
+def _normalize_leverage_pair(value: Any, field: str) -> str:
+    """Normalize a leverage-map key to the canonical futures pair.
+
+    Research documents commonly spell a USDT-M symbol as ``BTCUSDT`` while
+    the execution contract uses ``BTC/USDT:USDT``.  Accept both spellings at
+    the Fnew boundary, then persist only the canonical form so rule hashes
+    and downstream execution see one unambiguous key.
+    """
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"{field} must be a non-empty trimmed symbol")
+    text = value.upper().replace("-", "")
+    if "/" in text:
+        base, quote = text.split("/", 1)
+        quote = quote.replace(":USDT", "")
+        if quote != "USDT" or not base:
+            raise ValueError(f"{field} must be a USDT-M symbol")
+        return f"{base}/USDT:USDT"
+    if text.endswith("USDT") and len(text) > 4:
+        return f"{text[:-4]}/USDT:USDT"
+    raise ValueError(f"{field} must be a USDT-M symbol")
+
+
 def data_feed_contract(canonical: str) -> dict[str, Any]:
     """Freeze markets separately. A futures series can never substitute spot."""
     pairs = CANONICAL_UNIVERSES[canonical]
@@ -278,10 +300,43 @@ def normalize_fnew_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     supplied_budget = spec.get("position_budget", {})
     if not isinstance(supplied_budget, Mapping):
         raise ValueError("position_budget must be a mapping")
-    if set(supplied_budget) - set(budget):
+    supplied_leverage_map = supplied_budget.get("leverage_by_symbol")
+    allowed_budget_fields = set(budget) | ({"leverage_by_symbol"}
+                                           if supplied_leverage_map is not None else set())
+    if set(supplied_budget) - allowed_budget_fields:
         raise ValueError("unsupported Fnew position_budget field")
-    if any(value != budget[key] for key, value in supplied_budget.items()):
+    if any(value != budget[key] for key, value in supplied_budget.items()
+           if key != "leverage_by_symbol"):
         raise ValueError("Fnew execution requires 30% margin, two slots and 100x leverage")
+    if supplied_leverage_map is not None:
+        if not isinstance(supplied_leverage_map, Mapping) or not supplied_leverage_map:
+            raise ValueError("leverage_by_symbol must be a non-empty mapping")
+        expected = set(expected_pairs)
+        normalized_keys = {}
+        for raw_pair in supplied_leverage_map:
+            pair = _normalize_leverage_pair(raw_pair, "leverage_by_symbol key")
+            if pair in normalized_keys:
+                raise ValueError(f"duplicate leverage_by_symbol key after normalization: {pair}")
+            normalized_keys[pair] = raw_pair
+        supplied_pairs = set(normalized_keys)
+        if supplied_pairs != expected:
+            missing = sorted(expected - supplied_pairs)
+            extra = sorted(supplied_pairs - expected)
+            detail = []
+            if missing:
+                detail.append("missing: " + ", ".join(missing))
+            if extra:
+                detail.append("unknown: " + ", ".join(extra))
+            raise ValueError("leverage_by_symbol does not match execution universe (" +
+                             "; ".join(detail) + ")")
+        normalized_map = {}
+        for pair in expected_pairs:
+            value = _number(supplied_leverage_map[normalized_keys[pair]],
+                            f"leverage_by_symbol[{pair}]")
+            if value <= 0 or value > budget["leverage"]:
+                raise ValueError("per-symbol leverage must be in (0, 100]")
+            normalized_map[pair] = value
+        budget["leverage_by_symbol"] = normalized_map
     for field in ("target_exposure", "max_positions", "max_per_coin", "leverage"):
         _number(supplied_budget.get(field, budget[field]), field)
     risk = _number(spec.get("max_loss_per_trade_usdt", identity["max_loss_per_trade_usdt"]),

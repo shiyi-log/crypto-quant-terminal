@@ -89,6 +89,12 @@ def _record_event(store, event_type: str, payload: dict[str, Any], source_id: st
 
 _RISK_GATE_STATES = frozenset({"open", "closed"})
 _RISK_GATE_PREFLIGHT_STATUSES = frozenset({"pass", "fail", "not_estimable"})
+_RISK_GATE_BINDING_VERSION = "risk-gate-target-v1"
+_RISK_GATE_HASH_LENGTH = 64
+
+
+class RiskGateError(RuntimeError):
+    """Raised when a research run is attempted without a closed risk gate."""
 
 
 def _risk_gate_text(value: Any, name: str) -> str:
@@ -97,6 +103,52 @@ def _risk_gate_text(value: Any, name: str) -> str:
             or any(ord(char) < 32 for char in value)):
         raise ValueError(f"risk_gate {name} must be a non-empty string")
     return value
+
+
+def build_risk_gate_target_binding(account_scope: str,
+                                   targets: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build the canonical account and frozen-strategy scope for one gate."""
+    account_scope = _risk_gate_text(account_scope, "account_scope")
+    if not isinstance(targets, list) or not targets:
+        raise ValueError("risk_gate targets must be a non-empty list")
+    normalized = []
+    for target in targets:
+        if not isinstance(target, dict) or set(target) != {
+                "strategy_id", "rule_hash", "execution_hash"}:
+            raise ValueError("risk_gate target must contain strategy_id, rule_hash, and execution_hash")
+        row = {key: _risk_gate_text(target.get(key), f"target.{key}")
+               for key in ("strategy_id", "rule_hash", "execution_hash")}
+        for key in ("rule_hash", "execution_hash"):
+            value = row[key]
+            if (len(value) != _RISK_GATE_HASH_LENGTH
+                    or any(char not in "0123456789abcdef" for char in value)):
+                raise ValueError(f"risk_gate target {key} must be a lowercase SHA-256")
+        normalized.append(row)
+    normalized.sort(key=lambda row: row["strategy_id"])
+    if len({row["strategy_id"] for row in normalized}) != len(normalized):
+        raise ValueError("risk_gate target strategy_id values must be unique")
+    return {"version": _RISK_GATE_BINDING_VERSION,
+            "account_scope": account_scope, "targets": normalized}
+
+
+def risk_gate_target_binding_hash(binding: dict[str, Any]) -> str:
+    """Hash a target binding after revalidating its exact canonical shape."""
+    if not isinstance(binding, dict) or set(binding) != {"version", "account_scope", "targets"}:
+        raise ValueError("risk_gate target binding has an invalid shape")
+    if binding.get("version") != _RISK_GATE_BINDING_VERSION:
+        raise ValueError("risk_gate target binding version is unsupported")
+    canonical = build_risk_gate_target_binding(binding.get("account_scope"), binding.get("targets"))
+    if canonical != binding:
+        raise ValueError("risk_gate target binding is not canonical")
+    return hashlib.sha256(_json(canonical).encode("utf-8")).hexdigest()
+
+
+def _risk_gate_binding_matches(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+    """Require the exact account and each requested frozen target to be authorized."""
+    if expected["account_scope"] != actual["account_scope"]:
+        return False
+    authorized = {row["strategy_id"]: row for row in actual["targets"]}
+    return all(authorized.get(row["strategy_id"]) == row for row in expected["targets"])
 
 
 def _risk_gate_timestamp(value: Any) -> datetime:
@@ -142,33 +194,33 @@ def _risk_gate_events(store, research_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def validate_risk_gate_transition(store, payload: dict[str, Any]) -> None:
-    """Validate one append-only risk-gate event before it is persisted.
-
-    The existing ledger deliberately accepts generic evidence events.  This
-    validator is scoped to the new research protocol so old model and
-    forward-paper records retain their historical behavior.  The first event
-    opens a research risk segment; a later event may close it only after a
-    passing preflight and an exact previous-event link.
-    """
+def _validate_risk_gate_payload(payload: dict[str, Any]) -> tuple[str, str, datetime, dict[str, Any], str]:
+    """Validate fields that must remain true when a stored gate is read."""
     if not isinstance(payload, dict):
-        raise ValueError("risk_gate payload must be an object")
+        raise ValueError("risk_gate payload is invalid")
     research_id = _risk_gate_text(payload.get("research_id"), "research_id")
     state = payload.get("risk_segment_status")
     if state not in _RISK_GATE_STATES:
-        raise ValueError("risk_gate risk_segment_status must be open or closed")
+        raise ValueError("risk_gate risk_segment_status is invalid")
     preflight = payload.get("preflight_status")
     if preflight not in _RISK_GATE_PREFLIGHT_STATUSES:
-        raise ValueError("risk_gate preflight_status must be pass, fail, or not_estimable")
+        raise ValueError("risk_gate preflight_status is invalid")
     _risk_gate_text(payload.get("boundary_hash"), "boundary_hash")
     _risk_gate_text(payload.get("inputs_hash"), "inputs_hash")
     _risk_gate_text(payload.get("reviewer"), "reviewer")
+    try:
+        binding = payload.get("target_binding")
+        binding_hash = risk_gate_target_binding_hash(binding)
+    except ValueError as exc:
+        raise ValueError("risk_gate target_binding is invalid") from exc
+    if payload.get("target_binding_hash") != binding_hash:
+        raise ValueError("risk_gate target_binding_hash does not match its binding")
     timestamp = _risk_gate_timestamp(payload.get("timestamp_utc"))
     evidence_hashes = payload.get("evidence_hashes")
     if (not isinstance(evidence_hashes, list) or not evidence_hashes
             or any(not isinstance(item, str) or item != item.strip() or not item.strip()
                    for item in evidence_hashes)):
-        raise ValueError("risk_gate evidence_hashes must be a non-empty list of strings")
+        raise ValueError("risk_gate evidence_hashes are invalid")
     if "previous_event_id" not in payload:
         raise ValueError("risk_gate previous_event_id is required")
     previous_event_id = payload.get("previous_event_id")
@@ -180,6 +232,25 @@ def validate_risk_gate_transition(store, payload: dict[str, Any]) -> None:
         raise ValueError(
             "risk_gate not_estimable requires risk_data_acquisition_plan source, owner, and deadline"
         )
+    if state == "closed" and preflight != "pass":
+        raise ValueError("risk_gate may close only with preflight_status=pass")
+    return research_id, state, timestamp, binding, binding_hash
+
+
+def validate_risk_gate_transition(store, payload: dict[str, Any]) -> None:
+    """Validate one append-only risk-gate event before it is persisted.
+
+    The existing ledger deliberately accepts generic evidence events.  This
+    validator is scoped to the new research protocol so old model and
+    forward-paper records retain their historical behavior.  The first event
+    opens a research risk segment; a later event may close it only after a
+    passing preflight and an exact previous-event link.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("risk_gate payload must be an object")
+    research_id, state, timestamp, binding, binding_hash = _validate_risk_gate_payload(payload)
+    previous_event_id = payload.get("previous_event_id")
+    preflight = payload.get("preflight_status")
 
     events = _risk_gate_events(store, research_id)
     if not events:
@@ -200,6 +271,9 @@ def validate_risk_gate_transition(store, payload: dict[str, Any]) -> None:
         raise ValueError("a closed risk segment cannot receive another risk_gate event")
     if prior_payload.get("boundary_hash") != payload.get("boundary_hash"):
         raise ValueError("risk_gate boundary_hash cannot change within a research chain")
+    if (prior_payload.get("target_binding") != payload.get("target_binding")
+            or prior_payload.get("target_binding_hash") != payload.get("target_binding_hash")):
+        raise ValueError("risk_gate target binding cannot change within a research chain")
     prior_timestamp = _risk_gate_timestamp(prior_payload.get("timestamp_utc"))
     if timestamp < prior_timestamp:
         raise ValueError("risk_gate timestamp_utc must be monotonic within a research chain")
@@ -230,6 +304,107 @@ def read_risk_gate_events(store, research_id: str) -> list[dict[str, Any]]:
     """Return one research id's risk-gate chain in append order."""
     research_id = _risk_gate_text(research_id, "research_id")
     return _risk_gate_events(store, research_id)
+
+
+def require_closed_risk_gate(store, research_id: str, *,
+                             expected_binding: dict[str, Any]) -> dict[str, Any]:
+    """Return the latest passing gate or refuse a candidate/forward run.
+
+    This check is intentionally separate from event append validation.  A
+    caller must prove that the immutable chain exists and that its latest
+    event closes the segment with a passing preflight before it reads any
+    candidate input data.
+    """
+    research_id = _risk_gate_text(research_id, "research_id")
+    try:
+        risk_gate_target_binding_hash(expected_binding)
+        # Rebuild to ensure the consumer supplied a canonical, independently
+        # derived target rather than an incomplete or mutable identity.
+        expected_binding = build_risk_gate_target_binding(
+            expected_binding["account_scope"], expected_binding["targets"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RiskGateError("expected risk gate target binding is invalid") from exc
+    events = read_risk_gate_events(store, research_id)
+    if not events:
+        raise RiskGateError(
+            f"research_id={research_id} has no risk_gate event; "
+            "candidate/forward execution is blocked"
+        )
+    previous = None
+    boundary_hash = None
+    target_binding_hash = None
+    target_binding = None
+    previous_timestamp = None
+    closed_seen = False
+    for index, event in enumerate(events):
+        if event.get("event_type") != "risk_gate" or event.get("source_id") != f"research-risk/{research_id}":
+            raise RiskGateError(f"research_id={research_id} risk gate chain contains an invalid event")
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            raise RiskGateError(f"research_id={research_id} risk gate payload is invalid")
+        event_id = event.get("event_id")
+        try:
+            expected_event_id = _event_id("risk_gate", payload)
+        except (TypeError, ValueError):
+            raise RiskGateError(f"research_id={research_id} risk gate payload is invalid") from None
+        if not isinstance(event_id, str) or event_id != expected_event_id:
+            raise RiskGateError(f"research_id={research_id} risk gate event content id mismatch")
+        try:
+            event_research_id, event_state, event_timestamp, event_binding, event_binding_hash = (
+                _validate_risk_gate_payload(payload)
+            )
+        except ValueError as exc:
+            raise RiskGateError(f"research_id={research_id} risk gate chain is malformed") from exc
+        if event_research_id != research_id:
+            raise RiskGateError(f"research_id={research_id} risk gate research id mismatch")
+        if closed_seen:
+            raise RiskGateError(f"research_id={research_id} risk gate event follows a closed segment")
+        if index == 0:
+            if payload.get("previous_event_id") is not None or event_state != "open":
+                raise RiskGateError(f"research_id={research_id} first risk gate event is invalid")
+        else:
+            if payload.get("previous_event_id") != previous:
+                raise RiskGateError(f"research_id={research_id} risk gate predecessor mismatch")
+            if payload.get("boundary_hash") != boundary_hash:
+                raise RiskGateError(f"research_id={research_id} risk gate boundary changed")
+            if (event_binding_hash != target_binding_hash
+                    or event_binding != target_binding):
+                raise RiskGateError(f"research_id={research_id} risk gate target binding changed")
+            if event_timestamp < previous_timestamp:
+                raise RiskGateError(f"research_id={research_id} risk gate timestamp regressed")
+        previous = event.get("event_id")
+        boundary_hash = payload.get("boundary_hash")
+        target_binding = event_binding
+        target_binding_hash = event_binding_hash
+        previous_timestamp = event_timestamp
+        closed_seen = event_state == "closed"
+
+    latest = events[-1]
+    payload = latest.get("payload")
+    if not isinstance(payload, dict):
+        raise RiskGateError(f"research_id={research_id} latest risk_gate payload is invalid")
+    state = payload.get("risk_segment_status")
+    preflight = payload.get("preflight_status")
+    if state != "closed" or preflight != "pass":
+        raise RiskGateError(
+            f"research_id={research_id} risk gate is not executable "
+            f"(risk_segment_status={state!r}, preflight_status={preflight!r})"
+        )
+    if not _risk_gate_binding_matches(expected_binding, target_binding):
+        raise RiskGateError(
+            f"research_id={research_id} risk gate does not authorize the requested account/strategy target"
+        )
+    return {
+        "research_id": research_id,
+        "event_id": latest.get("event_id"),
+        "risk_segment_status": state,
+        "preflight_status": preflight,
+        "boundary_hash": payload.get("boundary_hash"),
+        "inputs_hash": payload.get("inputs_hash"),
+        "evidence_hashes": list(payload.get("evidence_hashes") or []),
+        "target_binding": target_binding,
+        "target_binding_hash": target_binding_hash,
+    }
 
 
 _FORWARD_PAPER_TYPES = frozenset({"manifest", "snapshot", "decision", "fill", "checkpoint"})

@@ -12,6 +12,32 @@ from strategy_simulation import (SAMPLE_QUALITY_CUTOFF_MS, StrategySimulation, _
                                  sample_annotation)
 
 
+def _tier_snapshot(*, leverages=None):
+    leverages = leverages or {BTC: 100, ETH: 100, TRX: 100}
+    provenance = {"endpoint": "/fapi/v1/leverageBracket", "http_method": "GET",
+                  "security_type": "USER_DATA", "request_id": "pair-test",
+                  "signed_at_utc": "2026-10-23T00:00:00Z", "response_sha256": "b" * 64,
+                  "environment": "testnet"}
+    def schedule(symbol, lev):
+        return {"symbol": symbol, "bands": [{"initial_leverage": lev,
+                "notional_floor_usdt": "0", "notional_cap_usdt": "1000000",
+                "maintenance_margin_ratio": "0.005",
+                "cumulative_maintenance_usdt": "0"}], "source": "test",
+                "effective_at_utc": "2026-10-23T00:00:00Z",
+                "fetched_at_utc": "2026-10-23T00:00:00Z", "account_scope": "pair-test",
+                "evidence_sha256": "c" * 64, "verified": True,
+                "snapshot_kind": "account_api_snapshot", "notional_cap_inclusive": False,
+                "provenance": provenance}
+    raw = {"snapshot_hash": "0" * 64, "account_scope": "pair-test",
+            "as_of_utc": "2026-10-23T00:00:00Z", "schedules": [
+                schedule("BTCUSDT", leverages[BTC]),
+                schedule("ETHUSDT", leverages[ETH]),
+                schedule("TRXUSDT", leverages[TRX]) ]}
+    from core.execution.tier_snapshot import tier_snapshot_hash
+    raw["snapshot_hash"] = tier_snapshot_hash(raw)
+    return raw
+
+
 BAR = 3_600_000
 START = (SAMPLE_QUALITY_CUTOFF_MS // BAR + 30) * BAR
 
@@ -98,6 +124,132 @@ class PairExecutionTests(unittest.TestCase):
                     self.assertEqual(a["entry_pair_coefficients"], {"intercept": .1, "beta": 1.2})
                     self.assertEqual(len([item for item in events if item["event_type"] == "position_opened"]), 2)
                     self.assertLessEqual(_mark(state)["margin_used"], .3 * _mark(state)["equity"] + 1e-8)
+
+    def test_tiered_pair_rejects_all_legs_before_any_cash_mutation(self):
+        spec = self.definition()
+        spec["liquidation_model"] = "binance_tiered"
+        spec["tier_snapshot"] = _tier_snapshot()
+
+        def tiered(pair, entry_price, direction, leverage, notional, tier_provider=None):
+            rejected = pair == ETH
+            return entry_price * (0.99 if direction == 1 else 1.01), {
+                "tier_max_leverage": 75 if rejected else 100,
+                "tier_leverage_exceeded": rejected,
+                "maintenance_margin_incompatible": False,
+                "tier_snapshot_hash": spec["tier_snapshot"]["snapshot_hash"],
+                "account_scope": "pair-test",
+                "tier_evidence_sha256": "c" * 64,
+                "tier_rejection_reason": "tier_leverage_exceeded" if rejected else None,
+            }
+
+        with patch("strategy_simulation._tiered_liquidation_price", side_effect=tiered):
+            state, events = self.enter(spec)
+        self.assertFalse(state["positions"])
+        self.assertAlmostEqual(state["cash"], 10_000.0)
+        self.assertEqual(state["fees_paid"], 0.0)
+        self.assertFalse(any(item["event_type"] in {"order_filled", "position_opened"}
+                             for item in events))
+        rejected = [item["payload"] for item in events if item["event_type"] == "order_rejected"]
+        self.assertEqual(len(rejected), 2)
+        self.assertTrue(all(item["reason"] == "tier_leverage_exceeded" for item in rejected))
+        self.assertEqual({item["pair"] for item in rejected}, {BTC, ETH})
+        for item in rejected:
+            with self.subTest(pair=item["pair"]):
+                self.assertEqual(item["tier_snapshot_hash"],
+                                 spec["tier_snapshot"]["snapshot_hash"])
+                self.assertEqual(item["account_scope"], "pair-test")
+                self.assertEqual(item["tier_evidence_sha256"], "c" * 64)
+
+    def test_tiered_pair_provider_early_rejection_does_not_claim_unverified_provenance(self):
+        spec = self.definition()
+        spec["liquidation_model"] = "binance_tiered"
+        spec["tier_snapshot"] = _tier_snapshot()
+        pending, _ = self.step(spec, initial_state(spec, START), START, (1, -1))
+        with patch("strategy_simulation._tier_provider_issue",
+                   side_effect=[None, "tier_snapshot_hash_mismatch"]):
+            state, events = self.step(spec, pending, START + BAR)
+
+        self.assertFalse(state["positions"])
+        rejected = [item["payload"] for item in events
+                    if item["event_type"] == "order_rejected"]
+        self.assertEqual(len(rejected), 2)
+        for item in rejected:
+            with self.subTest(pair=item["pair"]):
+                self.assertEqual(item["reason"], "tier_snapshot_unavailable")
+                self.assertEqual(item["group_rejection_reason"],
+                                 "tier_snapshot_hash_mismatch")
+                self.assertEqual(item["tier_snapshot_hash"],
+                                 spec["tier_snapshot"]["snapshot_hash"])
+                self.assertNotIn("account_scope", item)
+                self.assertNotIn("tier_evidence_sha256", item)
+                self.assertNotIn("liquidation_tier", item)
+
+    def test_tiered_pair_uses_per_leg_leverage_and_margin_with_frozen_snapshot(self):
+        spec = self.definition()
+        spec["liquidation_model"] = "binance_tiered"
+        spec["tier_snapshot"] = _tier_snapshot(leverages={BTC: 100, ETH: 75, TRX: 25})
+        spec["position_budget"] = dict(spec["position_budget"],
+                                       leverage_by_symbol={BTC: 100, ETH: 75, TRX: 25})
+        # The per-symbol matrix is a new executable identity; let Fnew derive
+        # its rule hash instead of reusing the frozen scalar-leverage hash.
+        spec.pop("rule_hash", None)
+        state, events = self.enter(spec, legs=(BTC, ETH))
+        self.assertEqual(set(state["positions"]), {BTC, ETH})
+        btc, eth = state["positions"][BTC], state["positions"][ETH]
+        self.assertEqual(btc["leverage"], 100)
+        self.assertEqual(eth["leverage"], 75)
+        self.assertAlmostEqual(btc["margin"], btc["notional"] / 100)
+        self.assertAlmostEqual(eth["margin"], eth["notional"] / 75)
+        self.assertAlmostEqual(btc["notional"], eth["notional"])
+        self.assertEqual(btc["liquidation_tier"]["tier_snapshot_hash"],
+                         spec["tier_snapshot"]["snapshot_hash"])
+        self.assertEqual(eth["liquidation_tier"]["tier_max_leverage"], 75)
+        fills = [item["payload"] for item in events if item["event_type"] == "order_filled"]
+        self.assertEqual({item["leverage"] for item in fills}, {75, 100})
+
+    def test_tiered_pair_liquidation_settles_each_leg_and_preserves_tier_evidence(self):
+        spec = self.definition()
+        spec["liquidation_model"] = "binance_tiered"
+        spec["tier_snapshot"] = _tier_snapshot(
+            leverages={BTC: 100, ETH: 100, TRX: 100})
+        opened, _ = self.enter(spec)
+        btc_position = opened["positions"][BTC]
+        current = bars(START + 2 * BAR)
+        current[BTC]["low"] = btc_position["liquidation_price"]
+        current[ETH]["high"] = 100.2
+        exited, events = self.step(spec, opened, START + 2 * BAR, candle=current)
+
+        self.assertFalse(exited["positions"])
+        trades = {item["payload"]["pair"]: item["payload"] for item in events
+                  if item["event_type"] == "trade_closed"}
+        self.assertEqual(set(trades), {BTC, ETH})
+        for pair, position in opened["positions"].items():
+            exit_price = trades[pair]["exit_price"]
+            expected_gross = position["direction"] * position["quantity"] * (
+                exit_price - position["entry_price"])
+            with self.subTest(pair=pair):
+                self.assertAlmostEqual(trades[pair]["gross_pnl"], expected_gross, places=8)
+                self.assertEqual(trades[pair]["liquidation_model"], "binance_tiered")
+                self.assertEqual(trades[pair]["tier_snapshot_hash"],
+                                 spec["tier_snapshot"]["snapshot_hash"])
+                self.assertEqual(trades[pair]["account_scope"], "pair-test")
+                self.assertEqual(trades[pair]["tier_evidence_sha256"], "c" * 64)
+
+        liquidation_events = [item["payload"] for item in events
+                              if item["event_type"] == "liquidation"]
+        self.assertEqual(len(liquidation_events), 1)
+        liquidation_payload = liquidation_events[0]
+        self.assertEqual(liquidation_payload["tier_snapshot_hash"],
+                         spec["tier_snapshot"]["snapshot_hash"])
+        self.assertEqual(liquidation_payload["account_scope"], "pair-test")
+        self.assertEqual(liquidation_payload["tier_evidence_sha256"], "c" * 64)
+
+        pair_trade = next(item["payload"] for item in events
+                          if item["event_type"] == "pair_trade_closed")
+        self.assertEqual(len(pair_trade["tier_evidence"]), 2)
+        self.assertEqual({entry["pair"] for entry in pair_trade["tier_evidence"]},
+                         {BTC, ETH})
+        self.assertAlmostEqual(exited["cash"], 10_000 + pair_trade["net_pnl"], places=8)
 
     def test_actual_next_opens_recompute_atr_and_quantities_keep_equal_notional(self):
         state, _ = self.enter(fill_prices={BTC: 120, ETH: 80})

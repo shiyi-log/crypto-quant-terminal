@@ -221,7 +221,8 @@ class ControllerRecoveryTests(unittest.TestCase):
         self.addCleanup(self.service_patch.stop)
         self.addCleanup(self.thread_patch.stop)
         self.controller = DemoRunnerController(self.data, self.ledger, self.provider, self.factory,
-            paper_source=self.paper, lock_path=Path(self.temp.name) / "demo.lock")
+            paper_source=self.paper, lock_path=Path(self.temp.name) / "demo.lock",
+            risk_gate_required=False)
         self.addCleanup(self.controller.close_if_flat)
 
     def test_human_start_saves_recovery_identity_before_exchange_work(self):

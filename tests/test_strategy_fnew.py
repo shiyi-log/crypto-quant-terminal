@@ -144,6 +144,33 @@ class FnewDefinitionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "rule hash mismatch"):
             normalize_fnew_spec(changed)
 
+    def test_leverage_map_accepts_compact_symbols_and_persists_canonical_keys(self):
+        spec = self.spec(34)
+        spec.pop("rule_hash")
+        spec["position_budget"]["leverage_by_symbol"] = {
+            "BTCUSDT": 100,
+            "ETHUSDT": 75,
+            "TRXUSDT": 25,
+        }
+        normalized = normalize_fnew_spec(spec)
+        self.assertEqual(
+            set(normalized["position_budget"]["leverage_by_symbol"]),
+            {BTC, ETH, TRX},
+        )
+        self.assertEqual(normalized["position_budget"]["leverage_by_symbol"][ETH], 75.0)
+
+    def test_leverage_map_rejects_alias_collisions_after_normalization(self):
+        spec = self.spec(34)
+        spec.pop("rule_hash")
+        spec["position_budget"]["leverage_by_symbol"] = {
+            "BTCUSDT": 100,
+            BTC: 100,
+            "ETHUSDT": 75,
+            "TRXUSDT": 25,
+        }
+        with self.assertRaisesRegex(ValueError, "duplicate leverage_by_symbol key"):
+            normalize_fnew_spec(spec)
+
     def test_economic_hash_ignores_prose_but_rejects_risk_feed_and_capital_changes(self):
         spec = self.spec(34)
         changed = copy.deepcopy(spec)

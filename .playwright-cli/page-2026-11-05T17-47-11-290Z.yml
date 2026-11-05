@@ -1,0 +1,372 @@
+- generic [ref=e4]:
+  - complementary [ref=e6]:
+    - generic [ref=e7]:
+      - generic [ref=e8] [cursor=pointer]
+      - link "量化交易终端 量化交易终端" [ref=e13] [cursor=pointer]:
+        - /url: javascript:void 0
+        - img "量化交易终端" [ref=e16]
+        - generic [ref=e17]: 量化交易终端
+      - menu [ref=e20]:
+        - listitem [ref=e21]:
+          - generic [ref=e22] [cursor=pointer]: 量化交易
+          - list [ref=e30]:
+            - menuitem "总览" [ref=e31] [cursor=pointer]
+            - menuitem "持仓与成交" [ref=e40] [cursor=pointer]
+            - menuitem "行情图表" [ref=e47] [cursor=pointer]
+            - menuitem "数据中心" [ref=e56] [cursor=pointer]
+            - menuitem "订单流突增" [ref=e64] [cursor=pointer]
+            - menuitem "爆发行情观测" [ref=e69] [cursor=pointer]
+            - menuitem "回测与任务" [ref=e74] [cursor=pointer]
+            - menuitem "回测明细" [ref=e79] [cursor=pointer]
+            - menuitem "策略研究" [ref=e86] [cursor=pointer]
+            - menuitem "多策略模拟" [ref=e91] [cursor=pointer]
+            - menuitem "币安 Demo" [ref=e98] [cursor=pointer]
+            - menuitem "重点策略观察" [ref=e103] [cursor=pointer]
+            - menuitem "研究账本" [ref=e108] [cursor=pointer]
+            - menuitem "实盘运维" [ref=e115] [cursor=pointer]
+            - menuitem "交易对与锁" [ref=e120] [cursor=pointer]
+            - menuitem "密码管理" [ref=e125] [cursor=pointer]
+            - menuitem "运行日志" [ref=e132] [cursor=pointer]
+      - button "切换侧边栏" [ref=e140] [cursor=pointer]
+  - generic [ref=e145]:
+    - generic [ref=e146]:
+      - banner [ref=e147]:
+        - button [ref=e148] [cursor=pointer]
+        - navigation "breadcrumb" [ref=e152]:
+          - list [ref=e153]:
+            - listitem [ref=e154]:
+              - link "量化交易" [ref=e155] [cursor=pointer]:
+                - /url: javascript:void 0
+              - listitem [aria-hidden] [ref=e161]
+            - listitem [ref=e164]:
+              - link "总览" [disabled] [ref=e165]
+        - generic [ref=e174]:
+          - generic [ref=e176] [cursor=pointer]:
+            - generic [ref=e180]: 搜索
+            - generic [ref=e181]: ⌘ K
+          - button [ref=e183] [cursor=pointer]
+          - button "light" [ref=e188] [cursor=pointer]
+          - button [ref=e197] [cursor=pointer]
+          - button [ref=e203] [cursor=pointer]
+          - button [ref=e206] [cursor=pointer]
+          - button [ref=e212] [cursor=pointer]
+          - button [ref=e216] [cursor=pointer]
+          - button [ref=e221] [cursor=pointer]
+          - button "DE" [ref=e225] [cursor=pointer]
+      - generic [ref=e232]:
+        - generic [ref=e233]: 总览
+        - generic [ref=e256]:
+          - button [ref=e257] [cursor=pointer]
+          - generic [ref=e264] [cursor=pointer]
+          - generic [ref=e268] [cursor=pointer]
+    - main [ref=e276]:
+      - generic [ref=e277]:
+        - generic [ref=e278]: 交易状态与操作
+        - generic [ref=e283]:
+          - generic [ref=e284]: 运行中
+          - generic "实时推送已连接" [ref=e285]
+          - generic [ref=e286]: 模拟盘 dry-run
+          - generic [ref=e287]: 持仓 8/20
+          - generic "策略：TrendFollowing" [ref=e288]: 策略 TrendFollowing
+          - generic [ref=e289]: futures · binance
+          - button "启 动" [disabled] [ref=e291]
+          - button "停 止" [ref=e293] [cursor=pointer]
+          - button "暂停买入" [ref=e295] [cursor=pointer]
+          - button "重载配置" [ref=e297] [cursor=pointer]
+          - button "全部平仓" [ref=e299] [cursor=pointer]
+      - generic [ref=e302]:
+        - generic [ref=e303]:
+          - generic [ref=e306]:
+            - generic [ref=e307]: 总资产
+            - generic [ref=e308]: —USDT
+            - generic [ref=e309]: 起始 —
+          - generic [ref=e312]:
+            - generic [ref=e313]: 总盈亏
+            - generic [ref=e314]: +0.57USDT
+            - generic [ref=e315]: +0.01%
+          - generic [ref=e318]:
+            - generic [ref=e319]: 已平仓盈亏
+            - generic [ref=e320]: 0.00USDT
+            - generic [ref=e321]: 0 胜 / 0 负
+          - generic [ref=e324]:
+            - generic [ref=e325]: 当前持仓
+            - generic [ref=e326]: 8笔 / 上限 20
+            - generic [ref=e327]: 已用 1077.01 USDT
+          - generic [ref=e330]:
+            - generic [ref=e331]: 胜率
+            - generic [ref=e332]: 暂无平仓样本
+            - generic [ref=e333]: 共 0 笔已平仓
+          - generic [ref=e336]:
+            - generic [ref=e337]: 运行状态
+            - generic [ref=e338]: 运行中
+            - generic [ref=e339]: 干跑模拟
+        - generic [ref=e340]:
+          - generic [ref=e342]:
+            - generic [ref=e343]: 实盘策略与风控
+            - generic [ref=e344]: 数据每 5 秒刷新 · 运维快照 2026-10-31 14:10:35
+          - generic [ref=e346]:
+            - generic [ref=e348]:
+              - generic [ref=e349]: 策略
+              - generic [ref=e350]: TrendFollowing
+              - generic [ref=e351]: 周期 1d
+            - generic [ref=e353]:
+              - generic [ref=e354]: 交易对
+              - generic [ref=e355]: 20 个
+              - generic [ref=e356]: futures / isolated
+            - generic [ref=e358]:
+              - generic [ref=e359]: 选币规则
+              - generic [ref=e360]: 强度前 8
+              - generic [ref=e361]: 目标敞口 30%
+            - generic [ref=e363]:
+              - generic [ref=e364]: 波动率中枢
+              - generic [ref=e365]: 59.1%
+              - generic [ref=e366]: 历史分位 33.9% · 正常
+            - generic [ref=e368]:
+              - generic [ref=e369]: 因子告警
+              - generic [ref=e370]: "0"
+              - generic [ref=e371]: 共 0 个因子
+            - generic [ref=e373]:
+              - generic [ref=e374]: 模型重估
+              - generic [ref=e375]: ✅ 不需要
+              - generic [ref=e376]: 基于因子漂移自动判定
+        - generic [ref=e377]:
+          - generic [ref=e379]:
+            - generic [ref=e380]: 🖥 程序运行状况
+            - generic [ref=e381]:
+              - generic [ref=e382]: 4/9 运行中
+              - text: 2026-11-06 01:47:06
+          - generic [ref=e384]:
+            - generic [ref=e385]:
+              - generic [ref=e386]:
+                - generic [ref=e387]: 🟢
+                - generic [ref=e388]: 前端 Vben
+              - generic [ref=e389]: 8888 · PID 15845
+            - generic [ref=e390]:
+              - generic [ref=e391]:
+                - generic [ref=e392]: 🟢
+                - generic [ref=e393]: 认证服务
+              - generic [ref=e394]: 8890 · PID 43397
+            - generic [ref=e395]:
+              - generic [ref=e396]:
+                - generic [ref=e397]: 🟢
+                - generic [ref=e398]: Freqtrade
+              - generic [ref=e399]: 8889 · PID 43714
+            - generic [ref=e400]:
+              - generic [ref=e401]:
+                - generic [ref=e402]: 🟢
+                - generic [ref=e403]: 研究服务
+              - generic [ref=e404]: 8891 · PID 43728
+            - generic [ref=e405]:
+              - generic [ref=e406]:
+                - generic [ref=e407]: 🔴
+                - generic [ref=e408]: 运维监控
+              - generic [ref=e409]: PID —
+            - generic [ref=e410]:
+              - generic [ref=e411]:
+                - generic [ref=e412]: 🔴
+                - generic [ref=e413]: 自动迭代
+              - generic [ref=e414]: PID —
+            - generic [ref=e415]:
+              - generic [ref=e416]:
+                - generic [ref=e417]: 🔴
+                - generic [ref=e418]: 研究刷新
+              - generic [ref=e419]: PID —
+              - generic "数据更新 2026-10-31 10:08:51" [ref=e420]
+            - generic [ref=e421]:
+              - generic [ref=e422]:
+                - generic [ref=e423]: 🔴
+                - generic [ref=e424]: 模型迭代
+              - generic [ref=e425]: PID —
+              - generic "已完成 1021 轮" [ref=e426]
+            - generic [ref=e427]:
+              - generic [ref=e428]:
+                - generic [ref=e429]: 🔴
+                - generic [ref=e430]: 模型研究轮次
+              - generic [ref=e431]: PID —
+        - generic [ref=e432]:
+          - generic [ref=e434]:
+            - generic [ref=e435]: 当前持仓
+            - generic [ref=e436]: 8 笔 · 占用 1077.01 USDT · 浮动盈亏 +0.72 USDT · 离场：反向突破 20 日通道
+          - table [ref=e445]:
+            - rowgroup [ref=e456]:
+              - row [ref=e457]:
+                - columnheader "开仓订单编号" [ref=e458]
+                - columnheader "币对" [ref=e459]
+                - columnheader "方向" [ref=e460]
+                - columnheader "开仓价" [ref=e461]
+                - columnheader "现价" [ref=e462]
+                - columnheader "投入" [ref=e463]
+                - columnheader "浮动盈亏 (%)" [ref=e464]
+                - columnheader "浮动盈亏 (USDT)" [ref=e465]
+                - columnheader "开仓时间" [ref=e466]
+            - rowgroup [ref=e467]:
+              - row [ref=e468]:
+                - cell "20261106-012445-ETH" [ref=e469]
+                - cell "ETH/USDT:USDT" [ref=e470]
+                - cell "空" [ref=e471]
+                - cell "2255.920000" [ref=e473]
+                - cell "2249.610000" [ref=e474]
+                - cell "133.10" [ref=e475]
+                - cell "+0.24%" [ref=e476]
+                - cell "+0.32" [ref=e477]
+                - cell "11-06 01:24" [ref=e478]
+              - row [ref=e479]:
+                - cell "20261106-012446-ADA" [ref=e480]
+                - cell "ADA/USDT:USDT" [ref=e481]
+                - cell "空" [ref=e482]
+                - cell "0.181800" [ref=e484]
+                - cell "0.181500" [ref=e485]
+                - cell "134.90" [ref=e486]
+                - cell "+0.13%" [ref=e487]
+                - cell "+0.17" [ref=e488]
+                - cell "11-06 01:24" [ref=e489]
+              - row [ref=e490]:
+                - cell "20261106-012448-DOT" [ref=e491]
+                - cell "DOT/USDT:USDT" [ref=e492]
+                - cell "空" [ref=e493]
+                - cell "0.905800" [ref=e495]
+                - cell "0.903600" [ref=e496]
+                - cell "134.96" [ref=e497]
+                - cell "+0.20%" [ref=e498]
+                - cell "+0.27" [ref=e499]
+                - cell "11-06 01:24" [ref=e500]
+              - row [ref=e501]:
+                - cell "20261106-012448-NEAR" [ref=e502]
+                - cell "NEAR/USDT:USDT" [ref=e503]
+                - cell "空" [ref=e504]
+                - cell "3.730000" [ref=e506]
+                - cell "3.713000" [ref=e507]
+                - cell "134.28" [ref=e508]
+                - cell "+0.42%" [ref=e509]
+                - cell "+0.56" [ref=e510]
+                - cell "11-06 01:24" [ref=e511]
+              - row [ref=e512]:
+                - cell "20261106-012449-APT" [ref=e513]
+                - cell "APT/USDT:USDT" [ref=e514]
+                - cell "空" [ref=e515]
+                - cell "0.586100" [ref=e517]
+                - cell "0.585300" [ref=e518]
+                - cell "134.98" [ref=e519]
+                - cell "+0.10%" [ref=e520]
+                - cell "+0.13" [ref=e521]
+                - cell "11-06 01:24" [ref=e522]
+              - row [ref=e523]:
+                - cell "20261106-012449-FIL" [ref=e524]
+                - cell "FIL/USDT:USDT" [ref=e525]
+                - cell "空" [ref=e526]
+                - cell "0.786000" [ref=e528]
+                - cell "0.789500" [ref=e529]
+                - cell "134.96" [ref=e530]
+                - cell "-0.49%" [ref=e531]
+                - cell "-0.66" [ref=e532]
+                - cell "11-06 01:24" [ref=e533]
+              - row [ref=e534]:
+                - cell "20261106-012450-ZEC" [ref=e535]
+                - cell "ZEC/USDT:USDT" [ref=e536]
+                - cell "空" [ref=e537]
+                - cell "1248.650000" [ref=e539]
+                - cell "1246.250000" [ref=e540]
+                - cell "134.85" [ref=e541]
+                - cell "+0.15%" [ref=e542]
+                - cell "+0.21" [ref=e543]
+                - cell "11-06 01:24" [ref=e544]
+              - row [ref=e545]:
+                - cell "20261106-012450-SAND" [ref=e546]
+                - cell "SAND/USDT:USDT" [ref=e547]
+                - cell "空" [ref=e548]
+                - cell "0.041700" [ref=e550]
+                - cell "0.041770" [ref=e551]
+                - cell "134.98" [ref=e552]
+                - cell "-0.21%" [ref=e553]
+                - cell "-0.28" [ref=e554]
+                - cell "11-06 01:24" [ref=e555]
+        - generic [ref=e556]:
+          - generic [ref=e558]:
+            - generic [ref=e560]:
+              - generic [ref=e561]: 因子健康度
+              - generic [ref=e562]: 0 个因子
+            - generic [ref=e563]: 全部因子基线 IC < 0.03
+          - generic [ref=e567]:
+            - generic [ref=e569]:
+              - generic [ref=e570]: 任务进度
+              - generic [ref=e571]: 0 个任务
+            - generic [ref=e572]: 当前无运行中的任务
+        - generic [ref=e574]:
+          - generic [ref=e576]:
+            - generic [ref=e577]: 最近成交
+            - generic [ref=e578]: 持仓 8 笔 · 已平仓 0 笔
+          - table [ref=e587]:
+            - rowgroup [ref=e596]:
+              - row [ref=e597]:
+                - columnheader "开仓订单编号" [ref=e598]
+                - columnheader "币对" [ref=e599]
+                - columnheader "方向" [ref=e600]
+                - columnheader "收益率" [ref=e601]
+                - columnheader "盈亏" [ref=e602]
+                - columnheader "平仓原因" [ref=e603]
+                - columnheader "平仓时间" [ref=e604]
+            - rowgroup [ref=e605]:
+              - row [ref=e606]:
+                - cell "20261106-012445-ETH" [ref=e607]
+                - cell "ETH/USDT:USDT" [ref=e608]
+                - cell "空" [ref=e609]
+                - cell "+0.24%" [ref=e611]
+                - cell "+0.32" [ref=e612]
+                - cell "持仓中" [ref=e613]
+                - cell "—" [ref=e615]
+              - row [ref=e616]:
+                - cell "20261106-012446-ADA" [ref=e617]
+                - cell "ADA/USDT:USDT" [ref=e618]
+                - cell "空" [ref=e619]
+                - cell "+0.13%" [ref=e621]
+                - cell "+0.17" [ref=e622]
+                - cell "持仓中" [ref=e623]
+                - cell "—" [ref=e625]
+              - row [ref=e626]:
+                - cell "20261106-012448-DOT" [ref=e627]
+                - cell "DOT/USDT:USDT" [ref=e628]
+                - cell "空" [ref=e629]
+                - cell "+0.20%" [ref=e631]
+                - cell "+0.27" [ref=e632]
+                - cell "持仓中" [ref=e633]
+                - cell "—" [ref=e635]
+              - row [ref=e636]:
+                - cell "20261106-012448-NEAR" [ref=e637]
+                - cell "NEAR/USDT:USDT" [ref=e638]
+                - cell "空" [ref=e639]
+                - cell "+0.42%" [ref=e641]
+                - cell "+0.56" [ref=e642]
+                - cell "持仓中" [ref=e643]
+                - cell "—" [ref=e645]
+              - row [ref=e646]:
+                - cell "20261106-012449-APT" [ref=e647]
+                - cell "APT/USDT:USDT" [ref=e648]
+                - cell "空" [ref=e649]
+                - cell "+0.10%" [ref=e651]
+                - cell "+0.13" [ref=e652]
+                - cell "持仓中" [ref=e653]
+                - cell "—" [ref=e655]
+              - row [ref=e656]:
+                - cell "20261106-012449-FIL" [ref=e657]
+                - cell "FIL/USDT:USDT" [ref=e658]
+                - cell "空" [ref=e659]
+                - cell "-0.49%" [ref=e661]
+                - cell "-0.66" [ref=e662]
+                - cell "持仓中" [ref=e663]
+                - cell "—" [ref=e665]
+              - row [ref=e666]:
+                - cell "20261106-012450-ZEC" [ref=e667]
+                - cell "ZEC/USDT:USDT" [ref=e668]
+                - cell "空" [ref=e669]
+                - cell "+0.15%" [ref=e671]
+                - cell "+0.21" [ref=e672]
+                - cell "持仓中" [ref=e673]
+                - cell "—" [ref=e675]
+              - row [ref=e676]:
+                - cell "20261106-012450-SAND" [ref=e677]
+                - cell "SAND/USDT:USDT" [ref=e678]
+                - cell "空" [ref=e679]
+                - cell "-0.21%" [ref=e681]
+                - cell "-0.28" [ref=e682]
+                - cell "持仓中" [ref=e683]
+                - cell "—" [ref=e685]

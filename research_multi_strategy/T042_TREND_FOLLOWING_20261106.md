@@ -37,3 +37,20 @@
 - 记录每日权益、交易、滑点；至少 20–30 个交易日后按门槛复核。
 
 证据：`artifacts/t042_trend_following_20261106/backtest_result.zip`
+
+## Forward paper（已存在）
+
+- 交易 API 配置：`bot/user_data/config_trend_live.json`
+  - `dry_run=True`、`dry_run_wallet=10000`、20 对、1d、strategy=`TrendFollowing`、`max_open_trades=20`；
+- forward 数据库：`bot/tradesv3.dryrun.sqlite`；
+- 截至 2026-11-06 03:40：**8 笔未平仓**（11-05 开仓：ETH/ADA/DOT/NEAR/APT/FIL/ZEC/SAND），无已平仓 PnL；
+- 这是真实盘口/模拟成交的 forward，但只有约 1 天，远不足以裁决。
+
+结论：回测通过 + forward 已启动，仍需 20–30 个交易日观察。
+
+### Forward 当前（2026-11-06 03:45 本地）
+
+- freqtrade API `/api/v1/status`：8 笔全未平仓；
+- 未实现盈亏合计约 **-14.78 USDT**（相对 10k 钱包 -0.15%）；
+- 明细（profit_abs）：ETH 0.00、ADA -1.98、DOT -3.33、NEAR +1.89、APT -2.96、FIL -4.11、ZEC +0.46、SAND -4.75；
+- 仅约 1 天，不构成裁决证据。

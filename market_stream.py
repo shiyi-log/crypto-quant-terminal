@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import fcntl
@@ -22,6 +22,8 @@ import uuid
 
 from orderflow_detector import VolumeSurgeDetector
 from orderflow_maturity import OrderflowMaturityWorker
+from gate_registry import GateRegistry
+from baseline_recovery import fetch_closed_baseline, BASELINE_SOURCE
 
 LOG = logging.getLogger("market_stream")
 ROOT = Path(__file__).resolve().parent
@@ -110,6 +112,13 @@ def normalize_pair(value: str, market: str = "futures") -> str:
 
 def symbol_for(pair: str) -> str:
     return pair.split(":", 1)[0].replace("/", "").lower()
+
+
+def stream_gate_key(status_document_key: str) -> str:
+    """Map each managed collector instance to its visible registry gate."""
+    if status_document_key == "market_stream_breadth_status.json":
+        return "breadth_stream.enabled"
+    return "market_stream.enabled"
 
 
 @dataclass(frozen=True)
@@ -565,7 +574,8 @@ class FileSpool:
 class MarketCollector:
     def __init__(self, config: StreamConfig, store: Any,
                  surge_detector: VolumeSurgeDetector | None = None,
-                 *, maturity_store_factory: Any | None = None):
+                 *, maturity_store_factory: Any | None = None,
+                 baseline_fetcher: Any | None = None):
         self.config, self.store = config, store
         self.maturity_worker = (OrderflowMaturityWorker(maturity_store_factory)
                                 if maturity_store_factory is not None else None)
@@ -605,6 +615,10 @@ class MarketCollector:
         self._failure_streak = 0
         self._status_lock = asyncio.Lock()
         self.surge_detector = surge_detector or VolumeSurgeDetector()
+        self.baseline_fetcher = baseline_fetcher or fetch_closed_baseline
+        self._baseline_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._baseline_pending: dict[str, deque[dict[str, Any]]] = defaultdict(deque)
+        self._baseline_retry_at: dict[str, float] = {}
         self.status.update({
             "surge_observed": 0, "surge_persisted": 0, "surge_pending": 0,
             "surge_failures": 0, "surge_dropped": 0, "surge_last_error": None,
@@ -613,7 +627,8 @@ class MarketCollector:
             "price_candidate_dropped": 0, "price_candidate_last_error": None,
             "surge_warmup": {
                 pair: {**self.surge_detector.warmup_status(pair, market=config.market),
-                       "source": None}
+                       "recovery_state": "idle", "recovery_error": None,
+                       "recovered_at": None}
                 for pair in config.pairs
             },
         })
@@ -771,6 +786,7 @@ class MarketCollector:
                         )
                         sources = {source for _, _, source in suffix[-len(ordered):]} if ordered else set()
                         self.status["surge_warmup"][pair] = {
+                            **self.status["surge_warmup"][pair],
                             **self.surge_detector.warmup_status(pair, market=self.config.market),
                             "source": next(iter(sources)) if len(sources) == 1 else (
                                 "mixed" if sources else None
@@ -796,6 +812,152 @@ class MarketCollector:
                 # A cold detector is safe; make the missing warm-up visible.
                 self.status["surge_last_error"] = str(exc)
                 self.record_error(f"突增检测器历史预热失败：{exc}")
+            if self._rest_recovery_supported(pair):
+                warmup = self.surge_detector.warmup_status(pair, market=self.config.market)
+                end_timestamp = now_ms // 300_000 * 300_000
+                if (not warmup["ready"]
+                        or warmup["last_timestamp"] != end_timestamp - 300_000):
+                    await self.recover_baseline(pair, end_timestamp)
+
+    def _rest_recovery_supported(self, pair: str) -> bool:
+        return (self.config.market == "futures" and "5m" in self.config.kline_intervals
+                and pair in {"BTC/USDT:USDT", "ETH/USDT:USDT"})
+
+    def _update_warmup(self, pair: str) -> None:
+        self.status["surge_warmup"][pair].update(
+            self.surge_detector.warmup_status(pair, market=self.config.market),
+        )
+
+    def _live_observation_events(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        pair = event["pair"]
+        try:
+            surge = self.surge_detector.process(
+                pair, event["timeframe"], event["candle"], market=event["market"],
+                source_timestamp=event["source_timestamp"],
+            )
+            candidate = getattr(self.surge_detector, "last_candidate", None)
+            self._update_warmup(pair)
+        except Exception as exc:
+            self.status["surge_last_error"] = str(exc)
+            self.record_error(f"突增检测器处理失败：{exc}")
+            return []
+
+        observations = []
+        if candidate is not None and event["market"] == "futures":
+            observations.append({
+                "kind": "price_candidate", "market": event["market"], "pair": pair,
+                "timeframe": event["timeframe"], "row": candidate,
+            })
+            self.status["price_candidate_observed"] += 1
+            self.status["price_candidate_pending"] += 1
+        if surge is not None:
+            observations.append({
+                "kind": "orderflow_surge", "market": event["market"], "pair": pair,
+                "timeframe": event["timeframe"], "row": surge,
+            })
+            self.status["surge_observed"] += 1
+            self.status["surge_pending"] += 1
+        return observations
+
+    async def _persist_closed_event(self, event: dict[str, Any], *, include_candle: bool) -> None:
+        batch = ([event] if include_candle else []) + self._live_observation_events(event)
+        try:
+            await self.persist_batch(batch)
+        except OSError as exc:
+            surge_count = sum(item["kind"] == "orderflow_surge" for item in batch)
+            candidate_count = sum(item["kind"] == "price_candidate" for item in batch)
+            self.status["dropped"] += len(batch)
+            self.status["surge_dropped"] += surge_count
+            self.status["surge_pending"] = max(0, self.status["surge_pending"] - surge_count)
+            self.status["price_candidate_dropped"] += candidate_count
+            self.status["price_candidate_pending"] = max(
+                0, self.status["price_candidate_pending"] - candidate_count
+            )
+            self.status["state"] = "storage_error"
+            message = ("收盘 K 线与在线订单流观测暂存失败"
+                       if include_candle else "延迟订单流观测暂存失败")
+            self.record_error(f"{message}，停止采集：{exc}")
+            self.stop.set()
+            raise
+
+    async def _recover_pending_candles(self, pair: str) -> None:
+        """Recover outside WebSocket receive tasks, then process live bars in order."""
+        pending = self._baseline_pending[pair]
+        try:
+            while pending:
+                event = pending[0]
+                candle = event["candle"]
+                replay_or_late = self.surge_detector.is_duplicate_or_late(
+                    pair, event["timeframe"], candle, market=self.config.market,
+                )
+                has_gap = (not replay_or_late and self.surge_detector.needs_gap_recovery(
+                    pair, event["timeframe"], candle, market=self.config.market,
+                ))
+                if not replay_or_late and (has_gap or self._baseline_retry_due(pair)):
+                    restored = False
+                    if self._baseline_retry_at.get(pair, 0) <= time.monotonic():
+                        restored = await self.recover_baseline(pair, candle["timestamp"])
+                    if not restored and has_gap:
+                        self.surge_detector.reset(pair, market=self.config.market)
+                        self._update_warmup(pair)
+                await self._persist_closed_event(event, include_candle=False)
+                pending.popleft()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.status["surge_last_error"] = str(exc)
+            if self.status["state"] != "storage_error":
+                self.record_error(f"基线恢复后的实时观测处理失败：{exc}")
+        finally:
+            self._baseline_tasks.pop(pair, None)
+            if not pending:
+                self._baseline_pending.pop(pair, None)
+
+    async def recover_baseline(self, pair: str, end_timestamp: int) -> bool:
+        """Restore memory only. Recovered rows never become live candles or events."""
+        warmup = self.status["surge_warmup"][pair]
+        warmup.update(recovery_state="recovering", recovery_error=None)
+        try:
+            rows = await asyncio.wait_for(self.baseline_fetcher(
+                pair=pair, market=self.config.market, end_timestamp=end_timestamp,
+                window_size=self.surge_detector.window_size,
+            ), timeout=12)
+            expected_start = end_timestamp - self.surge_detector.window_size * 300_000
+            if (not isinstance(rows, list) or len(rows) != self.surge_detector.window_size
+                    or any(not isinstance(row, dict)
+                           or isinstance(row.get("timestamp"), bool)
+                           or row.get("timestamp") != expected_start + index * 300_000
+                           or row.get("source") != BASELINE_SOURCE
+                           or VolumeSurgeDetector._quote_volume(row) is None
+                           for index, row in enumerate(rows))):
+                raise ValueError("REST 基线未覆盖完整连续窗口")
+            self.surge_detector.seed(
+                pair, [row["quote_volume"] for row in rows],
+                market=self.config.market, timestamps=[row["timestamp"] for row in rows],
+                source=BASELINE_SOURCE,
+            )
+            self._update_warmup(pair)
+            if not warmup["ready"]:
+                raise ValueError("REST 基线包含无效成交额")
+            warmup.update(recovery_state="recovered", recovery_error=None,
+                          recovered_at=int(time.time() * 1000))
+            self._baseline_retry_at.pop(pair, None)
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            error = "REST 基线请求超时" if isinstance(exc, TimeoutError) else (
+                str(exc).strip() or type(exc).__name__
+            )
+            warmup.update(recovery_state="failed", recovery_error=error)
+            self._baseline_retry_at[pair] = time.monotonic() + 30
+            LOG.warning("基线恢复失败 pair=%s: %s", pair, error)
+            return False
+
+    def _baseline_retry_due(self, pair: str) -> bool:
+        warmup = self.status["surge_warmup"][pair]
+        return (warmup.get("recovery_state") == "failed" and not warmup["ready"]
+                and self._baseline_retry_at.get(pair, 0) <= time.monotonic())
 
     def record_error(self, error: Exception | str) -> None:
         self.status["last_error"] = str(error)
@@ -830,60 +992,45 @@ class MarketCollector:
         self.status["received"] += 1
         self.status["last_message"] = received_ms
         if event["kind"] == "kline":
-            surge = None
-            candidate = None
-            if event["timeframe"] == "5m":
-                try:
-                    surge = self.surge_detector.process(
-                        event["pair"], event["timeframe"], event["candle"],
-                        market=event["market"], source_timestamp=event["source_timestamp"],
-                    )
-                    candidate = getattr(self.surge_detector, "last_candidate", None)
-                    self.status["surge_warmup"][event["pair"]] = {
-                        **self.surge_detector.warmup_status(
-                            event["pair"], market=event["market"]
-                        ),
-                        "source": self.status["surge_warmup"][event["pair"]].get("source"),
-                    }
-                except Exception as exc:
-                    self.status["surge_last_error"] = str(exc)
-                    self.record_error(f"突增检测器处理失败：{exc}")
-            # Closed candles and 5m observations are low-frequency facts. Save
-            # them together before returning; 1m candles are persisted alone
-            # and intentionally never advance the 5m detector.
             extras = event["row"]["extras"]
             extras.update({key: value for key, value in event["candle"].items()
                            if key not in {"timestamp", "open", "high", "low", "close", "volume"}})
             extras["live_event_timestamp"] = extras["exchange_event_timestamp"]
-            batch = [event]
-            if candidate is not None and event["market"] == "futures":
-                batch.append({"kind": "price_candidate", "market": event["market"],
-                              "pair": event["pair"], "timeframe": event["timeframe"], "row": candidate})
-                self.status["price_candidate_observed"] += 1
-                self.status["price_candidate_pending"] += 1
-            if surge is not None:
-                batch.append({"kind": "orderflow_surge", "market": event["market"],
-                              "pair": event["pair"], "timeframe": event["timeframe"], "row": surge})
-                self.status["surge_observed"] += 1
-                # Count before spooling so a concurrent writer cannot acknowledge
-                # the batch before the pending metric is visible.
-                self.status["surge_pending"] += 1
-            try:
-                await self.persist_batch(batch)
-            except OSError as exc:
-                self.status["dropped"] += len(batch)
-                self.status["surge_dropped"] += int(surge is not None)
-                self.status["surge_pending"] = max(
-                    0, self.status["surge_pending"] - int(surge is not None)
-                )
-                self.status["price_candidate_dropped"] += int(candidate is not None)
-                self.status["price_candidate_pending"] = max(
-                    0, self.status["price_candidate_pending"] - int(candidate is not None)
-                )
-                self.status["state"] = "storage_error"
-                self.record_error(f"收盘 K 线与在线订单流观测暂存失败，停止采集：{exc}")
-                self.stop.set()
-                raise
+            pair = event["pair"]
+            replay_or_late = self.surge_detector.is_duplicate_or_late(
+                pair, event["timeframe"], event["candle"], market=event["market"],
+            )
+            delayed = (self._rest_recovery_supported(pair) and event["timeframe"] == "5m"
+                       and not replay_or_late
+                       and (pair in self._baseline_tasks
+                            or self._baseline_retry_due(pair)
+                            or self.surge_detector.needs_gap_recovery(
+                                pair, event["timeframe"], event["candle"], market=event["market"],
+                            )))
+            if delayed:
+                # Preserve the WS candle before an external recovery request.
+                # Other receive loops keep processing trades, books and 1m bars.
+                try:
+                    await self.persist_batch([event])
+                except OSError as exc:
+                    self.status["dropped"] += 1
+                    self.status["state"] = "storage_error"
+                    self.record_error(f"收盘 K 线暂存失败，停止采集：{exc}")
+                    self.stop.set()
+                    raise
+                pending = self._baseline_pending[pair]
+                if len(pending) >= 16:
+                    self.status["state"] = "storage_error"
+                    self.record_error("基线恢复检测队列溢出，K 线已落盘，停止采集")
+                    self.stop.set()
+                    return
+                pending.append(event)
+                if pair not in self._baseline_tasks:
+                    self._baseline_tasks[pair] = asyncio.create_task(
+                        self._recover_pending_candles(pair), name=f"baseline-recovery-{pair}",
+                    )
+            else:
+                await self._persist_closed_event(event, include_candle=True)
             return
         try:
             self.queue.put_nowait(event)
@@ -1272,6 +1419,14 @@ class MarketCollector:
                         task.result()
         finally:
             self.stop.set()
+            recovery_tasks = list(self._baseline_tasks.values())
+            for task in recovery_tasks:
+                if not task.done():
+                    task.cancel()
+            if recovery_tasks:
+                await asyncio.gather(*recovery_tasks, return_exceptions=True)
+            self._baseline_tasks.clear()
+            self._baseline_pending.clear()
             for task in connections:
                 if not task.done():
                     task.cancel()
@@ -1332,12 +1487,13 @@ def parse_config(argv: list[str] | None = None) -> StreamConfig:
     kline_intervals = tuple(dict.fromkeys(
         interval.strip() for interval in arguments.kline_intervals.split(",") if interval.strip()
     ))
+    gate_key = stream_gate_key(arguments.status_document_key)
     return StreamConfig(pairs=pairs, market=arguments.market, spool_dir=arguments.spool_dir,
                         status_document_key=arguments.status_document_key,
                         trade_stream=arguments.trade_stream,
                         kline_intervals=kline_intervals,
                         gap_threshold_ms=arguments.gap_threshold_ms,
-                        enabled=os.getenv("QUANT_STREAM_ENABLED", "true").lower() not in {"false", "0", "no"},
+                        enabled=GateRegistry(ROOT).is_enabled(gate_key),
                         disk_warning_pct=arguments.disk_warning_pct,
                         disk_critical_pct=arguments.disk_critical_pct,
                         disk_warning_bytes=arguments.disk_warning_bytes,
@@ -1350,7 +1506,7 @@ def main() -> int:
     load_environment(ROOT)
     config = parse_config()
     if not config.enabled:
-        LOG.info("QUANT_STREAM_ENABLED 已关闭，采集器未启动")
+        LOG.info("采集门禁已关闭（%s），采集器未启动", stream_gate_key(config.status_document_key))
         return 0
     from data_store import DataStore
     store = DataStore()

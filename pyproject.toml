@@ -1,6 +1,6 @@
 [project]
 name = "quant-terminal"
-version = "0.1.0"
+version = "0.2.0"
 description = "量化终端后端、数据库与 Python 运维入口"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -18,14 +18,20 @@ dependencies = [
 [project.optional-dependencies]
 # 新环境可选择安装交易引擎；本机复用 bot/.venv，不改动模型训练环境。
 trading = ["freqtrade>=2026.9,<2027"]
+# FreqAI 的模型、数据管线和训练依赖与基础交易引擎分开安装。
+freqai = ["freqtrade[freqai]>=2026.9,<2027"]
 # 仅研究/训练环境需要 PyTorch，服务默认安装不拉入训练依赖。
 research = ["torch>=2.4"]
 
 [dependency-groups]
-dev = ["ruff>=0.12,<1"]
+dev = ["pytest>=9,<10", "ruff>=0.12,<1"]
 
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py312"

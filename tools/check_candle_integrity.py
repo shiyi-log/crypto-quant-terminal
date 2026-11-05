@@ -26,6 +26,10 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from gate_registry import GateRegistry
+
 
 METHOD = "candle_integrity_check_v1"
 REST_URL = "https://fapi.binance.com/fapi/v1/klines"
@@ -57,6 +61,12 @@ DERIVED_DENOMINATORS = {
     "flow_imbal_q": "quote_volume",
     "flow_imbal_base": "volume",
 }
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def require_integrity_monitor_gate() -> None:
+    if not GateRegistry(PROJECT_ROOT).is_enabled("integrity.monitor_enabled"):
+        raise RuntimeError("integrity.monitor_enabled is disabled")
 
 
 def _denominator_value(row: dict[str, Any], name: str) -> Any:
@@ -619,6 +629,7 @@ def compact_status(report: dict[str, Any], *, cycles: int, interval: float,
 
 def audit_once(args: argparse.Namespace, *, dsn: str) -> dict[str, Any]:
     """Run one audit using already-parsed arguments."""
+    require_integrity_monitor_gate()
     required = tuple(args.required_fields or DEFAULT_REQUIRED_FIELDS)
     if args.input:
         payload = json.loads(args.input.read_text(encoding="utf-8"))
@@ -652,6 +663,7 @@ def run_watch(args: argparse.Namespace, *, dsn: str, cycles: int | None = None,
               audit: Callable[[], dict[str, Any]] | None = None,
               sleep: Callable[[float], None] = time.sleep) -> int:
     """Re-audit on an interval and publish a status document each cycle."""
+    require_integrity_monitor_gate()
     if args.interval <= 0:
         raise ValueError("--interval must be positive")
     audit = audit or (lambda: audit_once(args, dsn=dsn))

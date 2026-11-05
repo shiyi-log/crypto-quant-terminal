@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import research_ledger
+from gate_registry import GateRegistry
 
 ROOT = Path(__file__).resolve().parent
 BAR_MS = 300_000
@@ -377,6 +378,10 @@ def read_service_status(path=STATUS_PATH, now_ms=None):
         data["running"] = fresh and alive
         if not data["running"]:
             data["status"] = "stopped_or_stale"
+            if not fresh:
+                # An expired heartbeat cannot describe a current failure. Clear
+                # it so API consumers do not surface an old PoolTimeout.
+                data["last_error"] = None
         return data
     except (OSError, ValueError, KeyError, TypeError):
         return {"running": False, "status": "not_started", "last_error": None}
@@ -931,6 +936,14 @@ def main():
     from data_store import DataStore
     from strategy_simulation import StrategySimulation
     load_environment(ROOT)
+    gates = GateRegistry(ROOT)
+    if not gates.is_enabled("strategy_lab.enabled"):
+        print("[strategy-lab] strategy_lab.enabled is disabled", flush=True)
+        return 1
+    if args.fnew_paired_execution and not gates.is_enabled(
+            "strategy.paired_execution_enabled"):
+        print("[strategy-lab] strategy.paired_execution_enabled is disabled", flush=True)
+        return 1
     STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
     lock = (STATUS_PATH.parent / "strategy_lab.lock").open("a")
     try:

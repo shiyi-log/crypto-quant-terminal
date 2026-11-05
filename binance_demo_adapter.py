@@ -8,12 +8,14 @@ clients are always constructed as the guarded CCXT subclass below.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
 import threading
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from typing import Any, Mapping
 from urllib.parse import urlsplit
@@ -31,6 +33,7 @@ _PRIVATE_GET = {
     ("fapiPrivate", "openOrders"), ("fapiPrivate", "userTrades"),
     ("fapiPrivate", "positionSide/dual"), ("fapiPrivate", "symbolConfig"),
     ("fapiPrivate", "commissionRate"),
+    ("fapiPrivate", "leverageBracket"),
     ("fapiPrivateV3", "positionRisk"),
     ("fapiPrivateV3", "account"),
 }
@@ -49,6 +52,7 @@ REQUEST_COSTS = {
     ("fapiPrivate", "GET", "positionSide/dual"): {"cost": 30},
     ("fapiPrivate", "GET", "symbolConfig"): {"cost": 5},
     ("fapiPrivate", "GET", "commissionRate"): {"cost": 20},
+    ("fapiPrivate", "GET", "leverageBracket"): {"cost": 1},
     ("fapiPrivateV3", "GET", "positionRisk"): {"cost": 5},
     ("fapiPrivateV3", "GET", "account"): {"cost": 5},
     ("fapiPrivate", "POST", "order/test"): {"cost": 1},
@@ -125,6 +129,27 @@ def _number(value: Any) -> str | None:
         return format(_decimal(value), "f")
     except DemoSafetyError:
         return None
+
+
+def _bracket_decimal(value: Any, field: str, *, positive: bool = False,
+                     nonnegative: bool = False) -> Decimal:
+    if isinstance(value, bool):
+        raise DemoSafetyError(f"invalid leverage-bracket {field}")
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        raise DemoSafetyError(f"invalid leverage-bracket {field}") from None
+    if (not result.is_finite() or (positive and result <= 0)
+            or (nonnegative and result < 0)):
+        raise DemoSafetyError(f"invalid leverage-bracket {field}")
+    return result
+
+
+def _bracket_integer(value: Any, field: str) -> int:
+    number = _bracket_decimal(value, field, positive=True)
+    if number != number.to_integral_value():
+        raise DemoSafetyError(f"invalid leverage-bracket {field}")
+    return int(number)
 
 
 def sanitize_response(value: Any) -> Any:
@@ -243,6 +268,21 @@ def _build_client(api_key: str | None, api_secret: str | None):
         response = original_request(method, url, **kwargs)
         if 300 <= response.status_code < 400:
             raise DemoSafetyError("Demo redirects are prohibited")
+        # Keep only a digest of the response bytes.  CCXT may decode and
+        # normalize the payload before the adapter sees it; that normalized
+        # object is useful for content identity but cannot stand in for the
+        # raw HTTP evidence required by the account-risk gate.
+        try:
+            raw_bytes = bytes(response.content)
+        except (AttributeError, TypeError, ValueError):
+            raise DemoSafetyError("Demo response body is not byte-addressable") from None
+        client._quant_last_response_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+        client._quant_last_response_hash_basis = "raw_http_response_bytes"
+        # The leverage-bracket response contains exchange metadata only. Keep
+        # the exact body in memory so the caller can place it in a 0600
+        # evidence artifact after an explicit read-only capture. It is never
+        # logged or included in the adapter's public normalized payload.
+        client._quant_last_response_bytes = raw_bytes
         return response
 
     client.session.request = guarded_request
@@ -366,6 +406,7 @@ class BinanceDemoAdapter:
         if api.startswith("fapiPrivate") and not self._credentials_ready:
             raise DemoSafetyError("explicit Demo credentials are required")
         started = time.monotonic()
+        started_at_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         config = dict(REQUEST_COSTS[(api, method, path)])
         effective_cost = (config["noSymbol"] if "noSymbol" in config
                           and not (params or {}).get("symbol") else config["cost"])
@@ -380,12 +421,14 @@ class BinanceDemoAdapter:
             code = int(code_match[1]) if code_match else None
             self.last_call = {"path": path, "api": api, "method": method,
                               "latency_ms": elapsed, "status": "error", "error_kind": kind,
-                              "exchange_code": code, "rate_limit_cost": effective_cost}
+                              "exchange_code": code, "rate_limit_cost": effective_cost,
+                              "started_at_utc": started_at_utc}
             raise DemoRequestError(kind, elapsed, code) from None
         self.last_call = {"path": path, "api": api, "method": method,
                           "latency_ms": round((time.monotonic() - started) * 1000, 3),
                           "status": "ok", "adapter_version": ADAPTER_VERSION,
-                          "rate_limit_cost": effective_cost}
+                          "rate_limit_cost": effective_cost,
+                          "started_at_utc": started_at_utc}
         return result
 
     def fetch_exchange_info(self) -> dict:
@@ -654,6 +697,120 @@ class BinanceDemoAdapter:
         if pair is not None and len(results) != 1:
             raise DemoSafetyError("Demo symbol config requested identity is not unique")
         return results
+
+    def fetch_leverage_bracket(self) -> dict[str, Any]:
+        """Read and validate the account-scoped leverage-bracket snapshot.
+
+        Binance returns every symbol for this USER_DATA endpoint.  The
+        execution contract only accepts the three explicitly supported
+        USDT-M pairs, and validates their complete, contiguous bracket
+        schedules before returning a credential-free evidence object.
+        """
+        raw = self._call("leverageBracket", "fapiPrivate", "GET")
+        if not isinstance(raw, list) or not raw:
+            raise DemoSafetyError("Demo leverage-bracket response is incomplete")
+
+        expected_symbols = tuple(PAIR_SYMBOLS[pair] for pair in ALLOWED_PAIRS)
+        schedules: dict[str, dict[str, Any]] = {}
+        for item in raw:
+            if not isinstance(item, Mapping):
+                raise DemoSafetyError("Demo leverage-bracket response contains an invalid symbol")
+            symbol = item.get("symbol")
+            if symbol not in expected_symbols:
+                continue
+            if symbol in schedules:
+                raise DemoSafetyError("Demo leverage-bracket response contains duplicate symbols")
+            brackets = item.get("brackets")
+            if not isinstance(brackets, list) or not brackets:
+                raise DemoSafetyError("Demo leverage-bracket schedule is incomplete")
+            coefficient = item.get("notionalCoef")
+            if coefficient is not None and _bracket_decimal(
+                    coefficient, f"{symbol}.notionalCoef", positive=True) != Decimal("1"):
+                raise DemoSafetyError("Demo leverage-bracket notional coefficient is unsupported")
+
+            normalized: list[dict[str, Any]] = []
+            previous: dict[str, Decimal] | None = None
+            for position, bracket in enumerate(brackets, start=1):
+                if not isinstance(bracket, Mapping):
+                    raise DemoSafetyError("Demo leverage-bracket band is invalid")
+                required = ("bracket", "initialLeverage", "notionalCap", "notionalFloor",
+                            "maintMarginRatio", "cum")
+                if any(field not in bracket for field in required):
+                    raise DemoSafetyError("Demo leverage-bracket band is incomplete")
+                number = _bracket_integer(bracket["bracket"], f"{symbol}.bracket")
+                initial = _bracket_integer(bracket["initialLeverage"],
+                                           f"{symbol}.initialLeverage")
+                floor = _bracket_decimal(bracket["notionalFloor"],
+                                         f"{symbol}.notionalFloor", nonnegative=True)
+                cap = _bracket_decimal(bracket["notionalCap"],
+                                       f"{symbol}.notionalCap", positive=True)
+                mmr = _bracket_decimal(bracket["maintMarginRatio"],
+                                       f"{symbol}.maintMarginRatio")
+                cumulative = _bracket_decimal(bracket["cum"], f"{symbol}.cum",
+                                              nonnegative=True)
+                if number != position or cap <= floor or not (Decimal("0") < mmr < Decimal("1")):
+                    raise DemoSafetyError("Demo leverage-bracket bands are not ordered")
+                if position == 1 and floor != 0:
+                    raise DemoSafetyError("Demo leverage-bracket bands must start at zero")
+                if previous is not None:
+                    if floor != previous["cap"]:
+                        raise DemoSafetyError("Demo leverage-bracket bands are not contiguous")
+                    previous_offset = previous["cap"] * previous["mmr"] - previous["cum"]
+                    current_offset = floor * mmr - cumulative
+                    if previous_offset != current_offset:
+                        raise DemoSafetyError("Demo leverage-bracket maintenance offsets are discontinuous")
+                previous = {"cap": cap, "mmr": mmr, "cum": cumulative}
+                normalized.append({
+                    "bracket": number,
+                    "initialLeverage": initial,
+                    "notionalCap": format(cap, "f"),
+                    "notionalFloor": format(floor, "f"),
+                    "maintMarginRatio": format(mmr, "f"),
+                    "cum": format(cumulative, "f"),
+                })
+            schedules[symbol] = {
+                "symbol": symbol,
+                "notionalCoef": None if coefficient is None else format(
+                    _bracket_decimal(coefficient, f"{symbol}.notionalCoef"), "f"),
+                "brackets": normalized,
+            }
+
+        missing = [symbol for symbol in expected_symbols if symbol not in schedules]
+        if missing:
+            raise DemoSafetyError("Demo leverage-bracket response is missing supported symbols")
+
+        selected = [schedules[symbol] for symbol in expected_symbols]
+        canonical = json.dumps(selected, ensure_ascii=False, sort_keys=True,
+                               separators=(",", ":"))
+        raw_response_hash = getattr(self._client, "_quant_last_response_sha256", None)
+        raw_hash_basis = getattr(self._client, "_quant_last_response_hash_basis", None)
+        if (not isinstance(raw_response_hash, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", raw_response_hash)
+                or raw_hash_basis != "raw_http_response_bytes"):
+            # Injected offline clients do not expose transport bytes.  Keep a
+            # deterministic fallback for unit tests, but mark it explicitly
+            # so callers cannot mistake it for exchange response evidence.
+            response_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            response_hash_basis = "canonical_selected_symbols_json"
+        else:
+            response_hash = raw_response_hash
+            response_hash_basis = raw_hash_basis
+        fetched_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        request_id = f"leverage-bracket-{int(time.time() * 1000)}-{response_hash[:12]}"
+        return {
+            "environment": "demo",
+            "endpoint": "/fapi/v1/leverageBracket",
+            "http_method": "GET",
+            "security_type": "USER_DATA",
+            "request_id": request_id,
+            "fetched_at_utc": fetched_at,
+            "signed_at_utc": self.last_call.get("started_at_utc"),
+            "response_sha256": response_hash,
+            "response_hash_basis": response_hash_basis,
+            "request_latency_ms": self.last_call["latency_ms"],
+            "symbols": selected,
+            "raw": sanitize_response(selected),
+        }
 
     def fetch_positions(self) -> list[dict]:
         raw = self._call("positionRisk", "fapiPrivateV3", "GET")

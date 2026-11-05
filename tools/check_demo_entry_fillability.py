@@ -31,7 +31,25 @@ FILLS_SINCE_MS = 1791938400000  # 开闸前一刻
 
 
 def _j(v):
+    if v is None:
+        return {}
     return v if isinstance(v, dict) else json.loads(v)
+
+
+def _document_payload(conn, key: str) -> tuple[dict, bool]:
+    """Return one persisted document, or an explicit empty projection.
+
+    A fresh Demo installation may not have written the shared-session or
+    runner document yet.  The acceptance check is read-only and should report
+    that state instead of crashing while indexing ``fetchone()``.
+    """
+    row = conn.execute(
+        "select payload from quant.documents where key=%s", (key,)
+    ).fetchone()
+    if row is None:
+        return {}, False
+    value = _j(row[0])
+    return (value if isinstance(value, dict) else {}), True
 
 
 def _t(ms):
@@ -101,8 +119,9 @@ def main() -> int:
                   f"{o['status']:<32}成交 {o['filled_quantity']}/{o['quantity']}{extra}")
 
         print()
-        ss = _j(conn.execute("select payload from quant.documents "
-                             "where key='binance_demo_shared_sessions.json'").fetchone()[0])
+        ss, ss_present = _document_payload(conn, "binance_demo_shared_sessions.json")
+        if not ss_present:
+            problems.append("缺少 binance_demo_shared_sessions.json，无法验收会话开闸状态")
         sessions = ss.get("sessions") or []
         on = sum(1 for s in sessions if s.get("entriesEnabled"))
         states: dict[str, int] = {}
@@ -115,8 +134,9 @@ def main() -> int:
             if st.get("ownership_conflicts"):
                 print(f"  ⚠️ {str(s.get('selectedAccountId'))[:44]} conflicts={st['ownership_conflicts']}")
 
-        r = _j(conn.execute("select payload from quant.documents "
-                            "where key='binance_demo_runner_controller.json'").fetchone()[0])
+        r, runner_present = _document_payload(conn, "binance_demo_runner_controller.json")
+        if not runner_present:
+            problems.append("缺少 binance_demo_runner_controller.json，无法验收 runner 状态")
         st = r.get("status") or {}
         print(f"══ runner ══")
         print(f"  status={st.get('status')} entries_enabled={st.get('entries_enabled')} "

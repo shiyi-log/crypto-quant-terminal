@@ -11,6 +11,7 @@ import time
 import uuid
 
 from demo_execution_service import DemoExecutionService, DemoRunnerConfig, PaperEventSource
+from gate_registry import GateRegistry
 
 STATE_KEY = "binance_demo_runner_controller.json"
 SHARED_STATE_KEY = "binance_demo_shared_sessions.json"
@@ -29,7 +30,7 @@ class DemoHandoffError(RuntimeError):
 class DemoRunnerController:
     def __init__(self, data_store, demo_store, credential_provider, adapter_factory=None,
                  *, paper_source=None, lock_path=None, clock_ms=None, ledger_factory=None,
-                 risk_gate_required=True, risk_account_scope=None):
+                 risk_gate_required=None, risk_account_scope=None, gate_registry=None):
         self.data_store, self.demo_store = data_store, demo_store
         self.credential_provider = credential_provider
         if adapter_factory is None:
@@ -66,11 +67,29 @@ class DemoRunnerController:
         self._restore_incomplete = False
         self._account_coordinator = None
         self._account_cycle_lock = threading.RLock()
+        self.gate_registry = gate_registry
+        if risk_gate_required is None:
+            risk_gate_required = self._gate_enabled("risk.required")
         self.risk_gate_required = bool(risk_gate_required)
         self.risk_account_scope = risk_account_scope
         self._risk_gate = None
         self._research_id = None
         self._risk_gate_binding_missing = False
+
+    def _gate_enabled(self, key):
+        """Use the injected process registry when the public API has one."""
+        if self.gate_registry is None:
+            return True
+        return bool(self.gate_registry.is_enabled(key))
+
+    def _require_gate(self, key):
+        if not self._gate_enabled(key):
+            raise DemoHandoffError("execution_gate_closed", f"{key} is disabled")
+
+    def _require_entry_gates(self):
+        for key in ("execution.demo_enabled", "execution.trading_enabled",
+                    "execution.entries_enabled"):
+            self._require_gate(key)
 
     @staticmethod
     def _gate_identity(gate):
@@ -398,7 +417,9 @@ class DemoRunnerController:
     def _service(self, account_id, ledger, adapter):
         config = DemoRunnerConfig(str(account_id),
             virtual_account_key=ledger.virtual_account_key, trading_enabled=True)
-        return DemoExecutionService(adapter, ledger, self.paper, config, clock_ms=self.clock_ms)
+        return DemoExecutionService(adapter, ledger, self.paper, config,
+                                    clock_ms=self.clock_ms,
+                                    gate_registry=self.gate_registry)
 
     def _create(self, account_id, *, entries_enabled, research_id=None):
         if self.risk_gate_required and entries_enabled:
@@ -459,6 +480,7 @@ class DemoRunnerController:
         """Invoked by the user's frontend start action; never a live start."""
         with self._mutex:
             self._require_not_closing()
+            self._require_entry_gates()
             if not self.service:
                 shared = self.data_store.get_document(SHARED_STATE_KEY, {})
                 if not isinstance(shared, dict):

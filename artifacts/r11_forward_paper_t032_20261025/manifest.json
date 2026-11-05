@@ -1,0 +1,324 @@
+{
+  "code_sha256": "37b957f509be0953379eaa664af74384c86012d01f09022c34782c96b5e023c7",
+  "conditional_prefix": "conditional_",
+  "conditional_rule": "entry_dvol_1h >= median(previous_252_valid_entry_observations)",
+  "execution_evidence": "forward_paper",
+  "files": {
+    "artifacts/r11_forward_paper_t032_20261025/FORWARD_STATUS.md": {
+      "bytes": 1027,
+      "sha256": "8fe99d4efb12862e1eb7f1f490a325fa63d2c59ecb2de0b0a66577376f2645ee"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/REPORT 2.json": {
+      "bytes": 13721,
+      "sha256": "04796a4e1d53b33ff56c8bb9cd358e109015a081767d969d0f332d264fd99bdd"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/REPORT 2.md": {
+      "bytes": 1714,
+      "sha256": "689f1654905e5b97a7e8b94dda178051050e3c42770aab711ad1bff09b1b8aee"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/REPORT.json": {
+      "bytes": 18941,
+      "sha256": "ea209368418f88ca910ff9eb51c160e7de3d4e1e4fbc2972a95d693a6f6821ea"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/REPORT.md": {
+      "bytes": 1988,
+      "sha256": "a7aa595d7b6fc34d3a959e782f9ece4ccabcc052f4df1e9146ad7bbaf2c29680"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/com.quant.r11forward.t032 2.plist": {
+      "bytes": 954,
+      "sha256": "ee5eaa7736e3c4310626409a8d28c1d714f8a4c491ec9da18b591aabcf02ab60"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/com.quant.r11forward.t032.plist": {
+      "bytes": 1068,
+      "sha256": "06911805a3be06afcf2ce5c2166ed6c9db51dc32f93cf6448eeb394cf572dfb0"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_REPORT 2.json": {
+      "bytes": 5689,
+      "sha256": "283ab2469247de5afee7cf9355385acb26437bf9d289e0b6445bae9eafe38f2a"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_REPORT 2.md": {
+      "bytes": 1503,
+      "sha256": "ca23c4f15a175bb19d86d24c6e34f9fccee3b6b8535c8fc1f4a41babeffaad7c"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_REPORT.json": {
+      "bytes": 8878,
+      "sha256": "e067a7fa557170c6541262c01d99336965d403d6538e624d6730b144acc04934"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_REPORT.md": {
+      "bytes": 1710,
+      "sha256": "7cace3aece8c475d3b560cdfed4120e498fea99e9ab5e788cf6f3877279f5dff"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_api_requests.jsonl": {
+      "bytes": 13104,
+      "sha256": "2fa594641c389ec163bc91f3906ac30286ce82c5e919de999eabaf2b124b809d"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_REPORT 2.json": {
+      "bytes": 5689,
+      "sha256": "283ab2469247de5afee7cf9355385acb26437bf9d289e0b6445bae9eafe38f2a"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_REPORT 2.md": {
+      "bytes": 1503,
+      "sha256": "ca23c4f15a175bb19d86d24c6e34f9fccee3b6b8535c8fc1f4a41babeffaad7c"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_REPORT.json": {
+      "bytes": 8424,
+      "sha256": "d7f01a7478ae6aac39194f1b03ce6c51d6ce5374de5ded687283aeed04ef5936"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_REPORT.md": {
+      "bytes": 1508,
+      "sha256": "3c1a38191f65ffebc00e9c86c5f8b122a788a1cd8eb291592e9b6d1744453fde"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_api_requests 2.jsonl": {
+      "bytes": 1461,
+      "sha256": "43232f6b2f0577171fd439f5158903a3431c2406307428d67124dacd47d60afe"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_api_requests.jsonl": {
+      "bytes": 7287,
+      "sha256": "5664e4c3483a092d4be1fef48189d91564a19eb5fc3b59e297ca1885523791a6"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_equity_daily 2.jsonl": {
+      "bytes": 430,
+      "sha256": "630188adfa8b5ffe6e587ef5964a7091b4b624aa5e83d07d6d702854554e9818"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_equity_daily.jsonl": {
+      "bytes": 2200,
+      "sha256": "96ccedc784f11d40566afe79b90e961550b4b2826d4930f54cbb2bf7f92a7995"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_equity_state 2.json": {
+      "bytes": 138,
+      "sha256": "f8e789be161d417d9476c46fec08b6d6ea5983214471cdb99fb06e0ce712f363"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_equity_state.json": {
+      "bytes": 158,
+      "sha256": "64e05f88c616cd6be5c19fb8c726b292f949cdc1bd2c349888f908633e8b2aab"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_ledger_events 2.jsonl": {
+      "bytes": 3549,
+      "sha256": "1f27eaef2dd724c64015384deb64e74e8d42e251ff25f19ec9b0b934461ad8bc"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_ledger_events.jsonl": {
+      "bytes": 26447,
+      "sha256": "aaa54f7c70ed7c8128033c1b3016e724ca23c5a1dd772cef57ce796d500751d9"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_snapshots 2.jsonl": {
+      "bytes": 3133,
+      "sha256": "8c1c43b26286b4994203d5789220dd7c861e8415351be211a9c2cb492313f700"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dryrun_snapshots.jsonl": {
+      "bytes": 21986,
+      "sha256": "e058198cf26b06e7fb151d440a4b808e83560ae899ad2db0a38d5e0300bc8bdd"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dvol_history 2.jsonl": {
+      "bytes": 41897,
+      "sha256": "92f99b1f071a9da7a938b01fd5b5cb9539a7585a99485c96542b5a1b324524ba"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_dvol_history.jsonl": {
+      "bytes": 13400,
+      "sha256": "859c00d3cb2e3da9095284aa97981f02a6f84659d6902b6297e6ec19d80a74c5"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_equity_daily.jsonl": {
+      "bytes": 4808,
+      "sha256": "2eed6164d06baf7326769e6b336dc8a831dbc4e5cfb10a958803f61d2778fce1"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_equity_state.json": {
+      "bytes": 1957,
+      "sha256": "75001d3586f92f14f27c8312a95196c603d5e81a42ffe4a11332d1a3c4edbcb9"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_ledger_events.jsonl": {
+      "bytes": 62608,
+      "sha256": "806ef035a3889a7f2c5cdcfb33f94b0526b244f014b1a98b8fc5c491e05c0116"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/conditional_snapshots.jsonl": {
+      "bytes": 39528,
+      "sha256": "ca229d201b4afa33a192ed3d5e7d60682af7bd51fe6a7fe12014f16b9d64e32e"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/dryrun_FORWARD_STATUS.md": {
+      "bytes": 907,
+      "sha256": "e02749f01098b0d9d99650d46d9fe0b86be22b1610b57bb0213795ac495b590c"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/dryrun_REPORT.json": {
+      "bytes": 17307,
+      "sha256": "60d8540a15bfff948ac1a6eab3aa8fa370c3f51dc8c67255c42107cd5c918387"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/dryrun_REPORT.md": {
+      "bytes": 1953,
+      "sha256": "f7265a3489f2a97e29dae2f3e446b3e38d7c214592b437912bf90f5179fd58a9"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/forward_gaps.jsonl": {
+      "bytes": 285,
+      "sha256": "39768ef3a23d59a70cefc681f43bbf99e260e5bf29896b77e4f878a1ea118a5d"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/logs/watchdog.launchd.err.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/logs/watchdog.launchd.out.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/logs/watchdog.log": {
+      "bytes": 1439,
+      "sha256": "5eded0554f4e0a97edc375d70a174527a768ee78686e3b518220e6af85ab0512"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/manifest 2.json": {
+      "bytes": 6125,
+      "sha256": "129ccf84cfafb9cb3d2ab74dadbb4cbcae2e035b4352f28dcd95f3bfe38dd35c"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/raw_cache/index_price 2.json": {
+      "bytes": 165,
+      "sha256": "d1770b0004fc2c5ba4153e31a4471e53585f2285461df98df469315b65d38dcc"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/raw_cache/index_price.json": {
+      "bytes": 165,
+      "sha256": "22a34a9fbcd4762b64e87a198849272b9bebcdc2c9f7b79160a6e3f75938f669"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/raw_cache/instruments_btc_option 2.json": {
+      "bytes": 808771,
+      "sha256": "93df7390b46d60929e4b68ea3c5eb268a76840a0903c8dc46e0b4c6609161b47"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/raw_cache/instruments_btc_option.json": {
+      "bytes": 808772,
+      "sha256": "df53bd3988b1e19b19ded6b79113dc7838ee80cc695c0a1e5e31aa95a38ec7a8"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/raw_cache/ticker_BTC-25OCT26-80500-C.json": {
+      "bytes": 779,
+      "sha256": "2d6b8d1bf0266fa650d318c759d71b594ad3898418f407cd569297320c5385c2"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/raw_cache/ticker_BTC-25OCT26-80500-P.json": {
+      "bytes": 780,
+      "sha256": "db9e3949f1c1965b462fcfccacd309b681025eb366c5f62c46bd4e55f9b567a5"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/raw_cache/ticker_BTC-27NOV26-80000-C 2.json": {
+      "bytes": 778,
+      "sha256": "18f3f66c2be47c9e5ad60f492b163007487d6d4f3e93674a7bc69b4b45ca8004"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/raw_cache/ticker_BTC-27NOV26-80000-C.json": {
+      "bytes": 775,
+      "sha256": "3839c337eab3ac03905643f64343fe0b42e74a076d3091402f0cc15b40115886"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/raw_cache/ticker_BTC-27NOV26-80000-P 2.json": {
+      "bytes": 777,
+      "sha256": "4a3e7af3bad246af1ccc975e23340fccf937979b7109bca8cc9ea257fbe26f8e"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/raw_cache/ticker_BTC-27NOV26-80000-P.json": {
+      "bytes": 781,
+      "sha256": "7fbb0191a0fc9ea96d2de3767d637b6ae62c937f7d05418b371d1bd2e20ec61f"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/raw_cache/ticker_BTC-PERPETUAL 2.json": {
+      "bytes": 702,
+      "sha256": "0cb61ae04492e2f3f4fb3fc6ec08696ee3206e3f4fca80a2eb545c1b708cb076"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/raw_cache/ticker_BTC-PERPETUAL.json": {
+      "bytes": 700,
+      "sha256": "1691e354e5f34e7c7460289de951c46b7408db05264139c1bb0d2308a6d2cddf"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/reproduce 2.sh": {
+      "bytes": 253,
+      "sha256": "947caeaa37c3d06317a8a71a14f23d6b6b9e305a56aa05547cc39016172af166"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/reproduce.sh": {
+      "bytes": 253,
+      "sha256": "947caeaa37c3d06317a8a71a14f23d6b6b9e305a56aa05547cc39016172af166"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_REPORT 2.json": {
+      "bytes": 5159,
+      "sha256": "b9771abb2f6feb19a642e5188dbe5d1844a16d16b7ab82257a807f1255187fc3"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_REPORT 2.md": {
+      "bytes": 1508,
+      "sha256": "32dd27c57acbbc1a960179215fe41ea8b37300c0f029abacb3f23d954ae8ed81"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_REPORT.json": {
+      "bytes": 5624,
+      "sha256": "e0e92a3f680fe71f394ebaeaf29dc1ca62947c150d6f8172eaed83975cc837b1"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_REPORT.md": {
+      "bytes": 1710,
+      "sha256": "e3abadd5c2a38c955199eee798cff97f5982cafddb9ba516fc0ee24bd5b7bd98"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_api_requests.jsonl": {
+      "bytes": 13104,
+      "sha256": "2fa594641c389ec163bc91f3906ac30286ce82c5e919de999eabaf2b124b809d"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_REPORT 2.json": {
+      "bytes": 5159,
+      "sha256": "b9771abb2f6feb19a642e5188dbe5d1844a16d16b7ab82257a807f1255187fc3"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_REPORT 2.md": {
+      "bytes": 1508,
+      "sha256": "32dd27c57acbbc1a960179215fe41ea8b37300c0f029abacb3f23d954ae8ed81"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_REPORT.json": {
+      "bytes": 5172,
+      "sha256": "0ca40a58ab95400221114f82a3bec0bcbd0f3a79b680c4224bda8c83b3666896"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_REPORT.md": {
+      "bytes": 1508,
+      "sha256": "c780f3ce0ef69b4cd6a07cdc8f4236d1cd57191b2cfcaf6950c8cdb72b001b67"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_api_requests 2.jsonl": {
+      "bytes": 1456,
+      "sha256": "553d44bc7133f2c8990fe0a2a52221970899d18c74b3698c93c4fd6cb554398c"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_api_requests.jsonl": {
+      "bytes": 7280,
+      "sha256": "3e228f38d052804d53d351d2e7f7afd63f4739cf19d11827bad3aae62f931c90"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_equity_daily 2.jsonl": {
+      "bytes": 494,
+      "sha256": "aa71f75a4735ead2a5356746c6b660be07c0468f332263b722920b76cc5238e4"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_equity_daily.jsonl": {
+      "bytes": 2456,
+      "sha256": "b9f35493a93435a0d4260b23d343ca3891812949790d46227aaaf7e270794365"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_equity_state 2.json": {
+      "bytes": 158,
+      "sha256": "b8b1c6e2d9355a0d67c598c223d0ed136bea36c75e458a4d0f64222f8fb91ad0"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_equity_state.json": {
+      "bytes": 160,
+      "sha256": "17afcef0e1e529433409a267eeed52454220036bcff7149dabba1443dac16d28"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_ledger_events 2.jsonl": {
+      "bytes": 5622,
+      "sha256": "0c71668c0397d66fb7ed98410ad882dd52fb5a29fdf53579e76b1fd8f7ed5128"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_ledger_events.jsonl": {
+      "bytes": 28155,
+      "sha256": "db2e7c68e28084a8e30c81ae13f8367fc1d8a0ea21df818a7958f28987e3204e"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_snapshots 2.jsonl": {
+      "bytes": 2832,
+      "sha256": "1d0308e72a5a1d7b67543a1c1a026951257dd1df9ca4b22207b1e374b2351a76"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_dryrun_snapshots.jsonl": {
+      "bytes": 14205,
+      "sha256": "a091dc2d313dc0d63f26c73d22db6c4d07b81980a129518683054f87b3264648"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_equity_daily.jsonl": {
+      "bytes": 4999,
+      "sha256": "edc17cb05f04a9b0bb3cf372519a1bc92ff42257451aa53e2069e76b07a89f60"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_equity_state.json": {
+      "bytes": 2850,
+      "sha256": "c3c97656e28364003e75428dc4ce70b91f59620b09e39f2f65fef02d9073854c"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_ledger_events.jsonl": {
+      "bytes": 71526,
+      "sha256": "0c233fbd9fcd3d26eee20f1ab862b8edaf6134068ebca1651394feec9b54bc9f"
+    },
+    "artifacts/r11_forward_paper_t032_20261025/unconditional_snapshots.jsonl": {
+      "bytes": 25542,
+      "sha256": "99bf3407c8455d2a73c34b0bd75bf869f4b64f7b63d671fd3868d378935e7d28"
+    }
+  },
+  "generated_at_utc": "2026-11-04T00:00:06.961003+00:00",
+  "git_commit": "72f5ddd0517eec5f7bf63488bdc69f149684aef6",
+  "git_dirty": true,
+  "run_id": "r11-forward-paper-t032-20261025-v1",
+  "spec_sha256": "207f140d6d43ab5f67d989aac9826b2793ed015b434e2a6077b75bc62891f094",
+  "state_runner_code_sha256": "9d8d2bba326698070372881121fd2f13f8a463f8a989d0651c13052aaa43941d",
+  "task": "T032",
+  "unconditional_prefix": "unconditional_"
+}

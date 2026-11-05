@@ -77,10 +77,9 @@ jobs:
         run: |
           uv run --frozen --group dev python - <<'PY'
           import os
-          import sys
-          import unittest
 
           import psycopg
+          import pytest
 
           # 数据库连接失败必须使 CI 失败，不能被缺少环境变量的跳过逻辑掩盖。
           database_url = os.environ["QUANT_TEST_DATABASE_URL"]
@@ -91,33 +90,27 @@ jobs:
               assert database_name == "quant_test", "CI 必须使用专用测试数据库"
               assert 170000 <= int(server_version) < 180000, "CI 必须使用 PostgreSQL 17"
 
-          suite = unittest.defaultTestLoader.discover("tests")
+          class DatabaseIntegrationGuard:
+              found_integration_tests = False
+              skipped_integration_tests = []
 
-          def iter_cases(items):
-              for item in items:
-                  if isinstance(item, unittest.TestSuite):
-                      yield from iter_cases(item)
-                  else:
-                      yield item
+              def pytest_collection_finish(self, session):
+                  self.found_integration_tests = any(
+                      "DataStoreIntegrationTests" in item.nodeid for item in session.items
+                  )
+                  if not self.found_integration_tests:
+                      raise RuntimeError("未发现数据库集成测试，禁止空测试通过 CI")
 
-          integration_ids = {
-              case.id()
-              for case in iter_cases(suite)
-              if case.__class__.__name__ == "DataStoreIntegrationTests"
-          }
-          if not integration_ids:
-              raise RuntimeError("未发现数据库集成测试，禁止空测试通过 CI")
+              def pytest_runtest_logreport(self, report):
+                  if "DataStoreIntegrationTests" in report.nodeid and report.skipped:
+                      self.skipped_integration_tests.append(report.nodeid)
 
-          result = unittest.TextTestRunner(verbosity=2).run(suite)
-          skipped_integration = [
-              case.id()
-              for case, _reason in result.skipped
-              if case.id() in integration_ids
-              or "DataStoreIntegrationTests" in case.id()
-          ]
-          if skipped_integration:
-              raise RuntimeError(f"数据库集成测试被跳过: {skipped_integration}")
-          sys.exit(0 if result.wasSuccessful() else 1)
+              def pytest_sessionfinish(self, session, exitstatus):
+                  if self.skipped_integration_tests:
+                      print(f"数据库集成测试被跳过: {self.skipped_integration_tests}")
+                      session.exitstatus = 1
+
+          raise SystemExit(pytest.main(["tests/", "-q"], plugins=[DatabaseIntegrationGuard()]))
           PY
 
   frontend:

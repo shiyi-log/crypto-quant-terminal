@@ -51,7 +51,10 @@ from psycopg_pool import PoolTimeout
 from runtime_config import load_environment
 from data_store import DataStore
 from candle_archive import CandleArchiveWriter
+from orderflow_detector import METHOD_VERSION as SURGE_METHOD_VERSION
+from price_spike import PRICE_SPIKE_METHOD_VERSION
 import trading_audit
+from gate_registry import GateRegistry, UnknownGateError
 
 load_environment()
 
@@ -104,6 +107,12 @@ DEFAULT_PASS = os.environ.get("QUANT_BOOTSTRAP_PASSWORD")
 FORWARD_PAPER_ROOT = os.environ.get(
     "QUANT_FORWARD_PAPER_ROOT", os.path.join(ROOT, "artifacts", "forward_paper")
 )
+# T032 的固定 forward-paper artifact。这个接口只读取固定文件名，不能通过
+# 请求参数选择任意本地路径。
+R11_FORWARD_ROOT = os.environ.get(
+    "QUANT_R11_FORWARD_ROOT",
+    os.path.join(ROOT, "artifacts", "r11_forward_paper_t032_20261025"),
+)
 FORWARD_PAPER_LIMIT = 100
 _FORWARD_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
@@ -141,6 +150,24 @@ _store = None
 _store_lock = threading.Lock()
 _demo_api = None
 _demo_api_lock = threading.Lock()
+_gate_registry = None
+_gate_registry_lock = threading.Lock()
+
+
+KNOWN_GATE_KEYS = (
+    "market_stream.enabled",
+    "breadth_stream.enabled",
+    "integrity.monitor_enabled",
+    "ops.monitor_enabled",
+    "strategy_lab.enabled",
+    "iteration.auto_enabled",
+    "strategy.paired_execution_enabled",
+    "risk.required",
+    "execution.demo_enabled",
+    "execution.entries_enabled",
+    "execution.trading_enabled",
+    "execution.real_orders",
+)
 
 
 def get_store():
@@ -160,8 +187,21 @@ def get_demo_api():
         with _demo_api_lock:
             if _demo_api is None:
                 from demo_api import create_demo_api
-                _demo_api = create_demo_api(get_store(), auth_dir=Path(AUTH_DIR))
+                _demo_api = create_demo_api(get_store(), auth_dir=Path(AUTH_DIR),
+                                            gate_registry=get_gate_registry())
     return _demo_api
+
+
+def get_gate_registry():
+    """Return the process-wide registry and fail early on an unregistered key."""
+    global _gate_registry
+    if _gate_registry is None:
+        with _gate_registry_lock:
+            if _gate_registry is None:
+                candidate = GateRegistry(ROOT, storage_dir=AUTH_DIR)
+                candidate.assert_registered(KNOWN_GATE_KEYS)
+                _gate_registry = candidate
+    return _gate_registry
 
 
 # REST 初始化与 WebSocket 增量都先返回行情，由独立线程归档。
@@ -476,6 +516,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._local_orderflow_route(orderflow_path)
         if self.path.startswith("/api/locals/database/"):
             return self._local_database()
+        if urllib.parse.urlsplit(self.path).path == "/api/locals/gates":
+            return self._local_gates("GET")
         if urllib.parse.urlsplit(self.path).path == "/api/locals/market-stream-info":
             return self._local_market_stream_info()
         if self.path.startswith("/api/locals/klines"):
@@ -491,6 +533,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._local_research_progress()
         if self.path.startswith("/api/locals/research_status"):
             return self._local_research_status()
+        if urllib.parse.urlsplit(self.path).path == "/api/locals/r11-forward":
+            return self._local_r11_forward()
         if urllib.parse.urlsplit(self.path).path == "/api/locals/forward-paper":
             return self._local_forward_paper()
         if urllib.parse.urlsplit(self.path).path == "/api/locals/strategy-lab":
@@ -692,6 +736,11 @@ class Handler(BaseHTTPRequestHandler):
                 "market": "futures", "pair": pair, "timeframe": "5m",
                 "status": status, "limit": limit, "include_revisions": False,
             }
+            if self._orderflow_accepts_keywords(read_revisions, "method_version"):
+                read_kwargs["method_version"] = SURGE_METHOD_VERSION
+            else:
+                # Old readers must be filtered before applying the public page.
+                read_kwargs["limit"] = None
             if start is not None:
                 read_kwargs["start"] = start
             if end is not None:
@@ -705,11 +754,10 @@ class Handler(BaseHTTPRequestHandler):
                 read_kwargs["limit"] = None
             items = read_revisions(**read_kwargs)
         elif callable(getattr(store, "list_surge_observations", None)):
-            # Old flat stores can apply their time bounds after SQL limiting.
-            # Request all rows when bounded, then enforce the public limit.
+            # Old flat stores can limit before version/time filtering.
+            # Request all rows and apply those filters before the public page.
             list_observations = store.list_surge_observations
-            read_kwargs = {"pair": pair, "timeframe": "5m", "status": status,
-                           "limit": None if start is not None or end is not None else limit}
+            read_kwargs = {"pair": pair, "timeframe": "5m", "status": status, "limit": None}
             if start is not None and self._orderflow_accepts_keywords(list_observations, "start"):
                 read_kwargs["start"] = start
             if end is not None and self._orderflow_accepts_keywords(list_observations, "end"):
@@ -720,6 +768,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # The canonical query applies these predicates before its SQL LIMIT;
         # enforce them again for older stores and adapter implementations.
+        items = [item for item in items if item.get("method_version") == SURGE_METHOD_VERSION]
         if start is not None:
             items = [item for item in items if int(item.get("timestamp", -1)) >= start]
         if end is not None:
@@ -731,6 +780,7 @@ class Handler(BaseHTTPRequestHandler):
             "pair": pair,
             "timeframe": "5m",
             "limit": limit,
+            "method_version": SURGE_METHOD_VERSION,
             "maturity": {
                 "unknown_is_unmatured": True,
                 "unknown_excluded_from_performance_statistics": True,
@@ -914,8 +964,9 @@ class Handler(BaseHTTPRequestHandler):
         stats_method = getattr(store, "surge_stats", None)
         if not callable(stats_method):
             stats_method = getattr(store, "get_surge_stats", None)
-        if callable(stats_method):
-            stats_kwargs = {"pair": pair, "timeframe": timeframe}
+        if callable(stats_method) and self._orderflow_accepts_keywords(stats_method, "method_version"):
+            stats_kwargs = {"pair": pair, "timeframe": timeframe,
+                            "method_version": SURGE_METHOD_VERSION}
             if not self._orderflow_accepts_keywords(stats_method, "timeframe"):
                 stats_kwargs.pop("timeframe")
             raw = stats_method(**stats_kwargs)
@@ -923,10 +974,12 @@ class Handler(BaseHTTPRequestHandler):
             read_revisions = getattr(store, "read_orderflow_surges", None)
             if not callable(read_revisions):
                 return self._send(503, {"detail": "订单流突增统计接口暂时不可用"})
-            rows = read_revisions(
-                market=market, pair=pair, timeframe=timeframe,
-                limit=None, include_revisions=False,
-            )
+            read_kwargs = {"market": market, "pair": pair, "timeframe": timeframe,
+                           "limit": None, "include_revisions": False}
+            if self._orderflow_accepts_keywords(read_revisions, "method_version"):
+                read_kwargs["method_version"] = SURGE_METHOD_VERSION
+            rows = [row for row in read_revisions(**read_kwargs)
+                    if row.get("method_version") == SURGE_METHOD_VERSION]
             by_pair = {}
             for row in rows:
                 key = row.get("pair") or "unknown"
@@ -959,6 +1012,7 @@ class Handler(BaseHTTPRequestHandler):
                 pairs[pair_name] = bucket
         by_pair = list(pairs.values()) if isinstance(by_pair, list) else pairs
         summary = {key: value for key, value in raw.items() if key not in {"by_pair", "pairs"}}
+        summary["method_version"] = SURGE_METHOD_VERSION
         if not summary.get("total"):
             zero = self._orderflow_zero_stats()
             summary = {**zero, **summary}
@@ -1027,9 +1081,10 @@ class Handler(BaseHTTPRequestHandler):
             "timeframe": timeframe, "direction": direction,
             "warmup": warmup,
             "sample_scope": "live_online_only",
+            "method_version": PRICE_SPIKE_METHOD_VERSION,
             "limitations": [
                 "只记录基线就绪后的在线收盘 K 线，不导入研究历史标签",
-                "基线只使用采集器自身记录的连续收盘 K 线；首次预热需要 288 根",
+                "基线优先使用本机连续收盘 K 线，缺口时可用 REST 恢复基线；不补发停机期间事件",
                 "事件定义为候选根收盘至第 3 根后续 K 线收盘的绝对收益达到 1.5%",
                 "量比预测波动而非方向，不是单独入场信号",
                 "未成熟和无效窗口不计入概率；剖面需完整的 t-12 至 t+12 数据",
@@ -1259,6 +1314,157 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, RuntimeError, psycopg.Error, PoolTimeout) as exc:
             print(f"[auth] 强平事件查询失败: {type(exc).__name__}", file=sys.stderr)
             return self._send(503, {"detail": "强平事件暂时不可用,请稍后重试"})
+
+    def _local_r11_forward(self):
+        """Project the authenticated, read-only T032 forward-paper dashboard.
+
+        The runner owns the append-only JSONL artifacts. This endpoint reads
+        only the fixed conditional/unconditional filenames plus optional gap
+        and status summaries, and never writes or invokes the runner.
+        """
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+
+        root = Path(R11_FORWARD_ROOT).expanduser()
+        if not root.is_dir():
+            return self._send(404, {"detail": "R11 forward artifact 目录不存在"})
+
+        def read_json(path: Path, default):
+            if not path.is_file():
+                return default
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"{path.name} 内容损坏") from exc
+            return value
+
+        def read_jsonl(path: Path) -> list[dict]:
+            if not path.is_file():
+                return []
+            rows = []
+            try:
+                with path.open("r", encoding="utf-8") as stream:
+                    for line_number, line in enumerate(stream, 1):
+                        if not line.strip():
+                            continue
+                        value = json.loads(line)
+                        if not isinstance(value, dict):
+                            raise ValueError(f"{path.name} 第 {line_number} 行必须是对象")
+                        rows.append(value)
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"{path.name} 内容损坏") from exc
+            return rows
+
+        def read_summary(path: Path):
+            if not path.is_file():
+                return None
+            try:
+                return path.read_text(encoding="utf-8")[:40_000]
+            except (OSError, UnicodeError) as exc:
+                raise ValueError(f"{path.name} 无法读取") from exc
+
+        def pick_metric(report: dict, *names):
+            containers = [report]
+            for key in ("performance", "metrics", "summary", "gate"):
+                value = report.get(key)
+                if isinstance(value, dict):
+                    containers.append(value)
+            for container in containers:
+                for name in names:
+                    if name in container:
+                        return container[name]
+            return None
+
+        def project_track(prefix: str) -> dict:
+            report = read_json(root / f"{prefix}REPORT.json", {})
+            if not isinstance(report, dict):
+                raise ValueError(f"{prefix}REPORT.json 必须是对象")
+            rows = read_jsonl(root / f"{prefix}equity_daily.jsonl")
+            latest = rows[-1] if rows else report.get("latest_daily", {})
+            if not isinstance(latest, dict):
+                latest = {}
+            state = read_json(root / f"{prefix}equity_state.json", {})
+            if not isinstance(state, dict):
+                state = {}
+            entry = report.get("conditional_entry")
+            if not isinstance(entry, dict):
+                entry = {}
+            decision = entry.get("decision")
+            if not decision:
+                decision = "unconditional" if prefix == "unconditional_" else "unknown"
+            equity = latest.get("equity")
+            initial_equity = state.get("initial_equity")
+            cumulative_pnl = None
+            if isinstance(equity, (int, float)) and isinstance(initial_equity, (int, float)):
+                cumulative_pnl = float(equity) - float(initial_equity)
+            observations = latest.get("observations", report.get("observations", 0))
+            live_observations = latest.get(
+                "live_observations", report.get("live_observations", 0)
+            )
+            return {
+                "latest": {
+                    "timestamp": latest.get("timestamp"),
+                    "timestamp_iso": latest.get("timestamp_iso"),
+                    "decision": decision,
+                    "entry_iv": entry.get("entry_dvol_1h"),
+                    "trailing_median": entry.get("trailing_252d_median"),
+                    "equity": equity,
+                    "cash_equity": latest.get("cash_equity"),
+                    "daily_pnl": latest.get("daily_pnl_usd"),
+                    "cumulative_pnl": cumulative_pnl,
+                    "observations": observations,
+                    "live_observations": live_observations,
+                    "spread": latest.get("observed_spread_pct"),
+                    "active_positions": latest.get("active_positions", 0),
+                    "run_mode": latest.get("run_mode"),
+                    "status": latest.get("status"),
+                    "execution_evidence": latest.get("execution_evidence"),
+                },
+                "observations": observations,
+                "live_observations": live_observations,
+                "minimum_observations": report.get("minimum_observations_for_comparison", 20),
+                "reject_annualized_return_threshold": report.get(
+                    "reject_annualized_return_threshold", 0.057
+                ),
+                "performance": {
+                    "annualized": pick_metric(report, "annualized", "annualized_return", "annualized_return_pct"),
+                    "sharpe": pick_metric(report, "sharpe", "sharpe_ratio"),
+                    "max_dd": pick_metric(report, "max_dd", "maxDD", "max_drawdown"),
+                    "cvar": pick_metric(report, "cvar", "cvar99", "cvar_99"),
+                    "gate": pick_metric(report, "gate", "decision_gate", "conclusion"),
+                },
+            }
+
+        try:
+            conditional = project_track("conditional_")
+            unconditional = project_track("unconditional_")
+            gaps = []
+            for gap in read_jsonl(root / "forward_gaps.jsonl"):
+                gaps.append({
+                    "missed_dates": gap.get("missed_dates", []),
+                    "gap_days": gap.get("gap_days"),
+                    "reason": gap.get("reason"),
+                })
+            status_summaries = {
+                "conditional": read_summary(root / "conditional_FORWARD_STATUS.md"),
+                "unconditional": read_summary(root / "unconditional_FORWARD_STATUS.md"),
+                "generic": read_summary(root / "FORWARD_STATUS.md"),
+            }
+            return self._send(200, {
+                "run_id": "r11-forward-paper-t032-20261025",
+                "updated_at": max(
+                    conditional["latest"].get("timestamp_iso") or "",
+                    unconditional["latest"].get("timestamp_iso") or "",
+                ) or None,
+                "conditional": conditional,
+                "unconditional": unconditional,
+                "gaps": gaps,
+                "gap_count": len(gaps),
+                "status_summaries": status_summaries,
+            })
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(f"[auth] R11 forward artifact 读取失败: {type(exc).__name__}", file=sys.stderr)
+            return self._send(503, {"detail": "R11 forward artifact 暂时不可用"})
 
     def _local_forward_paper(self):
         """Read a forward-paper run from the fixed artifact root.
@@ -2172,6 +2378,9 @@ class Handler(BaseHTTPRequestHandler):
         if self._is_demo_path():
             return self._unsupported_demo_method()
         self._read_body()
+        path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/locals/gates" or path.startswith("/api/locals/gates/"):
+            return self._local_gates("PUT")
         if self.path.startswith(FT_WEB_PREFIX + "/"):
             return self._proxy_web()
         if self.path.startswith("/api/"):
@@ -2241,6 +2450,45 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/auth/logout":
             return self._send(200, {"status": "ok"})
         return self._send(404, {"detail": "Not Found"})
+
+    def _local_gates(self, method):
+        """Expose every registered gate and persist explicit UI changes."""
+        user = verify_token(self._bearer())
+        if not user:
+            return self._send(401, {"detail": "未登录或登录已过期"})
+        registry = get_gate_registry()
+        path = urllib.parse.urlsplit(self.path).path
+        if method == "GET":
+            if path != "/api/locals/gates":
+                return self._send(404, {"detail": "Not Found"})
+            return self._send(200, {"gates": registry.list_gates()})
+        if method != "PUT" or not path.startswith("/api/locals/gates/"):
+            return self._send(404, {"detail": "Not Found"})
+        key = urllib.parse.unquote(path[len("/api/locals/gates/"):]).strip("/")
+        if not key or "/" in key:
+            return self._send(404, {"detail": "门禁 key 不存在"})
+        admin_env = os.environ.get("QUANT_GATE_ADMINS", "")
+        admins = {DEFAULT_USER}
+        admins.update(item.strip() for item in admin_env.split(",") if item.strip())
+        body = self._json_body()
+        reason = body.get("reason", "") if isinstance(body, dict) else ""
+        if len(str(reason)) > 512:
+            return self._send(400, {"detail": "变更原因不能超过 512 个字符"})
+        try:
+            gate = registry.update(
+                key,
+                body.get("value") if isinstance(body, dict) else None,
+                actor=user,
+                reason=reason,
+                is_admin=user in admins,
+            )
+        except UnknownGateError:
+            return self._send(404, {"detail": f"未注册门禁: {key}"})
+        except PermissionError as exc:
+            return self._send(403, {"detail": str(exc)})
+        except ValueError as exc:
+            return self._send(400, {"detail": str(exc)})
+        return self._send(200, {"status": "updated", "gate": gate})
 
     def _auto_login(self):
         """
@@ -2349,6 +2597,12 @@ class Handler(BaseHTTPRequestHandler):
 
         path = self.path
         payload = self._read_body() or None
+        # The auth proxy is the last controlled boundary before the managed
+        # trade bot.  A direct Freqtrade API write must remain impossible while
+        # the visible real-order gate is closed.
+        if base == FT_BASE and trading_audit.classify_action(self.command, path):
+            if not get_gate_registry().is_enabled("execution.real_orders"):
+                return self._send(403, {"detail": "execution.real_orders is disabled"})
         audit_request = None
         audit_store = None
         if trading_audit.classify_action(self.command, path):
@@ -2446,6 +2700,9 @@ def main():
     FT_BASE = args.freqtrade.rstrip("/")
     FT_WEB_BASE = args.freqtrade_web.rstrip("/")
 
+    # Validate the registry before accepting requests so a newly introduced
+    # gate cannot become an invisible runtime switch.
+    get_gate_registry()
     load_users()
 
     # Restart recovery only reconciles and protects an already bound Demo

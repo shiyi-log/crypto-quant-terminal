@@ -20,6 +20,7 @@ import sys
 import time
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 
 
 def ui_progress_path() -> str:
@@ -34,10 +35,59 @@ def ui_progress_path() -> str:
 
 
 def atomic_write(path: str, payload: dict) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
     os.replace(tmp, path)
+
+
+def resolve_user_data_dir(config: dict) -> str:
+    value = os.path.expanduser(str(config.get("user_data_dir") or "user_data"))
+    if not os.path.isabs(value):
+        value = os.path.join(os.getcwd(), value)
+    return os.path.abspath(value)
+
+
+def backtest_results_dir(config: dict) -> Path:
+    return Path(resolve_user_data_dir(config)) / "backtest_results"
+
+
+def build_backtest_command(
+    *,
+    config: dict,
+    config_path: str,
+    strategy: str,
+    freqaimodel: str,
+    timerange: str,
+    strategy_path: str | None = None,
+) -> list[str]:
+    base_dir = Path(__file__).resolve().parent
+    userdir = resolve_user_data_dir(config)
+    strategy_path = strategy_path or os.path.join(base_dir, "user_data", "strategies")
+    strategy_path = os.path.abspath(os.path.expanduser(strategy_path))
+    command = [
+        sys.executable,
+        "-m",
+        "freqtrade",
+        "backtesting",
+        "--config",
+        config_path,
+        "--userdir",
+        userdir,
+        "--strategy-path",
+        strategy_path,
+        "--strategy",
+        strategy,
+        "--freqaimodel",
+        freqaimodel,
+        "--timerange",
+        timerange,
+    ]
+    fee = (config.get("exchange") or {}).get("taker_fee")
+    if fee is not None:
+        command.extend(["--fee", str(float(fee))])
+    return command
 
 
 def parse_result(zip_path: str) -> dict | None:
@@ -120,24 +170,30 @@ def main() -> int:
     ap.add_argument("--freqaimodel", default="LightGBMRegressor")
     ap.add_argument("--timerange", required=True)
     ap.add_argument("--identifier", default=None, help="默认从 config 的 freqai.identifier 读取")
+    ap.add_argument("--progress", default=None, help="覆盖共享 FreqUI 进度文件")
+    ap.add_argument("--strategy-path", default=None)
     args = ap.parse_args()
 
     with open(args.config, encoding="utf-8") as f:
         cfg = json.load(f)
     identifier = args.identifier or cfg.get("freqai", {}).get("identifier", "unknown")
     n_pairs = len(cfg["exchange"]["pair_whitelist"])
-    models_dir = os.path.join("user_data", "models", identifier)
+    user_data_dir = resolve_user_data_dir(cfg)
+    models_dir = os.path.join(user_data_dir, "models", identifier)
+    results_dir = backtest_results_dir(cfg)
+    previous_result_paths = {str(path) for path in results_dir.glob("*.zip")}
 
-    progress_file = ui_progress_path()
+    progress_file = args.progress or ui_progress_path()
     started = time.time()
 
-    cmd = [
-        sys.executable, "-m", "freqtrade", "backtesting",
-        "--config", args.config,
-        "--strategy", args.strategy,
-        "--freqaimodel", args.freqaimodel,
-        "--timerange", args.timerange,
-    ]
+    cmd = build_backtest_command(
+        config=cfg,
+        config_path=args.config,
+        strategy=args.strategy,
+        freqaimodel=args.freqaimodel,
+        timerange=args.timerange,
+        strategy_path=args.strategy_path,
+    )
 
     state = {
         "status": "running",
@@ -233,9 +289,11 @@ def main() -> int:
         state["phase"] = "读取结果"
         atomic_write(progress_file, state)
         results = sorted(
-            [os.path.join("user_data/backtest_results", f)
-             for f in os.listdir("user_data/backtest_results")
-             if f.endswith(".zip")],
+            [
+                str(path)
+                for path in results_dir.glob("*.zip")
+                if str(path) not in previous_result_paths or os.path.getmtime(path) >= started
+            ],
             key=os.path.getmtime,
         )
         if results:

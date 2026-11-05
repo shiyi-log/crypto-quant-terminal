@@ -6,19 +6,30 @@
 
 ---
 
-## 0. 2026-10-20 状态重置（本节优先于下文全部内容）
+## 0. 通道状态（2026-10-24 更新，本节优先于下文全部内容）
 
 **工作区已迁移**：`/Users/shiyi/DeepSeek/量化` → **`/Users/shiyi/Documents/ChatGPT/量化`**；
 下文所有旧路径、旧会话 ID、旧端口与"通道中断"结论**全部作废**，仅留作历史记录。
 
 | 项 | 当前值 |
 |---|---|
-| DSH 会话 | `session-2f91d371-064a-453c-af7b-a85f23d13889`（标题「打通与Codex联合开发」）|
-| Harness | `http://127.0.0.1:51680`（2026-10-20 15:04 复核；端口随桌面重启变化，**一律以 `DSH_WEB_URL` 为准**）|
-| Codex 会话 | `01a1556b-983b-71e3-866c-f6524a8497a8`（`cwd` = 本工作区）|
-| 命名 link | `quant`（同时写了默认绑定 `desktop.json`）；旧的 4 条 standby 通道已不存在 |
+| DSH 会话 | `session-5faa1215-0475-4fcf-87b6-16a7fb5761fb`（标题「打通ChatGPT联合开发通道」）|
+| Harness | 以 `$DSH_WEB_URL` 为准（2026-10-24 18:26 为 `http://127.0.0.1:52144`；端口随桌面重启变化）|
+| Codex 会话 | `01a16d71-4502-7653-97c0-725e3a93bd41`（`cwd` = 本工作区）|
+| 命名 link | `quant`（`links.json` 当前唯一一条）；本轮默认绑定 `desktop.json` 不存在，Codex 侧须显式 `--link quant` |
 
-**连通验收（2026-10-20 02:29 +0800，双向、原生直投）**
+**连通验收（2026-10-24 18:30 +0800，双向、原生直投）**
+
+- Codex → DSH：`quant-bridge-handshake-20261024-01` → `status=accepted`
+- DSH → Codex：`deepseek-link-ack-20261024-01`（`--reply-to quant-bridge-handshake-20261024-01`）
+  → `turn/steer` 受理，`turn_id=01a16d71-6827-7801-b256-b4ecbc555530`
+- Codex 回执：`codex-link-ack-20261024-01`（`--reply-to deepseek-link-ack-20261024-01`）→ 已核对，双向验收完成
+- `status --link quant` → `ready: true` · `delivery_mode: direct` · `transport: desktop-native-ipc`
+- 桥接自检：`python3 -m unittest discover -s tools/codex_bridge/tests -v` → 135 运行 / 133 通过 / 2 跳过 / 0 失败
+- 通道记录：`tools/codex_bridge/CONNECTION_20261024.md`（Codex 独占维护）
+- 文件分工：Codex 独占 `CONNECTION_*.md`、`bridge_core.py` 及执行实现文件；DSH 独占 `desktop_link.py`、本文件及审查意见文件；同一文件同一时间只允许一方编辑。
+
+**历史验收（2026-10-20 02:29 +0800，旧会话，已被上方 2026-10-24 记录取代）**
 
 - Codex → DSH：`quant-connect-20261020-codex-01` → `status=accepted`
 - DSH → Codex：`quant-connect-20261020-dsh-ack-01` → `turn/steer` 受理，
@@ -34,14 +45,14 @@ python3 tools/codex_bridge/desktop_link.py history --limit 10
 ```
 
 **DSH 桌面重启后的恢复**：端口会变，`bind`/`sessions` 现在默认读取 `DSH_WEB_URL`
-（不再写死 19387）。两条 `bind` 刷新命名 link 与默认绑定的端口，Codex 线程保持不变：
+（不再写死 19387）。`bind` 刷新命名 link（以及可选的默认绑定）的端口，Codex 线程保持不变：
 
 ```bash
 # 命名 link（Codex 侧 --link quant 走这条）
 python3 tools/codex_bridge/desktop_link.py bind --link quant --dsh-session "$DSH_SESSION_ID"
-# 默认绑定（Codex 不带 link 的 send_to_dsh 走这条），用同一对会话刷新
+# 默认绑定（Codex 不带 link 的 send_to_dsh 走这条，可选；本轮仅用命名 link）
 python3 tools/codex_bridge/desktop_link.py bind \
-  --codex-thread 01a1556b-983b-71e3-866c-f6524a8497a8 --dsh-session "$DSH_SESSION_ID"
+  --codex-thread 01a16d71-4502-7653-97c0-725e3a93bd41 --dsh-session "$DSH_SESSION_ID"
 python3 tools/codex_bridge/desktop_link.py status --link quant   # 期望 ready: true
 ```
 
@@ -614,3 +625,120 @@ DSH **不执行 git 写操作**（按分工），但可做**非 git 的本地备
 | 时间 | 事件 |
 |---|---|
 | 2026-10-15 11:20Z | **本文件创建**（补齐 Codex 交接文档所要求的 DSH 侧文件）· 记录 Codex 通道中断与 6 项待办 |
+| 2026-10-24 10:27Z | 通道恢复（`quant` link）· 双向验收：`quant-bridge-handshake-20261024-01` / `deepseek-link-ack-20261024-01` / `codex-link-ack-20261024-01`；桥接测试 135 运行 / 133 通过 / 2 跳过 |
+| 2026-10-24 10:35Z | 交付量化主流方向社媒调研 `research_multi_strategy/MAINSTREAM_DIRECTIONS_SOCIAL_20261024.md`；经 `quant-research-handoff-20261024-01` 交 Codex 选型并出实现计划，DSH 负责独立审核 |
+| 2026-10-24 10:52Z | 交付盈利方向续篇 `research_multi_strategy/PROFITABILITY_DIRECTIONS_20261024.md`（证据分级：carry 最强、covered call 不稳、预测市场容量极小、动量争议）；审核 Codex 实现计划并发 `quant-plan-review-20261024-01`：方向 PASS、计划 FIX_REQUIRED（F1-F11） |
+| 2026-10-24 11:05Z | Codex 回传 F1-F11 处置与冻结 spec v1；DSH 二轮审核 `quant-spec-review-20261024-02`：处置 PASS、spec FIX_REQUIRED（G1 资本矛盾 25k 现货 vs 10k 权益；G2 经济性算术 16bp 成本 vs 8bp funding；G3 MDE 定义等） |
+| 2026-10-24 11:12Z | 用户指令：直接实现 s36 并跑模拟交易，否决必须有证据。DSH 发 `quant-go-implement-20261024-01` 解除预审阻断；新建 `research_multi_strategy/S36_EVIDENCE_REVIEW_CHECKLIST_20261024.md`（A-K 审核清单与假证据清单） |
+| 2026-10-24 11:30Z | S36 paper 证据审核 `quant-s36-evidence-review-20261024-01`：run `s36-paper-6f60c39dff194644` 判 NOT_ESTIMABLE（0 成交；DB 无历史 15m/现货数据）；要求回填 Binance 历史数据 + 阈值网格 0/0.5/1/2bp 重跑，补 1000ms unknown 与资金费/同 bar 再入场修复 |
+| 2026-10-24 11:55Z | 审核 s36 历史证据 `s36-history-20261024`：manifest 133 哈希/9 测试通过，但发现 P0 数据 bug（Binance spot 月档 2025-01 起 μs 时间戳未归一化，aligned 仅 2024 的 35,136 bars）→ 判 invalid_run，发 `quant-s36-history-review-20261024-01` 与 `quant-s36-p0-followup-20261024-01` 要求修复重跑 |
+| 2026-10-24 12:15Z | 审核 s36 历史 v2：覆盖修复 PASS（96,384 bars，2024/25/26=35,136/35,040/26,208；manifest 22 哈希；11 测试）；统计 FIX_REQUIRED（cluster 按 256 consecutive exits 而非时间块，仅 3-5 块；MDE z 与收益分母口径）→ `quant-s36-v2-review-20261024-01` |
+| 2026-10-24 12:40Z | S36 v3 审核裁决：数据/统计 PASS；0/0.5/1bp **证据性 REJECT**（mean≈-17bp、CI 全负、p<5e-5、Bonferroni/BH 显著），2bp NOT_ESTIMABLE（n=76）；无可盈利候选、不部署。文档 `research_multi_strategy/S36_VERDICT_20261024.md`；消息 `quant-s36-v3-verdict-20261024-01` |
+| 2026-10-24 12:50Z | S36 收尾核验 PASS：REPORT/manifest SHA256 与记录一致、manifest 22/22、四 variant decision 事件含 review ID、PG 账本 source_id=forward-paper/s36-history-20261024-v3 含 1 manifest+4 decision；`quant-s36-closeout-ack-20261024-01`，研究关闭不部署 |
+| 2026-10-24 13:00Z | 用户指令「全部推进」；新增 `research_multi_strategy/NEXT_PROGRAMS_20261024.md` 并下发 `quant-next-programs-20261024-01`：R0 carry 复盘、R1 maker 证据、R2 配对 15m(s37)、R3 1d 动量(s38)、R4 maker carry(条件)；Codex 已 turn/start |
+| 2026-10-24 13:15Z | 预审 R0-R3 计划并发 `quant-program-review-20261024-01`：R0/R1 PASS（R1 附快照节奏/δ/queue/markout/前瞻样本条件），R2/R3 附冻结条件（单仓位、K=18、α/18、信号频率预检、平衡面板、funding 计入）；待 spec hash |
+| 2026-10-24 13:30Z | R0 复盘交付并审核：PASS + 1 FIX（币/年/阈值切片、ledger note、slippage 口径拆分），`quant-r0-review-20261024-01`；NEXT_PROGRAMS 追加 R1-R3 审核清单；R1/R2/R3 待交付 |
+| 2026-10-24 13:50Z | 网络调研第二轮：新增 `PROFITABLE_STRATEGY_CANDIDATES_20261024.md`（R5 quarter-hour arXiv:2607.09426、R6 横截面 funding、R7 清算回复、R8 微观结构）；发 `quant-new-candidates-20261024-01`；核实 1m 月档约 1.9-2.2MB/月、aggTrades 约 523MB/月；R0 切片与 ledger note 已补 |
+| 2026-10-24 14:10Z | 读 arXiv:2607.09426 原文：开盘收益仅约 0.5bp/boundary < taker 费，作者明确非独立策略；R5 修订为 4-12h 订单不平衡/技术信号（1m taker-buy 字段 9 代理、6 币、8bp 往返），发 `quant-r5-revision-20261024-01`；R1/R2/R3 仍待交付 |
+| 2026-10-24 14:20Z | 审核 S37/S38/R1 spec + 频率预检：S37 18 变体 feasible n=422-1429 全部≥400；S38 17 币/199 期（机制）；R1 runner 文件缺失待实现；发 `quant-specs-review-20261024-01`（时点/PnL/并发/成交判定等 FIX） |
+| 2026-10-24 14:30Z | 复跑 S37/S38 频率预检与 artifact 一致；新增证据（Frontiers 2026 动态协整配对、HSE 2026 协整+ML 低收益/成本侵蚀）→ 发 `quant-s37-diagnostic-20261024-01` 要求 S37 增加 prior-only 平稳性/协整诊断（禁止全样本门控）；R1 runner 仍缺 |
+| 2026-10-24 14:45Z | R1 runner 可运行（本机复跑 12,252 placements/币），但官方 artifact 空、markout 误用 raw trade-through 样本（623 vs full 118）→ FIX；S37 spec 与预检时点不一致（2-bar vs 1-bar）要求冻结重跑；S38 待时间戳确认；发 `quant-r1-s37-s38-review-20261024-01` |
+| 2026-10-24 15:00Z | 审核 S39（R5 修订版）：发现 boundary 后首分钟特征与 15m 收盘确认时点矛盾（前视风险）、缺 funding 与 K 网格；发 `quant-s39-review-20261024-01` 要求 A/B 时间线二选一并给例子；R1 正式 artifact 仍空 |
+| 2026-10-24 15:15Z | R1 官方 artifact 审核：manifest 6 哈希 OK，但 markout 仍按 raw trade-through（抽样 5,000 行中 721 个 no_fill 有 markout；δ0.5/1s 624 vs full 118），多桶样本<500 → FIX_REQUIRED，不可用于 s39；发 `quant-r1-artifact-review-20261024-01` |
+| 2026-10-24 15:30Z | R1 代码修复验证：markout_n≈full fills、按秒样本>500、markout -0.8~-1.4bp（逆向选择）；官方 artifact 仍旧口径需重跑；fill_ts 应取累计过 queue 时刻；S37/S38 runner 仍缺；发 `quant-r1-rerun-20261024-01` |
+| 2026-10-24 15:45Z | R1 v2 artifact PASS（manifest 6/6、markout 按实际 fill、按秒去重 12,299）；剩余 fill_ts/桶可估性/测试 FIX；实质结论 maker carry 不支持；优先级转向 S37/S38 runner（仍缺）；发 `quant-r1v2-priority-20261024-01` |
+| 2026-10-24 20:06+0800 | 诊断 Codex 活动：turn inProgress、最后 item 20:05、日志活跃（未停滞）；S37 时点例子仍为 t+2(10:15) 与预检 t+1(10:00) 不一致，发 `quant-s37-time-fix-20261024-01` 要求 A/B 二选一；R1 v2 PASS（剩 fill_ts/桶可估性/测试） |
+| 2026-10-24 20:07+0800 | S37 spec+precheck PASS（时点 z_{t-1}→t+1 open；n=414-1429 全≥400）；S38 spec PASS（周日收盘→周一 00:00 UTC open 例子）；发 `quant-s37s38-spec-pass-20261024-01`：先做 S37 最小变体 runner（ETH/BTC w96 z2）再跑 18 变体 |
+| 2026-10-24 20:08+0800 | 发现 Codex 偏离：新建 `tools/check_demo_entry_fillability.py`（20261014 旧任务），S37 runner 仍缺；发 `quant-steer-s37-runner-20261024-01` 纠偏，要求只做 ETH/BTC w96 z2 最小 runner + artifact |
+| 2026-10-24 20:08:45+0800 | 发现 S37 spec(z_{t-1}) 与预检(z_t→t+1 open) 仍差一根 bar；发 `quant-z-index-fix-20261024-01` 要求 A(z_t，沿用 n 表)/B(z_{t-1}，重跑预检) 二选一并加单测；Codex agentMessage 确认在做 ETH/BTC w96 z2 最小 runner |
+| 2026-10-24 20:09+0800 | S37 冻结 A 口径（z_t→t+1 open），与 precheck 一致、n 表有效；发 `quant-z-option-a-ack-20261024-01` 要求 runner 加单测；Codex 已改 spec、跑 pytest，runner 待落盘 |
+| 2026-10-24 20:10+0800 | 第二轮检索：arXiv:2608.21888（15m 方向反转毛 1.3bp<成本）、funding-rate-alpha（funding=carry+regime 切换）；追加候选简报并 `quant-evidence-update-20261024-01`（R6 改 carry 轮换，S37 仍最高优先） |
+| 2026-10-24 20:11+0800 | S37 precheck 索引已改为 z[i-1]→entry i（与 spec A 等价，n 仍 414-1429）；runner 仍未落盘；本轮不再发消息，避免打断编码 |
+| 2026-10-24 20:12+0800 | S37 最小变体 artifact：n=1,399、net -6,325.94（-9.14bp）、CI[-12.39,-5.96] 全负；manifest 7/7；发现 bootstrap_p=0.501 错误、MDE z 未用 α/K、ledger 缺 risk_gate 且 rule_hash 不一致、分母口径、funding 退出边界、无测试/基准 → `quant-s37-artifact-review-20261024-01` FIX_REQUIRED |
+| 2026-10-24 20:14+0800 | S37 更新版复跑：bootstrap_p 修正为 5e-5（与 CI 全负一致）、baselines 已填（随机翻转 -7.59bp 差于候选 -9.14bp）；剩 MDE z、delta_econ 口径、baseline 命名、risk_gate/rule_hash、funding 边界、连续性/测试；发 `quant-s37-fix2-20261024-01` 要求修完跑 18 变体 |
+| 2026-10-24 20:15+0800 | 用户指示：消息太多，Codex 执行不过来。DSH 暂停 bridge steer，只审 artifact；等 Codex 完成 S37 修复 + 18 变体后一次交付，再介入（除非明确卡死或偏离） |
+| 2026-10-24 20:16+0800 | 发现 Codex 又新建无关工具 build_execution_evidence_bundle.py；按「少打扰」原则只发 1 条聚焦消息 `quant-final-focus-s37-20261024-01`（只做 S37 7 项 FIX + 18 变体，旧任务忽略）；之后不再发消息直到 artifact |
+| 2026-10-24 20:17+0800 | 新增 DSH 审核工具 `tools/dsh_audit_s37.py`（只读）：校验 manifest/spec hash、计数、gross/net 恒等式、fee 口径、CI/p 一致性、MDE α/K、ledger risk_gate/rule_hash、baseline 独立性、时间戳/再入场；在当前 artifact 上正确报出 5 项 FIX |
+| 2026-10-24 20:18+0800 | `dsh_audit_s37.py` 增加 funding 区间覆盖检查：当前 artifact 有 37/1399 持仓在 (entry, exit] 缺结算记录（退出边界漏记），与 FIX 一致；artifact/runner 无新变化 |
+| 2026-10-24 20:21+0800 | S37 最小变体 bootstrap 分解：gross -1.14bp CI[-4.33,+2.04] 跨 0（无显著毛边际）、basis -1.20bp CI 跨 0、funding +0.065bp 显著为正、net -9.12bp 显著为负（fee 8bp 主导）；结论=无毛边际+成本负净，非「策略巨亏」 |
+| 2026-10-24 20:23+0800 | 建立持续任务本：队列 `research_multi_strategy/TASK_QUEUE_20261024.md`（DSH 独占写）、进度 `TASK_PROGRESS_20261024.md`（Codex 独占写）；播 T001-T009；发 `quant-task-book-20261024-01` 让 Codex 按队列连续执行、不再逐项等确认 |
+| 2026-10-24 20:27+0800 | DSH 独立复现 S37 18 变体：最小变体与 Codex 完全对齐（n=1399/net -9.14bp）；**18/18 gross 为负（-1.1~-24.1bp）、net 全负且 CI 全负** → T010 不触发；写 `S37_DSH_INDEPENDENT_REPLICATION_20261024.md`；队列加 T012（归档 rejected + 交叉核对） |
+| 2026-10-24 20:28+0800 | 按用户要求给任务本补「实现细则」：T001-T006/T011 的文件、函数、数据源、时间线、成本/funding 公式、MDE/delta_econ、baseline、artifact、测试、命令；发 1 条 `quant-task-details-20261024-01` 指向该章节 |
+| 2026-10-24 20:30+0800 | S37 独立复现 18/18 gross<0 → 队列重排：T001/T002/T012 降 P2（归档），T003(S38)/T005(R6) 升 P0；发 `quant-priority-pivot-20261024-01` 要求立即切 T003 |
+| 2026-10-24 20:31+0800 | S38 独立预检（DSH）：q20 gross +27.75bp/funding +2.57/net +22.32bp CI[-38.8,87.1]；q30 net +10.84bp CI[-36.1,59.7]；198 期 CI 跨 0 → 仅机制；文档 `S38_DSH_PRELIM_20261024.md` |
+| 2026-10-24 20:32+0800 | R6 独立预检（mark 1h、17 币、8h 轮换）：k=1/2/3 net -9.58/-8.00/-8.07bp/8h，funding +1.3~2.1bp 被价格腿/成本抵消；文档 `R6_DSH_PRELIM_20261024.md`；S38 runner 仍缺 |
+| 2026-10-24 20:34+0800 | S38 官方 artifact 审核：191 期；q20 gross +30.05bp CI[-39,105] p=0.41、q30 +19.58bp CI[-31,74] p=0.47（不显著）；funding/net unknown（DB 无 markPrice）→ `quant-s38-review-20261024-01` + T013 补 official funding 重跑 |
+| 2026-10-24 20:11+0800 | Codex reasoning 显示正在 apply_patch 写 S37 runner（single file creation）；尚无文件落盘；本轮不打扰 |
+| 2026-10-24 20:38+0800 | S38 官方 funding 重跑（本机）：net 151/191 期可估；q20 net +33.85bp/周 CI[-60.8,132.4] p=0.50、q30 +16.81bp CI[-55.7,92.9] p=0.68；funding_pnl=null 与 net_stats n=151 口径不一致 → T014 FIX（覆盖率/呈现） |
+| 2026-10-24 20:40+0800 | S38 官方重跑 artifact 审核：manifest 97/97 一致；net 仍 151/191（79%），REPORT 仍 funding_pnl=None/funding_status=unknown 而 net_stats n=151 → T014 未闭环；net q20 +33.85bp/周 p=0.50、q30 +16.81bp p=0.68，不显著 |
+| 2026-10-24 20:41+0800 | S38 T003 DONE：q20 gross 8610.66/known-net 151 期 7668.18；q30 9349.28/6345.89；gross CI 均跨 0、整体 net not_estimable（40 期缺 markPrice）→ 机制验证、非盈利；REPORT 口径仍不一致，T014 插队优先于 T005 |
+| 2026-10-24 20:43+0800 | 队列停滞多轮（T014/T005 未领取，主线程在旧任务）；发 1 条 `quant-resume-queue-20261024-01`：暂停旧任务，先 T014 再 T005；ARB 数据已验证可用 |
+| 2026-10-24 20:50+0800 | DSH 重启致桥接断连，已重绑 60416（ready）；Codex turn 01a16df4 inProgress 但 1 分钟无输出、S40 runner 文件不存在 → 发 `quant-nudge-s40-runner-20261024-01` 要求直接写 runner |
+| 2026-10-24 20:51+0800 | Codex 子代理再次跑偏（网络唤醒/向日葵，thread 01a16df6），S40 runner 仍缺；发 `quant-stop-subagents-20261024-01` 要求停子代理、只交 runner，无法则回 BLOCKED |
+| 2026-10-24 21:06+0800 | S40 v3 审核通过修复：强平按 liq 价结算、year_pnl、cash/sign-flip/random baseline 齐全；判决 **REJECT**（6 变体全负，k2_h1 -10.17bp、k3_h1 -9.82bp 显著负），写入 `S40_VERDICT_20261024.md` + 队列 T017 归档 |
+| 2026-10-24 21:17+0800 | T004 v3 审核 PASS：fill_ts 累计穿价、markout 仅成交、bucket 需 unique≥500 且 fills≥30；1–5s 两侧 markout -0.3~-1.1bp（逆向选择），15/60s 方向性不对称 → maker 不成立；文档 `R1_MAKER_V3_AUDIT_20261024.md`；T006 已起步（run_s39_quarter_hour.py） |
+| 2026-10-24 21:22+0800 | T006 BLOCKED（blocked_missing_data：1m/15m 缓存缺）；T011 升 P0 并下发 `quant-t011-unblock-20261024-01`：6 币 1m+15m、20 币 15m、funding，补缓存后重跑 T006（turn/start） |
+| 2026-10-24 22:00+0800 | S39 首版异常：long4h -351.5bp、short4h -406.1bp（两侧各 -3.4%/笔）数学不可能；DSH 独立复算 BTC/DOGE 仅 ±2.8~4.1bp → 发 `quant-s39-anomaly-20261024-01` 要求 dump 样本/查单位对齐/加护栏；Codex 21:59 已改 runner 并重跑 |
+| 2026-10-24 22:18+0800 | S39 修复版审核 PASS（tick 0.01 根因、84 异常隔离、manifest 9/9），判决 **REJECT**（36/36 净负，最好 -5.32bp，cost>gross）→ `S39_VERDICT_20261024.md`；T006 可 DONE、T018 归档；T015 升级 S38 补 2023 全样本 net；已发 `quant-s39-verdict-20261024-01`（turn/start） |
+| 2026-10-24 22:32+0800 | S38 最终审核：191/191 coverage，q20 net +24.4bp/周 CI[-43.9,+98.9] p=0.50 MDE 112bp、q30 +13.2bp p=0.64 → REJECT；manifest 133/133。按“新需求开新会话”：R9 现货-永续基差 carry（T019）新 thread `01a16e53…` 绑定为 link `quant2`，已发 `quant-t019-spec-20261024-01`；旧 `quant` 保留给 T008 |
+| 2026-10-24 22:52+0800 | R9 首正：28d net +30.05bp CI[+16.4,+45.3] p=5e-5，但按年 2023 +133.9（known 1,054/6,188）、2024 +87.7、2025 -11.5、2026 -20.5；basis≈0，收益=funding-fee；7d block 对 28d 重叠低估 SE；判无条件 REJECT，发 `quant-r9-audit-20261024-01` 要求按年表/块长/强平/条件规则 OOS；文档 `R9_DSH_AUDIT_20261024.md` |
+| 2026-10-24 22:58+0800 | R9 v2 加入强平后 2025/26 转正、basis_pnl +71k；DSH 发现 `_apply_liquidation` 用 `same_UTC_day_daily_close_proxy`（trigger 后用当日 close）属 lookahead → 结果无效；发 `quant-r9-lookahead-20261024-01` 要求用 trigger 时点 spot 价/fail-closed 重跑 |
+| 2026-10-24 23:06+0800 | R9 最终 REJECT（OOS 7d -9.16/14d -4.78/28d +1.89 不显著）；文献复核 funding 本质=carry；验证 Bybit/OKX funding API 可用；开 R10 T021 跨所 funding 价差，新 thread `01a16e72…` 绑定 link `quant3`，已发 `quant-t021-spec-20261024-01` |
+| 2026-10-24 23:27+0800 | R10 artifact 为 `data_mode=fixture`（合成数据），CI 宽度≈0/MDE≈1e-9，仅扣 fee → 不可作证据；发 `quant-r10-fixture-20261024-01` 要求 official_api 三所 funding+1h K 线重跑、fail closed、断言方差 |
+| 2026-10-24 23:33+0800 | R10 official 模式 blocked：fundingTime 1704412800001 非精确 8h 网格被拒（±1ms 偏移）；发 `quant-r10-grid-20261024-01` 要求 ±60s 吸附归一化+去重后重跑，校验每所每币 funding≈3012/kline≈24096 |
+| 2026-10-24 23:38+0800 | R10 分页问题：Binance 全齐（3012/24096），Bybit kline 仅 1,000、OKX funding 217/kline 300（单页上限）→ `quant-r10-pagination-20261024-01` 要求 Bybit kline 1000/页、OKX before/after 翻页，校验后再跑 |
+| 2026-10-24 23:44+0800 | OKX funding-rate-history 公共接口仅保留约 3 个月（217 条，2026-07 起），无法覆盖 2024–2026；R10 收缩为 Binance vs Bybit，发 `quant-r10-okx-20261024-01` 改 spec/hash 后重跑 |
+| 2026-10-24 23:56+0800 | R10 rejected（spread 0.465bp/8h、net -15bp）；已写 `NEGATIVE_RESULTS_SUMMARY_20261024.md` 汇总 9 方向负结果与教训；Codex 暂停新实现等下一方向 |
+| 2026-10-24 23:58+0800 | R11 期权预研：DVOL 可取，VRP BTC +186.8bp（2026 转 -255）、ETH -520.8bp；但 Deribit 历史期权成交不可得（2024 窗口空、过期 instrument 无 trade history）→ 无法真实模拟，数据受限归档；负结果总报告已增补 |
+| 2026-10-25 00:24+0800 | 用户选择继续期权方向；T023 R11（DVOL+合成期权 VRP）加入队列；新 thread `01a16eb9…` 绑定 `quant4`，发 `quant-t023-spec-20261024-01`（方差互换代理+合成 short straddle、execution_evidence=unknown） |
+| 2026-10-25 00:35+0800 | 按用户要求检索油管/X/研究社区：niche-arb 清单确认 funding carry 属低费率大资金 edge、三角形套利零盈利；新候选 CEF 折价（学术 14.9%/Sharpe1.5）、并购套利、VIX contango；写 `SOCIAL_DIRECTIONS_20261025.md` |
+| 2026-10-25 00:37+0800 | R11 首版：BTC short straddle mean +134bp/月 CI[62.5,203.6] p=1e-4（但 MDE 125bp、日频重叠、合成价、无尾部）；ETH 不显著；发 `quant-r11-tail-20261025-01` 要求扩 2021 含 2022 崩盘、尾部/CVaR/回撤、成本敏感性、定义风险对照 |
+| 2026-10-25 00:48+0800 | R11 扩展（2022–2026，含崩盘）：BTC short straddle +163.4bp/月 CI[95.7,232.0]；成本 2% spread+16bp 仍 +110.7bp CI[41.7,180]；ETH fee16 不显著；MDE 118bp、合成价、无组合资金 → 发 `quant-r11-portfolio-20261025-01`（50k 权益/保证金/回撤/强平/Sharpe/CVaR，T024） |
+| 2026-10-25 00:54+0800 | T024 组合化：fixed 基准 ann 16.90%、maxDD -7.14%、Sharpe 5.47（重叠平滑）、强平/破产 0；numeric gate true 但 execution_evidence=unknown 阻断；发 `quant-r11-forward-20261025-01` 启动 T025 forward paper（Deribit 真实 bid/ask、bid 卖出、delta 对冲、日度 ledger，20–30 日） |
+| 2026-10-25 01:00+0800 | T025 dry-run：Deribit BTC-27NOV26-80000 C/P 真实盘口；bid premium 7,165.65、bid/ask width 161.03=**2.25%**（合成假设 0.2%）、mark IV 37.27%、hedge 0.09 BTC；1 张=80k 名义需归一；发 `quant-r11-forward-lifecycle-20261025-01` 要求 2,500 名义/腿 + 日度 open/mark/hedge/exit ledger + 调度 |
+| 2026-10-25 01:10+0800 | T025 v2 生命周期完成（snapshot→risk_gate→fill→mark→hedge→exit，19/19 测试）；但 Deribit min_trade_amount=0.1 BTC → 2,500 名义不可执行（executable qty=0）；发 `quant-r11-executable-20261025-01` 按 0.1 BTC/腿（≈8k）重算组合与 forward（T026） |
+| 2026-10-25 01:21+0800 | T026 可执行规模：0.1 BTC/腿（8,003/腿）；组合 50k/cap10 → 0.2%+8bp ann 8.85% maxDD -4.10% Sharpe 3.03；2.25%+16bp ann 5.73% maxDD -5.16%；强平/破产0；ann>10% gate 未过；发 `quant-r11-forward-executable-20261025-01` 做 T027 真实盘口 forward |
+| 2026-10-25 01:27+0800 | T027 dry-run：0.1 BTC/腿、actual 8,015/腿、paper equity 49,988.93、单次 -11.07 USD、spread 2.82%、ledger 完整、26/26 测试；已配置 launchd `com.quant.r11forward` 每日 08:00 本地（00:00 UTC）跑 `--daily --record-entry`，开始 forward 证据积累；gate 仍为 ann 5.7–8.9%、execution unverified |
+| 2026-10-25 01:28+0800 | launchd `com.quant.r11forward` 已加载（每日 08:00 本地=00:00 UTC）；但当前 executable runner 无 equity_state/equity_daily/持仓 mark（T027 artifact 为旧版），发 `quant-r11-equity-fix-20261025-01`（T028）恢复完整日度状态，避免 forward 证据断裂 |
+| 2026-10-25 01:35+0800 | T028 审核：开仓 bid 正确，但平仓/到期用 mark（非 ask）会低估 half-spread（实测 2.8% premium）；发 `quant-r11-exit-ask-20261025-01` 要求 exit-at-ask + spread cost 分列，08:00 前修 |
+| 2026-10-25 01:40+0800 | T028 已改 exit-at-ask（30/30 测试、boundary equity 49,983.37）；但边界 dry-run 用 17:36Z 盘口写未来 00:00Z 记录污染 live state → 已归档 dry-run 目录并清空 live；发 `quant-r11-dryrun-isolation-20261025-01` 要求 dry-run 不写 live，08:00 首跑从 obs=1 开始 |
+| 2026-10-25 01:47+0800 | dry-run 隔离验证通过（live 无状态）；新增 DSH 只读审计 `tools/dsh_audit_r11_forward.py`：ledger 顺序、0.1 BTC qty、exit realized=entry_bid−exit_ask、spread cost、equity 日差/obs；dryrun PASS；等 08:00 live |
+| 2026-10-25 01:53+0800 | launchd（GUI 域）两次不触发、cron 测试挂起（环境/TCC）；改用 detached `tools/r11_forward_watchdog.py`（PID 83565），每日 08:00 本地跑 forward，日志 `artifacts/r11_forward_paper_t027_20261025/logs/watchdog.log`；launchd plist 已移除 |
+| 2026-10-25 01:56+0800 | **R11 重大 lookahead**：DVOL 日线 close（23:00）被当作 00:00 入场 IV（实例 66.81 vs 64.87）→ T023/T024 正结果作废；发 `quant-r11-dvol-lookahead-20261025-01` 要求用 entry 时刻 1h close/日 open 重跑；forward 实时盘口不受影响 |
+| 2026-10-25 02:00+0800 | R11 lookahead 修复重跑：entry IV 66.81→64.87（DVOL 00:00）；BTC +163.9bp CI[95.3,233.4]、ETH +95.8bp；结果几乎不变 → 正收益非该 bug 驱动，但 MDE/合成价/execution 限制仍在；forward 08:00 起跑 |
+| 2026-10-25 02:02+0800 | DSH R11 独立复算 3 日：premium/payoff/fees 与 Codex 完全一致；hedge PnL 差 3–8%、net 差 3–8%，方向一致 → 实现基本可复现；forward 08:00 首跑 |
+| 2026-10-25 02:04+0800 | DSH 非重叠月度检验：57 个独立 30d 仓位，mean +185.2bp/月、CI[90.1,280.5]、p≈0.0003，2022–2026 每年正 → edge 非重叠样本仍成立；单仓年化贡献仅 ~1.1%，组合收益依赖重叠/杠杆 |
+| 2026-10-25 02:06+0800 | R11 regime 拆分：high IV +326bp、mid +107、low +58；IV 五分位 Q1 仅 +22.7bp、Q5 +410.6bp → edge 集中于高 IV；当前 IV≈37%（Q1），forward 首月或仅微弱/负，需按 regime 解读 |
+| 2026-10-25 02:10+0800 | DSH 预检：R11 条件规则（DVOL≥过去252d中位数才卖）非重叠 n=35、mean +272.7bp/月，2022–2026 分年 +421/+311/+252/+207/+179；当前 IV≈37% 或低于中位数→空仓；T031 立项并下发 `quant-r11-conditional-20261025-01`（条件版 spec/OOS/forward） |
+| 2026-10-25 02:12+0800 | T031 条件版：OOS 2024–26 真实 2.25%+16bp → mean +162.7bp CI[61.3,269.0] p=0.0013（n=23，MDE 152 标 not_estimable）；当前 IV 36.78%<median 41.83% → skipped_low_iv；发 `quant-r11-cond-forward-20261025-01`（T032）接日度条件 forward + 无条件 baseline |
+| 2026-10-25 02:24+0800 | T032 条件口径 bug：DVOL history 为 1h×1000（41.6 天），252 观测=10.5 天，median 37.885 → 误判 enter；按日频最近252日中位数 0.4173、当前 0.3678 → 应 skip；发 `quant-r11-median-days-20261025-01` 要求日频历史+fail closed，08:00 前修 |
+| 2026-10-25 02:29+0800 | T032 日频 median 修复验证：history 255 日/跨度254天，IV 36.78 < median 41.83 → skipped_low_iv；watchdog 已切到 `run_r11_forward_paper_t032.py`（conditional+unconditional 双轨），PID 86822，08:00 首跑 |
+| 2026-10-25 03:46+0800 | Deribit 访问修复（系统代理 503 + DNS 投毒）：sitecustomize→104.18.0.0、NO_PROXY=*；watchdog PID 90620；端到端 dry-run 成功：decision=skipped_low_iv、IV 38.07%、median 39.32%、live_obs=0 |
+| 2026-10-25 03:48+0800 | 目标窗口接近结束（252/256）：R11 条件版为唯一候选（OOS +162.7bp/30d，CI[61,269]），但 live forward 尚未开始（08:00 首跑），不能称已确认盈利；watchdog PID 90620 常驻，08:05 提醒检查；交付文档 PROJECT_SUMMARY/R11_AUDIT/NEGATIVE_RESULTS 齐全 |
+| 2026-10-25 08:05+0800 | forward 首跑成功：conditional=skipped_low_iv（IV 37.93% < median 39.29%）、equity 50,000；unconditional baseline 开 0.1 BTC straddle（bid premium 719.14、ask 735.30、spread 2.247%）；live obs=1/20；审计 conditional/unconditional 均 PASS；watchdog 下次 2026-10-26 08:00；已设每日 08:05 检查提醒 |
+| 2026-10-26 08:05+0800 | forward day2：conditional 仍 skipped_low_iv（IV 38.79<median 39.24）、equity 50,000、obs 2；unconditional 2 仓、equity 49,991.99（日 PnL -8.01）；审计 conditional/unconditional 均 PASS；watchdog 下次 10-27 08:00 |
+| 2026-10-27 08:05+0800 | forward day3：conditional skipped_low_iv（IV 38.56<median 39.18）、equity 50,000、obs 3；unconditional 3 仓、equity 49,983.24（日 -8.75）；审计 PASS；Deribit 走 NO_PROXY+IP 映射仍可用，Binance/VPN 仍未恢复，行情采集继续停 |
+| 2026-10-30 03:18+0800 | 网络/服务恢复；launchd `com.quant.r11forward.watchdog` 开机自启（RunAtLoad+KeepAlive，PID 69357）；Codex 旧 thread 重启后 owner=no-client-found → 新建 thread `01a18918…` 绑定 `quant5`（ready）；数据 1m/5m/15m 已追平（19:00–19:15 UTC）；forward obs=3，下次 08:00 |
+| 2026-10-30 03:20+0800 | 通道 quant5 恢复；下发 T033（forward 缺失日记录/live_observations 修正/FORWARD_STATUS 摘要/测试），等待 Codex 实现；forward 下次 08:00 |
+| 2026-10-30 03:39+0800 | T033 DONE：live_observations 改为真实 real_boundary 计数；T032 缺失日记 `forward_gaps.jsonl`；每次运行生成 `*_FORWARD_STATUS.md`（obs/20、gate 5.7%）；R11 测试 12/12；live 文件 hash 未变；全仓测试被缺失 S37 模块与无关 tier 失败阻断 |
+| 2026-10-30 03:41+0800 | 修复前端 API 路由：serve_web.py 增加 /api、/auth 反向代理到 8890（原 8888 静态直接 404），重启 web（PID 86958）；订单流突增/爆发行情页面正常加载，均显示基线预热 7/288（约 24h 后开始记录事件）；orderflow 1m/5m/15m 数据已恢复 |
+| 2026-10-30 03:45+0800 | 用户要求用 Codex 的 UI 技能重构前端；已通过 quant5 下发 T034（全局 token + overview/orderflow/price-spikes、保留 API、必须 build 发布+截图、先修 pnpm 构建链）；等待 Codex 确认技能与计划 |
+| 2026-10-30 03:57+0800 | T034 UI 构建回归：8888 空白/卡 loading，console `Cannot read properties of undefined (reading 'beforeEach')`（登录后 router 初始化失败）；已要求 Codex 定位修复/15 分钟内回滚 web 构建；forward 08:00 不受影响 |
+| 2026-10-30 04:11+0800 | T034 UI 验收通过：总览/订单流/爆发行情 三页新 UI 正常渲染，数据/服务状态正常；要求 Codex 更新 TASK_PROGRESS 并给构建命令；截图 /tmp/ui_front.png、/tmp/ui_orderflow_clean.png、/tmp/ui_spikes_new.png |
+| 2026-10-30 04:15+0800 | 用户要求消除隐藏门禁（全部门禁前端可控）；已下发 T035（门禁注册表+系统门禁页+迁移 hideInMenu/disabled/env+启动扫描+审计+测试）；等 Codex 先回门禁清单与计划；forward 08:00 不受影响 |
+| 2026-10-30 04:38+0800 | T035 核心验收：系统门禁页可用、注册表 12 gate、hideInMenu 归零、gate 测试 7 passed；auth_service 改后需 restart auth（已重启）；已要求 Codex 更新 TASK_PROGRESS 并自查剩余 disabled 是否为纯 UI 状态 |
+| 2026-10-30 04:42+0800 | T035 审计：门禁页/12 gate/hideInMenu=0/测试 7 passed；但 enforcement 只有 auth_service、demo_runner_controller(risk.required)、manage.py、market_stream；execution.*/iteration.auto/ops.monitor/paired 未找到真实读取点，已要求 Codex 给 gate→enforcement 对照表并补/删假开关 |
+| 2026-10-30 05:09+0800 | T035 DONE：12 gate 全部有入口级 enforcement（manage/market_stream/strategy_lab/auto_iteration/monitor/integrity/demo_execution/demo_runner/auth）；hideInMenu=0；门禁测试 17 passed；证据 artifacts/t035_gate_enforcement_20261030；门禁页验收通过；forward 08:00 待跑 |
+| 2026-10-30 05:18+0800 | T035 收尾审计：requires_restart 全 False，但 market_stream/breadth/strategy_lab/paired/real_orders 是启动型 gate；已要求 Codex 标记 requires_restart 或动态生效，并给最终 (key, requires_restart, 生效方式) 表 |
+| 2026-10-30 05:43+0800 | T036 R11 Forward 页验收：条件轨 3/20 skip、baseline 3/20 -16.76；API `/api/locals/r11-forward` 只读；auth 重启后页面正常；截图 /tmp/r11_forward_page2.png；要求 Codex 更新 TASK_PROGRESS 并记录 auth 重启要求 |
+| 2026-10-30 08:03+0800 | **R11 条件版首笔真实 forward 交易**：08:00 decision=enter（IV 41.98 > median 39.085），卖出 0.1 BTC/腿 ATM straddle，strike 80,000，expiry 2026-11-27，paper premium bid 719.14 USDT/腿，spread 2.247%；conditional equity 50,000、active 1、obs 4/20；gap 文件记录 10-28/29（watchdog_down, gap_days=2）；conditional/unconditional 审计均 PASS |
+| 2026-10-30 08:23+0800 | T037 实现：MAX_ACTIVE=10、MARGIN_PER_POSITION=480、position_capacity、capacity_blocked、报告字段；测试 13/13 OK；历史 live 仓保留；已要求 Codex 更新 TASK_PROGRESS T037 DONE |
+| 2026-10-30 08:55+0800 | T031 100k bootstrap 复核：OOS real-spread n=30、mean +195.34bp/30d、CI[94.60,302.01]、p=8e-05、MDE 151.7；方向与 20k 一致、CI 收紧；产物 artifacts/r11_conditional_100k_20261030 |
+| 2026-10-31 08:05+0800 | forward day5：conditional 再次 enter（IV 40.59 ≥ median 39.085），active 2、equity 49,991.99、日 PnL -8.01、margin 960/cap 10、obs 5/20；unconditional active 5、equity 49,963.52、日 -10.23；审计均 PASS；下次 11-01 08:00 |
+| 2026-11-01 08:05+0800 | forward day6：conditional 再次 enter（IV 40.03 ≥ 39.085），active 3、equity 49,983.24、日 -8.75、margin 1440/cap 10、obs 6/20；unconditional active 6、equity 49,952.55、日 -10.97；审计 PASS；下次 11-02 08:00 |
+| 2026-11-02 08:05+0800 | forward day7：conditional 再次 enter（IV 40.28 ≥ 39.085），active 4、equity 49,973.75、日 -9.49、margin 1920/cap 10、obs 7/20；unconditional active 7、equity 49,940.84、日 -11.71；审计 PASS；下次 11-03 08:00 |
+| 2026-11-03 23:55+0800 | 进程守护修复：`com.quant.supervisor`（KeepAlive，ASCII wrapper/路径，supervises api/webserver/auth/web/sync/3 collectors/market-live/integrity/spot-basis；kill market-live 后 60s 自动拉起已Test）；integrity sys.path 修复；spot-basis 加 --resume 幂等；archive-retention 估算 COPY 提前关闭导致事务 abort 修复（改 LIMIT），全量 archive 运行中 PID 44343，无 DELETE；strategy-lab 仍因缺 closed risk gate 身份未启动 |
+| 2026-11-03 08:05+0800 | forward day8：conditional enter（IV 39.30 vs median 39.085，临界），active 5、equity 49,963.52、日 -10.23、margin 2400/cap 10、obs 8/20；unconditional active 8、equity 49,928.39、日 -12.45；审计 PASS；下次 11-04 08:00 |
+| 2026-11-04 08:05+0800 | forward day9：conditional enter（IV 39.74 ≥ 39.085），active 6、equity 49,952.55、日 -10.97、margin 2880/cap 10、obs 9/20；unconditional active 9、equity 49,915.20、日 -13.19（明日将触 cap 10）；审计 PASS；下次 11-05 08:00 |
+| 2026-10-24 20:45+0800 | S38 重跑：funding_status=partial_known、coverage=151/191、net_n=151；DSH 推导 40 缺失期全为 2023 → net 仅覆盖 2024–2026；q20 net +33.85bp CI[-60.8,132.4] p=0.50、q30 +16.81bp p=0.68；加 T015 披露偏差 |
+| 2026-10-24 20:41+0800 | S38 T003 DONE（机制验证、net 151/191 partial not_estimable）；Codex 起草 S40 spec；DSH 审出 3 FIX（regime 前后不可行、缺保证金/强平、ARB 数据未验证）→ `quant-s40-review-20261024-01` |

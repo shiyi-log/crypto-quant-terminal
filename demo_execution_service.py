@@ -17,6 +17,7 @@ import threading
 import time
 
 from demo_store import ABSENT_LOOKUP_TERMINAL_STATUS
+from gate_registry import GateRegistry
 
 DEMO_POLICY_VERSION = "binance-demo-single-paper-v1"
 HOST = "demo-fapi.binance.com"
@@ -322,9 +323,14 @@ class DemoExecutionService:
     A submission is claimed durably BEFORE the HTTP call and is attempted once.
     """
 
-    def __init__(self, adapter, demo_store, paper_source, config, *, clock_ms=None):
+    def __init__(self, adapter, demo_store, paper_source, config, *, clock_ms=None,
+                 gate_registry=None):
         self.adapter, self.store, self.paper = adapter, demo_store, paper_source
         self.config = config
+        # Always keep a registry at the final execution boundary.  Production
+        # injects the auth-owned instance; direct callers get the persisted
+        # project registry instead of an unguarded compatibility path.
+        self.gate_registry = gate_registry or GateRegistry()
         self.clock_ms = clock_ms or (lambda: int(time.time() * 1000))
         self.policy = config.policy()
         self.policy_hash = _hash(self.policy)
@@ -353,6 +359,20 @@ class DemoExecutionService:
         # back to the last coherent snapshot while a polling cycle holds the
         # service mutex around exchange requests.
         self._status_snapshot = (copy.deepcopy(self._status), self.clock_ms())
+
+    def _gate_enabled(self, key: str) -> bool:
+        return bool(self.gate_registry.is_enabled(key))
+
+    def _require_gate(self, key: str) -> None:
+        if not self._gate_enabled(key):
+            raise RuntimeError(f"{key} is disabled")
+
+    def _entry_gates_open(self) -> bool:
+        return all(self._gate_enabled(key) for key in (
+            "execution.demo_enabled",
+            "execution.trading_enabled",
+            "execution.entries_enabled",
+        ))
 
     def _evidence(self, signal_id, fingerprint=None):
         return {"strategy_id": self.config.strategy_id, "signal_id": str(signal_id),
@@ -385,6 +405,7 @@ class DemoExecutionService:
         with self._account_lock(), self._mutex:
             if self._started:
                 return self.status()
+            self._require_gate("execution.demo_enabled")
             now = _stamp(self.clock_ms())
             self.account = self.paper.account(self.config.strategy_id)
             execution = self.account["execution"]
@@ -425,7 +446,10 @@ class DemoExecutionService:
                                     not bool(self.account["state"].get("positions"))}
                 self.store.bind_account(self.binding)
             self._started = True
-            self._entries_enabled = self.config.trading_enabled and entries_enabled is not False
+            self._entries_enabled = (
+                self.config.trading_enabled and entries_enabled is not False
+                and self._entry_gates_open()
+            )
             self._status.update(running=True, entries_enabled=self._entries_enabled,
                                 status="observing" if self._entries_enabled else "read_only",
                                 forward_boundary_ms=self.binding["forward_boundary_ms"],
@@ -438,6 +462,9 @@ class DemoExecutionService:
 
     def enable_entries(self):
         with self._account_lock(), self._mutex:
+            self._require_gate("execution.demo_enabled")
+            self._require_gate("execution.trading_enabled")
+            self._require_gate("execution.entries_enabled")
             if not self._started or not self.config.trading_enabled:
                 raise RuntimeError("human Demo start with trading enabled is required")
             self._entries_enabled = True
@@ -686,7 +713,10 @@ class DemoExecutionService:
                     if protective:
                         self._status["risk_alert"] = "shared_pair_ownership_unverified"
                     return None
-        if not self.config.trading_enabled or (not protective and not self._entries_enabled):
+        if not self.config.trading_enabled or not self._gate_enabled("execution.trading_enabled"):
+            return row
+        if not protective and (not self._entries_enabled or
+                               not self._entry_gates_open()):
             return row
         if not self.store.claim_submission(row["client_id"], claimed_ms=self.clock_ms()):
             return row

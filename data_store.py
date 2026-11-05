@@ -14,7 +14,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from price_spike import PRICE_SPIKE_METHOD_VERSION
+from price_spike import MATURITY_METHOD_VERSIONS, PRICE_SPIKE_METHOD_VERSION
 
 
 def _json_default(value):
@@ -720,10 +720,12 @@ class DataStore:
         return stored_id
 
     def read_orderflow_surges(self, market="futures", pair=None, timeframe="5m", status=None,
-                              limit=100, include_revisions=False, start=None, end=None, event_id=None):
+                              limit=100, include_revisions=False, start=None, end=None, event_id=None,
+                              method_version=None):
         """Project the latest fact before status filtering and final limiting."""
         conditions, params = [], []
-        for key, value in (("market", market), ("pair", pair), ("timeframe", timeframe), ("event_id", event_id)):
+        for key, value in (("market", market), ("pair", pair), ("timeframe", timeframe),
+                           ("event_id", event_id), ("method_version", method_version)):
             if value is not None:
                 conditions.append(key + "=%s")
                 params.append(str(value).upper() if key == "pair" else str(value))
@@ -1084,7 +1086,7 @@ class DataStore:
             rows = conn.execute(query, params).fetchall()
         return _serializable(rows)
 
-    def surge_stats(self, pair=None, timeframe=None, horizon="1h"):
+    def surge_stats(self, pair=None, timeframe=None, horizon="1h", method_version=None):
         """Counts use latest observations; returns use one result per horizon.
 
         The pair summary names its selected horizon explicitly.  All other
@@ -1092,7 +1094,8 @@ class DataStore:
         an execution/fee evidence source is introduced.
         """
         rows = self.read_orderflow_surges(market="futures", pair=pair,
-                                          timeframe=timeframe or "5m", limit=None)
+                                          timeframe=timeframe or "5m", limit=None,
+                                          method_version=method_version)
         def counts():
             return {"total": 0, "unknown": 0, "matured": 0, "invalid": 0, "known": 0}
         result = counts()
@@ -1112,7 +1115,8 @@ class DataStore:
                 entry["known"] += 1
         revisions = self.read_orderflow_surges(market="futures", pair=pair,
                                                timeframe=timeframe or "5m", limit=None,
-                                               include_revisions=True)
+                                               include_revisions=True,
+                                               method_version=method_version)
         latest_results = {}
         for revision in revisions:
             mature_result = revision.get("result")
@@ -1153,6 +1157,8 @@ class DataStore:
         result["horizons"] = {key: metric_summary(samples.get((None, key))) for key in horizons}
         result.update(metric_summary(samples.get((None, str(horizon)))))
         result["statistics_horizon"] = str(horizon)
+        if method_version is not None:
+            result["method_version"] = str(method_version)
         result["unknown_excluded_from_performance_statistics"] = True
         result["invalid_excluded_from_performance_statistics"] = True
         for pair_key, entry in by_pair.items():
@@ -1346,8 +1352,8 @@ class DataStore:
         query = """SELECT c.* FROM orderflow_price_candidates c
             LEFT JOIN orderflow_price_candidate_results o
               ON o.event_id=c.event_id AND o.result_kind='outcome'
-            WHERE o.event_id IS NULL AND c.method_version=%s ORDER BY c.timestamp ASC"""
-        params = [PRICE_SPIKE_METHOD_VERSION]
+            WHERE o.event_id IS NULL AND c.method_version = ANY(%s) ORDER BY c.timestamp ASC"""
+        params = [list(MATURITY_METHOD_VERSIONS)]
         if limit is not None:
             query += " LIMIT %s"
             params.append(max(0, int(limit)))
@@ -1362,10 +1368,10 @@ class DataStore:
               ON o.event_id=c.event_id AND o.result_kind='outcome'
             LEFT JOIN orderflow_price_candidate_results p
               ON p.event_id=c.event_id AND p.result_kind='profile'
-            WHERE c.method_version=%s AND o.status='matured'
+            WHERE c.method_version = ANY(%s) AND o.status='matured'
               AND o.result->>'direction' IN ('up','down') AND p.event_id IS NULL
             ORDER BY c.timestamp ASC"""
-        params = [PRICE_SPIKE_METHOD_VERSION]
+        params = [list(MATURITY_METHOD_VERSIONS)]
         if limit is not None:
             query += " LIMIT %s"
             params.append(max(0, int(limit)))
@@ -1373,12 +1379,12 @@ class DataStore:
             rows = conn.execute(query, params).fetchall()
         return _serializable(rows)
 
-    def read_price_observations(self, pair, start, end):
+    def read_price_observations(self, pair, start, end, *, method_version=PRICE_SPIKE_METHOD_VERSION):
         with self._connection() as conn:
-            rows = conn.execute("""SELECT event_id,timestamp,observation
+            rows = conn.execute("""SELECT event_id,method_version,timestamp,observation
                 FROM orderflow_price_candidates WHERE method_version=%s AND pair=%s
                     AND timestamp >= %s AND timestamp <= %s ORDER BY timestamp""",
-                (PRICE_SPIKE_METHOD_VERSION, str(pair).upper(), _timestamp(start), _timestamp(end))).fetchall()
+                [str(method_version), str(pair).upper(), _timestamp(start), _timestamp(end)]).fetchall()
         return _serializable(rows)
 
     def price_spike_stats(self, pair=None, *, limit_profiles=5000):

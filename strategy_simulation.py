@@ -162,10 +162,22 @@ def _tiered_liquidation_price(pair: str, entry_price: float, direction: int,
     """
     from decimal import Decimal
 
-    try:
-        tier = tier_provider.get_tier(pair, Decimal(str(notional))) if tier_provider is not None else None
-    except (AttributeError, KeyError, TypeError, ValueError):
-        tier = None
+    if tier_provider is None:
+        # Legacy scalar identities do not carry an account-frozen snapshot.
+        # Keep their diagnostic path compatible with the historical static
+        # Binance table; matrix execution is gated before this helper is
+        # reached and therefore cannot silently take this fallback.
+        try:
+            from core.execution.liquidation_model import MaintenanceMarginTier
+
+            tier = MaintenanceMarginTier.get_tier(pair, Decimal(str(notional)))
+        except (ImportError, AttributeError, KeyError, TypeError, ValueError):
+            tier = None
+    else:
+        try:
+            tier = tier_provider.get_tier(pair, Decimal(str(notional)))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            tier = None
     snapshot_hash = getattr(tier_provider, "snapshot_hash", None) if tier_provider is not None else None
     account_scope = getattr(tier_provider, "account_scope", None) if tier_provider is not None else None
     schedule_evidence = None
@@ -985,28 +997,39 @@ def execution_identity(spec: dict) -> dict:
                              if raw_snapshot is not None else None)
             if isinstance(raw_snapshot, Mapping):
                 snapshot_hash = raw_snapshot.get("snapshot_hash")
-            if not isinstance(snapshot_hash, str) or not snapshot_hash.strip():
-                raise ValueError("binance_tiered requires a frozen tier_snapshot")
-            model["tier_snapshot_hash"] = snapshot_hash
-            if isinstance(raw_snapshot, Mapping):
-                for key in ("account_scope", "as_of_utc"):
-                    if raw_snapshot.get(key) is not None:
-                        model[f"tier_snapshot_{key}"] = raw_snapshot[key]
+            # Per-symbol leverage is a live execution contract and always
+            # requires a frozen snapshot. A scalar tiered identity may still be
+            # used for the historical/static diagnostic path when no snapshot
+            # was supplied; an explicitly supplied snapshot remains validated.
+            snapshot_required = matrix_mode or raw_snapshot is not None
+            if snapshot_required:
+                if not isinstance(snapshot_hash, str) or not snapshot_hash.strip():
+                    raise ValueError("binance_tiered requires a frozen tier_snapshot")
+                model["tier_snapshot_hash"] = snapshot_hash
+                if isinstance(raw_snapshot, Mapping):
+                    for key in ("account_scope", "as_of_utc"):
+                        if raw_snapshot.get(key) is not None:
+                            model[f"tier_snapshot_{key}"] = raw_snapshot[key]
             # 分档模型需要真实的逐仓杠杆档位；把口径写进契约，审计可复现。
             model["liquidation"] = {
                 **model.get("liquidation", {}),
                 "model": "binance_tiered",
                 "trigger": "closed_candle_low_high_dual_path",
-                "margin_rate_source": "binance_usdt_m_maintenance_tiers",
+                "margin_rate_source": ("frozen_account_tier_snapshot"
+                                        if snapshot_required
+                                        else "binance_usdt_m_maintenance_tiers"),
                 "settlement": "crossing_price_proxy_without_adverse_tick_slippage",
-                "fallback": "none_for_matrix; legacy scalar diagnostics only",
+                "fallback": ("none_for_matrix"
+                              if snapshot_required
+                              else "static_table_for_scalar_diagnostics"),
             }
-            provider = _tier_snapshot_provider(spec)
-            provider_issue = _tier_provider_issue(
-                provider, model, tuple(model["execution_universe"]))
-            if provider_issue is not None:
-                raise ValueError("binance_tiered requires a valid frozen tier snapshot: "
-                                 + provider_issue)
+            if snapshot_required:
+                provider = _tier_snapshot_provider(spec)
+                provider_issue = _tier_provider_issue(
+                    provider, model, tuple(model["execution_universe"]))
+                if provider_issue is not None:
+                    raise ValueError("binance_tiered requires a valid frozen tier snapshot: "
+                                     + provider_issue)
     atr_risk = _atr_execution_risk(spec, fee, exit_fee)
     if atr_risk is not None:
         model.update(atr_risk)
@@ -1032,9 +1055,12 @@ def execution_identity(spec: dict) -> dict:
             **model.get("liquidation", {}),
             "model": "binance_tiered",
             "trigger": "closed_candle_low_high_dual_path",
-            "margin_rate_source": "frozen_account_tier_snapshot",
+            "margin_rate_source": ("frozen_account_tier_snapshot"
+                                    if model.get("tier_snapshot_hash")
+                                    else "binance_usdt_m_maintenance_tiers"),
             "settlement": "crossing_price_proxy_without_adverse_tick_slippage",
-            "fallback": "none",
+            "fallback": ("none" if model.get("tier_snapshot_hash")
+                          else "static_table_for_scalar_diagnostics"),
         }
     aggregate_risk_cap = spec.get("aggregate_risk_cap", False)
     if not isinstance(aggregate_risk_cap, bool):
@@ -1587,8 +1613,17 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
         # together; independent non-atomic orders are assessed separately.
         tiered_entries = {}
         if liquidation_model == "binance_tiered":
-            provider_issue = _tier_provider_issue(tier_provider, identity["execution"],
-                                                  tuple(order["pair"] for order in entries))
+            # Only matrix/frozen-snapshot contracts require a provider at
+            # order time. Scalar legacy diagnostics use the static table in
+            # _tiered_liquidation_price when no provider is available.
+            provider_required = bool(
+                identity["execution"].get("leverage_by_symbol")
+                or identity["execution"].get("tier_snapshot_hash")
+            )
+            provider_issue = (_tier_provider_issue(
+                tier_provider, identity["execution"],
+                tuple(order["pair"] for order in entries))
+                              if provider_required else None)
             if provider_issue is not None:
                 for order in entries:
                     event("order_rejected", dict(order, status="rejected",
@@ -1607,8 +1642,12 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                     plan=plans[index] if structural_sizing else None,
                     dual_limit=identity["execution"].get("notional_policy") == "dual_limit")
                 notional = quantity * price
-                liquidation_price, liquidation_evidence = _tiered_liquidation_price(
-                    pair, price, direction, entry_leverage, notional, tier_provider)
+                if tier_provider is None:
+                    liquidation_price, liquidation_evidence = _tiered_liquidation_price(
+                        pair, price, direction, entry_leverage, notional)
+                else:
+                    liquidation_price, liquidation_evidence = _tiered_liquidation_price(
+                        pair, price, direction, entry_leverage, notional, tier_provider)
                 tiered_entries[order["order_id"]] = {
                     "liquidation_price": liquidation_price,
                     "liquidation_evidence": liquidation_evidence,
@@ -1618,21 +1657,56 @@ def apply_closed_batch(state: dict, spec: dict, candles_by_pair: dict, signal: d
                 if entry["liquidation_evidence"].get("tier_rejection_reason")
             ]
             if tier_rejections:
-                group_reason = next(
-                    entry["liquidation_evidence"]["tier_rejection_reason"]
-                    for entry in tiered_entries.values()
-                    if entry["liquidation_evidence"].get("tier_rejection_reason")
-                )
-                for order in entries:
-                    audit = tiered_entries[order["order_id"]]
-                    event("order_rejected", dict(
-                        order, status="rejected", reason=group_reason,
-                        group_rejection_reason=group_reason,
-                        liquidation_model=liquidation_model,
-                        liquidation_tier=audit["liquidation_evidence"],
-                        **_tier_event_fields(audit["liquidation_evidence"]),
-                    ))
-                continue
+                if not orders[0].get("atomic"):
+                    # Independent entries are assessed separately. A rejected
+                    # leg must not turn a valid sibling into a group rejection.
+                    accepted_entries = []
+                    accepted_amounts = []
+                    accepted_leverages = []
+                    accepted_weights = []
+                    accepted_plans = []
+                    for index, order in enumerate(entries):
+                        audit = tiered_entries[order["order_id"]]
+                        reason = audit["liquidation_evidence"].get("tier_rejection_reason")
+                        if reason:
+                            event("order_rejected", dict(
+                                order, status="rejected", reason=reason,
+                                group_rejection_reason=reason,
+                                liquidation_model=liquidation_model,
+                                liquidation_tier=audit["liquidation_evidence"],
+                                **_tier_event_fields(audit["liquidation_evidence"]),
+                            ))
+                            continue
+                        accepted_entries.append(order)
+                        accepted_amounts.append(amounts[index])
+                        accepted_leverages.append(leverages[index])
+                        accepted_weights.append(weights[index])
+                        if structural_sizing:
+                            accepted_plans.append(plans[index])
+                    entries = accepted_entries
+                    amounts = accepted_amounts
+                    leverages = accepted_leverages
+                    weights = accepted_weights
+                    if structural_sizing:
+                        plans = accepted_plans
+                    if not entries:
+                        continue
+                else:
+                    group_reason = next(
+                        entry["liquidation_evidence"]["tier_rejection_reason"]
+                        for entry in tiered_entries.values()
+                        if entry["liquidation_evidence"].get("tier_rejection_reason")
+                    )
+                    for order in entries:
+                        audit = tiered_entries[order["order_id"]]
+                        event("order_rejected", dict(
+                            order, status="rejected", reason=group_reason,
+                            group_rejection_reason=group_reason,
+                            liquidation_model=liquidation_model,
+                            liquidation_tier=audit["liquidation_evidence"],
+                            **_tier_event_fields(audit["liquidation_evidence"]),
+                        ))
+                    continue
 
         for index, (order, margin, entry_leverage) in enumerate(
                 zip(entries, amounts, leverages, strict=True)):
@@ -2186,8 +2260,12 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
                       portfolio_margin=sum(leg_margins), portfolio_gross_notional=2 * notional)
         tiered_entries = {}
         if liquidation_model == "binance_tiered":
-            provider_issue = _tier_provider_issue(tier_provider, model,
-                                                  tuple(order["pair"] for order in entries))
+            provider_required = bool(
+                model.get("leverage_by_symbol") or model.get("tier_snapshot_hash")
+            )
+            provider_issue = (_tier_provider_issue(
+                tier_provider, model, tuple(order["pair"] for order in entries))
+                              if provider_required else None)
             if provider_issue is not None:
                 for order in entries:
                     event("order_rejected", dict(order, status="rejected",
@@ -2199,8 +2277,12 @@ def _apply_pair_closed_batch(state: dict, spec: dict, candles: dict, signal: dic
                 continue
             for order, entry_leverage in zip(entries, leg_leverages, strict=True):
                 pair, direction, price = order["pair"], order["direction"], opens[order["pair"]]
-                liquidation_price, liquidation_evidence = _tiered_liquidation_price(
-                    pair, price, direction, entry_leverage, notional, tier_provider)
+                if tier_provider is None:
+                    liquidation_price, liquidation_evidence = _tiered_liquidation_price(
+                        pair, price, direction, entry_leverage, notional)
+                else:
+                    liquidation_price, liquidation_evidence = _tiered_liquidation_price(
+                        pair, price, direction, entry_leverage, notional, tier_provider)
                 tiered_entries[order["order_id"]] = {
                     "liquidation_price": liquidation_price,
                     "liquidation_evidence": liquidation_evidence,

@@ -16,9 +16,16 @@
 
 import argparse
 import functools
+import http.client
 import http.server
 import os
+import socket
+import select
 import sys
+import urllib.parse
+
+UPSTREAM = ("127.0.0.1", 8890)
+PROXY_PREFIXES = ("/api/", "/auth/")
 
 NO_STORE_SUFFIX = (".html",)
 NO_STORE_PREFIX = ("_app-config",)
@@ -53,9 +60,68 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except (ConnectionResetError, BrokenPipeError, TimeoutError):
             self.close_connection = True
 
+
+    def _proxy(self, method: str) -> bool:
+        """Reverse-proxy /api/* and /auth/* to auth_service (8890)."""
+        parsed = urllib.parse.urlsplit(self.path)
+        if not parsed.path.startswith(PROXY_PREFIXES):
+            return False
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        headers = {k: v for k, v in self.headers.items()
+                   if k.lower() not in ("host", "content-length", "connection")}
+        headers["Host"] = "127.0.0.1:8890"
+        conn = http.client.HTTPConnection(*UPSTREAM, timeout=30)
+        path = parsed.path + (("?" + parsed.query) if parsed.query else "")
+        conn.request(method, path, body=body, headers=headers)
+        resp = conn.getresponse()
+        data = resp.read()
+        self.send_response(resp.status)
+        for key, value in resp.getheaders():
+            if key.lower() in ("content-length", "transfer-encoding", "connection"):
+                continue
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if method != "HEAD":
+            self.wfile.write(data)
+        conn.close()
+        return True
+
+    def do_GET(self):
+        if self._proxy("GET"):
+            return
+        super().do_GET()
+
+    def do_HEAD(self):
+        if self._proxy("HEAD"):
+            return
+        super().do_HEAD()
+
+    def do_POST(self):
+        if self._proxy("POST"):
+            return
+        self.send_error(404)
+
+    def do_PUT(self):
+        if self._proxy("PUT"):
+            return
+        self.send_error(404)
+
+    def do_DELETE(self):
+        if self._proxy("DELETE"):
+            return
+        self.send_error(404)
+
+    def do_OPTIONS(self):
+        if self._proxy("OPTIONS"):
+            return
+        self.send_error(404)
+
     def log_message(self, fmt, *args):
         # 只记录错误，保持终端清爽
-        if args and str(args[1]).startswith(("4", "5")):
+        status = str(args[1]) if len(args) > 1 else ""
+        if status.startswith(("4", "5")):
             sys.stderr.write("  %s\n" % (fmt % args))
 
 

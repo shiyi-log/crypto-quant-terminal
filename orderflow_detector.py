@@ -21,7 +21,8 @@ from price_spike import PRICE_SPIKE_METHOD_VERSION
 
 PAIR_BASES = frozenset({"BTC", "ETH"})
 DEFAULT_THRESHOLDS = (2.0, 4.0, 8.0, 20.0)
-METHOD_VERSION = "orderflow-volume-surge-v3"
+METHOD_VERSION = "orderflow-volume-surge-v4"
+LIVE_KLINE_SOURCE = "binance_websocket_closed_kline"
 BAR_INTERVAL_MS = 5 * 60 * 1000
 
 
@@ -61,6 +62,7 @@ class VolumeSurgeDetector:
     _closed_timestamps: dict[tuple[str, str], set[int]] = field(default_factory=lambda: defaultdict(set))
     _emitted: set[str] = field(default_factory=set)
     _last_timestamp: dict[tuple[str, str], int] = field(default_factory=dict)
+    _sources: dict[tuple[str, str], Deque[str]] = field(default_factory=lambda: defaultdict(deque))
     last_candidate: dict[str, Any] | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -77,6 +79,10 @@ class VolumeSurgeDetector:
             lambda: deque(maxlen=self.window_size),
             {key: deque(volumes, maxlen=self.window_size)
              for key, volumes in self._volumes.items()},
+        )
+        self._sources = defaultdict(
+            lambda: deque(maxlen=self.window_size),
+            {key: deque(values, maxlen=self.window_size) for key, values in self._sources.items()},
         )
 
     @staticmethod
@@ -114,6 +120,7 @@ class VolumeSurgeDetector:
         *,
         market: str = "futures",
         timestamps: list[int] | tuple[int, ...] | None = None,
+        source: str = LIVE_KLINE_SOURCE,
     ) -> None:
         """Warm a pair from trusted closed history after a restart.
 
@@ -151,6 +158,7 @@ class VolumeSurgeDetector:
         key = (market, pair)
         if timestamps is None:
             self._volumes[key] = deque(cleaned[-self.window_size:], maxlen=self.window_size)
+            self._sources[key] = deque([source] * len(self._volumes[key]), maxlen=self.window_size)
             self._closed_timestamps.pop(key, None)
             self._last_timestamp.pop(key, None)
             return
@@ -165,11 +173,45 @@ class VolumeSurgeDetector:
             contiguous.append(item)
         ordered = list(reversed(contiguous))
         self._volumes[key] = deque((number for _, number in ordered), maxlen=self.window_size)
+        self._sources[key] = deque([source] * len(ordered), maxlen=self.window_size)
         self._closed_timestamps[key] = {timestamp for timestamp, _ in ordered}
         if ordered:
             self._last_timestamp[key] = ordered[-1][0]
         else:
             self._last_timestamp.pop(key, None)
+
+    def needs_gap_recovery(self, pair: str, timeframe: str, candle: dict[str, Any],
+                           *, market: str = "futures") -> bool:
+        """Identify a forward gap before processing can clear the baseline."""
+        if not self._supported(pair, timeframe) or candle.get("closed") is not True:
+            return False
+        previous = self._last_timestamp.get((market, pair))
+        return previous is not None and candle["timestamp"] - previous > BAR_INTERVAL_MS
+
+    def is_duplicate_or_late(self, pair: str, timeframe: str, candle: dict[str, Any],
+                             *, market: str = "futures") -> bool:
+        """Avoid recovery work for closed bars the detector would reject."""
+        if not self._supported(pair, timeframe) or candle.get("closed") is not True:
+            return False
+        timestamp = candle.get("timestamp")
+        if isinstance(timestamp, bool):
+            return False
+        try:
+            timestamp = int(timestamp)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if timestamp < 0 or str(timestamp) != str(candle.get("timestamp")):
+            return False
+        previous = self._last_timestamp.get((market, pair))
+        return previous is not None and timestamp <= previous
+
+    def reset(self, pair: str, *, market: str = "futures") -> None:
+        """Drop a stale baseline when REST cannot repair a gap."""
+        key = (market, pair)
+        self._volumes[key].clear()
+        self._sources[key].clear()
+        self._closed_timestamps[key].clear()
+        self._last_timestamp.pop(key, None)
 
     def restore_event_ids(self, event_ids: Any) -> None:
         """Restore persisted observation IDs so a process restart stays idempotent."""
@@ -180,11 +222,15 @@ class VolumeSurgeDetector:
     def warmup_status(self, pair: str, *, market: str = "futures") -> dict[str, Any]:
         """Expose the current contiguous-bar count needed for a valid baseline."""
         key = (market, pair)
+        sources = set(self._sources[key])
         return {
             "valid_bars": len(self._volumes[key]),
             "required_bars": self.window_size,
             "last_timestamp": self._last_timestamp.get(key),
             "ready": len(self._volumes[key]) >= self.window_size,
+            "source": (next(iter(sources)) if len(sources) == 1 else "mixed" if sources else None),
+            "rest_bars": sum(value == "binance_futures_rest_closed_kline"
+                             for value in self._sources[key]),
         }
 
     def process(
@@ -228,6 +274,7 @@ class VolumeSurgeDetector:
             # A missing closed candle breaks the rolling window. Require a
             # fresh contiguous baseline instead of carrying stale history.
             self._volumes[key].clear()
+            self._sources[key].clear()
         quote_volume = self._quote_volume(candle)
         if quote_volume is None:
             return None
@@ -243,6 +290,16 @@ class VolumeSurgeDetector:
         volumes = self._volumes[key]
         baseline = float(median(volumes)) if len(volumes) >= self.window_size else None
         ratio = quote_volume / baseline if baseline and baseline > 0 else None
+        baseline_sources = list(self._sources[key])
+        sources = set(baseline_sources)
+        baseline_source = (next(iter(sources)) if len(sources) == 1
+                           else "mixed" if sources else LIVE_KLINE_SOURCE)
+        baseline_fingerprint = _fingerprint({
+            "sources": baseline_sources,
+            "start_timestamp": timestamp - self.window_size * BAR_INTERVAL_MS,
+            "end_timestamp": timestamp - BAR_INTERVAL_MS,
+            "interval_ms": BAR_INTERVAL_MS, "quote_volumes": list(volumes),
+        })
         if ratio is not None:
             band = (
                 "lt1" if ratio < 1 else "1to2" if ratio < 2 else
@@ -260,14 +317,8 @@ class VolumeSurgeDetector:
                 "num_trades": candle.get("num_trades"),
                 "baseline_start_timestamp": timestamp - self.window_size * BAR_INTERVAL_MS,
                 "baseline_end_timestamp": timestamp - BAR_INTERVAL_MS,
-                "baseline_source": "binance_websocket_closed_kline",
-                "baseline_fingerprint": _fingerprint({
-                    "source": "binance_websocket_closed_kline",
-                    "start_timestamp": timestamp - self.window_size * BAR_INTERVAL_MS,
-                    "end_timestamp": timestamp - BAR_INTERVAL_MS,
-                    "interval_ms": BAR_INTERVAL_MS,
-                    "quote_volumes": list(volumes),
-                }),
+                "baseline_source": baseline_source,
+                "baseline_fingerprint": baseline_fingerprint,
             }
             identity = {
                 "method_version": PRICE_SPIKE_METHOD_VERSION,
@@ -291,6 +342,7 @@ class VolumeSurgeDetector:
                 "observation": observation,
             }
         volumes.append(quote_volume)
+        self._sources[key].append(LIVE_KLINE_SOURCE)
         if ratio is None or ratio < self.thresholds[0]:
             return None
         threshold, threshold_band = self._band(ratio, self.thresholds)
@@ -305,6 +357,8 @@ class VolumeSurgeDetector:
             "volume_ratio": ratio,
             "threshold": threshold,
             "threshold_band": threshold_band,
+            "baseline_source": baseline_source,
+            "baseline_fingerprint": baseline_fingerprint,
             "num_trades": candle.get("num_trades"),
             "taker_buy_base": candle.get("taker_buy_base"),
             "taker_buy_quote": candle.get("taker_buy_quote"),

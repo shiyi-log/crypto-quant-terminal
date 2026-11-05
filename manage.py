@@ -25,8 +25,14 @@ from urllib.request import urlopen
 import uuid
 
 from runtime_config import load_environment
+from gate_registry import GateRegistry
 
 ROOT = Path(__file__).resolve().parent
+
+
+def gate_enabled(root: Path, key: str) -> bool:
+    """Read a registered gate without caching child-process state."""
+    return GateRegistry(root).is_enabled(key)
 
 # The breadth universe is intentionally duplicated here as an operational
 # allowlist.  It must stay aligned with strategy_data.BREADTH_PAIRS; changing
@@ -77,6 +83,20 @@ def services(root: Path = ROOT) -> dict[str, Service]:
     breadth_pairs = ",".join(BREADTH_SIDECAR_PAIRS)
     native_futures_intervals = ("1m", "5m", "15m", "1h", "1d")
     native_futures_interval_arg = ",".join(native_futures_intervals)
+    strategy_lab_command = [python, "-u", str(root / "strategy_lab_service.py")]
+    if gate_enabled(root, "strategy.paired_execution_enabled"):
+        strategy_lab_command.append("--fnew-paired-execution")
+    research_id = os.getenv("QUANT_STRATEGY_LAB_RESEARCH_ID", "").strip()
+    account_scope = os.getenv("QUANT_STRATEGY_LAB_ACCOUNT_SCOPE", "").strip()
+    if research_id and account_scope:
+        strategy_lab_command.extend(("--research-id", research_id,
+                                      "--account-scope", account_scope))
+    spot_basis_dir = root / "database/runtime/spot_basis"
+    spot_basis_cmd = [python, "-u", str(root / "tools/backfill_spot_basis_history.py"),
+                      "--apply", "--watch", "--output", str(spot_basis_dir),
+                      "--status-document-key", "spot_basis_status.json"]
+    if spot_basis_dir.is_dir():
+        spot_basis_cmd.append("--resume")
     specs = [
         Service("api", "交易 API", (trading_python, "-m", "freqtrade", "trade", "--config",
                 "user_data/config_trend_live.json", "--config", "config_api_access_log.json",
@@ -135,14 +155,13 @@ def services(root: Path = ROOT) -> dict[str, Service]:
                 "--port", os.getenv("QUANT_LIVE_PORT", "8892")), root,
                 root / "market_live.py", port=int(os.getenv("QUANT_LIVE_PORT", "8892")),
                 health_path="/health"),
-        Service("strategy-lab", "十策略独立模拟", (python, "-u", str(root / "strategy_lab_service.py"),
+        Service("strategy-lab", "十策略独立模拟", tuple(strategy_lab_command),
                 # The Fnew paired execution policy
                 # (atomic-pair-equal-notional-ohlc-v1) is implemented in
                 # strategy_simulation.py and covered by the dedicated pair
                 # execution suite, so s32/s36 may create their first accounts
                 # enabled.  Accounts created while blocked carry a distinct
                 # execution identity and can never be upgraded in place.
-                "--fnew-paired-execution"),
                 root, root / "strategy_lab_service.py"),
         # s33_basis_momentum_1h trades the perpetual leg but reads a genuine
         # spot market, and it fails closed when spot is stale.  This collector
@@ -150,9 +169,7 @@ def services(root: Path = ROOT) -> dict[str, Service]:
         # closed 1h tail; it writes its own status document and never touches
         # another collector or any strategy/account state.
         Service("spot-basis", "现货基差前向喂数",
-                (python, "-u", str(root / "tools/backfill_spot_basis_history.py"),
-                 "--apply", "--watch", "--output", str(root / "database/runtime/spot_basis"),
-                 "--status-document-key", "spot_basis_status.json"),
+                tuple(spot_basis_cmd),
                 root, root / "tools/backfill_spot_basis_history.py"),
         # 用户要求「不能漏数据」：缺口必须由常驻进程主动发现，而不是等人手工跑。
         # 只读审计，不写 K 线；状态文档供运维与前端读取。
@@ -214,6 +231,21 @@ def matches_process(spec: Service, command: str, cwd: Path | None, *, allow_lega
             return False
         if spec.stream_spool_dir is not None:
             return matches_stream_arguments(spec, remaining[1:], cwd, allow_legacy=allow_legacy)
+        if spec.name == "strategy-lab":
+            # A strategy-lab process is valid only when its complete managed
+            # argument vector matches, including execution-mode switches.
+            try:
+                command_script_index = spec.command.index(str(spec.script))
+                expected_args = list(spec.command[command_script_index + 1:])
+            except ValueError:
+                return False
+            arguments = remaining[1:]
+            if "--research-id" not in expected_args or "--account-scope" not in expected_args:
+                # Without a configured risk-gate identity there is no valid
+                # current strategy-lab process; any matching script is legacy.
+                return allow_legacy
+            if arguments != expected_args:
+                return allow_legacy
         return True
     # 兼容 python -m freqtrade 和旧 venv 的 freqtrade console script。
     entry = tokens[1:]
@@ -351,7 +383,25 @@ def pid_file(root: Path, spec: Service) -> Path:
     return root / "logs" / f"manage-{spec.name}.pid"
 
 
+def _service_requests_real_orders(spec: Service) -> bool:
+    """Return whether the managed Freqtrade service is configured for live orders."""
+    if spec.name != "api" or "--config" not in spec.command:
+        return False
+    try:
+        config = Path(spec.command[spec.command.index("--config") + 1])
+        config_path = config if config.is_absolute() else spec.cwd / config
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, IndexError):
+        # Missing config is handled by the normal service validation below.  It
+        # cannot be treated as a request for real orders.
+        return False
+    return payload.get("dry_run") is False
+
+
 def start_service(spec: Service, root: Path = ROOT) -> bool:
+    if spec.name == "api" and _service_requests_real_orders(spec) \
+            and not gate_enabled(root, "execution.real_orders"):
+        raise RuntimeError("真实下单门禁已关闭，拒绝启动非 dry-run 交易服务")
     existing = find_processes(spec, allow_legacy=False)
     if existing:
         print(f"{spec.label}：复用 PID {','.join(map(str, existing))}，{health(spec)}")
@@ -359,16 +409,34 @@ def start_service(spec: Service, root: Path = ROOT) -> bool:
     legacy = find_processes(spec, allow_legacy=True)
     if legacy:
         raise RuntimeError(f"{spec.label}：发现旧配置进程 PID {','.join(map(str, legacy))}，请先执行 restart 以加载当前采集周期")
-    if spec.stream_spool_dir is not None and os.getenv("QUANT_STREAM_ENABLED", "true").lower() in {
-        "false", "0", "no", "off",
-    }:
-        print(f"{spec.label}：QUANT_STREAM_ENABLED 已关闭，跳过启动")
+    if spec.stream_spool_dir is not None and not gate_enabled(root, "market_stream.enabled"):
+        print(f"{spec.label}：行情采集门禁已关闭，跳过启动")
         return True
-    if spec.enable_env is not None and os.getenv(spec.enable_env, "false").lower() in {
-        "false", "0", "no", "off",
-    }:
-        print(f"{spec.label}：{spec.enable_env} 未开启，跳过启动")
+    if spec.enable_env is not None:
+        gate_key = {"QUANT_BREADTH_STREAM_ENABLED": "breadth_stream.enabled"}.get(spec.enable_env)
+        if gate_key is not None:
+            enabled = gate_enabled(root, gate_key)
+        else:
+            enabled = os.getenv(spec.enable_env, "false").lower() not in {
+                "false", "0", "no", "off",
+            }
+        if not enabled:
+            print(f"{spec.label}：对应门禁已关闭，跳过启动")
+            return True
+    service_gate = {
+        "strategy-lab": "strategy_lab.enabled",
+        "integrity": "integrity.monitor_enabled",
+    }.get(spec.name)
+    if service_gate is not None and not gate_enabled(root, service_gate):
+        print(f"{spec.label}：对应门禁已关闭，跳过启动")
         return True
+    if spec.name == "strategy-lab":
+        missing = [name for name, value in (
+            ("QUANT_STRATEGY_LAB_RESEARCH_ID", os.getenv("QUANT_STRATEGY_LAB_RESEARCH_ID", "").strip()),
+            ("QUANT_STRATEGY_LAB_ACCOUNT_SCOPE", os.getenv("QUANT_STRATEGY_LAB_ACCOUNT_SCOPE", "").strip()),
+        ) if not value]
+        if missing:
+            raise RuntimeError("strategy-lab 缺少风险闸门身份：" + ", ".join(missing))
     if spec.port and port_busy(spec.port):
         raise RuntimeError(f"端口 {spec.port} 已被其他进程占用；请查看端口所属服务")
     if spec.script and not spec.script.is_file():

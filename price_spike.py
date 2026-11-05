@@ -14,7 +14,10 @@ BAR_INTERVAL_MS = 5 * 60 * 1000
 FORWARD_BARS = 3
 PROFILE_RADIUS = 12
 PRICE_SPIKE_THRESHOLD = 0.015
-PRICE_SPIKE_METHOD_VERSION = "orderflow-price-spike-close3-v3"
+PRICE_SPIKE_METHOD_VERSION = "orderflow-price-spike-close3-v4"
+# v3 and v4 share the exact outcome/profile rules; v4 changes baseline sources.
+# Older versions used different threshold arithmetic and need their own handler.
+MATURITY_METHOD_VERSIONS = ("orderflow-price-spike-close3-v3", "orderflow-price-spike-close3-v4")
 
 
 def _fingerprint(value: Any) -> str:
@@ -61,6 +64,9 @@ def mature_price_spike_observations(
     appended: list[dict[str, Any]] = []
     pending = candidates_reader(limit=limit)
     for row in pending or []:
+        method_version = row.get("method_version")
+        if method_version not in MATURITY_METHOD_VERSIONS:
+            continue
         event_id = row.get("event_id")
         observation = row.get("observation")
         if not event_id or not isinstance(observation, dict):
@@ -120,7 +126,7 @@ def mature_price_spike_observations(
                 "matured_at_utc": now_ms,
                 "outcome_window_end_utc": target,
                 "future_candle_fingerprint": future_fingerprint,
-                "method_version": PRICE_SPIKE_METHOD_VERSION,
+                "method_version": method_version,
             }
             result["data_fingerprint"] = _fingerprint(result)
             result_writer(event_id, "outcome", result)
@@ -145,7 +151,7 @@ def mature_price_spike_observations(
                 "detected_at_utc": now_ms, "matured_at_utc": now_ms,
                 "outcome_window_end_utc": target,
                 "missing_timestamps": [value for value in expected if value not in by_time],
-                "method_version": PRICE_SPIKE_METHOD_VERSION,
+                "method_version": method_version,
             }
             result["data_fingerprint"] = _fingerprint(result)
             result_writer(event_id, "outcome", result)
@@ -155,6 +161,9 @@ def mature_price_spike_observations(
     # after the candidate bar and are recorded as a separate immutable fact.
     events = profiles_reader(limit=None)
     for row in events or []:
+        method_version = row.get("method_version")
+        if method_version not in MATURITY_METHOD_VERSIONS:
+            continue
         outcome = row.get("outcome")
         if not isinstance(outcome, dict) or outcome.get("direction") not in {"up", "down"}:
             continue
@@ -166,9 +175,10 @@ def mature_price_spike_observations(
             continue
         start, end = (timestamp - PROFILE_RADIUS * BAR_INTERVAL_MS,
                       timestamp + PROFILE_RADIUS * BAR_INTERVAL_MS)
-        observations = observation_reader(pair, start, end) or []
+        observations = observation_reader(pair, start, end, method_version=method_version) or []
         by_time = {int(item["timestamp"]): item for item in observations
-                   if isinstance(item, dict) and item.get("timestamp") is not None}
+                   if isinstance(item, dict) and item.get("timestamp") is not None
+                   and item.get("method_version") == method_version}
         expected = [timestamp + offset * BAR_INTERVAL_MS
                     for offset in range(-PROFILE_RADIUS, PROFILE_RADIUS + 1)]
         points = []
@@ -201,7 +211,7 @@ def mature_price_spike_observations(
             "points": points, "missing_timestamps": missing,
             "profile_start_utc": start, "profile_end_utc": end,
             "matured_at_utc": now_ms,
-            "method_version": PRICE_SPIKE_METHOD_VERSION,
+            "method_version": method_version,
         }
         profile["data_fingerprint"] = _fingerprint(profile)
         result_writer(row["event_id"], "profile", profile)

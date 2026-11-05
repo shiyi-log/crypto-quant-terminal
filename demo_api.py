@@ -560,10 +560,11 @@ class DemoApi:
             self._check_lock.release()
 
 
-def create_demo_api(data_store, *, auth_dir):
+def create_demo_api(data_store, *, auth_dir, gate_registry=None):
     from demo_store import DemoStore
     from demo_runner_controller import DemoRunnerController
     from demo_signal_sources import DemoSignalSources
+    from gate_registry import GateRegistry
 
     credentials = DemoCredentialStore(data_store, master_key_path=auth_dir / "demo_master.key")
     from demo_runner_controller import STATE_KEY
@@ -573,9 +574,11 @@ def create_demo_api(data_store, *, auth_dir):
         raise DemoApiError("invalid_demo_session")
     ledger = DemoStore(data_store, virtual_account_key=namespace)
     sources = DemoSignalSources(data_store)
+    gate_registry = gate_registry or GateRegistry(storage_dir=auth_dir)
     controller = DemoRunnerController(data_store, ledger, credentials.load_credentials,
-                                      paper_source=sources, risk_gate_required=True,
-                                      risk_account_scope=os.environ.get("QUANT_DEMO_RISK_ACCOUNT_SCOPE"))
+                                      paper_source=sources,
+                                      risk_account_scope=os.environ.get("QUANT_DEMO_RISK_ACCOUNT_SCOPE"),
+                                      gate_registry=gate_registry)
     return DemoApi(data_store, credentials, ledger, controller,
                    ledger_provider=lambda: controller.demo_store,
                    account_provider=lambda: list_paper_accounts(data_store) + sources.additional_accounts())

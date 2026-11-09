@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import time
 import math
 import statistics
 import sys
@@ -288,7 +289,20 @@ def live_entry_gate(now_ms: int, output: Path, *, fetcher: Any = None) -> dict[s
             existing_hourly[ts_i] = iv_f
 
     start = now_ms - (TRAILING_DAYS + 2) * DAY_MS
-    hourly, urls = _fetch_dvol_hourly(start, now_ms, fetcher=fetcher)
+    # Deribit's public endpoint occasionally resets a single hourly page.
+    # Retry the whole paged fetch before failing the daily gate.
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            hourly, urls = _fetch_dvol_hourly(start, now_ms, fetcher=fetcher)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt == 2:
+                raise
+            time.sleep(2 * (attempt + 1))
+    else:  # pragma: no cover
+        raise RuntimeError("DVOL fetch failed") from last_exc
     existing_hourly.update(hourly)
     # Only the 00:00 UTC 1h close is an entry-day observation.  This produces
     # spacing exactly DAY_MS and makes the 252-day requirement auditable.

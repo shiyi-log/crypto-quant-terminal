@@ -24,7 +24,7 @@ def main() -> int:
         time.sleep(max(1.0, (target - now).total_seconds()))
         with LOG.open("a") as fh:
             fh.write(f"{datetime.now().astimezone().isoformat()} running forward job\n")
-        for attempt in range(1, 4):
+        for attempt in range(1, 7):
             try:
                 env = os.environ.copy()
                 env["NO_PROXY"] = "*"; env["no_proxy"] = "*"
@@ -39,8 +39,8 @@ def main() -> int:
             if rc == 0:
                 break
             with LOG.open("a") as fh:
-                fh.write(f"attempt {attempt} failed rc={rc}; retry in 60s\n")
-            time.sleep(60)
+                fh.write(f"attempt {attempt} failed rc={rc}; retry in 120s\n")
+            time.sleep(120)
         time.sleep(120)
 if __name__ == "__main__":
     raise SystemExit(main())

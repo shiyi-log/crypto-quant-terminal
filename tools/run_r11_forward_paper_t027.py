@@ -142,6 +142,17 @@ def process(output: Path = OUTPUT_DEFAULT, *, now_ms: int | None = None, record_
         if existing_report.exists():
             return json.loads(existing_report.read_text())
     state = load_state(equity_state_path, ledger_path)
+    # The snapshot carries quotes for exactly one selected expiry.  Once the
+    # 30d expiry rolls, existing positions still reference the old expiry, so
+    # using the new snapshot's premium would fabricate their mark.  Fail closed
+    # until per-expiry pricing is implemented.
+    open_expiries = {int(pos["expiry_ts"]) for pos in state["positions"].values()}
+    selected_expiry = int(snapshot["selected_expiry_ts"])
+    if open_expiries and selected_expiry not in open_expiries:
+        raise RuntimeError(
+            "multi-expiry mark unsupported: open=%s selected=%s"
+            % (sorted(open_expiries), selected_expiry)
+        )
     prior_equity = mark_equity(state)
     events: list[dict[str, Any]] = []
     if daily and snapshot["schedule_status"] != "on_boundary":

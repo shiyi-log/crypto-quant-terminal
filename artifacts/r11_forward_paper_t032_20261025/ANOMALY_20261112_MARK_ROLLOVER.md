@@ -19,3 +19,11 @@
 - 11-12 unconditional equity 行已从 CSV 移除（备份：`unconditional_equity_daily.jsonl.bak_20261112_rollover_mark`）；
 - 不纳入绩效统计；
 - 修复前，后续 mark 估值不可直接用于裁决。
+
+## 2026-11-14 修复
+
+- 已实现按持仓 `expiry_ts`+`strike` 单独取 mark/ask（`fetch_expiry_premiums`）；
+- mark 使用 `observed_option_mark_at_position_expiry`；
+- 新持仓会持久化 `strike`；
+- dry-run（含 11-27 旧仓 + 12-25 新选到期）exit=0；
+- watchdog 已重启，11-15 08:00 起恢复有效观测。

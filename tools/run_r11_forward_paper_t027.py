@@ -27,6 +27,45 @@ from tools.run_r11_forward_paper import (  # noqa: E402
 )
 from tools.run_r11_forward_paper_executable import transform_snapshot  # noqa: E402
 
+def fetch_expiry_premiums(expiry_ts: int, strike: float, now_ms: int, output: Path,
+                          spot: float, *, fetcher: Any = None) -> tuple[float, float]:
+    """Fetch (mark_usd, ask_usd) for one expiry/strike straddle at 0.1 BTC/leg."""
+    from tools.run_r11_forward_paper import (
+        _download_json, _ticker_payload, paper_quantity, public_url, quote_usd,
+    )
+
+    cache = output / "raw_cache"
+    instruments = _download_json(
+        public_url("get_instruments", {"currency": "BTC", "kind": "option", "expired": "false"}),
+        cache / "instruments_btc_option.json", [], fetcher,
+    )["result"]
+    mark_total = ask_total = 0.0
+    quantity_meta = None
+    for option_type in ("call", "put"):
+        matches = [i for i in instruments
+                   if int(i.get("expiration_timestamp", 0)) == int(expiry_ts)
+                   and abs(float(i.get("strike", 0.0)) - float(strike)) < 1e-9
+                   and i.get("option_type") == option_type]
+        if not matches:
+            raise RuntimeError(f"cannot find {option_type} {expiry_ts} {strike}")
+        instrument = matches[0]
+        name = instrument["instrument_name"]
+        ticker = _ticker_payload(_download_json(
+            public_url("ticker", {"instrument_name": name}),
+            cache / f"ticker_{name}.json", [], fetcher,
+        ))
+        contract_size = float(instrument.get("contract_size", 1.0))
+        underlying = float(ticker.get("underlying_price") or spot)
+        mark_native, ask_native = ticker.get("mark_price"), ticker.get("best_ask_price")
+        if mark_native is None or ask_native is None:
+            raise RuntimeError(f"missing mark/ask for {name}")
+        if quantity_meta is None:
+            quantity_meta = paper_quantity(spot, contract_size)
+        mark_total += quote_usd(float(mark_native), contract_size, underlying) * quantity_meta["target_quantity_btc"] / contract_size
+        ask_total += quote_usd(float(ask_native), contract_size, underlying) * quantity_meta["target_quantity_btc"] / contract_size
+    return float(mark_total), float(ask_total)
+
+
 SPEC_PATH = ROOT / "research_multi_strategy/R11_FORWARD_PAPER_EXECUTABLE_T027_20261025.md"
 T026_SPEC_PATH = ROOT / "research_multi_strategy/R11_EXECUTABLE_SCALE_T026_20261025.md"
 OUTPUT_DEFAULT = ROOT / "artifacts/r11_forward_paper_t027_20261025"
@@ -142,18 +181,8 @@ def process(output: Path = OUTPUT_DEFAULT, *, now_ms: int | None = None, record_
         if existing_report.exists():
             return json.loads(existing_report.read_text())
     state = load_state(equity_state_path, ledger_path)
-    # The snapshot carries quotes for exactly one selected expiry.  Once the
-    # 30d expiry rolls, existing positions still reference the old expiry, so
-    # using the new snapshot's premium would fabricate their mark.  Fail closed
-    # until per-expiry pricing is implemented.
-    open_expiries = {int(pos["expiry_ts"]) for pos in state["positions"].values()}
-    selected_expiry = int(snapshot["selected_expiry_ts"])
-    if open_expiries and selected_expiry not in open_expiries:
-        raise RuntimeError(
-            "multi-expiry mark unsupported: open=%s selected=%s"
-            % (sorted(open_expiries), selected_expiry)
-        )
     prior_equity = mark_equity(state)
+    expiry_quote_cache: dict[tuple[int, float], tuple[float, float]] = {}
     events: list[dict[str, Any]] = []
     if daily and snapshot["schedule_status"] != "on_boundary":
         snapshot["schedule_status"] = "daily_skipped_outside_boundary"
@@ -161,9 +190,21 @@ def process(output: Path = OUTPUT_DEFAULT, *, now_ms: int | None = None, record_
         events.append(base(snapshot, rule_hash, "snapshot") | snapshot)
         # Mark and hedge all existing positions, then exit any that have expired.
         for pid, position in list(state["positions"].items()):
-            current_mark = snapshot["paper_premium_mark_usd"]
+            pos_expiry = int(position["expiry_ts"])
+            pos_strike = float(position.get("strike", 80000.0))
+            if pos_expiry == int(snapshot["selected_expiry_ts"]):
+                current_mark = snapshot["paper_premium_mark_usd"]
+                exit_ask = snapshot.get("paper_premium_ask_usd")
+            else:
+                cache_key = (pos_expiry, pos_strike)
+                if cache_key not in expiry_quote_cache:
+                    expiry_quote_cache[cache_key] = fetch_expiry_premiums(
+                        pos_expiry, pos_strike, snapshot["timestamp"], output,
+                        float(snapshot["spot_index"]),
+                    )
+                current_mark, exit_ask = expiry_quote_cache[cache_key]
             mark_pnl = float(position["entry_premium_usd"]) - current_mark
-            events.append(base(snapshot, rule_hash, "mark") | {"position_id": pid, "entry_premium_usd": position["entry_premium_usd"], "mark_premium_usd": current_mark, "unrealized_pnl_usd": mark_pnl, "daily_mark_pnl_usd": float(position["last_mark_premium_usd"]) - current_mark, "mark_proxy": "observed_option_mark_at_0.1_units_per_leg"})
+            events.append(base(snapshot, rule_hash, "mark") | {"position_id": pid, "entry_premium_usd": position["entry_premium_usd"], "mark_premium_usd": current_mark, "unrealized_pnl_usd": mark_pnl, "daily_mark_pnl_usd": float(position["last_mark_premium_usd"]) - current_mark, "mark_proxy": "observed_option_mark_at_position_expiry"})
             hedge_qty = snapshot["target_hedge_btc"]
             hedge_notional = abs(hedge_qty * snapshot["perp"]["mark_price"])
             hedge_fee = hedge_notional * HEDGE_FEE_BPS / 10_000.0
@@ -171,7 +212,8 @@ def process(output: Path = OUTPUT_DEFAULT, *, now_ms: int | None = None, record_
             events.append(base(snapshot, rule_hash, "hedge") | {"position_id": pid, "quantity_btc": hedge_qty, "price_usd": snapshot["perp"]["mark_price"], "hedge_notional_usd": hedge_notional, "fee_bps": HEDGE_FEE_BPS, "fee_usd": hedge_fee})
             position["last_mark_premium_usd"] = current_mark
             if int(position["expiry_ts"]) <= snapshot["timestamp"]:
-                exit_ask = require_exit_ask(snapshot)
+                if exit_ask is None:
+                    raise RuntimeError("missing executable ask for position expiry")
                 realized = float(position["entry_premium_usd"]) - exit_ask
                 state["cash_equity"] += realized
                 events.append(base(snapshot, rule_hash, "exit") | {"position_id": pid, "exit_reason": "expiry_ask_buyback", "exit_premium_usd": exit_ask, "mark_premium_usd": current_mark, "spread_cost_usd": exit_ask - current_mark, "exit_price_policy": "buy_back_at_observed_ask", "realized_pnl_usd": realized, "dry_run_lifecycle": False})
@@ -201,7 +243,7 @@ def process(output: Path = OUTPUT_DEFAULT, *, now_ms: int | None = None, record_
                 events.append(base(snapshot, rule_hash, "risk_gate") | {"position_id": pid, "status": "open", "preflight": "paper_only_no_order", "target_quantity_per_leg": 0.1})
                 fill = base(snapshot, rule_hash, "fill") | {"position_id": pid, "side": "sell", "instrument": "BTC-30d-ATM-straddle", "expiry_ts": snapshot["selected_expiry_ts"], "strike": snapshot["strike"], "paper_premium_bid_usd": snapshot["paper_premium_bid_usd"], "quantity_per_leg": snapshot["paper_unit"]["executable_quantity_per_leg"], "actual_notional_usdt_per_leg": snapshot["paper_unit"]["actual_notional_usdt_per_leg"], "actual_straddle_notional_usdt": snapshot["paper_unit"]["actual_straddle_notional_usdt"], "notional_residual_usdt_per_leg": snapshot["paper_unit"]["notional_residual_usdt_per_leg"], "fill_policy": "sell_at_observed_bid_at_executable_min_trade_amount", "dry_run_lifecycle": dry_run_lifecycle}
                 events.append(fill)
-                state["positions"][pid] = {"position_id": pid, "entry_ts": snapshot["timestamp"], "expiry_ts": snapshot["selected_expiry_ts"], "entry_premium_usd": snapshot["paper_premium_bid_usd"], "last_mark_premium_usd": snapshot["paper_premium_bid_usd"], "quantity_per_leg": snapshot["paper_unit"]["executable_quantity_per_leg"]}
+                state["positions"][pid] = {"position_id": pid, "entry_ts": snapshot["timestamp"], "expiry_ts": snapshot["selected_expiry_ts"], "strike": snapshot["strike"], "entry_premium_usd": snapshot["paper_premium_bid_usd"], "last_mark_premium_usd": snapshot["paper_premium_bid_usd"], "quantity_per_leg": snapshot["paper_unit"]["executable_quantity_per_leg"]}
                 if dry_run_lifecycle:
                     current_mark = snapshot["paper_premium_mark_usd"]
                     events.append(base(snapshot, rule_hash, "mark") | {"position_id": pid, "entry_premium_usd": snapshot["paper_premium_bid_usd"], "mark_premium_usd": current_mark, "unrealized_pnl_usd": snapshot["paper_premium_bid_usd"] - current_mark, "daily_mark_pnl_usd": snapshot["paper_premium_bid_usd"] - current_mark, "mark_proxy": "observed_option_mark_at_0.1_units_per_leg", "dry_run_lifecycle": True})

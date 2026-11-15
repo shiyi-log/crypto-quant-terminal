@@ -16,6 +16,11 @@ PAIR = "BTC/USDT:USDT"
 MISSING = object()
 
 
+async def offline_baseline(**_kwargs):
+    """Keep persisted WebSocket warm-up tests independent of exchange recovery."""
+    raise ConnectionError("REST baseline unavailable in durable-file tests")
+
+
 def kline(timestamp=600_000, quote_volume=40, *, closed=True, interval="5m"):
     return {"stream": f"btcusdt@kline_{interval}", "data": {
         "e": "kline", "E": timestamp + 300_000, "s": "BTCUSDT",
@@ -119,7 +124,8 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
             status_interval=.01,
         )
         self.collector = MarketCollector(self.config, self.store,
-                                         VolumeSurgeDetector(window_size=2))
+                                         VolumeSurgeDetector(window_size=2),
+                                         baseline_fetcher=offline_baseline)
 
     async def asyncTearDown(self):
         self.temporary.cleanup()
@@ -209,7 +215,8 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_one_minute_candle_is_persisted_without_advancing_five_minute_detector(self):
         config = replace(self.config, kline_intervals=("1m", "5m"))
-        collector = MarketCollector(config, self.store, VolumeSurgeDetector(window_size=2))
+        collector = MarketCollector(config, self.store, VolumeSurgeDetector(window_size=2),
+                                    baseline_fetcher=offline_baseline)
         await collector.receive(kline(600_000, 1000, interval="1m"))
         events = self.pending_events(collector)
         self.assertEqual([event["kind"] for event in events], ["kline"])
@@ -228,7 +235,8 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.surges, {})
 
         restarted = MarketCollector(self.config, self.store,
-                                    VolumeSurgeDetector(window_size=2))
+                                    VolumeSurgeDetector(window_size=2),
+                                    baseline_fetcher=offline_baseline)
         await restarted.seed_surge_detector()
         self.assertEqual(self.store.candle_reads[-1],
                          ("binance", "futures", PAIR, "5m", "futures", 3))
@@ -338,7 +346,8 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
                 store.surges[persisted["event_id"]] = persisted
                 store.history[(market, pair)] = [archived_candle(0, 10, closed=True),
                                                 archived_candle(300_000, 20, closed=True)]
-                collector = MarketCollector(config, store, VolumeSurgeDetector(window_size=2))
+                collector = MarketCollector(config, store, VolumeSurgeDetector(window_size=2),
+                                            baseline_fetcher=offline_baseline)
                 await collector.seed_surge_detector()
                 await collector.receive(kline())
                 expected_kinds = ["kline", "price_candidate"] if market == "futures" else ["kline"]
@@ -357,7 +366,8 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
         store.history[("spot", "BTC/USDT")] = [
             archived_candle(0, 10, closed=True), archived_candle(300_000, 10, closed=True),
         ]
-        collector = MarketCollector(config, store, VolumeSurgeDetector(window_size=2))
+        collector = MarketCollector(config, store, VolumeSurgeDetector(window_size=2),
+                                    baseline_fetcher=offline_baseline)
         await collector.seed_surge_detector()
         await collector.receive(kline())
         events = self.pending_events(collector)
@@ -404,7 +414,8 @@ class CollectorSurgeTests(unittest.IsolatedAsyncioTestCase):
 
         self.store.fail_surge = False
         restarted = MarketCollector(self.config, self.store,
-                                    VolumeSurgeDetector(window_size=2))
+                                    VolumeSurgeDetector(window_size=2),
+                                    baseline_fetcher=offline_baseline)
         await self.flush_all(restarted)
         observation = next(event["row"] for event in original
                            if event["kind"] == "orderflow_surge")

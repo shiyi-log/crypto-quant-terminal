@@ -1,14 +1,14 @@
 {
-  "cash_equity": 49973.37580582115,
+  "cash_equity": 49887.30865357749,
   "initial_equity": 50000.0,
-  "last_equity": 49915.198521821156,
-  "last_timestamp": 1793750406761,
+  "last_equity": 54817.1030618298,
+  "last_timestamp": 1794700806724,
   "positions": {
     "1792886405422-1795766400000-80000.0": {
       "entry_premium_usd": 719.1369755000001,
       "entry_ts": 1792886405422,
       "expiry_ts": 1795766400000,
-      "last_mark_premium_usd": 726.409136,
+      "last_mark_premium_usd": 226.15753467476935,
       "position_id": "1792886405422-1795766400000-80000.0",
       "quantity_per_leg": 0.1
     },
@@ -16,7 +16,7 @@
       "entry_premium_usd": 719.1369755000001,
       "entry_ts": 1792972808214,
       "expiry_ts": 1795766400000,
-      "last_mark_premium_usd": 726.409136,
+      "last_mark_premium_usd": 226.15753467476935,
       "position_id": "1792972808214-1795766400000-80000.0",
       "quantity_per_leg": 0.1
     },
@@ -24,7 +24,7 @@
       "entry_premium_usd": 719.1369755000001,
       "entry_ts": 1793059206928,
       "expiry_ts": 1795766400000,
-      "last_mark_premium_usd": 726.409136,
+      "last_mark_premium_usd": 226.15753467476935,
       "position_id": "1793059206928-1795766400000-80000.0",
       "quantity_per_leg": 0.1
     },
@@ -32,7 +32,7 @@
       "entry_premium_usd": 719.1369755000001,
       "entry_ts": 1793318406131,
       "expiry_ts": 1795766400000,
-      "last_mark_premium_usd": 726.409136,
+      "last_mark_premium_usd": 226.15753467476935,
       "position_id": "1793318406131-1795766400000-80000.0",
       "quantity_per_leg": 0.1
     },
@@ -40,7 +40,7 @@
       "entry_premium_usd": 719.1369755000001,
       "entry_ts": 1793404805873,
       "expiry_ts": 1795766400000,
-      "last_mark_premium_usd": 726.409136,
+      "last_mark_premium_usd": 226.15753467476935,
       "position_id": "1793404805873-1795766400000-80000.0",
       "quantity_per_leg": 0.1
     },
@@ -48,7 +48,7 @@
       "entry_premium_usd": 719.1369755000001,
       "entry_ts": 1793491206725,
       "expiry_ts": 1795766400000,
-      "last_mark_premium_usd": 726.409136,
+      "last_mark_premium_usd": 226.15753467476935,
       "position_id": "1793491206725-1795766400000-80000.0",
       "quantity_per_leg": 0.1
     },
@@ -56,7 +56,7 @@
       "entry_premium_usd": 719.1369755000001,
       "entry_ts": 1793577607699,
       "expiry_ts": 1795766400000,
-      "last_mark_premium_usd": 726.409136,
+      "last_mark_premium_usd": 226.15753467476935,
       "position_id": "1793577607699-1795766400000-80000.0",
       "quantity_per_leg": 0.1
     },
@@ -64,7 +64,7 @@
       "entry_premium_usd": 719.1369755000001,
       "entry_ts": 1793664006521,
       "expiry_ts": 1795766400000,
-      "last_mark_premium_usd": 726.409136,
+      "last_mark_premium_usd": 226.15753467476935,
       "position_id": "1793664006521-1795766400000-80000.0",
       "quantity_per_leg": 0.1
     },
@@ -72,8 +72,16 @@
       "entry_premium_usd": 719.1369755000001,
       "entry_ts": 1793750406761,
       "expiry_ts": 1795766400000,
-      "last_mark_premium_usd": 719.1369755000001,
+      "last_mark_premium_usd": 226.15753467476935,
       "position_id": "1793750406761-1795766400000-80000.0",
+      "quantity_per_leg": 0.1
+    },
+    "1793923207411-1795766400000-80000.0": {
+      "entry_premium_usd": 719.1369755000001,
+      "entry_ts": 1793923207411,
+      "expiry_ts": 1795766400000,
+      "last_mark_premium_usd": 226.15753467476935,
+      "position_id": "1793923207411-1795766400000-80000.0",
       "quantity_per_leg": 0.1
     }
   }

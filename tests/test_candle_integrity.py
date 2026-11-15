@@ -23,7 +23,7 @@ from tools.check_candle_integrity import (
 
 def row(timestamp: int, *, complete: bool = True, flow: float = 0.2,
         flow_base: float = -0.8, flow_q: float | None = None) -> dict:
-    extras = {"quote_volume": 100.0, "num_trades": 10,
+    extras = {"closed": True, "quote_volume": 100.0, "num_trades": 10,
               "taker_buy_base": 1.0, "taker_buy_quote": 60.0,
               "flow_imbal": flow, "flow_imbal_base": flow_base}
     if flow_q is not None:

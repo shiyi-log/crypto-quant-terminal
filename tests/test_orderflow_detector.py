@@ -142,12 +142,12 @@ class VolumeSurgeDetectorTests(unittest.TestCase):
     def test_custom_method_version_is_part_of_event_identity(self):
         pair = "BTC/USDT:USDT"
         default = VolumeSurgeDetector(window_size=1)
-        custom = VolumeSurgeDetector(window_size=1, method_version="orderflow-volume-surge-v4")
+        custom = VolumeSurgeDetector(window_size=1, method_version="test-custom-surge-method")
         default.seed(pair, [10])
         custom.seed(pair, [10])
         default_event = default.process(pair, "5m", candle(1, 30))
         custom_event = custom.process(pair, "5m", candle(1, 30))
-        self.assertEqual(custom_event["method_version"], "orderflow-volume-surge-v4")
+        self.assertEqual(custom_event["method_version"], "test-custom-surge-method")
         self.assertNotEqual(default_event["event_id"], custom_event["event_id"])
 
     def test_default_288_window_drops_old_history_and_excludes_current_close(self):

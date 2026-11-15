@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import getpass
+import math
 import os
 from pathlib import Path
 import re
@@ -26,8 +27,36 @@ import uuid
 
 from runtime_config import load_environment
 from gate_registry import GateRegistry
+import service_supervision
+from service_logs import start_sink
 
 ROOT = Path(__file__).resolve().parent
+SUPERVISED_SERVICES = ("api", "webserver", "auth", "web", "sync", "market",
+                       "market-trx", "market-spot", "market-live", "integrity", "spot-basis")
+
+
+def run_lifecycle(action: str, selected: list[Service], root: Path = ROOT) -> int:
+    return service_supervision.run_lifecycle(sys.modules[__name__], action, selected, root)
+
+
+def service_snapshot(root: Path = ROOT, selected: list[Service] | None = None) -> list[dict]:
+    return service_supervision.service_snapshot(sys.modules[__name__], root, selected)
+
+
+def supervise_once(selected: list[Service], root: Path = ROOT) -> list[dict]:
+    return service_supervision.supervise_once(sys.modules[__name__], selected, root)
+
+
+def write_supervisor_log(root: Path, message: str, *, max_bytes: int = 10_485_760,
+                         backups: int = 5) -> None:
+    service_supervision.write_supervisor_log(root, message, max_bytes=max_bytes, backups=backups)
+
+
+def positive_interval(value: str) -> float:
+    result = float(value)
+    if result <= 0 or not math.isfinite(result):
+        raise argparse.ArgumentTypeError("interval must be a positive finite number")
+    return result
 
 
 def gate_enabled(root: Path, key: str) -> bool:
@@ -449,10 +478,15 @@ def start_service(spec: Service, root: Path = ROOT) -> bool:
             raise RuntimeError(f"缺少本地交易配置：{config}，请按运维文档创建")
     logs = root / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    with (logs / f"{spec.name}.log").open("ab") as output:
+    _sink, output = start_sink(root, logs / f"{spec.name}.log")
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(root) + os.pathsep + environment.get("PYTHONPATH", "")
+    try:
         child = subprocess.Popen(spec.command, cwd=spec.cwd, stdin=subprocess.DEVNULL,
                                  stdout=output, stderr=subprocess.STDOUT,
-                                 start_new_session=True)
+                                 start_new_session=True, env=environment)
+    finally:
+        output.close()
     pid_file(root, spec).write_text(str(child.pid) + "\n", encoding="utf-8")
     time.sleep(0.4)
     if child.poll() is not None:
@@ -794,7 +828,7 @@ def database_status() -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description="量化终端 Python 运维入口（不管理模型迭代）")
+    result = argparse.ArgumentParser(description="量化终端 Python 运维入口")
     commands = result.add_subparsers(dest="action", required=True)
     for action in ("start", "stop", "restart", "status"):
         command = commands.add_parser(action)
@@ -805,13 +839,23 @@ def parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="仅 strategy-lab：显式启用重点策略 2x2 账户人口",
             )
+    command = commands.add_parser("supervise", help="按持久化期望状态监督服务，尊重人工停止")
+    command.add_argument("services", nargs="*", choices=tuple(services(ROOT)))
+    command.add_argument("--once", action="store_true")
+    command.add_argument("--interval", type=positive_interval, default=60.0)
     commands.add_parser("build", help="类型检查、构建并发布前端")
     commands.add_parser("init-config", help="从公开模板创建随机凭据的本地模拟盘配置")
     command = commands.add_parser("audit", help="后端测试与前端类型检查")
     command.add_argument("--skip-frontend", action="store_true")
     command = commands.add_parser("db", help="查看 PostgreSQL 状态")
     command.add_argument("operation", nargs="?", default="status",
-                         choices=("init", "start", "stop", "status"))
+                         choices=("init", "start", "stop", "status", "backup", "restore"))
+    command.add_argument("--output", type=Path, help="全新备份目录")
+    command.add_argument("--backup", type=Path, help="已验证的备份目录")
+    command.add_argument("--target-dsn-env", help="隔离恢复目标连接的环境变量名")
+    command.add_argument("--container", help="复用现有 PostgreSQL 容器客户端")
+    command = commands.add_parser("storage", help="运行存储清单与预复制（默认预览）")
+    command.add_argument("storage_args", nargs=argparse.REMAINDER)
     commands.add_parser("sync", help="单次同步文件到数据库，额外参数原样传给 data_sync.py")
     commands.add_parser("shot", help="前端截图，额外参数原样传给 shot.py")
     return result
@@ -825,7 +869,7 @@ def main(argv: list[str] | None = None) -> int:
         cli.error("无法识别参数：" + " ".join(extras))
     try:
         if args.action in {"start", "stop", "restart", "status"}:
-            registered = services()
+            registered = services(ROOT)
             selected = [registered[name] for name in (args.services or registered)]
             if getattr(args, "risk_execution_2x2", False):
                 if args.action not in {"start", "restart"}:
@@ -837,14 +881,15 @@ def main(argv: list[str] | None = None) -> int:
                             for spec in selected]
             if args.action == "status":
                 return status(selected)
-            if args.action in {"stop", "restart"}:
-                if not all([stop_service(spec) for spec in reversed(selected)]):
-                    return 1
-            if args.action in {"start", "restart"}:
-                ensure_local_postgres()
-                for spec in selected:
-                    start_service(spec)
-            return 0
+            return run_lifecycle(args.action, selected, ROOT)
+        if args.action == "supervise":
+            registered = services(ROOT)
+            selected = [registered[name] for name in (args.services or SUPERVISED_SERVICES)]
+            while True:
+                records = supervise_once(selected, ROOT)
+                if args.once:
+                    return int(any(item["last_error"] for item in records))
+                time.sleep(args.interval)
         if args.action == "build":
             run_command(["pnpm", "typecheck"], ROOT / "vben/apps/web-antd")
             run_command(["pnpm", "build:antd"], ROOT / "vben")
@@ -855,9 +900,42 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "audit":
             return audit(skip_frontend=args.skip_frontend)
         if args.action == "db":
+            if args.operation in {"backup", "restore"}:
+                from tools.database_backup import backup_database, restore_database
+
+                if args.operation == "backup":
+                    dsn = os.getenv("QUANT_DATABASE_URL", "")
+                    if not dsn:
+                        raise RuntimeError("database_connection_missing")
+                    destination = args.output
+                    if destination is None:
+                        from runtime_config import storage_layout
+                        from tools.storage_migration import validate_storage
+
+                        layout = storage_layout(ROOT)
+                        if layout.external:
+                            validate_storage(layout)
+                        destination = layout.path("database/backups") / (
+                            datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-")
+                            + uuid.uuid4().hex[:8])
+                    receipt = {"manifest": str(backup_database(
+                        dsn, destination, container=args.container))}
+                else:
+                    if not args.backup or not args.target_dsn_env \
+                            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args.target_dsn_env):
+                        raise RuntimeError("restore_requires_backup_and_target_dsn_env")
+                    target = os.getenv(args.target_dsn_env, "")
+                    if not target:
+                        raise RuntimeError("restore_target_connection_missing")
+                    receipt = restore_database(args.backup, target, container=args.container)
+                print(json.dumps(receipt, ensure_ascii=False))
+                return 0
             operations = {"init": postgres_initialize, "start": postgres_start,
                           "stop": postgres_stop, "status": database_status}
             return operations[args.operation]()
+        if args.action == "storage":
+            from tools.storage_migration import main as storage_main
+            return storage_main(args.storage_args)
         if args.action in {"sync", "shot"}:
             file = "data_sync.py" if args.action == "sync" else "shot.py"
             run_command([sys.executable, str(ROOT / file), *extras])

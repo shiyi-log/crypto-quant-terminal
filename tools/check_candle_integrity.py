@@ -29,6 +29,9 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gate_registry import GateRegistry
+from tools.candle_integrity_runtime import (
+    atomic_write_json, inspect_window, load_policies, normalize_policy, read_database_windows,
+)
 
 
 METHOD = "candle_integrity_check_v1"
@@ -154,7 +157,9 @@ def _normalize_dataset(value: dict[str, Any], index: int) -> dict[str, Any]:
         if "volume" in row:
             normalized_row["volume"] = row["volume"]
         normalized.append(normalized_row)
-    return {**identity, "rows": normalized}
+    metadata = {name: value[name] for name in ("check_window", "read_error",
+                "read_started_at_utc", "read_finished_at_utc") if name in value}
+    return {**identity, **metadata, "policy": normalize_policy(value), "rows": normalized}
 
 
 def normalize_snapshot(payload: Any) -> list[dict[str, Any]]:
@@ -205,6 +210,14 @@ def inspect_dataset(
         raise ValueError("max_age_bars must be non-negative")
     if as_of_ms is not None and (isinstance(as_of_ms, bool) or as_of_ms < 0):
         raise ValueError("as_of_ms must be non-negative")
+    policy = dataset["policy"]
+    if policy.get("required_fields") is not None:
+        required_fields = tuple(policy["required_fields"])
+    elif dataset["candle_type"] in {"mark", "mark_ohlc", "index", "premiumIndex"}:
+        required_fields = ()
+        formula_check = False
+    if policy["mode"] == "active":
+        max_age_bars = policy.get("max_age_bars", max_age_bars)
     rows = dataset["rows"]
     timestamps = [row["timestamp"] for row in rows]
     counts = Counter(timestamps)
@@ -212,6 +225,11 @@ def inspect_dataset(
     duplicates = sum(count - 1 for count in counts.values() if count > 1)
     result: dict[str, Any] = {
         **{name: dataset[name] for name in IDENTITY_FIELDS},
+        "policy": policy,
+        **{name: dataset[name] for name in ("check_window", "read_error",
+          "read_started_at_utc", "read_finished_at_utc") if name in dataset},
+        "latest_observed_timestamp": unique_timestamps[-1] if unique_timestamps else None,
+        "latest_final_closed_timestamp": None,
         "row_count": len(rows),
         "first_timestamp": unique_timestamps[0] if unique_timestamps else None,
         "last_timestamp": unique_timestamps[-1] if unique_timestamps else None,
@@ -228,39 +246,45 @@ def inspect_dataset(
         interval = timeframe_milliseconds(dataset["timeframe"])
         result["expected_interval_ms"] = interval
         result["gaps"], result["gap_count"] = _gap_records(unique_timestamps, interval)
+        if any(timestamp % interval for timestamp in timestamps):
+            result["errors"].append("timestamp_misaligned")
         if result["gap_count"]:
             result["errors"].append("timestamp_gaps")
-        if max_age_bars is not None and unique_timestamps:
-            observed_at = (as_of_ms if as_of_ms is not None
-                           else int(datetime.now(timezone.utc).timestamp() * 1000))
-            if observed_at < 0:
-                raise ValueError("as_of_ms must be non-negative")
-            tail_age_ms = max(0, observed_at - (unique_timestamps[-1] + interval))
+        observed_at = (as_of_ms if as_of_ms is not None
+                       else int(datetime.now(timezone.utc).timestamp() * 1000))
+        final_timestamps = [row["timestamp"] for row in rows
+                            if row["extras"].get("closed") is True
+                            and row["timestamp"] % interval == 0
+                            and row["timestamp"] + interval <= observed_at]
+        final_timestamp = max(final_timestamps) if final_timestamps else None
+        result["latest_final_closed_timestamp"] = final_timestamp
+        if dataset.get("check_window") and not dataset.get("read_error"):
+            coverage = inspect_window(rows, dataset["check_window"], interval=interval,
+                                      as_of_ms=observed_at)
+            if coverage is not None:
+                result["window_coverage"] = coverage
+                if coverage["missing_closed_rows"]:
+                    result["errors"].append("window_coverage_missing")
+        if policy["mode"] == "frozen":
+            result["tail"] = {"status": "not_applicable_frozen", "passes": None}
+        elif max_age_bars is not None:
+            end = final_timestamp + interval if final_timestamp is not None else None
+            age = max(0, observed_at - end) if end is not None else None
             result["tail"] = {
-                "as_of_ms": observed_at,
-                "last_closed_end_ms": unique_timestamps[-1] + interval,
-                "age_ms": tail_age_ms,
-                "age_bars": tail_age_ms / interval,
+                "as_of_ms": observed_at, "last_closed_end_ms": end,
+                "age_ms": age, "age_bars": age / interval if age is not None else None,
                 "max_age_bars": max_age_bars,
-                "passes": tail_age_ms <= max_age_bars * interval,
+                "passes": age is not None and age <= max_age_bars * interval,
             }
             if not result["tail"]["passes"]:
-                result["errors"].append("stale_tail")
-        elif max_age_bars is not None:
-            result["tail"] = {
-                "as_of_ms": as_of_ms,
-                "last_closed_end_ms": None,
-                "age_ms": None,
-                "age_bars": None,
-                "max_age_bars": max_age_bars,
-                "passes": False,
-            }
-            # Empty datasets already have a more specific error.
-            if "empty_dataset" not in result["errors"]:
                 result["errors"].append("stale_tail")
     except ValueError:
         result["expected_interval_ms"] = None
         result["errors"].append("unsupported_timeframe")
+    if dataset.get("read_error"):
+        result["errors"] = ["dataset_read_failed"]
+        result["ok"] = False
+        return result
     if duplicates:
         result["errors"].append("duplicate_timestamps")
     total = len(rows)
@@ -524,6 +548,9 @@ def inspect_snapshot(
                    "max_age_bars": max_age_bars, "as_of_ms": as_of_ms,
                    "formula_check": formula_check},
         "dataset_count": len(reports),
+        "failed_dataset_count": sum(bool(item.get("read_error")) for item in reports),
+        "successful_dataset_count": sum(not item.get("read_error") for item in reports),
+        "snapshot_scope": payload.get("snapshot_scope", "offline_snapshot") if isinstance(payload, dict) else "offline_snapshot",
         "ok": errors == 0,
         "error_count": errors,
         "errors": snapshot_errors,
@@ -532,50 +559,13 @@ def inspect_snapshot(
 
 
 def read_database_snapshot(*, dsn: str, schema: str, pairs: list[str] | None = None,
-                           timeframes: list[str] | None = None) -> dict[str, Any]:
-    """Read candles without DataStore.initialize (which can run migrations)."""
-    import psycopg
-    from psycopg import sql
-    from psycopg.rows import dict_row
-
-    conditions = ["exchange='binance'", "market='futures'"]
-    params: list[Any] = []
-    if pairs:
-        conditions.append("pair = ANY(%s)")
-        params.append(pairs)
-    if timeframes:
-        conditions.append("timeframe = ANY(%s)")
-        params.append(timeframes)
-    query = ("SELECT exchange,market,pair,timeframe,candle_type,timestamp,volume,extras "
-             "FROM candles WHERE " + " AND ".join(conditions) + " "
-             "ORDER BY exchange,market,pair,timeframe,candle_type,timestamp")
-    datasets: dict[tuple[str, ...], dict[str, Any]] = {}
-    with psycopg.connect(dsn, row_factory=dict_row, connect_timeout=10) as conn:
-        with conn.transaction():
-            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-            conn.execute(sql.SQL("SET LOCAL search_path TO {}, pg_catalog").format(sql.Identifier(schema)))
-            conn.execute("SET LOCAL statement_timeout TO '120s'")
-            for row in conn.execute(query, params):
-                identity = tuple(row[name] for name in IDENTITY_FIELDS)
-                key = identity
-                if key not in datasets:
-                    datasets[key] = {name: row[name] for name in IDENTITY_FIELDS} | {"rows": []}
-                datasets[key]["rows"].append({
-                    "timestamp": row["timestamp"],
-                    "volume": row["volume"],
-                    "extras": row["extras"] or {},
-                })
-    # A requested dataset with no rows is still an integrity failure.  Keep it
-    # in the snapshot so the report cannot confuse "absent" with "complete".
-    if pairs and timeframes:
-        for pair in pairs:
-            for timeframe in timeframes:
-                identity = ("binance", "futures", pair, timeframe, "futures")
-                datasets.setdefault(identity, {
-                    "exchange": identity[0], "market": identity[1], "pair": identity[2],
-                    "timeframe": identity[3], "candle_type": identity[4], "rows": [],
-                })
-    return {"datasets": list(datasets.values())}
+                           timeframes: list[str] | None = None, window_bars: int | None = 750,
+                           as_of_ms: int | None = None, timeout_seconds: float = 10,
+                           policies: dict | None = None) -> dict[str, Any]:
+    """Read indexed windows without initialization, repair or candle writes."""
+    return read_database_windows(dsn=dsn, schema=schema, pairs=pairs, timeframes=timeframes,
+                                 window_bars=window_bars, as_of_ms=as_of_ms,
+                                 timeout_seconds=timeout_seconds, policies=policies)
 
 
 def persist_report(*, dsn: str, schema: str, key: str, report: dict[str, Any]) -> None:
@@ -591,11 +581,7 @@ def persist_report(*, dsn: str, schema: str, key: str, report: dict[str, Any]) -
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump(_json_safe(payload), handle, ensure_ascii=False, allow_nan=False, indent=2)
-        handle.write("\n")
+    atomic_write_json(path, _json_safe(payload))
 
 
 def compact_status(report: dict[str, Any], *, cycles: int, interval: float,
@@ -612,6 +598,9 @@ def compact_status(report: dict[str, Any], *, cycles: int, interval: float,
             "tail_passes": tail.get("passes"),
             "errors": list(dataset.get("errors") or []),
             "flow_formula_status": (dataset.get("flow_formula") or {}).get("status"),
+            "policy": dataset.get("policy"), "check_window": dataset.get("check_window"),
+            "latest_observed_timestamp": dataset.get("latest_observed_timestamp"),
+            "latest_final_closed_timestamp": dataset.get("latest_final_closed_timestamp"),
         })
     return {
         "method": METHOD,
@@ -622,6 +611,11 @@ def compact_status(report: dict[str, Any], *, cycles: int, interval: float,
         "error_count": int(report.get("error_count") or 0),
         "dataset_count": int(report.get("dataset_count") or 0),
         "last_error": last_error,
+        "started_at_utc": report.get("started_at_utc"),
+        "finished_at_utc": report.get("finished_at_utc"),
+        "last_success_at_utc": report.get("last_success_at_utc"),
+        "failed_dataset_count": report.get("failed_dataset_count", 0),
+        "successful_dataset_count": report.get("successful_dataset_count", 0),
         "datasets": datasets,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
     }
@@ -631,13 +625,21 @@ def audit_once(args: argparse.Namespace, *, dsn: str) -> dict[str, Any]:
     """Run one audit using already-parsed arguments."""
     require_integrity_monitor_gate()
     required = tuple(args.required_fields or DEFAULT_REQUIRED_FIELDS)
+    policies = load_policies(getattr(args, "dataset_policy", None))
     if args.input:
         payload = json.loads(args.input.read_text(encoding="utf-8"))
     else:
         if not dsn:
             raise ValueError("QUANT_DATABASE_URL is not configured")
         payload = read_database_snapshot(dsn=dsn, schema=args.schema, pairs=args.pairs,
-                                         timeframes=args.timeframes)
+                                         timeframes=args.timeframes,
+                                         window_bars=None if getattr(args, "full_history", False) else getattr(args, "window_bars", 750),
+                                         as_of_ms=args.as_of_ms,
+                                         timeout_seconds=getattr(args, "query_timeout", 10), policies=policies)
+    for dataset in payload.get("datasets", []) if isinstance(payload, dict) else payload:
+        identity = tuple(dataset.get(name) for name in IDENTITY_FIELDS)
+        if identity in policies:
+            dataset["policy"] = policies[identity]
     rest_fetcher = (lambda pair, timeframe: fetch_rest_klines(
         pair, timeframe, limit=args.rest_limit,
     )) if args.rest else None
@@ -650,7 +652,7 @@ def audit_once(args: argparse.Namespace, *, dsn: str) -> dict[str, Any]:
         as_of_ms=args.as_of_ms,
         formula_check=not args.no_formula_check,
     )
-    if args.output:
+    if args.output and not getattr(args, "watch", False):
         _write_json(args.output, report)
     if args.persist:
         if not dsn:
@@ -668,18 +670,46 @@ def run_watch(args: argparse.Namespace, *, dsn: str, cycles: int | None = None,
         raise ValueError("--interval must be positive")
     audit = audit or (lambda: audit_once(args, dsn=dsn))
     completed = 0
+    last_success = None
+    if args.status_document and args.status_document.exists():
+        with suppress(OSError, ValueError):
+            previous = json.loads(args.status_document.read_text(encoding="utf-8"))
+            last_success = previous.get("last_success_at_utc")
     while cycles is None or completed < cycles:
         last_error = None
+        started = datetime.now(timezone.utc).isoformat()
         try:
             report = audit()
         except Exception as exc:  # a failed cycle must stay visible, not silent
             last_error = f"{type(exc).__name__}"
-            report = {"ok": False, "error_count": 1, "dataset_count": 0, "datasets": []}
+            report = {"ok": False, "error_count": 1, "dataset_count": 0, "datasets": [],
+                      "errors": ["audit_failed"], "last_error": last_error}
+        candidate_success = report.get("generated_at_utc") or datetime.now(timezone.utc).isoformat()
+        report.update(started_at_utc=started, finished_at_utc=datetime.now(timezone.utc).isoformat(),
+                      last_success_at_utc=last_success)
+        if getattr(args, "output", None):
+            try:
+                _write_json(args.output, report)
+            except (OSError, ValueError, TypeError):
+                last_error = "report_publication_failed"
+                report["ok"] = False
+                report["last_error"] = last_error
+                report["error_count"] = int(report.get("error_count") or 0) + 1
+                report.setdefault("errors", []).append(last_error)
+        if report.get("ok"):
+            last_success = candidate_success
+            report["last_success_at_utc"] = last_success
         completed += 1
         status = compact_status(report, cycles=completed, interval=args.interval,
                                 last_error=last_error)
         if args.status_document:
-            _write_json(args.status_document, status)
+            try:
+                _write_json(args.status_document, status)
+            except (OSError, ValueError, TypeError):
+                # stdout remains the independent structured heartbeat if the
+                # status disk is unavailable. Do not abandon future cycles.
+                status.update(ok=False, last_error="status_publication_failed")
+                status["error_count"] += 1
         print(json.dumps(status, ensure_ascii=False), flush=True)
         if cycles is not None and completed >= cycles:
             break
@@ -699,6 +729,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--schema", default="quant")
     parser.add_argument("--pair", action="append", dest="pairs")
     parser.add_argument("--timeframe", action="append", dest="timeframes")
+    parser.add_argument("--window-bars", type=int, default=750, help="recent database audit window per dataset")
+    parser.add_argument("--full-history", action="store_true", help="explicit exhaustive historical audit")
+    parser.add_argument("--query-timeout", type=float, default=10, help="per-dataset PostgreSQL timeout seconds")
+    parser.add_argument("--dataset-policy", type=Path, help="explicit dataset roles, sources and requirements")
     parser.add_argument("--required-field", action="append", dest="required_fields",
                         help="extras field required on every row; may be repeated")
     parser.add_argument("--min-coverage", type=float, default=1.0)
@@ -724,6 +758,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="stop after this many cycles (testing and one-shot batches)")
     args = parser.parse_args(argv)
     try:
+        if args.window_bars < 1 or args.query_timeout <= 0:
+            raise ValueError("window bars and query timeout must be positive")
         if not 0 <= args.min_coverage <= 1:
             raise ValueError("--min-coverage must be between 0 and 1")
         if args.max_age_bars is not None and args.max_age_bars < 0:

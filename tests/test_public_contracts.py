@@ -11,6 +11,8 @@ import urllib.parse
 import unittest
 from unittest.mock import Mock, patch
 
+from orderflow_detector import METHOD_VERSION as SURGE_METHOD_VERSION
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -241,6 +243,7 @@ class OrderflowSurgePublicContractTests(unittest.TestCase):
     def test_returns_revision_rows_for_btc_and_preserves_unknown_status(self):
         item = {
             "event_id": "volume-surge:test",
+            "method_version": SURGE_METHOD_VERSION,
             "pair": "BTC/USDT:USDT",
             "market": "futures",
             "timeframe": "5m",
@@ -264,14 +267,15 @@ class OrderflowSurgePublicContractTests(unittest.TestCase):
         store.read_orderflow_surges.assert_called_once_with(
             market="futures", pair="BTC/USDT:USDT", timeframe="5m",
             status="unknown", limit=25, include_revisions=False,
+            method_version=SURGE_METHOD_VERSION,
         )
 
     def test_supports_eth_and_filters_time_bounds(self):
         store = Mock()
         store.read_orderflow_surges.return_value = [
-            {"event_id": "old", "timestamp": 99},
-            {"event_id": "new", "timestamp": 100},
-            {"event_id": "future", "timestamp": 101},
+            {"event_id": "old", "timestamp": 99, "method_version": SURGE_METHOD_VERSION},
+            {"event_id": "new", "timestamp": 100, "method_version": SURGE_METHOD_VERSION},
+            {"event_id": "future", "timestamp": 101, "method_version": SURGE_METHOD_VERSION},
         ]
         (code, payload), _handler, _store = self._get(
             "/api/locals/orderflow/surges?pair=ETH%2FUSDT%3AUSDT&start=100&end=100",
@@ -282,6 +286,7 @@ class OrderflowSurgePublicContractTests(unittest.TestCase):
         store.read_orderflow_surges.assert_called_once_with(
             market="futures", pair="ETH/USDT:USDT", timeframe="5m",
             status=None, limit=100, include_revisions=False, start=100, end=100,
+            method_version=SURGE_METHOD_VERSION,
         )
 
     def test_duplicate_query_parameter_is_rejected(self):

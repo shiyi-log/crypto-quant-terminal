@@ -106,6 +106,7 @@ class TrxLifecycleTests(unittest.TestCase):
             with patch("manage.process_commands", return_value=commands), \
                  patch("manage.process_cwd", return_value=root), \
                  patch("manage.subprocess.Popen", return_value=child) as spawn, \
+                 patch("manage.start_sink", return_value=(MagicMock(), MagicMock())), \
                  patch("manage.time.sleep"), patch.dict("os.environ", {"QUANT_STREAM_ENABLED": "true"}):
                 self.assertTrue(manage.start_service(spec, root))
             self.assertEqual(spawn.call_args.args[0], spec.command)
@@ -163,7 +164,9 @@ class TrxLifecycleTests(unittest.TestCase):
                  patch("manage.load_environment"), patch("manage.ensure_local_postgres"), \
                  patch("manage.start_service", return_value=True) as start, \
                  patch("manage.stop_service", return_value=True) as stop, \
-                 patch("manage.status", return_value=0) as status:
+                patch("manage.status", return_value=0) as status, \
+                tempfile.TemporaryDirectory() as temporary, \
+                patch("manage.ROOT", Path(temporary)):
                 self.assertEqual(manage.main([action]), 0)
                 if action in {"start", "restart"}:
                     self.assertIn("market-trx", [call.args[0].name for call in start.call_args_list])

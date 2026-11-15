@@ -246,7 +246,7 @@ class OrderflowStorageIntegrationTests(unittest.TestCase):
         self.store.append_orderflow_surge(event)
         for change in (
             {"pair": "ETH/USDT:USDT"},
-            {"method_version": "orderflow-volume-surge-v4"},
+            {"method_version": "test-distinct-surge-method"},
             {"data_fingerprint": "changed-input"},
             {"observation": {**event["observation"], "quote_volume": 999.0}},
         ):

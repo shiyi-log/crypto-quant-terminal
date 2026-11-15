@@ -549,6 +549,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._local_research()
         if self.path.startswith("/api/locals/ops"):
             return self._local_ops()
+        if orderflow_path == "/api/locals/runtime-health":
+            return self._local_runtime_health()
+        if (orderflow_path == "/api/locals/iterations"
+                or orderflow_path.startswith("/api/locals/iterations/")):
+            return self._local_iterations()
         if self.path.startswith("/api/locals/iteration"):
             return self._local_iteration()
         if self.path.startswith("/api/locals/auto_iterate"):
@@ -1881,6 +1886,27 @@ class Handler(BaseHTTPRequestHandler):
     def _local_iteration(self):
         return self._local_json("iteration_summary.json")
 
+    def _local_iterations(self):
+        """新迭代运行视图，保留旧 iteration_summary 接口。"""
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+        from iterations_api import iterations_payload
+
+        parsed = urllib.parse.urlsplit(self.path)
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        try:
+            if set(query) - {"limit"} or any(len(values) != 1 for values in query.values()):
+                raise ValueError("invalid query")
+            limit = int(query.get("limit", ["50"])[0])
+            prefix = "/api/locals/iterations/"
+            run_id = urllib.parse.unquote(parsed.path[len(prefix):]) if parsed.path.startswith(prefix) else None
+            payload = iterations_payload(get_store(), run_id=run_id, limit=limit)
+            return self._send(200, payload)
+        except (ValueError, TypeError):
+            return self._send(400, {"detail": "迭代运行参数无效"})
+        except KeyError:
+            return self._send(404, {"detail": "迭代运行不存在"})
+
     def _local_ml(self):
         """深度学习迭代状态汇总
 
@@ -2081,24 +2107,34 @@ class Handler(BaseHTTPRequestHandler):
         st["recent"] = [{k: r.get(k) for k in keep} for r in rows[-8:]][::-1]
         return st
 
-    def _local_services(self):
-        """
-        整个程序的运行状况（供「总览」页展示）
+    def _local_runtime_health(self):
+        """Read each operational source independently, including during DB failure."""
+        if not verify_token(self._bearer()):
+            return self._send(401, {"detail": "未登录或登录已过期"})
+        from pathlib import Path
+        from runtime_health import build_runtime_health
 
-        与 start.sh status 同源：有端口的按端口探活，无常驻端口的按进程名匹配。
-        再附带各服务的关键状态文件，让总览一眼看出「谁在跑、跑到哪」。
-        """
+        try:
+            with get_store()._connection() as conn:
+                row = conn.execute(
+                    "SELECT payload FROM store_metadata WHERE key = 'sync_state'"
+                ).fetchone()
+            sync = row["payload"] if row else None
+        except (OSError, ValueError, RuntimeError, psycopg.Error, PoolTimeout):
+            sync = {"error_code": "sync_unavailable"}
+        try:
+            archive = _kline_archive.status
+        except (OSError, ValueError, RuntimeError):
+            archive = {"error": True, "closed": False, "pending_rows": 0}
+        return self._send(200, build_runtime_health(Path(ROOT), sync=sync, archive=archive))
+
+    def _local_services(self):
+        """Report owned processes and persisted operator intent from the manager."""
         if not verify_token(self._bearer()):
             return self._send(401, {"detail": "未登录或登录已过期"})
         import subprocess
-
-        def port_pid(port):
-            try:
-                out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
-                                     capture_output=True, text=True, timeout=5)
-                return out.stdout.strip().split("\n")[0] or None
-            except Exception:
-                return None
+        from pathlib import Path
+        from manage import service_snapshot
 
         def proc_pid(pat):
             try:
@@ -2111,19 +2147,14 @@ class Handler(BaseHTTPRequestHandler):
         def read_json(name):
             return get_store().get_document(name)
 
-        # 端口服务
-        ports = [(8888, "前端 Vben", "web"), (8890, "认证服务", "auth"),
-                 (8889, "Freqtrade", "freqtrade"), (8891, "研究服务", "research_api")]
-        out = []
-        for port, name, key in ports:
-            pid = port_pid(port)
-            out.append({"key": key, "name": name, "port": port,
-                        "running": bool(pid), "pid": pid})
+        aliases = {"api": "freqtrade", "webserver": "research_api"}
+        out = [dict(item, key=aliases.get(item["key"], item["key"]))
+               for item in service_snapshot(Path(ROOT))]
 
         # 进程服务
         procs = [
             ("monitor.py --daemon", "运维监控", "monitor", None),
-            ("auto_iterate.py --daemon", "自动迭代", "auto_iterate", "auto_iterate_status.json"),
+            ("auto_iteration.py --daemon", "自动迭代", "auto_iterate", "auto_iteration_status.json"),
             ("refresh_research.py --daemon", "研究刷新", "refresh_research", "research_refresh.json"),
             ("auto_research_daemon.py", "模型迭代", "auto_research", "auto_research_daemon.json"),
         ]

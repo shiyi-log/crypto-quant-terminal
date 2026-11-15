@@ -37,6 +37,7 @@ import {
 } from '#/api/freqtrade';
 
 import ResearchLedger from './ResearchLedger.vue';
+import IterationRuns from './IterationRuns.vue';
 
 const it = ref<any>(null);
 const ml = ref<any>(null);
@@ -391,6 +392,7 @@ onUnmounted(() => {
 
 <template>
   <div class="p-4">
+    <IterationRuns />
     <ResearchLedger />
     <div class="mb-3 flex justify-end">
       <Button :loading="refreshing" size="small" @click="load">刷新迭代数据</Button>

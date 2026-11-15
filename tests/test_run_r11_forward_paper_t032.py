@@ -103,7 +103,15 @@ class T032DualTrackTests(unittest.TestCase):
             out = Path(directory)
             gate = {"entry_dvol_1h": 0.37, "trailing_252d_median": 0.42, "decision": "skipped_low_iv", "history_rows": 300}
             self.run_with_gate(out, gate, 1_792_886_400_000)
-            report = self.run_with_gate(out, gate, 1_792_886_400_000 + 3 * DAY_MS)
+            # The next snapshot selects a later expiry. Value the existing
+            # position with its own synthetic quote rather than query an exchange.
+            with patch("tools.run_r11_forward_paper_t027.fetch_expiry_premiums",
+                       return_value=(710.0, 720.0)) as expiry_quotes:
+                report = self.run_with_gate(out, gate, 1_792_886_400_000 + 3 * DAY_MS)
+            expiry_quotes.assert_called_once_with(
+                1_792_886_400_000 + 30 * DAY_MS, 80_000.0,
+                1_792_886_400_000 + 3 * DAY_MS, out, 80_000.0,
+            )
             gaps = self.events(out / "forward_gaps.jsonl")
             status = (out / "FORWARD_STATUS.md").read_text()
         self.assertEqual(len(gaps), 1)

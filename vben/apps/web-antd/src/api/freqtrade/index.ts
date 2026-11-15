@@ -328,6 +328,58 @@ export async function getAutoIterate(): Promise<any> {
   return unwrap(await ftClient.get('/locals/auto_iterate'));
 }
 
+/** 每轮运行分别记录执行结果与研究裁定；未知指标保留 null。 */
+export interface IterationRun {
+  run_id: string;
+  execution_status?: string;
+  research_verdict?: string;
+  status?: string;
+  strategy?: string;
+  identifier?: string;
+  model?: string;
+  timerange?: string;
+  version_id?: string;
+  started_at?: string;
+  updated_at?: string;
+  completed_at?: string;
+  finished_at?: string;
+  timestamp?: string;
+  error_code?: string | null;
+  result_source?: string | null;
+  progress?: { percent?: number | null; phase?: string; [key: string]: unknown };
+  metrics?: Record<string, unknown>;
+  gate?: {
+    passed?: boolean;
+    valid?: boolean;
+    values?: Record<string, unknown>;
+    reasons?: string[];
+    criteria?: unknown;
+  };
+  evidence?: Record<string, unknown> | null;
+  entry?: {
+    metrics?: Record<string, unknown>;
+    evidence?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+}
+
+export interface IterationRuns {
+  items: IterationRun[];
+  total: number;
+  generated_at?: string;
+}
+
+/** 当前自动迭代入口的运行记录，按 run_id 隔离。 */
+export async function getIterationRuns(limit = 50): Promise<IterationRuns> {
+  return unwrap(await ftClient.get(`/locals/iterations?limit=${limit}`));
+}
+
+export async function getIterationRun(runId: string): Promise<IterationRun> {
+  return unwrap(
+    await ftClient.get(`/locals/iterations/${encodeURIComponent(runId)}`),
+  );
+}
+
 export async function getOps(): Promise<any> {
   return unwrap(await ftClient.get('/locals/ops'));
 }

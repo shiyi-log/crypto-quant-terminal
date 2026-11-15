@@ -93,9 +93,11 @@ class PriceStore:
                 if row.get("outcome", {}).get("direction") in {"up", "down"}
                 and row.get("profile") is None][:limit]
 
-    def read_price_observations(self, pair, start, end):
+    def read_price_observations(self, pair, start, end, *,
+                                method_version=PRICE_SPIKE_METHOD_VERSION):
         return [copy.deepcopy(row) for row in self.observations.get(pair, [])
-                if start <= row["timestamp"] <= end]
+                if start <= row["timestamp"] <= end
+                and row.get("method_version") == method_version]
 
 
 class PriceSpikeMaturityTests(unittest.TestCase):
@@ -186,6 +188,7 @@ class PriceSpikeMaturityTests(unittest.TestCase):
                 continue
             ts = START + offset * BAR_INTERVAL_MS
             ratios.append({"event_id": f"candidate:{ts}", "timestamp": ts,
+                           "method_version": PRICE_SPIKE_METHOD_VERSION,
                            "observation": {"volume_ratio": float(offset + 20)}})
         store.observations[PAIR] = ratios
 
@@ -195,6 +198,7 @@ class PriceSpikeMaturityTests(unittest.TestCase):
         for offset in range(4, PROFILE_RADIUS + 1):
             ts = START + offset * BAR_INTERVAL_MS
             ratios.append({"event_id": f"candidate:{ts}", "timestamp": ts,
+                           "method_version": PRICE_SPIKE_METHOD_VERSION,
                            "observation": {"volume_ratio": float(offset + 20)}})
         appended = mature_price_spike_observations(
             store, now_ms=START + (PROFILE_RADIUS + 1) * BAR_INTERVAL_MS
@@ -215,6 +219,7 @@ class PriceSpikeMaturityTests(unittest.TestCase):
         }
         store.observations[PAIR] = [{
             "timestamp": START + offset * BAR_INTERVAL_MS,
+            "method_version": PRICE_SPIKE_METHOD_VERSION,
             "observation": {"volume_ratio": 2.0},
         } for offset in range(-PROFILE_RADIUS, PROFILE_RADIUS + 1) if offset != -4]
 
@@ -225,6 +230,30 @@ class PriceSpikeMaturityTests(unittest.TestCase):
         profile = store.results[(event["event_id"], "profile")]
         self.assertEqual(profile["status"], "invalid")
         self.assertIn(START - 4 * BAR_INTERVAL_MS, profile["missing_timestamps"])
+        self.assertNotIn(-4, {point["offset"] for point in profile["points"]})
+
+    def test_profile_cannot_fill_missing_ratio_from_another_method_version(self):
+        event = candidate()
+        event["method_version"] = "orderflow-price-spike-close3-v3"
+        store = PriceStore([event], self._future(102, through=PROFILE_RADIUS))
+        store.results[(event["event_id"], "outcome")] = {
+            "status": "matured", "direction": "up",
+        }
+        store.observations[PAIR] = [{
+            "timestamp": START + offset * BAR_INTERVAL_MS,
+            "method_version": ("other-price-method" if offset == -4
+                               else event["method_version"]),
+            "observation": {"volume_ratio": 2.0},
+        } for offset in range(-PROFILE_RADIUS, PROFILE_RADIUS + 1)]
+
+        mature_price_spike_observations(
+            store, now_ms=START + (PROFILE_RADIUS + 1) * BAR_INTERVAL_MS
+        )
+
+        profile = store.results[(event["event_id"], "profile")]
+        self.assertEqual(profile["status"], "invalid")
+        self.assertEqual(profile["method_version"], event["method_version"])
+        self.assertEqual(profile["missing_timestamps"], [START - 4 * BAR_INTERVAL_MS])
         self.assertNotIn(-4, {point["offset"] for point in profile["points"]})
 
 

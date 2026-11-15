@@ -18,9 +18,14 @@ import re
 import subprocess
 import sys
 import time
-import zipfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    from bot import backtest_artifacts as artifacts
+except ModuleNotFoundError:
+    import backtest_artifacts as artifacts
 
 
 def ui_progress_path() -> str:
@@ -41,7 +46,7 @@ def atomic_write(path: str, payload: dict) -> None:
     fd, tmp = tempfile.mkstemp(prefix=".run-progress-", suffix=".tmp", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
+            json.dump(payload, f, ensure_ascii=False, allow_nan=False)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
@@ -67,6 +72,8 @@ def build_backtest_command(
     freqaimodel: str,
     timerange: str,
     strategy_path: str | None = None,
+    output_dir: str | None = None,
+    data_dir: str | None = None,
 ) -> list[str]:
     base_dir = Path(__file__).resolve().parent
     userdir = resolve_user_data_dir(config)
@@ -90,6 +97,10 @@ def build_backtest_command(
         "--timerange",
         timerange,
     ]
+    if output_dir:
+        command.extend(["--backtest-directory", output_dir, "--cache", "none", "--export", "trades"])
+    if data_dir:
+        command.extend(["--datadir", data_dir])
     fee = (config.get("exchange") or {}).get("taker_fee")
     if fee is not None:
         command.extend(["--fee", str(float(fee))])
@@ -99,12 +110,7 @@ def build_backtest_command(
 def parse_result(zip_path: str) -> dict | None:
     """从回测结果 zip 中提取关键绩效指标。"""
     try:
-        with zipfile.ZipFile(zip_path) as z:
-            inner = [n for n in z.namelist() if n.endswith(".json") and "meta" not in n]
-            if not inner:
-                return None
-            data = json.loads(z.read(inner[0]))
-        s = list(data["strategy"].values())[0]
+        strategy_name, s = artifacts.read_stats(Path(zip_path))
         pairs = [
             {
                 "pair": p["key"],
@@ -139,7 +145,7 @@ def parse_result(zip_path: str) -> dict | None:
             equity = []
 
         return {
-            "strategy": list(data["strategy"].keys())[0],
+            "strategy": strategy_name,
             "equity": equity,
             "start": s["backtest_start"],
             "end": s["backtest_end"],
@@ -165,7 +171,7 @@ def parse_result(zip_path: str) -> dict | None:
             "pairs": pairs,
             "exits": exits,
         }
-    except Exception as exc:  # 结果解析失败不应影响主流程
+    except Exception as exc:  # 主流程将解析错误作为执行失败处理
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
@@ -178,31 +184,59 @@ def main() -> int:
     ap.add_argument("--identifier", default=None, help="默认从 config 的 freqai.identifier 读取")
     ap.add_argument("--progress", default=None, help="覆盖共享 FreqUI 进度文件")
     ap.add_argument("--strategy-path", default=None)
+    ap.add_argument("--run-id", default=None, help="不可复用的运行身份")
+    ap.add_argument("--reuse-run", default=None, help="仅复用输入指纹完整匹配的已归档运行")
     args = ap.parse_args()
-
-    with open(args.config, encoding="utf-8") as f:
-        cfg = json.load(f)
-    identifier = args.identifier or cfg.get("freqai", {}).get("identifier", "unknown")
-    n_pairs = len(cfg["exchange"]["pair_whitelist"])
-    user_data_dir = resolve_user_data_dir(cfg)
-    models_dir = os.path.join(user_data_dir, "models", identifier)
-    results_dir = backtest_results_dir(cfg)
-    previous_result_paths = {str(path) for path in results_dir.glob("*.zip")}
 
     progress_file = args.progress or ui_progress_path()
     started = time.time()
-
-    cmd = build_backtest_command(
-        config=cfg,
-        config_path=args.config,
-        strategy=args.strategy,
-        freqaimodel=args.freqaimodel,
-        timerange=args.timerange,
-        strategy_path=args.strategy_path,
-    )
+    run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:12]
+    try:
+        artifacts.safe_component(run_id)
+        cfg = artifacts.merge(artifacts.load_config(Path(args.config).resolve()),
+                              artifacts.environment_config())
+        if cfg.get("freqai_backtest_live_models"):
+            raise ValueError("live_model_backtest_not_supported")
+        identifier = artifacts.safe_component(str(args.identifier or cfg.get("freqai", {}).get("identifier", "unknown")))
+        cfg.setdefault("freqai", {})["identifier"] = identifier
+        user_data_dir = resolve_user_data_dir(cfg)
+        cfg["user_data_dir"] = user_data_dir
+        n_pairs = len(cfg["exchange"]["pair_whitelist"])
+        strategy_path = Path(args.strategy_path or Path(__file__).parent / "user_data/strategies").expanduser().resolve()
+        datadir = Path(cfg.get("datadir") or Path(user_data_dir) / "data" / cfg["exchange"]["name"]).expanduser().resolve()
+        cfg.update({"strategy": args.strategy, "freqaimodel": args.freqaimodel,
+                    "timerange": args.timerange, "strategy_path": str(strategy_path),
+                    "datadir": str(datadir)})
+        run_dir = backtest_results_dir(cfg) / "runs" / run_id
+        run_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
+        os.chmod(run_dir, 0o700)
+        identity, inventory = artifacts.input_identity(
+            cfg, args.strategy, args.freqaimodel, args.timerange, identifier, strategy_path, datadir)
+        effective_identifier = identifier[:64] + "-" + run_id
+        effective_config = artifacts.merge(cfg, {"freqai": {"identifier": effective_identifier}})
+        config_snapshot = run_dir / "config.json"
+        atomic_write(str(config_snapshot), effective_config)
+        atomic_write(str(run_dir / "inputs.json"), inventory)
+        cmd = build_backtest_command(
+            config=effective_config, config_path=str(config_snapshot), strategy=args.strategy,
+            freqaimodel=args.freqaimodel, timerange=args.timerange,
+            strategy_path=str(strategy_path), output_dir=str(run_dir), data_dir=str(datadir),
+        )
+    except Exception as exc:
+        atomic_write(progress_file, {"status": "failed", "execution_status": "failed",
+                     "run_id": run_id, "result": None, "percent": 0,
+                     "error_code": "input_validation_failed", "error": str(exc)})
+        return 2
 
     state = {
         "status": "running",
+        "execution_status": "running",
+        "run_id": run_id,
+        "effective_identifier": effective_identifier,
+        "artifact_dir": str(run_dir),
+        "manifest_path": str(run_dir / "manifest.json"),
+        "evidence": {"manifest": str((run_dir / "manifest.json").relative_to(user_data_dir)),
+                     "inputs": str((run_dir / "inputs.json").relative_to(user_data_dir))},
         "phase": "启动中",
         "strategy": args.strategy,
         "model": args.freqaimodel,
@@ -222,19 +256,34 @@ def main() -> int:
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "recent_log": [],
         "result": None,
+        "training_failures": [],
     }
     atomic_write(progress_file, state)
 
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1, errors="replace",
-    )
+    cached_path, cache_rejection = (artifacts.reuse_result(Path(args.reuse_run).resolve(), identity, run_dir)
+                                   if args.reuse_run else (None, None))
+    state["result_source"] = "cache" if cached_path else "fresh"
+    if cache_rejection:
+        state["cache_rejection"] = cache_rejection
+    proc = None
+    if cached_path is None:
+        child_env = {key: value for key, value in os.environ.items() if not key.startswith("FREQTRADE__")}
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, errors="replace", env=child_env,
+            )
+        except Exception as exc:
+            state.update(status="failed", execution_status="failed", error_code="child_start_failed",
+                         error=str(exc))
+            atomic_write(progress_file, state)
+            return 2
 
     re_timeranges = re.compile(r"Training (\d+) timeranges")
     re_pair = re.compile(r"Training (\S+), (\d+)/(\d+) pairs .*?, (\d+)/(\d+) trains")
     re_done = re.compile(r"Done training (\S+) \(([\d.]+) secs\)")
     re_backtest = re.compile(r"Running backtesting for Strategy")
-    re_simulating = re.compile(r"Backtesting|Simulating|Trade simulation")
+    re_training_failure = re.compile(r"Training (\S+) raised exception (\w+)")
 
     log_tail: list[str] = []
 
@@ -242,6 +291,10 @@ def main() -> int:
         """读取子进程输出（阻塞行读），更新状态。"""
         for raw in proc.stdout:  # type: ignore[union-attr]
             line = raw.rstrip("\n")
+            failure = re_training_failure.search(line)
+            if failure:
+                state["training_failures"].append({"pair": failure.group(1),
+                                                   "exception_type": failure.group(2)})
             log_tail.append(line)
             del log_tail[:-40]
             state["recent_log"] = log_tail[-25:]
@@ -270,7 +323,7 @@ def main() -> int:
                 state["phase"] = "回测撮合"
 
             if state["total"]:
-                state["percent"] = round(min(100.0, state["trained"] / state["total"] * 100), 1)
+                state["percent"] = round(min(99.0, state["trained"] / state["total"] * 100), 1)
                 el = time.time() - started
                 if state["trained"] > 0 and el > 5:
                     rate = state["trained"] / el * 60
@@ -281,51 +334,70 @@ def main() -> int:
             state["updated_at"] = datetime.now(timezone.utc).isoformat()
             atomic_write(progress_file, state)
 
-    pump()
-    rc = proc.wait()
-
-    state["status"] = "done" if rc == 0 else "failed"
-    state["phase"] = "已完成" if rc == 0 else f"失败 (退出码 {rc})"
-    state["trained"] = state.get("total") or state.get("trained")
-    state["percent"] = 100.0 if rc == 0 else state.get("percent", 0)
-    state["eta_seconds"] = 0
+    rc = 0
+    if proc is not None:
+        pump()
+        rc = proc.wait()
     state["elapsed_seconds"] = round(time.time() - started)
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
-    if rc == 0:
-        state["phase"] = "读取结果"
+    state["eta_seconds"] = None
+    try:
+        if rc != 0:
+            raise ValueError("child_exit_nonzero")
+        if state["training_failures"]:
+            raise ValueError("model_training_failed")
+        state["phase"] = "验证并归档结果"
         atomic_write(progress_file, state)
-        results = sorted(
-            [
-                str(path)
-                for path in results_dir.glob("*.zip")
-                if str(path) not in previous_result_paths or os.path.getmtime(path) >= started
-            ],
-            key=os.path.getmtime,
-        )
-        if results:
-            state["result"] = parse_result(results[-1])
-            # 归档到 identifier 目录，便于多模型横向对比
-            try:
-                arch = os.path.join(models_dir, "backtest_result.json")
-                os.makedirs(models_dir, exist_ok=True)
-                with open(arch, "w", encoding="utf-8") as f:
-                    json.dump(
-                        {
-                            "identifier": identifier,
-                            "strategy": args.strategy,
-                            "model": args.freqaimodel,
-                            "timerange": args.timerange,
-                            "elapsed_seconds": state["elapsed_seconds"],
-                            "result": state["result"],
-                        },
-                        f,
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-                print(f"结果已归档: {arch}")
-            except Exception as exc:
-                print(f"结果归档失败: {exc}", file=sys.stderr)
-        state["phase"] = "已完成"
+        current_identity, _ = artifacts.input_identity(
+            cfg, args.strategy, args.freqaimodel, args.timerange, identifier, strategy_path, datadir)
+        if current_identity != identity:
+            raise ValueError("inputs_changed_during_backtest")
+        paths = list(run_dir.glob("*.zip"))
+        if len(paths) != 1:
+            raise ValueError("missing_or_ambiguous_result")
+        result_path = paths[0]
+        _, stats = artifacts.read_stats(result_path, args.strategy, args.timerange)
+        if stats.get("freqaimodel") != args.freqaimodel:
+            raise ValueError("result_model_mismatch")
+        expected_identifier = effective_identifier
+        if cached_path:
+            prior_manifest = json.loads((Path(args.reuse_run) / "manifest.json").read_text())
+            expected_identifier = prior_manifest["effective_identifier"]
+        if stats.get("freqai_identifier") != expected_identifier:
+            raise ValueError("result_identifier_mismatch")
+        state["effective_identifier"] = expected_identifier
+        result = parse_result(str(result_path))
+        if not result or result.get("error"):
+            raise ValueError("invalid_result_statistics")
+        summary = {"run_id": run_id, "identifier": identifier, "strategy": args.strategy,
+                   "model": args.freqaimodel, "timerange": args.timerange,
+                   "elapsed_seconds": state["elapsed_seconds"], "result": result,
+                   "evidence": state["evidence"]}
+        atomic_write(str(run_dir / "result.json"), summary)
+        manifest = {"schema": "quant-backtest-run-v1", "run_id": run_id,
+                    "execution_status": "succeeded", "identity": identity,
+                    "effective_identifier": expected_identifier,
+                    "result_source": state["result_source"],
+                    "cache_source": str(Path(args.reuse_run).resolve()) if cached_path else None,
+                    "result_file": result_path.name, "result_sha256": artifacts.digest(result_path),
+                    "config_sha256": artifacts.digest(config_snapshot),
+                    "inputs_sha256": artifacts.digest(run_dir / "inputs.json")}
+        execution_config = run_dir / "execution_config.json" if cached_path else config_snapshot
+        manifest.update(execution_config_file=execution_config.name,
+                        execution_config_sha256=artifacts.digest(execution_config),
+                        config_role="request" if cached_path else "execution")
+        # 旧接口读取最新摘要；不可变事实保存在各运行目录。
+        atomic_write(str(Path(user_data_dir) / "models" / identifier / "backtest_result.json"), summary)
+        atomic_write(str(run_dir / "manifest.json"), manifest)
+        state.update(status="done", execution_status="succeeded", phase="已完成",
+                     result=result, percent=100.0, eta_seconds=0)
+        state["trained"] = state.get("total") or state.get("trained")
+    except Exception as exc:
+        state.update(status="failed", execution_status="failed", phase="结果验证失败",
+                     result=None, error_code=str(exc), error=str(exc),
+                     percent=min(99.0, state.get("percent", 0)))
+        rc = rc or 2
+    atomic_write(str(run_dir / "progress.json"), state)
     atomic_write(progress_file, state)
 
     print(f"\n进度文件: {progress_file}")

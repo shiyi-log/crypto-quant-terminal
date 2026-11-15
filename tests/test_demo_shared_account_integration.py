@@ -20,6 +20,7 @@ from data_store import DataStore
 from demo_execution_service import DemoExecutionService, DemoRunnerConfig
 from demo_shared_account import SharedDemoAccount
 from demo_store import DemoPairOwnershipError, DemoStore
+from tests.demo_gate_fixtures import demo_gate_registry
 from tests.test_demo_contract_integration import ExchangeStub, NOW, PaperStub
 from tests.test_demo_store import fill, intent, observation
 
@@ -101,6 +102,7 @@ class SharedAccountIntegrationTests(unittest.TestCase):
         with self.data._connection() as conn:
             conn.execute("TRUNCATE demo_fills,demo_orders,demo_positions,demo_account,demo_signal_comparisons")
         self.clock = NOW
+        self.gates = demo_gate_registry(self.root.name)
         self.exchange = MultiExchangeStub()
         self.ledgers = {ns: DemoStore(self.data, ns) for ns in ("s35", "s07")}
         self.shared = SharedDemoAccount(self.ledgers["s35"])
@@ -117,7 +119,8 @@ class SharedAccountIntegrationTests(unittest.TestCase):
         adapter = BinanceDemoAdapter(client=self.exchange, api_key="offline-placeholder-key",
             api_secret="offline-placeholder-secret", allow_trading=True)
         return DemoExecutionService(adapter, self.ledgers[ns], self.papers[ns],
-            DemoRunnerConfig(ns, virtual_account_key=ns, trading_enabled=True), clock_ms=lambda: self.clock)
+            DemoRunnerConfig(ns, virtual_account_key=ns, trading_enabled=True),
+            clock_ms=lambda: self.clock, gate_registry=self.gates)
 
     def start(self):
         for service in self.services.values():

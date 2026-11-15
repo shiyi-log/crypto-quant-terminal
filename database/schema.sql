@@ -107,6 +107,46 @@ CREATE TABLE IF NOT EXISTS research_ledger_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ALTER TABLE research_ledger_events ADD COLUMN IF NOT EXISTS sequence_id BIGSERIAL;
+-- Older ADD COLUMN installations did not add cursor constraints. Preserve every
+-- historical value; invalid NULL/duplicate evidence fails this DDL transaction.
+-- Consult the catalog first so already-upgraded services do not rescan the ledger.
+DO $$
+DECLARE
+    sequence_attribute SMALLINT;
+    sequence_required BOOLEAN;
+BEGIN
+    SELECT attnum, attnotnull INTO sequence_attribute, sequence_required
+    FROM pg_attribute
+    WHERE attrelid = 'research_ledger_events'::regclass
+      AND attname = 'sequence_id' AND NOT attisdropped;
+    IF NOT sequence_required THEN
+        ALTER TABLE research_ledger_events ALTER COLUMN sequence_id SET NOT NULL;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_index
+        WHERE indrelid = 'research_ledger_events'::regclass
+          AND indisunique AND indisvalid AND indnkeyatts = 1
+          AND indkey[0] = sequence_attribute
+          AND indpred IS NULL AND indexprs IS NULL
+    ) THEN
+        CREATE UNIQUE INDEX research_ledger_events_sequence_unique
+            ON research_ledger_events (sequence_id);
+    END IF;
+END $$;
+
+-- A statement trigger also rejects no-row mutations and TRUNCATE. INSERT and
+-- ON CONFLICT DO NOTHING stay valid; corrections are always separate new facts.
+CREATE OR REPLACE FUNCTION research_ledger_immutable_event() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'Research ledger events are immutable; append a new fact instead'
+        USING ERRCODE = '55000';
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS research_ledger_events_immutable ON research_ledger_events;
+CREATE TRIGGER research_ledger_events_immutable
+    BEFORE UPDATE OR DELETE OR TRUNCATE ON research_ledger_events
+    FOR EACH STATEMENT EXECUTE FUNCTION research_ledger_immutable_event();
+ALTER TABLE research_ledger_events ENABLE ALWAYS TRIGGER research_ledger_events_immutable;
 CREATE INDEX IF NOT EXISTS research_ledger_events_type ON research_ledger_events (event_type, created_at);
 CREATE TABLE IF NOT EXISTS research_ledger_sync (
     source_id TEXT PRIMARY KEY,

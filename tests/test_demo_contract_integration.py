@@ -19,6 +19,7 @@ from data_store import DataStore
 from demo_execution_service import DemoExecutionService, DemoRunnerConfig
 from demo_store import DemoStore, binance_fill, binance_order
 from runtime_config import load_environment
+from tests.demo_gate_fixtures import demo_gate_registry
 
 load_environment()
 BTC = "BTC/USDT:USDT"
@@ -201,6 +202,7 @@ class DemoContractIntegrationTests(unittest.TestCase):
 
     def setUp(self):
         self.clock = NOW
+        self.gates = demo_gate_registry(self.root.name)
         self.client, self.paper = ExchangeStub(), PaperStub()
         self.ledger = DemoStore(self.data, "offline-" + uuid.uuid4().hex)
         self.config = DemoRunnerConfig("offline-paper", virtual_account_key=self.ledger.virtual_account_key,
@@ -210,7 +212,8 @@ class DemoContractIntegrationTests(unittest.TestCase):
     def new_service(self):
         adapter = BinanceDemoAdapter(client=self.client, api_key="offline-placeholder-key",
                                      api_secret="offline-placeholder-secret", allow_trading=True)
-        return DemoExecutionService(adapter, self.ledger, self.paper, self.config, clock_ms=lambda: self.clock)
+        return DemoExecutionService(adapter, self.ledger, self.paper, self.config,
+                                    clock_ms=lambda: self.clock, gate_registry=self.gates)
 
     def tick(self, elapsed=1000):
         self.clock += elapsed

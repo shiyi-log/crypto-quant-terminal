@@ -23,6 +23,7 @@ import { Tabs, TabPane } from 'ant-design-vue';
 import LivePage from '#/views/quant/live/index.vue';
 import LegacyInspectionCard from './LegacyInspectionCard.vue';
 import LiquidationEventsCard from './LiquidationEventsCard.vue';
+import RuntimeHealth from './RuntimeHealth.vue';
 /** 合并后的分页(2026-10-09):运维 / 实盘统计 */
 const tab = ref('ops');
 
@@ -77,6 +78,7 @@ onUnmounted(() => clearInterval(timer));
   <div class="p-4">
     <Tabs v-model:activeKey="tab" size="small">
       <TabPane key="ops" tab="运维">
+    <RuntimeHealth />
     <Alert v-if="opsError" class="mb-3" :message="opsError" type="error" show-icon />
     <Alert v-if="inspectionError" class="mb-3" :message="inspectionError" type="warning" show-icon />
     <Spin :spinning="loading">

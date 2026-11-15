@@ -1,27 +1,27 @@
 # R11 Forward Status
 
-- run mode: `real_boundary`
-- forward gap count: `1`
+- run mode: `capture`
+- forward gap count: `3`
 - rejection threshold: annualized return >= `5.7%` after `20` real observations
 
 ## Conditional
 
-- observations: `9 / 20`
+- observations: `13 / 20`
 - decision: `enter`
-- entry IV: `39.74`
-- trailing median: `39.085`
-- equity: `49952.545783258814`; cumulative PnL: `-47.45421674118552` USDT
-- active positions: `6`; cap: `10`; margin: `2880.0` / `480.0` USDT per position; spread: `2.2471892769474198`%
+- entry IV: `39.94`
+- trailing median: `38.894999999999996`
+- equity: `49910.02159517527`; cumulative PnL: `-89.97840482473111` USDT
+- active positions: `8`; cap: `10`; margin: `3840.0` / `480.0` USDT per position; spread: `3.3613431621572305`%
 - annualized / Sharpe / maxDD / CVaR99: pending until 20 real observations
 
 ## Unconditional
 
-- observations: `9 / 20`
+- observations: `15 / 20`
 - decision: `unconditional`
 - entry IV: `unknown`
 - trailing median: `unknown`
-- equity: `49915.198521821156`; cumulative PnL: `-84.80147817884426` USDT
-- active positions: `9`; cap: `10`; margin: `4320.0` / `480.0` USDT per position; spread: `2.2471892769474198`%
+- equity: `54817.1030618298`; cumulative PnL: `4817.103061829803` USDT
+- active positions: `10`; cap: `10`; margin: `4800.0` / `480.0` USDT per position; spread: `3.3613431621572305`%
 - annualized / Sharpe / maxDD / CVaR99: pending until 20 real observations
 
 ## Missed Dates
@@ -29,3 +29,5 @@
 | missed dates | gap days | reason |
 |---|---:|---|
 | 2026-10-28, 2026-10-29 | 2 | watchdog_down |
+| 2026-11-05 | 1 | watchdog_down |
+| 2026-11-08, 2026-11-09 | 2 | watchdog_down |

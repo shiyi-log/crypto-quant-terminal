@@ -20,12 +20,12 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import fcntl
 import json
-import math
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
+import uuid
 from typing import Any, Callable
 
 
@@ -37,6 +37,10 @@ for import_root in (PROJECT_ROOT, BASE):
 
 import model_registry as registry  # noqa: E402
 from gate_registry import GateRegistry  # noqa: E402
+from bot.iteration_evidence import (  # noqa: E402
+    GATE as GATE, append_history as _append_history, build_gate, finish_evaluation, research_verdict,
+    resume_registration, safe_run_id, write_status as _write_status,
+)
 
 
 DEFAULT_CONFIG = BASE / "user_data" / "config_freqai_smoke.json"
@@ -57,17 +61,6 @@ BLOCKED_CONFIG_NAMES = {
     "config_trend_webserver.json",
     "config_dashboard.private.json",
 }
-
-# These are deliberately conservative.  A failed gate remains evidence, but
-# it is never allowed to change the current champion.
-GATE = {
-    "min_trades": 100,
-    "min_profit_pct": 0.0,
-    "max_drawdown_pct": 25.0,
-    "min_profit_factor": 1.05,
-    "min_sharpe": 0.5,
-}
-
 
 class IterationBusy(RuntimeError):
     """Raised when another training iteration already owns the lock."""
@@ -112,26 +105,6 @@ class IterationLock:
         self.release()
 
 
-def _json_dump(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
-    tmp.replace(path)
-
-
-def _write_status(path: Path | None, payload: dict[str, Any]) -> None:
-    if path is not None:
-        _json_dump(path, payload)
-
-
-def _append_history(path: Path | None, payload: dict[str, Any]) -> None:
-    if path is None:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, allow_nan=False) + "\n")
-
-
 def validate_training_config(config_path: str | os.PathLike[str]) -> dict[str, Any]:
     """Validate that a config is a dry-run FreqAI research config."""
 
@@ -154,87 +127,6 @@ def validate_training_config(config_path: str | os.PathLike[str]) -> dict[str, A
         raise ValueError("自动迭代配置的 pair_whitelist 不能为空")
     config["_path"] = str(path)
     return config
-
-
-def _number(metrics: dict[str, Any], *names: str) -> float | None:
-    for name in names:
-        value = metrics.get(name)
-        if value is None:
-            continue
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return None
-        return value
-    return None
-
-
-def _nonfinite_paths(value: Any, path: str = "metrics") -> list[str]:
-    """Find NaN/inf anywhere in an evaluation payload before persistence."""
-
-    bad: list[str] = []
-    if isinstance(value, bool) or value is None:
-        return bad
-    if isinstance(value, (int, float)):
-        if not math.isfinite(float(value)):
-            bad.append(path)
-        return bad
-    if isinstance(value, dict):
-        for key, item in value.items():
-            bad.extend(_nonfinite_paths(item, f"{path}.{key}"))
-        return bad
-    if isinstance(value, (list, tuple)):
-        for index, item in enumerate(value):
-            bad.extend(_nonfinite_paths(item, f"{path}[{index}]"))
-    return bad
-
-
-def build_gate(metrics: dict[str, Any] | None) -> dict[str, Any]:
-    """Evaluate fixed gates and return auditable reasons.
-
-    ``oos_*`` aliases are accepted for the injectable test/analysis API.
-    """
-
-    metrics = metrics or {}
-    raw_values = {
-        "trades": _number(metrics, "trades", "oos_trades"),
-        "profit_pct": _number(metrics, "profit_pct", "oos_profit_pct"),
-        "max_drawdown_pct": _number(metrics, "max_drawdown_pct", "oos_max_drawdown_pct"),
-        "profit_factor": _number(metrics, "profit_factor"),
-        "sharpe": _number(metrics, "sharpe", "oos_sharpe"),
-    }
-    values: dict[str, float | None] = {}
-    reasons: list[str] = []
-    finite = True
-    for key, value in raw_values.items():
-        if value is None or not math.isfinite(value):
-            finite = False
-            values[key] = None
-            reasons.append(f"{key} must be finite / {key} 必须是有限数值")
-        else:
-            values[key] = value
-    extra_nonfinite = _nonfinite_paths(metrics)
-    if extra_nonfinite:
-        finite = False
-        reasons.append("metrics contains non-finite values: " + ", ".join(extra_nonfinite[:5]))
-    if finite:
-        if values["trades"] < GATE["min_trades"]:
-            reasons.append(f"trades={values['trades']:.0f} < {GATE['min_trades']}")
-        if values["profit_pct"] <= GATE["min_profit_pct"]:
-            reasons.append(f"profit_pct={values['profit_pct']:.3f} <= {GATE['min_profit_pct']}")
-        if values["max_drawdown_pct"] > GATE["max_drawdown_pct"]:
-            reasons.append(f"max_drawdown_pct={values['max_drawdown_pct']:.3f} > {GATE['max_drawdown_pct']}")
-        if values["profit_factor"] < GATE["min_profit_factor"]:
-            reasons.append(f"profit_factor={values['profit_factor']:.3f} < {GATE['min_profit_factor']}")
-        if values["sharpe"] < GATE["min_sharpe"]:
-            reasons.append(f"sharpe={values['sharpe']:.3f} < {GATE['min_sharpe']}")
-    return {
-        "criteria": deepcopy(GATE),
-        "values": values,
-        "passed": finite and not reasons,
-        "valid": finite,
-        "reasons": reasons,
-    }
 
 
 def discover_progress_path() -> Path:
@@ -277,8 +169,8 @@ def _register_challenger(
     gate: dict[str, Any],
     registry_path: Path,
     run_id: str,
+    persist: bool = True,
 ) -> dict[str, Any]:
-    reg = registry.load(str(registry_path))
     entry = deepcopy(candidate)
     entry.setdefault("layer", "ml_model")
     entry["status"] = "challenger"
@@ -286,11 +178,19 @@ def _register_challenger(
     entry["deployed"] = None
     entry["metrics"] = deepcopy(metrics)
     entry["gate"] = deepcopy(gate)
-    entry["evaluation_status"] = "accepted" if gate["passed"] else "rejected"
+    entry["evaluation_status"] = research_verdict(gate)
     entry["run_id"] = run_id
+    artifacts = entry.setdefault("artifacts", [])
+    artifacts.append(f"iterations/{run_id}/result.json")
+    if persist:
+        _save_challenger(entry, registry_path)
+    return entry
+
+
+def _save_challenger(entry: dict[str, Any], registry_path: Path) -> None:
+    reg = registry.load(str(registry_path))
     registry.upsert(reg, entry)
     registry.save(reg, str(registry_path))
-    return entry
 
 
 def _already_done(registry_path: Path, candidate_id: str, run_id: str) -> bool:
@@ -321,6 +221,10 @@ def _generic_iteration(
     except IterationBusy:
         return {"status": "busy", "run_id": run_id}
     try:
+        resumed = resume_registration(history_path, run_id, status_path=progress_path,
+                                      register=lambda entry: _save_challenger(entry, registry_path))
+        if resumed is not None:
+            return resumed
         if _already_done(registry_path, candidate["id"], run_id):
             return {"status": "skipped", "run_id": run_id, "version_id": candidate["id"]}
         try:
@@ -332,16 +236,18 @@ def _generic_iteration(
             _append_history(history_path, result)
             return result
         gate = build_gate(metrics)
-        result = {"status": "rejected", "run_id": run_id, "version_id": candidate["id"], "gate": gate}
+        result = {"status": "rejected" if gate["valid"] else "failed",
+                  "run_id": run_id, "version_id": candidate["id"], "gate": gate}
+        if gate["valid"]:
+            result["metrics"] = deepcopy(metrics)
         if gate["valid"]:
             entry = _register_challenger(candidate=candidate, metrics=metrics, gate=gate,
-                                          registry_path=registry_path, run_id=run_id)
+                                          registry_path=registry_path, run_id=run_id, persist=False)
             result["entry"] = entry
             if gate["passed"]:
                 result["status"] = "registered"
-        _write_status(progress_path, result)
-        _append_history(history_path, result)
-        return result
+        return finish_evaluation(result, history_path=history_path, status_path=progress_path,
+                                 register=lambda entry: _save_challenger(entry, registry_path))
     finally:
         lock.release()
 
@@ -369,7 +275,7 @@ def run_iteration(
 ) -> dict[str, Any]:
     """Run one iteration, using either injected functions or FreqAI."""
 
-    run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = safe_run_id(run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:10])
     reg_path = Path(registry_path)
     status = Path(status_path) if status_path else None
     if progress_path:
@@ -377,7 +283,7 @@ def run_iteration(
         if not progress.is_absolute():
             progress = progress.resolve()
     elif enable_auto_iteration:
-        progress = discover_progress_path()
+        progress = (status or reg_path).parent / "iterations" / run_id / "progress.json"
     else:
         # Disabled calls must not import Freqtrade or touch its UI progress file.
         progress = DEFAULT_STATUS.with_name("auto_iteration_progress.json")
@@ -450,6 +356,7 @@ def run_iteration(
         "--timerange", timerange,
         "--identifier", identifier,
         "--progress", str(progress),
+        "--run-id", run_id,
     ]
     runner = runner or default_runner
     start = time.time()
@@ -461,6 +368,10 @@ def run_iteration(
         _write_status(status, result)
         return result
     try:
+        resumed = resume_registration(history, run_id, status_path=status,
+                                      register=lambda entry: _save_challenger(entry, reg_path))
+        if resumed is not None:
+            return resumed
         running = {"status": "running", "run_id": run_id, "version_id": candidate["id"],
                    "config": str(config["_path"]), "strategy": strategy, "model": freqaimodel,
                    "timerange": timerange, "started_at": datetime.now(timezone.utc).isoformat()}
@@ -474,7 +385,7 @@ def run_iteration(
             error = None
         progress_data = _read_progress(progress)
         if returncode != 0:
-            result = {"status": "failed", "run_id": run_id, "version_id": candidate["id"],
+            result = {**running, "status": "failed", "error_code": "subprocess_failed",
                       "returncode": returncode, "elapsed_seconds": round(time.time() - start, 1)}
             if error:
                 result["error"] = error
@@ -482,24 +393,33 @@ def run_iteration(
             _append_history(history, result)
             return result
         metrics = progress_data.get("result") or {}
-        if not metrics or metrics.get("error"):
-            result = {"status": "failed", "run_id": run_id, "version_id": candidate["id"],
-                      "returncode": returncode, "error": metrics.get("error", "训练没有产出可解析结果")}
+        if (progress_data.get("run_id") != run_id
+                or progress_data.get("status") != "done"
+                or not isinstance(metrics, dict) or not metrics or metrics.get("error")):
+            metrics = metrics if isinstance(metrics, dict) else {}
+            result = {**running, "status": "failed",
+                      "returncode": returncode, "error_code": "missing_or_mismatched_result",
+                      "error": "训练没有产出属于本轮的可解析结果"}
             _write_status(status, result)
             _append_history(history, result)
             return result
         gate = build_gate(metrics)
         entry = None
         if gate["valid"]:
+            candidate["evidence"] = progress_data.get("evidence") or {}
             entry = _register_challenger(candidate=candidate, metrics=metrics, gate=gate,
-                                         registry_path=reg_path, run_id=run_id)
-        result = {"status": "registered" if gate["passed"] else "rejected",
+                                         registry_path=reg_path, run_id=run_id, persist=False)
+        result = {**running,
+                  "status": ("registered" if gate["passed"] else "rejected") if gate["valid"] else "failed",
                   "run_id": run_id, "version_id": candidate["id"], "gate": gate,
                   "entry": entry, "returncode": returncode,
-                  "elapsed_seconds": round(time.time() - start, 1)}
-        _write_status(status, result)
-        _append_history(history, result)
-        return result
+                  "elapsed_seconds": round(time.time() - start, 1),
+                  "evidence": progress_data.get("evidence") or {},
+                  "result_source": progress_data.get("result_source")}
+        if gate["valid"]:
+            result["metrics"] = deepcopy(metrics)
+        return finish_evaluation(result, history_path=history, status_path=status,
+                                 register=lambda entry: _save_challenger(entry, reg_path))
     finally:
         lock_obj.release()
 

@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+from orderflow_detector import METHOD_VERSION as SURGE_METHOD_VERSION
+
 
 ROOT = Path(__file__).resolve().parents[1]
 LIST_PATHS = (
@@ -57,6 +59,7 @@ class OrderflowApiContractTests(unittest.TestCase):
     def _observation(self, **changes):
         return {
             "event_id": EVENT_ID,
+            "method_version": SURGE_METHOD_VERSION,
             "market": "futures",
             "pair": "BTC/USDT:USDT",
             "timeframe": "5m",
@@ -83,8 +86,24 @@ class OrderflowApiContractTests(unittest.TestCase):
                 self.assertEqual(payload["items"][0]["event_id"], EVENT_ID)
                 read.assert_called_once_with(
                     market="futures", pair=None, timeframe="5m", status=None,
-                    limit=100, include_revisions=False,
+                    limit=100, include_revisions=False, method_version=SURGE_METHOD_VERSION,
                 )
+
+    def test_list_filters_other_versions_before_applying_public_limit(self):
+        def old_read(market, pair, timeframe, status, limit, include_revisions):
+            self.assertIsNone(limit)
+            return [
+                self._observation(event_id="other", method_version="other-surge-method"),
+                self._observation(),
+            ]
+
+        (code, payload), _get_store = self._get(
+            LIST_PATHS[0] + "?limit=1", SimpleNamespace(read_orderflow_surges=old_read)
+        )
+
+        self.assertEqual(code, 200)
+        self.assertEqual([row["event_id"] for row in payload["items"]], [EVENT_ID])
+        self.assertEqual(payload["method_version"], SURGE_METHOD_VERSION)
 
     def test_detail_prefers_overall_projection_and_preserves_revision_facts(self):
         revision = self._observation(status="matured", revision_no=2, result={"horizon": "5m"})
@@ -171,10 +190,13 @@ class OrderflowApiContractTests(unittest.TestCase):
                 self.assertIsNone(payload["actual_fee_rate"])
                 self.assertEqual(payload["pairs"]["BTC/USDT:USDT"], bucket)
                 self.assertIn("各窗口 unknown", payload["limitations"][0])
-                stats.assert_called_once_with(pair=None, timeframe="5m")
+                stats.assert_called_once_with(
+                    pair=None, timeframe="5m", method_version=SURGE_METHOD_VERSION
+                )
 
     def test_fallback_stats_excludes_unknown_and_invalid_from_known_samples(self):
         rows = [self._observation(status=status) for status in ("unknown", "unknown", "matured", "invalid")]
+        rows.append(self._observation(status="matured", method_version="other-surge-method"))
         read = Mock(return_value=rows)
         (code, payload), _get_store = self._get(
             STATS_PATHS[0], SimpleNamespace(read_orderflow_surges=read)
@@ -184,6 +206,7 @@ class OrderflowApiContractTests(unittest.TestCase):
                          {"total": 4, "unknown": 2, "matured": 1, "invalid": 1, "known": 1})
         read.assert_called_once_with(
             market="futures", pair=None, timeframe="5m", limit=None, include_revisions=False,
+            method_version=SURGE_METHOD_VERSION,
         )
 
     def test_zero_sample_stats_have_pair_counts_unknown_metrics_and_live_warmup(self):
@@ -247,7 +270,9 @@ class OrderflowApiContractTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(set(payload["pairs"]), {pair})
         self.assertEqual(payload["warmup"], {pair: warmup[pair]})
-        stats.assert_called_once_with(pair=pair, timeframe="5m")
+        stats.assert_called_once_with(
+            pair=pair, timeframe="5m", method_version=SURGE_METHOD_VERSION
+        )
 
     def test_old_reader_applies_bounds_before_public_limit(self):
         calls = []

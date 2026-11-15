@@ -1,8 +1,8 @@
 {
-  "cash_equity": 49988.906585758814,
+  "cash_equity": 49968.19887917527,
   "initial_equity": 50000.0,
-  "last_equity": 49952.545783258814,
-  "last_timestamp": 1793750400574,
+  "last_equity": 49910.02159517527,
+  "last_timestamp": 1794700799959,
   "positions": {
     "1793318400180-1795766400000-80000.0": {
       "entry_premium_usd": 719.1369755000001,
@@ -48,8 +48,24 @@
       "entry_premium_usd": 719.1369755000001,
       "entry_ts": 1793750400574,
       "expiry_ts": 1795766400000,
-      "last_mark_premium_usd": 719.1369755000001,
+      "last_mark_premium_usd": 726.409136,
       "position_id": "1793750400574-1795766400000-80000.0",
+      "quantity_per_leg": 0.1
+    },
+    "1793923200149-1795766400000-80000.0": {
+      "entry_premium_usd": 719.1369755000001,
+      "entry_ts": 1793923200149,
+      "expiry_ts": 1795766400000,
+      "last_mark_premium_usd": 726.409136,
+      "position_id": "1793923200149-1795766400000-80000.0",
+      "quantity_per_leg": 0.1
+    },
+    "1794268800396-1795766400000-80000.0": {
+      "entry_premium_usd": 719.1369755000001,
+      "entry_ts": 1794268800396,
+      "expiry_ts": 1795766400000,
+      "last_mark_premium_usd": 726.409136,
+      "position_id": "1794268800396-1795766400000-80000.0",
       "quantity_per_leg": 0.1
     }
   }

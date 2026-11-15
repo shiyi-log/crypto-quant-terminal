@@ -23,6 +23,7 @@ from demo_api import DemoApi, DemoApiError
 from demo_runner_controller import DemoRunnerController, STATE_KEY
 from demo_store import DemoStore
 from runtime_config import load_environment
+from tests.demo_gate_fixtures import demo_gate_registry
 from tests.test_demo_contract_integration import BTC, NOW, SYMBOL, ExchangeStub, PaperStub
 
 load_environment()
@@ -124,6 +125,7 @@ class DemoSwitchIntegrationTests(unittest.TestCase):
             conn.execute("TRUNCATE demo_fills,demo_orders,demo_positions,demo_account,demo_signal_comparisons")
             conn.execute("DELETE FROM documents WHERE key=%s", (STATE_KEY,))
         self.clock = NOW
+        self.gates = demo_gate_registry(self.root.name)
         self.client, self.paper = AccountExchangeStub(), TwoFrozenPaperSources()
         self.credentials = PlaceholderCredentials()
         self.old = DemoStore(self.data, "demo_default")
@@ -140,7 +142,7 @@ class DemoSwitchIntegrationTests(unittest.TestCase):
             self.credentials.load_credentials, self.adapter_factory, paper_source=self.paper,
             clock_ms=lambda: self.clock,
             lock_path=Path(self.root.name) / "binance_demo_runner.lock",
-            risk_gate_required=False)
+            risk_gate_required=False, gate_registry=self.gates)
         controller._start_worker = Mock()
         self.controllers.append(controller)
         return controller

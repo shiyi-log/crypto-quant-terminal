@@ -115,6 +115,7 @@ class StatusFailureTests(unittest.IsolatedAsyncioTestCase):
         loop = asyncio.get_running_loop()
         with patch.dict("sys.modules", {"aiohttp": aiohttp}), \
              patch.object(loop, "add_signal_handler"), \
+             patch.object(self.collector, "seed_surge_detector", new=AsyncMock()), \
              patch.object(self.collector, "writer", new=AsyncMock()), \
              patch.object(self.collector, "status_loop", new=wait_for_stop), \
              patch.object(self.collector, "connection", new=wait_for_stop), \

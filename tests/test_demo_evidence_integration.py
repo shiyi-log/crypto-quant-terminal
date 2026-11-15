@@ -12,6 +12,7 @@ from data_store import DataStore
 from demo_evidence import DemoEvidenceError, read_demo_evidence
 from demo_store import DemoStore
 from runtime_config import load_environment
+from tests.demo_gate_fixtures import demo_gate_registry
 
 load_environment()
 BTC = "BTC/USDT:USDT"
@@ -214,7 +215,7 @@ class DemoEvidenceIntegrationTests(unittest.TestCase):
             api_secret="offline-placeholder-secret", allow_trading=True)
         service = DemoExecutionService(adapter, self.ledger, paper,
             DemoRunnerConfig("offline-paper", virtual_account_key=self.namespace, trading_enabled=True),
-            clock_ms=lambda: clock[0])
+            clock_ms=lambda: clock[0], gate_registry=demo_gate_registry(self.root.name))
         service.start()
         clock[0] += 1000
         paper.signal(clock[0])

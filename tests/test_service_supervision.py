@@ -1,7 +1,6 @@
 """Service intent survives supervision without changing business gates."""
 
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest

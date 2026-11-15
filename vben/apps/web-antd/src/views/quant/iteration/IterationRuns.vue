@@ -31,7 +31,7 @@ const columns = [
   { title: '证据', key: 'detail', width: 90 },
 ];
 
-function updated(run: IterationRun): string {
+function updated(run: Pick<IterationRun, 'updated_at' | 'finished_at' | 'completed_at' | 'timestamp' | 'started_at'>): string {
   return formatRunTime(run.updated_at ?? run.finished_at ?? run.completed_at ?? run.timestamp ?? run.started_at);
 }
 

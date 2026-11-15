@@ -85,14 +85,14 @@
     "listen_port": 8891,
     "verbosity": "error",
     "enable_openapi": false,
-    "jwt_secret_key": "8e939a490637959dfe43f938d5dfdafb246b0dff52032a26389d63441cec665b",
-    "ws_token": "LNASF2k6O7NZZBDg_mjdh93oLuJE8kh7tucTXItHmek",
+    "jwt_secret_key": "REDACTED_RESEARCH_ONLY",
+    "ws_token": "REDACTED_RESEARCH_ONLY",
     "CORS_origins": [
       "http://127.0.0.1:8888",
       "http://localhost:8888"
     ],
-    "username": "quant-api",
-    "password": "Ryfuhshu-NypJFuH7lwQKY2wc0MRYPGIidN0QlwGIR0"
+    "username": "research-only",
+    "password": "REDACTED_RESEARCH_ONLY"
   },
   "strategy": "BinanceMomentum",
   "_comment": "freqtrade webserver 专用实例：仅供浏览器端回测/下载数据/分析使用，不下单。",

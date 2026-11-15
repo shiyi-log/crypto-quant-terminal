@@ -200,6 +200,7 @@ def append_history(path: Path | None, payload: dict[str, Any], *, freeze: bool =
 def register_frozen(payload: dict[str, Any], *, history_path: Path | None,
                     status_path: Path | None, register: Any) -> dict[str, Any]:
     """登记收据独立于冻结测量，失败后可直接重试登记，无需重新训练。"""
+    receipt = None
     if payload.get("entry") is not None:
         try:
             register(payload["entry"])
@@ -208,11 +209,21 @@ def register_frozen(payload: dict[str, Any], *, history_path: Path | None,
             payload.update(state_fields(payload))
         if history_path is not None:
             receipt = history_path.parent / "iterations" / payload["run_id"] / "registration.json"
+    try:
+        append_history(history_path, payload, freeze=False)
+        write_status(status_path, payload)
+        # 收据只在历史与状态发布后完成，避免重试跳过尚未发布的冻结结果。
+        if receipt is not None:
             write_json(receipt, {"run_id": payload["run_id"],
                                  "registered": payload["status"] != "failed",
                                  "error_code": payload.get("error_code")})
-    append_history(history_path, payload, freeze=False)
-    write_status(status_path, payload)
+    except OSError:
+        payload = {**payload, "status": "failed", "error_code": "publication_failed"}
+        payload.update(state_fields(payload))
+        try:
+            write_status(status_path, payload)
+        except OSError:
+            pass
     return payload
 
 
@@ -242,5 +253,3 @@ def finish_evaluation(payload: dict[str, Any], *, history_path: Path | None,
         payload.pop("entry", None)
         payload.update(state_fields(payload))
     return register_frozen(payload, history_path=history_path, status_path=status_path, register=register)
-
-

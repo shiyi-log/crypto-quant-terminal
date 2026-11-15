@@ -167,8 +167,12 @@ def _integrity(path: Path, now: datetime) -> dict:
     if (not isinstance(payload.get("ok"), bool) or type(payload.get("error_count")) is not int
             or type(payload.get("dataset_count")) is not int):
         _flag(item, "status_invalid", "unknown")
-    _heartbeat(item, payload.get("generated_at_utc"), now, max(600, payload.get("interval_seconds", 300) * 2)
-               if isinstance(payload.get("interval_seconds", 300), (int, float)) else 600)
+    interval = payload.get("interval_seconds", 300)
+    if (type(interval) not in (int, float) or interval <= 0
+            or (isinstance(interval, float) and not math.isfinite(interval))):
+        _flag(item, "status_invalid", "unknown")
+        interval = 300
+    _heartbeat(item, payload.get("generated_at_utc"), now, max(600, interval * 2))
     item["last_success_at"] = _iso(_timestamp(payload.get("last_success_at") or payload.get("last_success_at_utc")))
     if payload.get("ok") is False or payload.get("last_error") or payload.get("error_count", 0):
         _flag(item, "integrity_failed")

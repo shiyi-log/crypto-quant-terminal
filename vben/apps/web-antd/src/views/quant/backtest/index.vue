@@ -1,552 +1,874 @@
 <script lang="ts" setup>
-import { sortCoins } from '../utils/coinOrder';
-import { computed, onMounted, onUnmounted, ref } from 'vue';
-
-import { Alert, Button, Card, Col, Progress, Row, Table, Tag } from 'ant-design-vue';
-
-import { errText, EXIT_LABELS, FT_SERVER_ORIGIN, FT_TOKEN_KEY, getBacktestStatus, getResearchProgress } from '#/api/freqtrade';
-
-
-import { Tabs, TabPane } from 'ant-design-vue';
-
-// 合并进来：研究任务 / 模型迭代（原为独立菜单，2026-10-09 合并同日）
-import IterationPage from '#/views/quant/iteration/index.vue';
-import TasksPage from '#/views/quant/tasks/index.vue';
-
-/** 合并后的分页（2026-10-09）：回测 / 研究任务 / 模型迭代 */
+import {
+  computed,
+  defineAsyncComponent,
+  onMounted,
+  onUnmounted,
+  ref,
+} from 'vue';
+import {
+  EXIT_LABELS,
+  FT_SERVER_ORIGIN,
+  FT_TOKEN_KEY,
+  getBacktestStatus,
+  getResearchProgress,
+} from '#/api/freqtrade';
+const TasksPage = defineAsyncComponent(
+  () => import('#/views/quant/tasks/index.vue'),
+);
+const IterationPage = defineAsyncComponent(
+  () => import('#/views/quant/iteration/index.vue'),
+);
+type Row = Record<string, any>;
+type SourceKey = 'file' | 'web' | 'research';
+interface Source {
+  data: Row | null;
+  error: string;
+  observed: string;
+}
 const tab = ref('bt');
-
-const progress = ref<any>(null);
-const fileError = ref('');
-const webError = ref('');
-const progressError = computed(() => [fileError.value, webError.value].filter(Boolean).join('；'));
-const researchError = ref('');
-const progressSource = ref<'file' | 'web'>('file');
-const webProgress = ref<any>(null);
-let webCheckedAt = 0;
-let fileCheckedAt = 0;
-let fileMissing = false;
-let fileProgress: any = null;
-let fetching = false;
-
-const progressStatusText = computed(() => {
-  if (progress.value?.status === 'done') return '已完成';
-  if (progress.value?.status === 'failed') return '失败';
-  if (progress.value?.status === 'idle') return '当前无运行任务';
-  return '运行中';
-});
-/* 模型自动迭代任务（bot/auto_research.py）—— 与回测任务并列展示 */
-const rp = ref<any>(null);
-const rprog = computed(() => rp.value?.progress ?? null);
-
-const rpStatus = computed(() => {
-  const s = rprog.value?.status;
-  if (s === 'done') return 'success';
-  if (s === 'failed') return 'error';
-  if (s === 'stopped') return 'warning';
-  return 'processing';
-});
-const rpStatusText = computed(() => {
-  const s = rprog.value?.status;
-  return s === 'done'
-    ? '已完成'
-    : s === 'failed'
-      ? '失败'
-      : s === 'stopped'
-        ? '已停止（预算用尽）'
-        : '运行中';
-});
-
-function cfgLabel(c: any) {
-  if (!c) return '—';
-  return `${c.kind} L=${c.seq_len} h=${c.hidden} ly=${c.layers} dp=${c.dropout}`;
+const selected = ref<SourceKey>('file');
+const file = ref<Source>({ data: null, error: '', observed: '' });
+const web = ref<Source>({ data: null, error: '', observed: '' });
+const research = ref<Source>({ data: null, error: '', observed: '' });
+const fileMissing = ref(false);
+const loading = ref(false);
+const sources = computed(() => [
+  { key: 'file' as const, label: '脚本回测 / 训练', state: file.value },
+  ...(fileMissing.value || web.value.data
+    ? [{ key: 'web' as const, label: '研究实例回测', state: web.value }]
+    : []),
+  { key: 'research' as const, label: '模型自动迭代', state: research.value },
+]);
+const current = computed(
+  () =>
+    ({ file: file.value, web: web.value, research: research.value })[
+      selected.value
+    ],
+);
+const currentData = computed<Row | null>(() =>
+  selected.value === 'research'
+    ? (current.value.data?.progress ?? null)
+    : current.value.data,
+);
+const currentStatus = computed<Row | null>(() =>
+  selected.value === 'research' && current.value.data && !currentData.value
+    ? { status: 'idle' }
+    : currentData.value,
+);
+const result = computed<Row | null>(() => currentData.value?.result ?? null);
+const errors = computed(() => sources.value.filter((s) => s.state.error));
+const labels: Record<string, string> = {
+  done: '执行完成',
+  failed: '执行失败',
+  idle: '当前无运行任务',
+  stopped: '已停止',
+  running: '运行中',
+  stopping: '等待停止确认',
+  unknown: '状态未知',
+};
+const statusText = (data: Row | null) =>
+  data
+    ? Object.hasOwn(labels, data.status)
+      ? labels[data.status]
+      : '状态未知'
+    : '尚未取得状态';
+const redact = (value: string) =>
+  value
+    .replace(/[a-z]+:[/][/][^ "'<>]+/gi, '[敏感地址已隐藏]')
+    .replace(/Bearer[ ]+[^ ]+/gi, '[凭据已隐藏]');
+function sanitized(value: unknown, depth = 0): unknown {
+  if (depth > 12) return '[内容过深]';
+  if (typeof value === 'string') return redact(value);
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (Array.isArray(value))
+    return value.map((item) => sanitized(item, depth + 1));
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        redact(key),
+        /password|secret|token|api[_-]?key|error|traceback/i.test(key)
+          ? '[敏感或错误详情已隐藏]'
+          : sanitized(item, depth + 1),
+      ]),
+    );
+  return value;
 }
-function fmtEta(s: any) {
-  if (s === null || s === undefined) return '—';
-  const m = Math.round(Number(s) / 60);
-  return m >= 60 ? `${(m / 60).toFixed(1)} 小时` : `${m} 分钟`;
+const text = (value: unknown) =>
+  value === null ||
+  value === undefined ||
+  value === '' ||
+  (typeof value === 'number' && !Number.isFinite(value))
+    ? '未知'
+    : typeof value === 'object'
+      ? JSON.stringify(sanitized(value))
+      : redact(String(value));
+const configLabel = (value: Row | null) =>
+  value
+    ? Object.entries(value)
+        .map(([k, v]) => k + '=' + text(v))
+        .join(' / ')
+    : '未知';
+const raw = computed(() =>
+  JSON.stringify(sanitized(current.value.data), null, 2),
+);
+const metrics = [
+  ['来源报告利润', 'profit_abs', 'USDT'],
+  ['收益率', 'profit_pct', '%'],
+  ['期末余额', 'final_balance', ''],
+  ['起始余额', 'starting_balance', ''],
+  ['胜率', 'winrate', '%'],
+  ['盈利笔数', 'wins', ''],
+  ['亏损笔数', 'losses', ''],
+  ['交易笔数', 'trades', ''],
+  ['多头交易', 'trades_long', ''],
+  ['空头交易', 'trades_short', ''],
+  ['最大回撤', 'max_drawdown_pct', '%'],
+  ['Sharpe', 'sharpe', ''],
+  ['盈亏比', 'profit_factor', ''],
+  ['CAGR', 'cagr', '%'],
+  ['日均交易', 'trades_per_day', ''],
+] as const;
+const pairRows = computed<Row[]>(() =>
+  Array.isArray(result.value?.pairs) ? result.value!.pairs : [],
+);
+const exitRows = computed<Row[]>(() =>
+  Array.isArray(result.value?.exits)
+    ? result.value!.exits.filter((r: Row) => r.reason !== 'TOTAL')
+    : [],
+);
+const trialRows = computed<Row[]>(() =>
+  Array.isArray(research.value.data?.trials?.recent)
+    ? research.value.data!.trials.recent
+    : [],
+);
+const hasResearchHistory = computed(
+  () =>
+    !!research.value.data &&
+    (trialRows.value.length > 0 ||
+      research.value.data.trials.total > 0 ||
+      research.value.data.trials.runs > 0),
+);
+let active = true;
+let generation = 0;
+let controller: AbortController | null = null;
+let timer: ReturnType<typeof setInterval> | undefined;
+let missingChecked = 0;
+let sessionIdentity = localStorage.getItem(FT_TOKEN_KEY);
+const record = (value: unknown): value is Row =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+function progressContract(value: unknown): Row {
+  if (!record(value) || typeof value.status !== 'string')
+    throw new Error('contract');
+  if (
+    value.result !== null &&
+    value.result !== undefined &&
+    !record(value.result)
+  )
+    throw new Error('contract');
+  if (record(value.result))
+    for (const key of ['pairs', 'exits']) {
+      if (
+        value.result[key] !== undefined &&
+        (!Array.isArray(value.result[key]) ||
+          value.result[key].some((r: unknown) => !record(r)))
+      )
+        throw new Error('contract');
+    }
+  return Object.hasOwn(labels, value.status)
+    ? value
+    : { ...value, status: 'unknown' };
 }
-const trialCols = [
-  { dataIndex: 'label', key: 'label', title: '配置' },
-  { key: 't', title: '逐窗口 t', align: 'right' as const, width: 110 },
-  { key: 'ic', title: 'IC', align: 'right' as const, width: 100 },
-  { key: 'pos', title: '正窗口', align: 'right' as const, width: 100 },
-  { key: 'phase', title: '阶段', width: 200 },
-];
-const rpTrialRows = computed(() =>
-  (rp.value?.trials?.recent ?? []).map((r: any) => ({
-    ...r,
-    label: cfgLabel(r.config),
-    pos: `${r.pos_windows}/${r.n_windows}`,
-  })),
-);
-
-const result = computed(() => progress.value?.result ?? null);
-
-const kpis = computed(() => {
-  const r = result.value;
-  if (!r || r.error) return [];
-  return [
-    { label: '净利润', value: `${r.profit_abs > 0 ? '+' : ''}${r.profit_abs}`, unit: 'USDT', cls: r.profit_abs > 0 ? 'text-red-500' : 'text-emerald-500' },
-    { label: '收益率', value: `${r.profit_pct > 0 ? '+' : ''}${r.profit_pct}`, unit: '%', cls: r.profit_pct > 0 ? 'text-red-500' : 'text-emerald-500' },
-    { label: '期末余额', value: `${r.final_balance}`, unit: '', sub: `起始 ${r.starting_balance}`, cls: '' },
-    { label: '胜率', value: `${r.winrate}`, unit: '%', sub: `${r.wins} 胜 / ${r.losses} 负`, cls: '' },
-    { label: '交易笔数', value: `${r.trades}`, unit: '', sub: `多 ${r.trades_long} / 空 ${r.trades_short}`, cls: '' },
-    { label: '最大回撤', value: `${r.max_drawdown_pct}`, unit: '%', cls: 'text-emerald-500' },
-    { label: 'Sharpe', value: `${r.sharpe}`, unit: '', cls: r.sharpe > 0 ? 'text-red-500' : 'text-emerald-500' },
-    { label: '盈亏比', value: `${r.profit_factor}`, unit: '', cls: r.profit_factor > 1 ? 'text-red-500' : 'text-emerald-500' },
-    { label: 'CAGR', value: `${r.cagr}`, unit: '%', cls: r.cagr > 0 ? 'text-red-500' : 'text-emerald-500' },
-    { label: '日均交易', value: `${r.trades_per_day}`, unit: '笔', cls: '' },
-  ];
-});
-
-const dropCls = (v: any) => (Number(v) > 0 ? 'text-red-500' : 'text-emerald-500');
-
-const pairCols = [
-  { dataIndex: 'pair', key: 'pair', title: '币对' },
-  { dataIndex: 'trades', key: 'trades', title: '交易', align: 'right' as const, width: 90 },
-  { dataIndex: 'profit_abs', key: 'profit_abs', title: '盈亏', align: 'right' as const },
-  { dataIndex: 'profit_pct', key: 'profit_pct', title: '收益率', align: 'right' as const },
-];
-
-const exitCols = [
-  { dataIndex: 'reason', key: 'reason', title: '平仓原因' },
-  { dataIndex: 'trades', key: 'trades', title: '笔数', align: 'right' as const, width: 90 },
-  { dataIndex: 'profit_abs', key: 'profit_abs', title: '盈亏贡献', align: 'right' as const },
-  { key: 'bar', title: '', width: 160 },
-];
-
-const exits = computed(() =>
-  (result.value?.exits ?? [])
-    .filter((e: any) => e.reason !== 'TOTAL')
-    .slice()
-    .sort((a: any, b: any) => a.profit_abs - b.profit_abs),
-);
-const maxAbs = computed(() =>
-  Math.max(...exits.value.map((e: any) => Math.abs(e.profit_abs)), 1),
-);
-
-/** 脚本进度文件与研究实例使用不同结果合同，统一金额与百分比单位后展示。 */
-function fromWebStatus(status: any) {
-  const entries = Object.entries(status?.backtest_result?.strategy ?? {});
-  const [strategy, metrics] = (entries[0] ?? ['', null]) as [string, any];
-  const number = (value: any, factor = 1) =>
-    typeof value === 'number' && Number.isFinite(value)
-      ? Number((value * factor).toFixed(2))
-      : '—';
-  const rows = (values: any[], kind: 'pair' | 'reason') =>
-    (values ?? []).filter((row) => row.key !== 'TOTAL').map((row) => ({
-      [kind]: row.key,
-      trades: row.trades,
-      profit_abs: number(row.profit_total_abs),
-      profit_pct: number(row.profit_total, 100),
-    }));
+function researchContract(value: unknown): Row {
+  if (
+    !record(value) ||
+    !Object.hasOwn(value, 'progress') ||
+    (value.progress !== null &&
+      (!record(value.progress) || typeof value.progress.status !== 'string')) ||
+    !record(value.trials) ||
+    !Array.isArray(value.trials.recent) ||
+    value.trials.recent.some((r: unknown) => !record(r)) ||
+    !Number.isInteger(value.trials.total) ||
+    value.trials.total < 0 ||
+    !Number.isInteger(value.trials.runs) ||
+    value.trials.runs < 0
+  )
+    throw new Error('contract');
+  if (record(value.progress) && !Object.hasOwn(labels, value.progress.status))
+    return {
+      ...value,
+      progress: { ...value.progress, status: 'unknown' },
+    };
+  return value;
+}
+function webContract(value: unknown): Row {
+  if (
+    !record(value) ||
+    typeof value.running !== 'boolean' ||
+    typeof value.status !== 'string'
+  )
+    throw new Error('contract');
+  const strategyMap = value.backtest_result?.strategy;
+  if (strategyMap !== undefined && !record(strategyMap))
+    throw new Error('contract');
+  const [strategy, m] = Object.entries(strategyMap ?? {})[0] ?? ['', null];
+  if (m !== null && !record(m)) throw new Error('contract');
+  const n = (v: unknown, factor = 1) =>
+    typeof v === 'number' && Number.isFinite(v)
+      ? Number((v * factor).toPrecision(14))
+      : null;
+  const rows = (v: unknown, field: string) => {
+    if (v === undefined || v === null) return [];
+    if (!Array.isArray(v) || v.some((r) => !record(r)))
+      throw new Error('contract');
+    return v
+      .filter((r) => r.key !== 'TOTAL')
+      .map((r) => ({
+        [field]: r.key,
+        trades: r.trades,
+        profit_abs: n(r.profit_total_abs),
+        profit_pct: n(r.profit_total, 100),
+      }));
+  };
+  const mtr = m as Row | null;
+  const status =
+    value.status === 'error'
+      ? 'failed'
+      : value.status === 'stopping'
+        ? 'stopping'
+        : value.running
+          ? 'running'
+          : mtr && value.status === 'ended'
+            ? 'done'
+            : value.status === 'not_started'
+              ? 'idle'
+              : 'unknown';
+  const phase =
+    value.status === 'error'
+      ? '研究实例报告执行错误；详细错误已隐藏'
+      : value.status === 'stopping'
+        ? '已请求停止，等待研究实例确认'
+        : value.status_msg === 'Backtest ended'
+          ? '研究实例回测已结束'
+          : value.status_msg === 'Backtest started'
+            ? '研究实例回测运行中'
+            : '研究实例状态由服务确认';
   return {
-    status: status.running ? 'running' : metrics ? 'done' : 'idle',
-    phase: status.running ? '研究实例回测中' : metrics ? '研究实例已有完成结果' : '研究实例待命',
-    percent: typeof status.progress === 'number' ? Math.min(100, Math.max(0, status.progress * 100)) : 0,
-    current_pair: '',
-    trained: '—',
-    total: '—',
-    elapsed_seconds: '—',
-    model: strategy || '—',
-    timerange: metrics?.timerange || '',
-    result: metrics ? {
-      strategy,
-      start: metrics.backtest_start,
-      end: metrics.backtest_end,
-      days: metrics.backtest_days,
-      profit_abs: number(metrics.profit_total_abs),
-      profit_pct: number(metrics.profit_total, 100),
-      final_balance: number(metrics.final_balance),
-      starting_balance: number(metrics.starting_balance),
-      winrate: number(metrics.winrate, 100),
-      wins: metrics.wins,
-      losses: metrics.losses,
-      trades: metrics.total_trades,
-      trades_long: metrics.trade_count_long,
-      trades_short: metrics.trade_count_short,
-      max_drawdown_pct: number(metrics.max_drawdown_account, 100),
-      sharpe: number(metrics.sharpe),
-      profit_factor: number(metrics.profit_factor),
-      cagr: number(metrics.cagr, 100),
-      trades_per_day: number(metrics.trades_per_day),
-      pairs: rows(metrics.results_per_pair, 'pair'),
-      exits: rows(metrics.exit_reason_summary, 'reason'),
-    } : null,
+    ...value,
+    status,
+    phase,
+    percent: n(value.progress, 100),
+    model: strategy || null,
+    result: mtr
+      ? {
+          ...mtr,
+          strategy,
+          start: mtr.backtest_start,
+          end: mtr.backtest_end,
+          days: mtr.backtest_days,
+          profit_abs: n(mtr.profit_total_abs),
+          profit_pct: n(mtr.profit_total, 100),
+          winrate: n(mtr.winrate, 100),
+          trades: mtr.total_trades,
+          trades_long: mtr.trade_count_long,
+          trades_short: mtr.trade_count_short,
+          max_drawdown_pct: n(mtr.max_drawdown_account, 100),
+          cagr: n(mtr.cagr, 100),
+          pairs: rows(mtr.results_per_pair, 'pair'),
+          exits: rows(mtr.exit_reason_summary, 'reason'),
+        }
+      : null,
   };
 }
-
-async function readFileProgress() {
-  // 确认无脚本任务进度时降低探查频率；找到任务后恢复快速轮询。
-  if (fileMissing && Date.now() - fileCheckedAt < 30_000) return fileProgress;
-  fileCheckedAt = Date.now();
+function accepted(target: typeof file, value: Row) {
+  target.value = {
+    data: value,
+    error: '',
+    observed: new Date().toLocaleString('zh-CN', { hour12: false }),
+  };
+}
+function failed(target: typeof file, label: string, reason: unknown) {
+  target.value.error =
+    label +
+    (reason instanceof Error && reason.message === 'contract'
+      ? '合同不完整'
+      : '读取失败') +
+    '；' +
+    (target.value.data ? '保留上次成功快照' : '尚无成功快照，请刷新重试');
+}
+async function load(force = false) {
   const token = localStorage.getItem(FT_TOKEN_KEY);
-  const response = await fetch(`${FT_SERVER_ORIGIN}/run_progress.json?t=${Date.now()}`, {
-    cache: 'no-store',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (response.status === 404) {
-    fileMissing = true;
-    fileProgress = null;
-    return null;
+  if (token !== sessionIdentity) {
+    sessionIdentity = token;
+    for (const target of [file, web, research])
+      target.value = { data: null, error: '', observed: '' };
+    fileMissing.value = false;
+    missingChecked = 0;
+    selected.value = 'file';
+    force = true;
   }
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(body?.detail || `HTTP ${response.status}`);
-  }
-  const body = await response.json();
-  if (!body || typeof body !== 'object' || typeof body.status !== 'string') {
-    throw new Error('任务进度返回格式不完整');
-  }
-  fileProgress = body;
-  fileMissing = false;
-  return fileProgress;
-}
-
-async function load() {
-  if (fetching) return;
-  fetching = true;
-  try {
-    const [file, research] = await Promise.allSettled([
-      readFileProgress(),
-      getResearchProgress().catch(() => null),
-    ]);
-    const p = file.status === 'fulfilled' ? file.value : null;
-    if (file.status === 'fulfilled') fileError.value = '';
-    else fileError.value = `脚本任务进度读取失败：${errText(file.reason)}`;
-    const r = research.status === 'fulfilled' ? research.value : null;
-    if (p) {
-      progress.value = p;
-      progressSource.value = 'file';
-      webError.value = '';
-    } else if (!webProgress.value || Date.now() - webCheckedAt >= 30_000) {
-      webCheckedAt = Date.now();
+  if (!force && loading.value) return;
+  const id = ++generation;
+  controller?.abort();
+  controller = new AbortController();
+  const signal = controller.signal;
+  const valid = () =>
+    active && id === generation && localStorage.getItem(FT_TOKEN_KEY) === token;
+  loading.value = true;
+  await Promise.allSettled([
+    (async () => {
       try {
-        webProgress.value = fromWebStatus(await getBacktestStatus());
-        progress.value = webProgress.value;
-        progressSource.value = 'web';
-        webError.value = '';
+        if (
+          !force &&
+          fileMissing.value &&
+          Date.now() - missingChecked < 30_000
+        ) {
+          try {
+            const value = webContract(await getBacktestStatus());
+            if (valid()) accepted(web, value);
+          } catch (e) {
+            if (valid()) failed(web, '研究实例状态', e);
+          }
+          return;
+        }
+        const response = await fetch(
+          FT_SERVER_ORIGIN + '/run_progress.json?t=' + Date.now(),
+          {
+            cache: 'no-store',
+            headers: token ? { Authorization: 'Bearer ' + token } : {},
+            signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+          },
+        );
+        if (!valid()) return;
+        if (response.status === 404) {
+          fileMissing.value = true;
+          missingChecked = Date.now();
+          file.value.error = '';
+          if (!file.value.data && selected.value === 'file')
+            selected.value = 'web';
+          try {
+            const value = webContract(await getBacktestStatus());
+            if (valid()) accepted(web, value);
+          } catch (e) {
+            if (valid()) failed(web, '研究实例状态', e);
+          }
+          return;
+        }
+        if (!response.ok) throw new Error('read');
+        const value = progressContract(await response.json());
+        if (valid()) {
+          fileMissing.value = false;
+          accepted(file, value);
+        }
       } catch (e) {
-        webError.value = `研究实例回测状态加载失败：${errText(e)}${progress.value ? '；当前保留上次成功状态' : ''}`;
+        if (valid()) failed(file, '脚本进度', e);
       }
-    } else {
-      progress.value = webProgress.value;
-      progressSource.value = 'web';
-    }
-    if (r) {
-      rp.value = r;
-      researchError.value = '';
-    } else {
-      researchError.value = `模型迭代任务状态暂不可用${rp.value ? '；当前保留上次成功记录' : '，请刷新重试'}`;
-    }
-  } finally {
-    fetching = false;
-  }
+    })(),
+    (async () => {
+      try {
+        const value = researchContract(await getResearchProgress());
+        if (valid()) accepted(research, value);
+      } catch (e) {
+        if (valid()) failed(research, '模型迭代', e);
+      }
+    })(),
+  ]);
+  if (active && id === generation) loading.value = false;
 }
-
-function refresh() {
-  webCheckedAt = 0;
-  fileCheckedAt = 0;
-  void load();
-}
-
-let timer: any = null;
 onMounted(() => {
-  load();
-  timer = setInterval(load, 3000);
+  void load();
+  timer = setInterval(() => void load(), 3000);
 });
-onUnmounted(() => clearInterval(timer));
-
+onUnmounted(() => {
+  active = false;
+  generation++;
+  controller?.abort();
+  clearInterval(timer);
+});
 </script>
 
 <template>
-  <div class="p-4">
-    <Tabs v-model:activeKey="tab" size="small">
-      <TabPane key="bt" tab="回测">
-    <div class="mb-3 text-right"><Button size="small" @click="refresh">刷新状态</Button></div>
-    <Alert v-if="progressError" class="mb-3" :message="progressError" type="error" show-icon />
-    <Alert v-if="researchError" class="mb-3" :message="researchError" type="warning" show-icon />
-    <!-- 进度 -->
-    <Card :bordered="false" class="shadow-sm" title="回测 / 训练任务">
-      <template #extra>
-        <Tag
-          v-if="progress"
-          :color="
-            progress.status === 'done'
-              ? 'success'
-              : progress.status === 'failed'
-                ? 'error'
-                : progress.status === 'idle' ? 'default' : 'processing'
-          "
-        >
-          {{ progressStatusText }}
-        </Tag>
-        <span v-if="progressSource === 'web' && progress" class="ml-2 text-xs text-gray-400">研究实例状态{{ fileMissing ? ' · 无脚本任务进度文件' : '' }}</span>
-      </template>
-      <template v-if="progress">
-        <Progress
-          :percent="Number((progress.percent ?? 0).toFixed(1))"
-          :status="progress.status === 'failed' ? 'exception' : progress.status === 'done' ? 'success' : progress.status === 'idle' ? 'normal' : 'active'"
-        />
-        <Row :gutter="[12, 12]" class="mt-4">
-          <Col :lg="3" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">阶段</div>
-            <div class="text-sm font-semibold">{{ progress.phase }}</div>
-          </Col>
-          <Col :lg="3" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">当前币对</div>
-            <div class="text-sm font-semibold">{{ progress.current_pair || '—' }}</div>
-          </Col>
-          <Col :lg="3" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">已训练轮次</div>
-            <div class="text-sm font-semibold">{{ progress.trained }} / {{ progress.total }}</div>
-          </Col>
-          <Col :lg="3" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">速率</div>
-            <div class="text-sm font-semibold">{{ progress.rate_per_min || '—' }} 轮/分</div>
-          </Col>
-          <Col :lg="3" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">已用时</div>
-            <div class="text-sm font-semibold">{{ typeof progress.elapsed_seconds === 'number' ? `${progress.elapsed_seconds}s` : '—' }}</div>
-          </Col>
-          <Col :lg="3" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">模型 / 区间</div>
-            <div class="text-sm font-semibold">{{ progress.model }}</div>
-            <div class="text-xs text-gray-400">{{ progress.timerange }}</div>
-          </Col>
-        </Row>
-      </template>
-      <div v-else class="py-12 text-center text-sm text-gray-400">
-        {{ progressError ? '回测状态暂不可用，请刷新重试。' : '正在读取回测状态…' }}
+  <main class="backtest-workspace">
+    <header class="workspace-heading">
+      <h1>回测与历史任务</h1>
+      <p>
+        历史研究环境。执行完成不等于研究通过，成本完整性未知，不构成 Demo
+        或实盘验收。
+      </p>
+    </header>
+    <nav class="workspace-tabs" aria-label="历史实验分页">
+      <button
+        v-for="item in [
+          { key: 'bt', label: '回测' },
+          { key: 'tasks', label: '研究任务' },
+          { key: 'iter', label: '模型迭代' },
+        ]"
+        :key="item.key"
+        :data-tab="item.key"
+        :aria-pressed="tab === item.key"
+        @click="tab = item.key"
+      >
+        {{ item.label }}
+      </button>
+    </nav>
+    <template v-if="tab === 'bt'">
+      <div class="monitor-tools">
+        <span>每 3 秒读取；脚本不存在时查看独立研究实例</span
+        ><button data-refresh @click="load(true)">刷新状态</button>
       </div>
-    </Card>
-
-    <!-- 模型自动迭代任务 -->
-    <Card :bordered="false" class="mt-3 shadow-sm" title="模型自动迭代任务">
-      <template #extra>
-        <Tag v-if="rprog" :color="rpStatus">{{ rpStatusText }}</Tag>
-        <span v-if="rprog?.run_id" class="ml-2 text-xs text-gray-400">
-          {{ rprog.run_id }} · 第 {{ rprog.round }} 轮
-        </span>
-      </template>
-
-      <template v-if="rprog">
-        <Progress
-          :percent="Number((rprog.percent ?? 0).toFixed(1))"
-          :status="rprog.status === 'failed' ? 'exception' : 'active'"
-        />
-        <Row :gutter="[12, 12]" class="mt-4">
-          <Col :lg="3" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">阶段</div>
-            <div class="text-sm font-semibold">{{ rprog.phase }}</div>
-          </Col>
-          <Col :lg="4" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">当前配置</div>
-            <div class="font-mono text-sm font-semibold">{{ cfgLabel(rprog.current) }}</div>
-          </Col>
-          <Col :lg="3" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">已完成 trial</div>
-            <div class="text-sm font-semibold">{{ rprog.trial }} / {{ rprog.total }}</div>
-          </Col>
-          <Col :lg="2" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">速率</div>
-            <div class="text-sm font-semibold">
-              {{ rprog.rate_per_min || '—' }} <span class="text-xs text-gray-400">个/分</span>
-            </div>
-          </Col>
-          <Col :lg="2" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">已用时</div>
-            <div class="text-sm font-semibold">{{ Math.round((rprog.elapsed_seconds || 0) / 60) }} 分</div>
-          </Col>
-          <Col :lg="3" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">预计剩余</div>
-            <div class="text-sm font-semibold">{{ fmtEta(rprog.eta_seconds) }}</div>
-          </Col>
-          <Col :lg="4" :sm="8" :xs="12">
-            <div class="text-xs text-gray-400">本轮历史最优</div>
-            <div class="font-mono text-sm font-semibold text-blue-500">
-              t={{ rprog.best ? Number(rprog.best.t_period).toFixed(2) : '—' }}
-            </div>
-            <div class="font-mono text-xs text-gray-400">
-              {{ rprog.best ? rprog.best.label : '' }}
-            </div>
-          </Col>
-        </Row>
-
-        <div v-if="rprog.result" class="mt-3 rounded bg-gray-50 p-2 text-xs dark:bg-gray-800">
-          <span class="font-medium">本轮结果：</span>
-          {{ rprog.result.n_trials }} 个 trial ·
-          最优 t={{ Number(rprog.result.best_t).toFixed(2) }} ·
-          {{ rprog.result.passed ? '✅ 达标' : '❌ 未达标' }} ·
-          候选版本 <span class="font-mono">{{ rprog.result.version_id || '—' }}</span> ·
-          报告 {{ rprog.result.report }}
-        </div>
-
-        <div class="mt-4">
-          <div class="mb-1 text-xs font-medium">
-            最近 trial（含失败 —— 自动迭代的全部尝试都可追溯）
-          </div>
-          <Table
-            :columns="trialCols"
-            :data-source="rpTrialRows"
-            :pagination="false"
-            row-key="label"
-            size="small"
+      <div
+        v-for="item in errors"
+        :key="item.key"
+        class="monitor-error"
+        role="alert"
+      >
+        {{ item.state.error }}
+      </div>
+      <div class="monitor-master-detail">
+        <aside class="monitor-sources" aria-label="任务来源">
+          <button
+            v-for="item in sources"
+            :key="item.key"
+            :data-source="item.key"
+            :aria-pressed="selected === item.key"
+            @click="selected = item.key"
           >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'label'">
-                <span class="font-mono text-xs">{{ record.label }}</span>
-              </template>
-              <template v-else-if="column.key === 't'">
-                <span
-                  class="font-mono text-xs"
-                  :class="Number(record.t_period) > 2 ? 'font-semibold text-blue-500' : ''"
-                >
-                  {{ record.t_period === null || record.t_period === undefined
-                    ? '—'
-                    : Number(record.t_period).toFixed(2) }}
-                </span>
-              </template>
-              <template v-else-if="column.key === 'ic'">
-                <span class="font-mono text-xs">
-                  {{ record.ic_period === null || record.ic_period === undefined
-                    ? '—'
-                    : Number(record.ic_period).toFixed(4) }}
-                </span>
-              </template>
-              <template v-else-if="column.key === 'pos'">
-                <span class="font-mono text-xs">{{ record.pos }}</span>
-              </template>
-              <template v-else-if="column.key === 'phase'">
-                <span class="text-xs text-gray-400">{{ record.phase }}</span>
-              </template>
-            </template>
-            <template #emptyText>
-              <div class="py-6 text-center text-xs text-gray-400">暂无最近 trial 记录</div>
-            </template>
-          </Table>
-          <div class="mt-1 text-xs text-gray-400">
-            账本累计 {{ rp?.trials?.total || 0 }} 条 trial · {{ rp?.trials?.runs || 0 }} 轮 ·
-            原始记录 <code>bot/user_data/research_trials.jsonl</code>
+            <strong>{{ item.label }}</strong
+            ><span>{{
+              statusText(
+                item.key === 'research'
+                  ? (item.state.data?.progress ??
+                      (item.state.data ? { status: 'idle' } : null))
+                  : item.state.data,
+              )
+            }}</span
+            ><small>{{
+              item.state.error
+                ? '旧快照 / 读取失败'
+                : item.state.observed
+                  ? '读取于 ' + item.state.observed
+                  : '尚未读取'
+            }}</small>
+          </button>
+          <p v-if="fileMissing" class="monitor-boundary">
+            已确认无脚本进度文件。研究实例与脚本是不同来源，历史快照分别保留。
+          </p>
+        </aside>
+        <section
+          class="monitor-inspector"
+          data-inspector
+          aria-label="所选任务事实"
+        >
+          <div class="inspector-title">
+            <h2>{{ sources.find((s) => s.key === selected)?.label }}</h2>
+            <span>{{ statusText(currentStatus) }}</span>
           </div>
-        </div>
-      </template>
-
-      <div v-else class="py-12 text-center text-sm text-gray-400">
-        {{ researchError ? '迭代任务状态暂不可用，请刷新重试。' : '当前没有已记录的模型迭代任务。' }}
-      </div>
-    </Card>
-
-    <Alert v-if="result?.error" class="mt-3" :message="String(result.error)" type="error" show-icon />
-
-    <!-- 结果 -->
-    <template v-if="result && !result.error">
-      <Card :bordered="false" class="mt-3 shadow-sm">
-        <template #title>
-          回测绩效
-          <span class="ml-2 text-xs font-normal text-gray-400">
-            {{ result.strategy }} · {{ result.start }} → {{ result.end }}（{{ result.days }} 天）
-          </span>
-        </template>
-        <Row :gutter="[12, 12]">
-          <Col v-for="k in kpis" :key="k.label" :lg="2.4" :md="8" :sm="12" :xs="12" :xl="2">
-            <div>
-              <div class="text-xs text-gray-400">{{ k.label }}</div>
-              <div class="mt-1 text-lg font-semibold" :class="k.cls">
-                {{ k.value }}
-                <span class="text-xs font-normal text-gray-400">{{ k.unit }}</span>
+          <p class="monitor-boundary">
+            {{
+              current.error
+                ? '当前展示上次成功事实，读取失败未覆盖记录。'
+                : current.observed
+                  ? '本次读取时间 ' +
+                    current.observed +
+                    '；源时间 ' +
+                    text(currentData?.updated_at)
+                  : '正在读取，未知状态不会显示为待命。'
+            }}
+          </p>
+          <template v-if="currentData">
+            <dl class="progress-ledger">
+              <div
+                v-for="[label, value] in [
+                  ['运行身份', currentData.run_id],
+                  ['模型 / 策略', currentData.model],
+                  ['阶段', currentData.phase],
+                  ['进度（%）', currentData.percent],
+                  ['当前币对', currentData.current_pair],
+                  ['训练 / trial', currentData.trained ?? currentData.trial],
+                  ['计划总量', currentData.total],
+                  ['轮次', currentData.round],
+                  ['速率（每分钟）', currentData.rate_per_min],
+                  ['已用秒数', currentData.elapsed_seconds],
+                  ['剩余秒数估计', currentData.eta_seconds],
+                  ['时间区间', currentData.timerange],
+                  [
+                    '当前配置',
+                    currentData.current
+                      ? configLabel(currentData.current)
+                      : null,
+                  ],
+                  [
+                    '本轮最优',
+                    currentData.best ? JSON.stringify(currentData.best) : null,
+                  ],
+                ]"
+                :key="String(label)"
+              >
+                <dt>{{ label }}</dt>
+                <dd>{{ text(value) }}</dd>
               </div>
-              <div v-if="k.sub" class="text-xs text-gray-400">{{ k.sub }}</div>
+            </dl>
+            <template v-if="selected === 'research'">
+              <p v-if="result" class="monitor-boundary">
+                旧判据{{
+                  result.passed === true
+                    ? '达标'
+                    : result.passed === false
+                      ? '未达标'
+                      : '未知'
+                }}；{{ text(result.n_trials) }} 个 trial；版本
+                {{ text(result.version_id) }}；报告
+                {{ text(result.report) }}。旧判据不构成上线批准。
+              </p>
+            </template>
+            <template v-else-if="result && !result.error">
+              <h3>来源报告绩效</h3>
+              <p class="monitor-boundary">
+                {{ text(result.strategy) }} / {{ text(result.start) }} 至
+                {{ text(result.end) }} /
+                {{ text(result.days) }} 天；成本完整性未知。
+              </p>
+              <dl class="metric-ledger">
+                <div v-for="[label, key, unit] in metrics" :key="key">
+                  <dt>{{ label }}</dt>
+                  <dd>
+                    {{ text(result[key]) }}
+                    {{
+                      result[key] === null || result[key] === undefined
+                        ? ''
+                        : unit
+                    }}
+                  </dd>
+                </div>
+              </dl>
+              <h3>分币对表现</h3>
+              <div class="table-viewport">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>交易对</th>
+                      <th>交易</th>
+                      <th>报告利润</th>
+                      <th>收益率（%）</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, i) in pairRows" :key="i">
+                      <td>{{ text(row.pair) }}</td>
+                      <td>{{ text(row.trades) }}</td>
+                      <td>{{ text(row.profit_abs) }}</td>
+                      <td>{{ text(row.profit_pct) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p v-if="!pairRows.length">来源未提供分币对明细。</p>
+              <h3>平仓原因贡献</h3>
+              <div class="table-viewport">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>原因</th>
+                      <th>笔数</th>
+                      <th>报告利润</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, i) in exitRows" :key="i">
+                      <td>{{ EXIT_LABELS[row.reason] || text(row.reason) }}</td>
+                      <td>{{ text(row.trades) }}</td>
+                      <td>{{ text(row.profit_abs) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+            <p v-else-if="result?.error" role="alert">
+              来源报告任务失败。请查看可信本机任务日志，错误详情不在页面回显。
+            </p>
+          </template>
+          <template v-if="selected === 'research' && current.data">
+            <p v-if="!currentData" class="monitor-boundary">
+              {{
+                hasResearchHistory
+                  ? '暂无当前运行进度；历史 trial 记录仍在下方展示。'
+                  : '当前没有已记录的模型迭代任务。'
+              }}
+            </p>
+            <h3>最近 trial（包含失败）</h3>
+            <div class="table-viewport">
+              <table>
+                <thead>
+                  <tr>
+                    <th>配置</th>
+                    <th>逐窗口 t</th>
+                    <th>IC</th>
+                    <th>正窗口</th>
+                    <th>阶段</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(row, i) in trialRows" :key="i">
+                    <td>{{ configLabel(row.config) }}</td>
+                    <td>{{ text(row.t_period) }}</td>
+                    <td>{{ text(row.ic_period) }}</td>
+                    <td>
+                      {{ text(row.pos_windows) }} / {{ text(row.n_windows) }}
+                    </td>
+                    <td>{{ text(row.phase) }}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
-          </Col>
-        </Row>
-      </Card>
-
-      <Row :gutter="[12, 12]" class="mt-3">
-        <Col :lg="14" :xs="24">
-          <Card :bordered="false" class="shadow-sm" title="平仓原因贡献（按亏损排序）">
-            <Table
-              :columns="exitCols"
-              :data-source="exits"
-              :pagination="false"
-              row-key="reason"
-              size="small"
-            >
-              <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'reason'">
-                  <span class="font-medium">
-                    {{ EXIT_LABELS[record.reason] || record.reason }}
-                  </span>
-                </template>
-                <template v-else-if="column.key === 'profit_abs'">
-                  <span :class="dropCls(record.profit_abs)" class="font-semibold">
-                    {{ record.profit_abs > 0 ? '+' : '' }}{{ record.profit_abs }}
-                  </span>
-                </template>
-                <template v-else-if="column.key === 'bar'">
-                  <div class="h-1.5 w-full overflow-hidden rounded bg-gray-100 dark:bg-gray-700">
-                    <div
-                      class="h-full rounded"
-                      :style="{
-                        background: record.profit_abs > 0 ? '#12b886' : '#f0424f',
-                        marginLeft: record.profit_abs > 0
-                          ? `${100 - (Math.abs(record.profit_abs) / maxAbs) * 100}%`
-                          : '0',
-                        width: `${(Math.abs(record.profit_abs) / maxAbs) * 100}%`,
-                      }"
-                    ></div>
-                  </div>
-                </template>
-              </template>
-              <template #emptyText>
-                <div class="py-6 text-center text-xs text-gray-400">暂无平仓原因统计</div>
-              </template>
-            </Table>
-          </Card>
-        </Col>
-        <Col :lg="10" :xs="24">
-          <Card :bordered="false" class="shadow-sm" title="分币对表现">
-            <Table
-              :columns="pairCols"
-              :data-source="sortCoins(result.pairs ?? [], (row) => row.pair)"
-              :pagination="false"
-              row-key="pair"
-              size="small"
-            >
-              <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'pair'">
-                  <span class="font-medium">{{ record.pair }}</span>
-                </template>
-                <template v-else-if="column.key === 'profit_abs'">
-                  <span :class="dropCls(record.profit_abs)">
-                    {{ record.profit_abs > 0 ? '+' : '' }}{{ record.profit_abs }}
-                  </span>
-                </template>
-                <template v-else-if="column.key === 'profit_pct'">
-                  <span :class="dropCls(record.profit_pct)">
-                    {{ record.profit_pct > 0 ? '+' : '' }}{{ record.profit_pct }}%
-                  </span>
-                </template>
-              </template>
-              <template #emptyText>
-                <div class="py-6 text-center text-xs text-gray-400">暂无分币对表现数据</div>
-              </template>
-            </Table>
-          </Card>
-        </Col>
-      </Row>
+            <p v-if="!trialRows.length">尚无最近 trial。</p>
+            <p class="monitor-boundary">
+              账本累计 {{ text(research.data?.trials.total) }} 条 trial /
+              {{ text(research.data?.trials.runs) }} 轮。
+            </p>
+          </template>
+          <p v-if="!currentData && !(selected === 'research' && current.data)">
+            {{
+              current.error ? '该来源暂不可读取。' : '尚无该来源的任务事实。'
+            }}
+          </p>
+          <details v-if="current.data">
+            <summary>脱敏来源 JSON</summary>
+            <pre>{{ raw }}</pre>
+          </details>
+        </section>
+      </div>
     </template>
-      </TabPane>
-
-      <TabPane key="tasks" tab="研究任务">
-        <TasksPage v-if="tab === 'tasks'" />
-      </TabPane>
-
-      <TabPane key="iter" tab="模型迭代">
-        <IterationPage v-if="tab === 'iter'" />
-      </TabPane>
-    </Tabs>
-  </div>
+    <TasksPage v-else-if="tab === 'tasks'" />
+    <IterationPage v-else-if="tab === 'iter'" />
+  </main>
 </template>
+
+<style scoped>
+.backtest-workspace {
+  min-width: 0;
+  max-width: 100%;
+  padding: 24px;
+  color: #e5edf4;
+  background: #0c1b2a;
+  font-family:
+    'IBM Plex Sans', 'Source Han Sans SC', 'Noto Sans SC', sans-serif;
+  font-size: 14px;
+}
+.workspace-heading h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+.workspace-heading p,
+.monitor-boundary {
+  max-width: 78ch;
+  color: #a2b8c9;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.workspace-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 20px 0;
+  border-bottom: 1px solid #29485c;
+}
+.workspace-tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  padding: 10px 16px;
+  color: #a2b8c9;
+}
+.workspace-tabs button[aria-pressed='true'] {
+  color: #e5edf4;
+  border-bottom-color: #69b4e4;
+}
+.monitor-tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  color: #a2b8c9;
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+.monitor-tools button {
+  border: 1px solid #29485c;
+  background: #132b3e;
+  padding: 8px 14px;
+  color: #e5edf4;
+}
+.monitor-error {
+  margin: 12px 0;
+  padding: 12px;
+  border-left: 3px solid #f0c17b;
+  background: #132b3e;
+  color: #f0c17b;
+}
+.monitor-master-detail {
+  display: grid;
+  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
+  border: 1px solid #29485c;
+}
+.monitor-sources {
+  min-width: 0;
+  border-right: 1px solid #29485c;
+  padding: 12px;
+}
+.monitor-sources button {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  border-left: 3px solid transparent;
+  background: transparent;
+  padding: 16px 12px;
+  color: #e5edf4;
+}
+.monitor-sources button[aria-pressed='true'] {
+  border-color: #29485c;
+  border-left-color: #69b4e4;
+  background: #132b3e;
+}
+.monitor-sources small,
+.monitor-sources span {
+  color: #a2b8c9;
+  font-size: 12px;
+}
+.monitor-inspector {
+  min-width: 0;
+  padding: 20px;
+  background: #132b3e;
+}
+.inspector-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.inspector-title h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.inspector-title span {
+  color: #69b4e4;
+}
+.progress-ledger,
+.metric-ledger {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 16px 0;
+  border-top: 1px solid #29485c;
+}
+.progress-ledger > div,
+.metric-ledger > div {
+  min-width: 0;
+  padding: 12px 8px;
+  border-bottom: 1px solid #29485c;
+}
+.progress-ledger dt,
+.metric-ledger dt {
+  font-size: 12px;
+  color: #a2b8c9;
+}
+.progress-ledger dd,
+.metric-ledger dd {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+.monitor-inspector h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 24px 0 12px;
+}
+.table-viewport {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid #29485c;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+th,
+td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid #29485c;
+  font-size: 12px;
+}
+th {
+  color: #a2b8c9;
+  font-weight: 500;
+}
+details {
+  margin-top: 24px;
+}
+summary {
+  cursor: pointer;
+  color: #69b4e4;
+}
+pre {
+  max-height: 480px;
+  overflow: auto;
+  font-size: 12px;
+  padding: 12px;
+  border: 1px solid #29485c;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+button {
+  cursor: pointer;
+}
+button:focus-visible,
+summary:focus-visible {
+  outline: 2px solid #69b4e4;
+  outline-offset: 3px;
+}
+@media (max-width: 900px) {
+  .backtest-workspace {
+    padding: 16px;
+  }
+  .monitor-master-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .monitor-sources {
+    display: flex;
+    flex-wrap: wrap;
+    border-right: 0;
+    border-bottom: 1px solid #29485c;
+  }
+  .monitor-sources button {
+    width: auto;
+    flex: 1;
+    min-width: 150px;
+  }
+  .monitor-sources p {
+    width: 100%;
+  }
+  .progress-ledger,
+  .metric-ledger {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .monitor-inspector {
+    padding: 16px;
+  }
+}
+@media (max-width: 420px) {
+  .backtest-workspace {
+    padding: 12px;
+  }
+  .workspace-heading h1 {
+    font-size: 22px;
+  }
+  .progress-ledger,
+  .metric-ledger {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+</style>

@@ -1,7 +1,16 @@
 <script lang="ts" setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
-import { Alert, Button, Card, Empty, Modal, Select, Table, Tag } from 'ant-design-vue';
+import {
+  Alert,
+  Button,
+  Card,
+  Empty,
+  Modal,
+  Select,
+  Table,
+  Tag,
+} from 'ant-design-vue';
 
 import {
   getForwardPaper,
@@ -167,7 +176,11 @@ function exitCategoryText(category?: string) {
   return names[category || ''] || '归类未知';
 }
 function exitCategoryColor(category?: string) {
-  if (category === 'external_intervention' || category === 'external_exchange_execution') return 'orange';
+  if (
+    category === 'external_intervention' ||
+    category === 'external_exchange_execution'
+  )
+    return 'orange';
   if (category === 'execution_emergency') return 'red';
   if (category === 'liquidation') return 'red';
   if (category?.startsWith('strategy_')) return 'blue';
@@ -178,10 +191,12 @@ function strategyProfitText(trade: {
   is_open?: boolean | null;
   strategy_eligible?: boolean;
 }) {
-  if (trade.is_open === true || trade.exit_category === 'not_closed') return '未成熟';
+  if (trade.is_open === true || trade.exit_category === 'not_closed')
+    return '未成熟';
   if (trade.strategy_eligible === true) return '计入策略';
   if (trade.exit_category === 'external_intervention') return '排除：外部干预';
-  if (trade.exit_category === 'external_exchange_execution') return '排除：交易所侧离场';
+  if (trade.exit_category === 'external_exchange_execution')
+    return '排除：交易所侧离场';
   return '归因未知';
 }
 function operationActionText(action: string) {
@@ -311,7 +326,8 @@ function versionRow(item: ResearchLedgerVersion) {
 
 function eventText(value: unknown, fallback = '—') {
   if (value === null || value === undefined || value === '') return fallback;
-  if (typeof value === 'number') return Number.isFinite(value) ? value.toFixed(6) : fallback;
+  if (typeof value === 'number')
+    return Number.isFinite(value) ? value.toFixed(6) : fallback;
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }
@@ -344,7 +360,9 @@ function filterKind(value: unknown) {
 
 function filterComparison(filter: Record<string, unknown>) {
   const op = filter.op === 'gt' ? '>' : filter.op === 'lt' ? '<' : '未知比较符';
-  const unit = ['channel_width_pct', 'realized_vol_pct'].includes(String(filter.kind))
+  const unit = ['channel_width_pct', 'realized_vol_pct'].includes(
+    String(filter.kind),
+  )
     ? '%'
     : '';
   return `${op} ${ruleNumber(filter.threshold)}${unit}`;
@@ -371,8 +389,11 @@ function variantRuleText(variant: ForwardPaperVariant) {
   const executionText = !execution
     ? '执行细则未记录'
     : [
-        execution.dual_touch === 'stop_loss_first' ? '双触达止损优先' : '双触达规则未知',
-        execution.exit_timing === 'next_open' && execution.gap_fill === 'execution_open'
+        execution.dual_touch === 'stop_loss_first'
+          ? '双触达止损优先'
+          : '双触达规则未知',
+        execution.exit_timing === 'next_open' &&
+        execution.gap_fill === 'execution_open'
           ? '次根开盘价退出（含跳空）'
           : '退出成交规则未知',
         execution.slot_release === 'after_exit_fill_next_open'
@@ -421,14 +442,25 @@ function paperReason(value: unknown, fallback = '—') {
 
 function filterEvidence(value: unknown) {
   const filter = eventRecord(value);
-  if (!Object.keys(filter).length) return { text: '未记录', status: '', ready: null };
-  if (filter.kind === 'none') return { text: '无横盘过滤', status: '', ready: true };
-  const unit = ['channel_width_pct', 'realized_vol_pct'].includes(String(filter.kind)) ? '%' : '';
-  const status = filter.ready === false
-    ? '指标未就绪'
-    : filter.ready === true
-      ? filter.passed === true ? '就绪 · 通过' : filter.passed === false ? '就绪 · 未通过' : '就绪 · 结果未知'
-      : '就绪状态未记录';
+  if (!Object.keys(filter).length)
+    return { text: '未记录', status: '', ready: null };
+  if (filter.kind === 'none')
+    return { text: '无横盘过滤', status: '', ready: true };
+  const unit = ['channel_width_pct', 'realized_vol_pct'].includes(
+    String(filter.kind),
+  )
+    ? '%'
+    : '';
+  const status =
+    filter.ready === false
+      ? '指标未就绪'
+      : filter.ready === true
+        ? filter.passed === true
+          ? '就绪 · 通过'
+          : filter.passed === false
+            ? '就绪 · 未通过'
+            : '就绪 · 结果未知'
+        : '就绪状态未记录';
   return {
     text: `${filterKind(filter.kind)}(${eventText(filter.window)}) ${ruleNumber(filter.raw_value)}${unit} ${filterComparison(filter)}`,
     status,
@@ -440,31 +472,46 @@ function triggerEvidence(value: unknown, riskValue?: unknown) {
   const trigger = eventRecord(value);
   const risk = eventRecord(riskValue);
   if (Object.keys(trigger).length) {
-    const level = typeof trigger.trigger_level === 'number'
-      ? `触发线 ${ruleNumber(trigger.trigger_level)}`
-      : '';
-    const observed = typeof trigger.observed_price === 'number'
-      ? `观察价 ${ruleNumber(trigger.observed_price)}`
-      : '';
+    const level =
+      typeof trigger.trigger_level === 'number'
+        ? `触发线 ${ruleNumber(trigger.trigger_level)}`
+        : '';
+    const observed =
+      typeof trigger.observed_price === 'number'
+        ? `观察价 ${ruleNumber(trigger.observed_price)}`
+        : '';
     return {
       time: eventText(trigger.candle_utc, ''),
-      text: [paperReason(trigger.reason), level, observed].filter(Boolean).join(' · '),
-      detail: trigger.dual_touch === true
-        ? trigger.dual_touch_policy === 'stop_loss_first' ? '同根双触达，按冻结规则止损优先' : '同根双触达，处理规则未记录'
-        : '',
+      text: [paperReason(trigger.reason), level, observed]
+        .filter(Boolean)
+        .join(' · '),
+      detail:
+        trigger.dual_touch === true
+          ? trigger.dual_touch_policy === 'stop_loss_first'
+            ? '同根双触达，按冻结规则止损优先'
+            : '同根双触达，处理规则未记录'
+          : '',
     };
   }
   const levels = [
-    typeof risk.take_profit_level === 'number' ? `止盈线 ${ruleNumber(risk.take_profit_level)}` : '',
-    typeof risk.stop_loss_level === 'number' ? `止损线 ${ruleNumber(risk.stop_loss_level)}` : '',
-    typeof risk.trailing_level === 'number' ? `跟踪线 ${ruleNumber(risk.trailing_level)}` : '',
+    typeof risk.take_profit_level === 'number'
+      ? `止盈线 ${ruleNumber(risk.take_profit_level)}`
+      : '',
+    typeof risk.stop_loss_level === 'number'
+      ? `止损线 ${ruleNumber(risk.stop_loss_level)}`
+      : '',
+    typeof risk.trailing_level === 'number'
+      ? `跟踪线 ${ruleNumber(risk.trailing_level)}`
+      : '',
   ].filter(Boolean);
   return { time: '', text: levels.join(' · ') || '—', detail: '' };
 }
 
 function matchesSelectedVariant(variantId: unknown) {
-  return selectedForwardVariant.value === 'all' ||
-    variantId === selectedForwardVariant.value;
+  return (
+    selectedForwardVariant.value === 'all' ||
+    variantId === selectedForwardVariant.value
+  );
 }
 
 const forwardVariantOptions = computed(() => [
@@ -487,18 +534,24 @@ type ForwardDatabaseLedger = {
   sync_error?: string | null;
 };
 
-const forwardDatabaseLedger = computed<ForwardDatabaseLedger>(() =>
-  forwardPaper.value?.summary.database_ledger ||
-  forwardPaper.value?.checkpoint?.database_ledger ||
-  { enabled: false, sync_error: null },
+const forwardDatabaseLedger = computed<ForwardDatabaseLedger>(
+  () =>
+    forwardPaper.value?.summary.database_ledger ||
+    forwardPaper.value?.checkpoint?.database_ledger || {
+      enabled: false,
+      sync_error: null,
+    },
 );
 
 const forwardVariantRows = computed(() => {
   const response = forwardPaper.value;
   if (!response) return [];
-  const summaries = response.variants || response.checkpoint?.variant_summaries || {};
-  const replaySummaries = response.last_successful_replay?.variants ||
-    response.checkpoint?.variant_summaries || {};
+  const summaries =
+    response.variants || response.checkpoint?.variant_summaries || {};
+  const replaySummaries =
+    response.last_successful_replay?.variants ||
+    response.checkpoint?.variant_summaries ||
+    {};
   const currentReady = forwardCurrentReady.value;
   return (response.manifest.variants || []).map((variant) => {
     const summary = summaries[variant.variant_id] || {};
@@ -523,7 +576,9 @@ const forwardDecisionRows = computed(() => {
     .flatMap((event, eventIndex) => {
       const candidates = eventList(event.candidates);
       const exits = eventList(event.exits);
-      const baseKey = event.event_id || `${event.variant_id}-${event.candle_utc}-${eventIndex}`;
+      const baseKey =
+        event.event_id ||
+        `${event.variant_id}-${event.candle_utc}-${eventIndex}`;
       const makeRow = (
         detail: Record<string, unknown>,
         detailIndex: number,
@@ -535,46 +590,63 @@ const forwardDecisionRows = computed(() => {
         event_time: eventText(event.execution_at_utc),
         coin: eventText(detail.pair ?? detail.coin),
         action_side: [
-          paperReason(detail.decision ?? detail.status ?? (kind === 'exit' ? '退出' : '候选')),
+          paperReason(
+            detail.decision ??
+              detail.status ??
+              (kind === 'exit' ? '退出' : '候选'),
+          ),
           eventText(detail.side, ''),
-        ].filter(Boolean).join(' / '),
+        ]
+          .filter(Boolean)
+          .join(' / '),
         filter: filterEvidence(detail.range_filter),
         trigger: triggerEvidence(detail.trigger, detail.risk_state),
         fee: eventText(detail.expected_fee),
         reason: paperReason(detail.reason ?? event.decision_reason),
       });
       const rows = [
-        ...candidates.map((candidate, index) => makeRow(candidate, index, 'candidate')),
-        ...exits.map((exit, index) => makeRow(exit, candidates.length + index, 'exit')),
+        ...candidates.map((candidate, index) =>
+          makeRow(candidate, index, 'candidate'),
+        ),
+        ...exits.map((exit, index) =>
+          makeRow(exit, candidates.length + index, 'exit'),
+        ),
       ];
       if (rows.length) return rows;
-      return [{
-        key: `${baseKey}-summary`,
-        variant_id: event.variant_id,
-        candle_utc: eventText(event.candle_utc),
-        event_time: eventText(event.execution_at_utc),
-        coin: '—',
-        action_side: '决策事件',
-        filter: { text: '—', status: '', ready: null },
-        trigger: { text: '—', detail: '', time: '' },
-        fee: '—',
-        reason: paperReason(event.decision_reason),
-      }];
+      return [
+        {
+          key: `${baseKey}-summary`,
+          variant_id: event.variant_id,
+          candle_utc: eventText(event.candle_utc),
+          event_time: eventText(event.execution_at_utc),
+          coin: '—',
+          action_side: '决策事件',
+          filter: { text: '—', status: '', ready: null },
+          trigger: { text: '—', detail: '', time: '' },
+          fee: '—',
+          reason: paperReason(event.decision_reason),
+        },
+      ];
     })
     .reverse();
 });
 
 function decisionReasonForFill(fill: ForwardPaperEvent) {
-  const decision = (forwardPaper.value?.decisions || []).find((event) =>
-    event.variant_id === fill.variant_id &&
-    event.candle_utc === fill.candle_utc,
+  const decision = (forwardPaper.value?.decisions || []).find(
+    (event) =>
+      event.variant_id === fill.variant_id &&
+      event.candle_utc === fill.candle_utc,
   );
   if (!decision) return '成交事件未保存原因';
-  const details = fill.action === 'entry'
-    ? eventList(decision.candidates)
-    : eventList(decision.exits);
+  const details =
+    fill.action === 'entry'
+      ? eventList(decision.candidates)
+      : eventList(decision.exits);
   const match = details.find((detail) => detail.coin === fill.coin);
-  return eventText(match?.reason ?? decision.decision_reason, '成交事件未保存原因');
+  return eventText(
+    match?.reason ?? decision.decision_reason,
+    '成交事件未保存原因',
+  );
 }
 
 const forwardFillRows = computed(() =>
@@ -583,17 +655,22 @@ const forwardFillRows = computed(() =>
     .slice(-30)
     .reverse()
     .map((event, index) => ({
-      key: event.event_id || `${event.variant_id}-${event.filled_at_utc}-${index}`,
+      key:
+        event.event_id || `${event.variant_id}-${event.filled_at_utc}-${index}`,
       variant_id: event.variant_id,
       candle_utc: eventText(event.candle_utc),
       event_time: eventText(event.filled_at_utc),
       coin: eventText(event.coin),
-      action_side: [eventText(event.action), eventText(event.side, '')].filter(Boolean).join(' / '),
+      action_side: [eventText(event.action), eventText(event.side, '')]
+        .filter(Boolean)
+        .join(' / '),
       price: eventText(event.price),
       quantity: eventText(event.quantity),
       fee: eventText(event.fee),
       profit_abs: eventText(event.profit_abs),
-      reason: paperReason(event.reason ?? event.exit_reason ?? decisionReasonForFill(event)),
+      reason: paperReason(
+        event.reason ?? event.exit_reason ?? decisionReasonForFill(event),
+      ),
       trigger: triggerEvidence(event.trigger, event.risk_state),
     })),
 );
@@ -604,17 +681,22 @@ const forwardCloseRows = computed(() =>
     .slice(-30)
     .reverse()
     .map((event, index) => ({
-      key: event.event_id || `${event.variant_id}-${event.filled_at_utc}-${index}`,
+      key:
+        event.event_id || `${event.variant_id}-${event.filled_at_utc}-${index}`,
       variant_id: event.variant_id,
       candle_utc: eventText(event.candle_utc),
       event_time: eventText(event.filled_at_utc ?? event.close_date),
       coin: eventText(event.coin ?? event.pair),
-      action_side: ['平仓', eventText(event.side, '')].filter(Boolean).join(' / '),
+      action_side: ['平仓', eventText(event.side, '')]
+        .filter(Boolean)
+        .join(' / '),
       price: eventText(event.price ?? event.close_rate),
       quantity: eventText(event.quantity),
       fee: eventText(event.fee),
       profit_abs: eventText(event.profit_abs ?? event.pnl),
-      reason: paperReason(event.reason ?? event.exit_reason ?? decisionReasonForFill(event)),
+      reason: paperReason(
+        event.reason ?? event.exit_reason ?? decisionReasonForFill(event),
+      ),
       trigger: triggerEvidence(event.trigger, event.risk_state),
     })),
 );
@@ -648,34 +730,36 @@ async function load() {
         assertLedgerSnapshot(ledgerResult.value);
         ledger.value = ledgerResult.value;
         ledgerRefreshedAt.value = new Date().toLocaleString('zh-CN');
-      } catch (cause) {
-        error.value = readError(cause, '证据账响应不完整');
+      } catch {
+        error.value = '证据账响应不完整，请重试';
       }
     } else {
-      error.value = readError(ledgerResult.reason, '证据账读取失败');
+      error.value = '证据账读取失败，请重试';
     }
     if (forwardResult.status === 'fulfilled') {
       try {
         assertForwardSnapshot(forwardResult.value);
         forwardPaper.value = forwardResult.value;
         forwardRefreshedAt.value = new Date().toLocaleString('zh-CN');
-        if (!forwardVariantOptions.value.some((item) => item.value === selectedForwardVariant.value)) {
+        if (
+          !forwardVariantOptions.value.some(
+            (item) => item.value === selectedForwardVariant.value,
+          )
+        ) {
           selectedForwardVariant.value = 'all';
         }
-      } catch (cause) {
-        forwardError.value = readError(cause, '前向纸面响应不完整');
+      } catch {
+        forwardError.value = '前向纸面响应不完整，请重试';
       }
     } else {
-      forwardError.value = readError(forwardResult.reason, '前向纸面运行读取失败');
+      forwardError.value = '前向纸面运行读取失败，请重试';
     }
   } finally {
-    loading.value = false;
-    forwardLoading.value = false;
+    if (active) {
+      loading.value = false;
+      forwardLoading.value = false;
+    }
   }
-}
-
-function readError(cause: unknown, fallback: string) {
-  return cause instanceof Error && cause.message ? cause.message : fallback;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -686,18 +770,31 @@ function assertLedgerSnapshot(snapshot: ResearchLedger) {
   if (!isRecord(snapshot) || !isRecord(snapshot.summary)) {
     throw new Error('证据账响应缺少摘要，无法读取本次快照');
   }
-  for (const field of ['versions', 'actual_trades', 'actual_orders', 'lessons', 'directions'] as const) {
+  for (const field of [
+    'versions',
+    'actual_trades',
+    'actual_orders',
+    'lessons',
+    'directions',
+  ] as const) {
     if (!Array.isArray(snapshot[field]) || !snapshot[field].every(isRecord)) {
       throw new Error(`证据账响应缺少有效的 ${field} 列表`);
     }
   }
-  if (!Array.isArray(snapshot.errors) || !snapshot.errors.every((item) => typeof item === 'string')) {
+  if (
+    !Array.isArray(snapshot.errors) ||
+    !snapshot.errors.every((item) => typeof item === 'string')
+  ) {
     throw new Error('证据账响应缺少有效的数据错误列表');
   }
 }
 
 function assertForwardSnapshot(snapshot: ForwardPaperResponse) {
-  if (!isRecord(snapshot) || !isRecord(snapshot.summary) || !isRecord(snapshot.manifest)) {
+  if (
+    !isRecord(snapshot) ||
+    !isRecord(snapshot.summary) ||
+    !isRecord(snapshot.manifest)
+  ) {
     throw new Error('前向纸面响应缺少摘要或规则清单，无法读取本次快照');
   }
   for (const field of ['decisions', 'fills', 'closes'] as const) {
@@ -705,8 +802,11 @@ function assertForwardSnapshot(snapshot: ForwardPaperResponse) {
       throw new Error(`前向纸面响应缺少有效的 ${field} 列表`);
     }
   }
-  if (snapshot.manifest.variants != null &&
-      (!Array.isArray(snapshot.manifest.variants) || !snapshot.manifest.variants.every(isRecord))) {
+  if (
+    snapshot.manifest.variants != null &&
+    (!Array.isArray(snapshot.manifest.variants) ||
+      !snapshot.manifest.variants.every(isRecord))
+  ) {
     throw new Error('前向纸面规则清单中的变体列表无效');
   }
 }
@@ -736,9 +836,11 @@ onBeforeUnmount(() => {
       type="error"
       show-icon
       :message="error"
-      :description="ledger
-        ? `本次刷新失败，保留 ${ledgerRefreshedAt} 读取的快照；下次自动刷新会重试。`
-        : '证据账暂不可用，请重试；读取失败不代表账本没有数据。'"
+      :description="
+        ledger
+          ? `本次刷新失败，保留 ${ledgerRefreshedAt} 读取的快照；下次自动刷新会重试。`
+          : '证据账暂不可用，请重试；读取失败不代表账本没有数据。'
+      "
     >
       <template #action
         ><Button size="small" @click="load">重试</Button></template
@@ -756,7 +858,8 @@ onBeforeUnmount(() => {
       <div class="mb-3 text-xs text-muted-foreground">
         来源 {{ value(ledger.source_id) }} · 接口快照
         {{ value(ledger.generated_at) }} · 研究账本事件同步
-        {{ value(ledger.last_synced_at) }} · 最近成功读取 {{ ledgerRefreshedAt }}
+        {{ value(ledger.last_synced_at) }} · 最近成功读取
+        {{ ledgerRefreshedAt }}
         · 页面可见时每 30 秒自动刷新
       </div>
 
@@ -792,25 +895,46 @@ onBeforeUnmount(() => {
           <div class="mt-1 text-xs text-muted-foreground">
             已平仓 {{ value(group.count) }} 笔
           </div>
-          <div v-if="group.missing && group.missing > 0" class="mt-1 text-xs text-orange-600">
-            收益缺失 {{ group.missing }} 笔；已知小计 {{ number(group.known) }}，非完整收益。
+          <div
+            v-if="group.missing && group.missing > 0"
+            class="mt-1 text-xs text-orange-600"
+          >
+            收益缺失 {{ group.missing }} 笔；已知小计
+            {{ number(group.known) }}，非完整收益。
           </div>
         </div>
       </div>
       <div class="mt-2 text-xs text-muted-foreground">
-        账户收益包含全部已平仓交易。策略归因计入信号、止盈、风控、强平和执行故障结果；force_exit / force_sell 属于外部干预，单独记录，不计入策略表现。未平仓浮盈亏不计入已实现收益。原因未知不等于人工干预。
+        账户收益包含全部已平仓交易。策略归因计入信号、止盈、风控、强平和执行故障结果；force_exit
+        / force_sell
+        属于外部干预，单独记录，不计入策略表现。未平仓浮盈亏不计入已实现收益。原因未知不等于人工干预。
       </div>
-      <div v-if="ledger.exit_classification_limitations?.length" class="mt-2 text-xs text-muted-foreground">
+      <div
+        v-if="ledger.exit_classification_limitations?.length"
+        class="mt-2 text-xs text-muted-foreground"
+      >
         归因限制：{{ join(ledger.exit_classification_limitations) }}
       </div>
-      <div v-if="ledger.summary.unknown_trade_state_count" class="mt-2 text-xs text-orange-600">
-        {{ ledger.summary.unknown_trade_state_count }} 笔交易的开闭仓状态未知，不作已平仓收益推断。
+      <div
+        v-if="ledger.summary.unknown_trade_state_count"
+        class="mt-2 text-xs text-orange-600"
+      >
+        {{ ledger.summary.unknown_trade_state_count }}
+        笔交易的开闭仓状态未知，不作已平仓收益推断。
       </div>
-      <div v-if="ledger.summary.externally_intervened_trade_count" class="mt-2 text-xs text-orange-600">
-        {{ ledger.summary.externally_intervened_trade_count }} 笔交易存在外部干预成交证据（包含尚未平仓的外部减仓）。有外部干预的已平仓交易整笔归外部，不拆分策略损益。
+      <div
+        v-if="ledger.summary.externally_intervened_trade_count"
+        class="mt-2 text-xs text-orange-600"
+      >
+        {{ ledger.summary.externally_intervened_trade_count }}
+        笔交易存在外部干预成交证据（包含尚未平仓的外部减仓）。有外部干预的已平仓交易整笔归外部，不拆分策略损益。
       </div>
-      <div v-if="ledger.summary.partial_exit_audit_unknown_trade_count" class="mt-2 text-xs text-muted-foreground">
-        {{ ledger.summary.partial_exit_audit_unknown_trade_count }} 笔交易缺少完整的订单标签审计，不能仅凭最终离场原因排除外部部分平仓。
+      <div
+        v-if="ledger.summary.partial_exit_audit_unknown_trade_count"
+        class="mt-2 text-xs text-muted-foreground"
+      >
+        {{ ledger.summary.partial_exit_audit_unknown_trade_count }}
+        笔交易缺少完整的订单标签审计，不能仅凭最终离场原因排除外部部分平仓。
       </div>
       <div
         v-if="ledger.summary.closed_trade_count === 0"
@@ -907,7 +1031,10 @@ onBeforeUnmount(() => {
         message="API 请求记录与订单成交分开核验"
         description="API 已接受仅表示接口接受请求，不代表成交成功。过去未记录的操作，以及绕过认证代理直连机器人的请求，无法据此追溯调用者；不会猜测历史 force_exit 的操作者。"
       />
-      <div v-if="ledger.operation_audit?.limitations?.length" class="mb-2 text-xs text-muted-foreground">
+      <div
+        v-if="ledger.operation_audit?.limitations?.length"
+        class="mb-2 text-xs text-muted-foreground"
+      >
         覆盖限制：{{ join(ledger.operation_audit.limitations) }}
       </div>
       <Table
@@ -922,33 +1049,65 @@ onBeforeUnmount(() => {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'actor'">
             <div class="text-xs">{{ value(record.actor) }}</div>
-            <div class="text-xs text-muted-foreground">{{ value(record.source_ip) }}</div>
+            <div class="text-xs text-muted-foreground">
+              {{ value(record.source_ip) }}
+            </div>
           </template>
           <template v-else-if="column.key === 'action'">
             <div class="text-xs">{{ operationActionText(record.action) }}</div>
-            <div class="font-mono text-xs text-muted-foreground">{{ record.method }} {{ record.path }}</div>
+            <div class="font-mono text-xs text-muted-foreground">
+              {{ record.method }} {{ record.path }}
+            </div>
           </template>
           <template v-else-if="column.key === 'target'">
-            <span class="break-all font-mono text-xs">{{ config(record.target) }}</span>
+            <span class="break-all font-mono text-xs">{{
+              config(record.target)
+            }}</span>
           </template>
           <template v-else-if="column.key === 'outcome'">
-            <Tag :color="operationOutcomeColor(record.outcome)">{{ operationOutcomeText(record.outcome) }}</Tag>
-            <div v-if="record.upstream_status != null" class="text-xs">HTTP {{ record.upstream_status }}</div>
+            <Tag :color="operationOutcomeColor(record.outcome)">{{
+              operationOutcomeText(record.outcome)
+            }}</Tag>
+            <div v-if="record.upstream_status != null" class="text-xs">
+              HTTP {{ record.upstream_status }}
+            </div>
           </template>
           <template v-else-if="column.key === 'result'">
-            <div class="text-xs">{{ record.result_event_id ? `响应时间 ${value(record.finished_at_utc)}` : '没有响应记录，结果未知' }}</div>
-            <div v-if="record.error_code" class="font-mono text-xs text-orange-600">{{ record.error_code }}</div>
-            <div v-if="record.result_event_id" class="break-all font-mono text-xs text-muted-foreground">{{ record.result_event_id }}</div>
+            <div class="text-xs">
+              {{
+                record.result_event_id
+                  ? `响应时间 ${value(record.finished_at_utc)}`
+                  : '没有响应记录，结果未知'
+              }}
+            </div>
+            <div
+              v-if="record.error_code"
+              class="font-mono text-xs text-orange-600"
+            >
+              {{ record.error_code }}
+            </div>
+            <div
+              v-if="record.result_event_id"
+              class="break-all font-mono text-xs text-muted-foreground"
+            >
+              {{ record.result_event_id }}
+            </div>
           </template>
           <template v-else-if="column.dataIndex === 'request_id'">
-            <span class="break-all font-mono text-xs">{{ record.request_id }}</span>
+            <span class="break-all font-mono text-xs">{{
+              record.request_id
+            }}</span>
           </template>
         </template>
       </Table>
       <Empty
         v-else
         :image="Empty.PRESENTED_IMAGE_SIMPLE"
-        :description="ledger.operation_audit ? '暂无已记录的操作请求，不表示历史上无人干预' : '操作审计记录暂不可用'"
+        :description="
+          ledger.operation_audit
+            ? '暂无已记录的操作请求，不表示历史上无人干预'
+            : '操作审计记录暂不可用'
+        "
       />
 
       <div class="mt-5 grid gap-4 lg:grid-cols-2">
@@ -988,17 +1147,36 @@ onBeforeUnmount(() => {
                   <Tag :color="exitCategoryColor(record.exit_category)">
                     {{ exitCategoryText(record.exit_category) }}
                   </Tag>
-                  <Tag v-if="record.externally_intervened" color="orange">外部干预成交</Tag>
-                  <div v-if="record.exit_classification_basis === 'filled_external_exit_order'" class="text-muted-foreground">
-                    依据：已成交外部退出订单 {{ value(record.external_exit_order_count) }} 笔
+                  <Tag v-if="record.externally_intervened" color="orange"
+                    >外部干预成交</Tag
+                  >
+                  <div
+                    v-if="
+                      record.exit_classification_basis ===
+                      'filled_external_exit_order'
+                    "
+                    class="text-muted-foreground"
+                  >
+                    依据：已成交外部退出订单
+                    {{ value(record.external_exit_order_count) }} 笔
                   </div>
-                  <div v-if="record.order_tag_audit_unknown !== false" class="text-muted-foreground">
+                  <div
+                    v-if="record.order_tag_audit_unknown !== false"
+                    class="text-muted-foreground"
+                  >
                     部分退出审计不完整
                   </div>
                 </div>
               </template>
               <template v-else-if="column.key === 'strategy'">
-                <span class="text-xs" :class="record.exit_category === 'external_intervention' ? 'text-orange-600' : ''">
+                <span
+                  class="text-xs"
+                  :class="
+                    record.exit_category === 'external_intervention'
+                      ? 'text-orange-600'
+                      : ''
+                  "
+                >
                   {{ strategyProfitText(record) }}
                 </span>
               </template>
@@ -1016,7 +1194,12 @@ onBeforeUnmount(() => {
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.dataIndex === 'order_id'">
-                <Button class="!px-0 font-mono text-xs" size="small" type="link" @click="showOrderDetail(record)">
+                <Button
+                  class="!px-0 font-mono text-xs"
+                  size="small"
+                  type="link"
+                  @click="showOrderDetail(record)"
+                >
                   {{ orderDisplayId(record) }}
                 </Button>
               </template>
@@ -1099,7 +1282,7 @@ onBeforeUnmount(() => {
         type="warning"
         show-icon
         message="账本存在数据错误"
-        :description="ledger.errors.join('；')"
+        :description="`账本报告 ${ledger.errors.length} 项数据错误；内部诊断未在页面展开，请由运维核对原始记录。`"
       />
     </template>
   </Card>
@@ -1119,7 +1302,11 @@ onBeforeUnmount(() => {
       class="mb-3"
       type="warning"
       show-icon
-      :message="forwardPaper ? '前向纸面记录刷新失败，保留上次快照' : '前向纸面记录暂不可用'"
+      :message="
+        forwardPaper
+          ? '前向纸面记录刷新失败，保留上次快照'
+          : '前向纸面记录暂不可用'
+      "
       :description="`${forwardError}${forwardPaper ? `；最近成功读取 ${forwardRefreshedAt}` : '；读取失败不代表没有运行记录'}`"
     />
     <Empty
@@ -1130,17 +1317,27 @@ onBeforeUnmount(() => {
       <div class="mb-3 text-xs text-muted-foreground">
         运行 {{ forwardPaper.run_id }} · 最近 K 线
         {{ value(forwardPaper.summary.candle_through_utc) }} · 数据指纹
-        <span class="font-mono">{{ value(forwardPaper.summary.data_fingerprint) }}</span>
+        <span class="font-mono">{{
+          value(forwardPaper.summary.data_fingerprint)
+        }}</span>
         · 最近成功读取 {{ forwardRefreshedAt }} · 页面可见时每 30 秒自动刷新
       </div>
       <Alert
         class="mb-3"
         :type="forwardDatabaseLedger.sync_error ? 'warning' : 'info'"
         show-icon
-        :message="forwardDatabaseLedger.enabled
-          ? (forwardDatabaseLedger.sync_error ? '数据库账本同步待重试' : '数据库账本已接通')
-          : '数据库账本未接通，当前使用本地 JSONL outbox'"
-        :description="forwardDatabaseLedger.sync_error || '纸面回放不会因数据库暂时不可用而中断；后续更新或重启会重试同步。'"
+        :message="
+          forwardDatabaseLedger.enabled
+            ? forwardDatabaseLedger.sync_error
+              ? '数据库账本同步待重试'
+              : '数据库账本已接通'
+            : '数据库账本未接通，当前使用本地 JSONL outbox'
+        "
+        :description="
+          forwardDatabaseLedger.sync_error
+            ? '同步失败，内部诊断未在页面展开；纸面记录仍保留，后续更新或重启会重试同步。'
+            : '纸面回放不会因数据库暂时不可用而中断；后续更新或重启会重试同步。'
+        "
       />
       <div class="grid grid-cols-2 gap-3 lg:grid-cols-7">
         <div
@@ -1149,7 +1346,10 @@ onBeforeUnmount(() => {
             ['决策', forwardPaper.summary.decision_count],
             ['成交', forwardPaper.summary.fill_count],
             ['变体数', forwardVariantRows.length],
-            ['数据库同步事件', forwardDatabaseLedger.synced_event_count ?? '未知'],
+            [
+              '数据库同步事件',
+              forwardDatabaseLedger.synced_event_count ?? '未知',
+            ],
           ]"
           :key="item[0]"
           class="rounded-lg border border-gray-100 p-3 dark:border-gray-800"
@@ -1186,7 +1386,9 @@ onBeforeUnmount(() => {
             <div class="text-xs leading-5">
               <div>{{ record.rules.channel }} · {{ record.rules.filter }}</div>
               <div>{{ record.rules.exits }}</div>
-              <div class="text-muted-foreground">{{ record.rules.execution }}</div>
+              <div class="text-muted-foreground">
+                {{ record.rules.execution }}
+              </div>
             </div>
           </template>
           <template v-else-if="column.key === 'current_status'">
@@ -1195,13 +1397,23 @@ onBeforeUnmount(() => {
             </Tag>
           </template>
           <template v-else-if="column.key === 'replay_status'">
-            <Tag :color="record.replay_status === true ? 'green' : record.replay_status === false ? 'red' : 'default'">
+            <Tag
+              :color="
+                record.replay_status === true
+                  ? 'green'
+                  : record.replay_status === false
+                    ? 'red'
+                    : 'default'
+              "
+            >
               {{ replayStatus(record.replay_status) }}
             </Tag>
           </template>
           <template v-else-if="column.key === 'realized'">
             <span class="font-mono text-xs">{{
-              forwardNumber(record.realized_profit_after_fee_before_unknown_costs)
+              forwardNumber(
+                record.realized_profit_after_fee_before_unknown_costs,
+              )
             }}</span>
           </template>
           <template v-else-if="column.key === 'floating'">
@@ -1230,7 +1442,9 @@ onBeforeUnmount(() => {
         />
       </div>
       <div class="mt-1 mb-3 text-xs text-muted-foreground">
-        接口按事件返回最近记录；决策候选按币种展开。时间均为 UTC，信号 K 线时间与执行 / 成交时间分开显示。纸面成交不代表实盘成交；滑点和资金费未知。
+        接口按事件返回最近记录；决策候选按币种展开。时间均为 UTC，信号 K
+        线时间与执行 /
+        成交时间分开显示。纸面成交不代表实盘成交；滑点和资金费未知。
       </div>
 
       <div class="mb-4">
@@ -1246,7 +1460,16 @@ onBeforeUnmount(() => {
             <template v-if="column.key === 'filter'">
               <div class="text-xs">
                 <div>{{ record.filter.text }}</div>
-                <Tag v-if="record.filter.status" :color="record.filter.ready === false ? 'orange' : record.filter.ready === true ? 'green' : 'default'">
+                <Tag
+                  v-if="record.filter.status"
+                  :color="
+                    record.filter.ready === false
+                      ? 'orange'
+                      : record.filter.ready === true
+                        ? 'green'
+                        : 'default'
+                  "
+                >
                   {{ record.filter.status }}
                 </Tag>
               </div>
@@ -1254,8 +1477,12 @@ onBeforeUnmount(() => {
             <template v-else-if="column.key === 'trigger'">
               <div class="text-xs">
                 <div>{{ record.trigger.text }}</div>
-                <div v-if="record.trigger.time" class="text-muted-foreground">触发 K 线 {{ record.trigger.time }}</div>
-                <div v-if="record.trigger.detail" class="text-muted-foreground">{{ record.trigger.detail }}</div>
+                <div v-if="record.trigger.time" class="text-muted-foreground">
+                  触发 K 线 {{ record.trigger.time }}
+                </div>
+                <div v-if="record.trigger.detail" class="text-muted-foreground">
+                  {{ record.trigger.detail }}
+                </div>
               </div>
             </template>
             <template v-else-if="column.dataIndex === 'reason'">
@@ -1282,8 +1509,12 @@ onBeforeUnmount(() => {
             <template v-if="column.key === 'trigger'">
               <div class="text-xs">
                 <div>{{ record.trigger.text }}</div>
-                <div v-if="record.trigger.time" class="text-muted-foreground">触发 K 线 {{ record.trigger.time }}</div>
-                <div v-if="record.trigger.detail" class="text-muted-foreground">{{ record.trigger.detail }}</div>
+                <div v-if="record.trigger.time" class="text-muted-foreground">
+                  触发 K 线 {{ record.trigger.time }}
+                </div>
+                <div v-if="record.trigger.detail" class="text-muted-foreground">
+                  {{ record.trigger.detail }}
+                </div>
               </div>
             </template>
             <template v-else-if="column.dataIndex === 'reason'">
@@ -1310,8 +1541,12 @@ onBeforeUnmount(() => {
             <template v-if="column.key === 'trigger'">
               <div class="text-xs">
                 <div>{{ record.trigger.text }}</div>
-                <div v-if="record.trigger.time" class="text-muted-foreground">触发 K 线 {{ record.trigger.time }}</div>
-                <div v-if="record.trigger.detail" class="text-muted-foreground">{{ record.trigger.detail }}</div>
+                <div v-if="record.trigger.time" class="text-muted-foreground">
+                  触发 K 线 {{ record.trigger.time }}
+                </div>
+                <div v-if="record.trigger.detail" class="text-muted-foreground">
+                  {{ record.trigger.detail }}
+                </div>
               </div>
             </template>
             <template v-else-if="column.dataIndex === 'reason'">
@@ -1331,17 +1566,26 @@ onBeforeUnmount(() => {
   <Modal v-model:open="orderDetailOpen" :footer="null" title="订单详情（只读）">
     <div v-if="selectedOrder" class="grid grid-cols-[110px_1fr] gap-3 text-sm">
       <span class="text-muted-foreground">展示编号</span>
-      <span class="break-all font-mono">{{ orderDisplayId(selectedOrder) }}</span>
+      <span class="break-all font-mono">{{
+        orderDisplayId(selectedOrder)
+      }}</span>
       <span class="text-muted-foreground">原始订单号</span>
-      <span class="break-all font-mono">{{ value(selectedOrder.order_id) }}</span>
+      <span class="break-all font-mono">{{
+        value(selectedOrder.order_id)
+      }}</span>
       <span class="text-muted-foreground">订单时间（北京）</span>
       <span>{{ fullOrderTime(selectedOrder.order_date) }}</span>
       <span class="text-muted-foreground">币对 / 方向</span>
-      <span>{{ value(selectedOrder.pair) }} / {{ value(selectedOrder.side) }}</span>
+      <span
+        >{{ value(selectedOrder.pair) }} / {{ value(selectedOrder.side) }}</span
+      >
       <span class="text-muted-foreground">状态</span>
       <span>{{ value(selectedOrder.status) }}</span>
       <span class="text-muted-foreground">数量 / 成交</span>
-      <span>{{ value(selectedOrder.amount) }} / {{ value(selectedOrder.filled) }}</span>
+      <span
+        >{{ value(selectedOrder.amount) }} /
+        {{ value(selectedOrder.filled) }}</span
+      >
       <span class="text-muted-foreground">价格</span>
       <span>{{ value(selectedOrder.price) }}</span>
       <span class="text-muted-foreground">交易关联</span>

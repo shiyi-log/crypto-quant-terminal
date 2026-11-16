@@ -940,6 +940,7 @@ describe('useVbenForm integration', () => {
   });
 
   it('respects blur and change validation triggers', async () => {
+    vi.useFakeTimers();
     const [Form] = useVbenForm({
       schema: [
         {
@@ -964,6 +965,8 @@ describe('useVbenForm integration', () => {
     expect(wrapper.text()).not.toContain('Name is required');
 
     await input.trigger('blur');
+    // 底层异步校验即使 debounce=0 也经过定时器，单独 flushPromises 不推进它。
+    await vi.runAllTimersAsync();
     await flushPromises();
     expect(wrapper.text()).toContain('Name is required');
 
@@ -972,6 +975,7 @@ describe('useVbenForm integration', () => {
     expect(wrapper.text()).not.toContain('Name is required');
 
     await input.trigger('blur');
+    await vi.runAllTimersAsync();
     await flushPromises();
     expect(wrapper.text()).not.toContain('Name is required');
   });
@@ -1052,6 +1056,7 @@ describe('useVbenForm integration', () => {
   });
 
   it('does not expose raw values through native form submit events', async () => {
+    vi.useFakeTimers();
     const onSubmit = vi.fn();
     const [Form, formApi] = useVbenForm({
       schema: [
@@ -1070,6 +1075,8 @@ describe('useVbenForm integration', () => {
 
     await formApi.setFieldValue('name', ' raw ');
     await wrapper.get('form').trigger('submit');
+    // 明确完成真实校验调度后再检查事件，既不放宽等待，也不泄漏原始值。
+    await vi.runAllTimersAsync();
     await flushPromises();
 
     expect(onSubmit).toHaveBeenCalledOnce();

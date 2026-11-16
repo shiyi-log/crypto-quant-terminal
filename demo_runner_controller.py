@@ -30,7 +30,8 @@ class DemoRunnerController:
     def __init__(self, data_store, demo_store, credential_provider, adapter_factory=None,
                  *, paper_source=None, lock_path=None, clock_ms=None, ledger_factory=None,
                  risk_gate_required=None, risk_account_scope=None, gate_registry=None,
-                 acceptance_round_provider=None, acceptance_round_required=False):
+                 acceptance_round_provider=None, acceptance_round_required=False,
+                 safety_runtime_factory=None):
         self.data_store, self.demo_store = data_store, demo_store
         self.credential_provider = credential_provider
         if adapter_factory is None:
@@ -81,6 +82,8 @@ class DemoRunnerController:
         self.acceptance_round_provider = acceptance_round_provider
         self.acceptance_round_required = bool(acceptance_round_required)
         self._acceptance_round = None
+        # 仅接收组合根的内部工厂，HTTP 字段不能构造权威风险/保护事实。
+        self.safety_runtime_factory = safety_runtime_factory
 
     def _acceptance_mode(self):
         # Lifecycle calls can precede resume_protection after a process restart.
@@ -483,12 +486,31 @@ class DemoRunnerController:
         scope = self.risk_account_scope or self._credential_fingerprint
         risk_store = (self.ledger_factory("account_risk_" + hashlib.sha256(
             str(scope).encode()).hexdigest()[:48]) if scope else ledger)
-        return DemoExecutionService(adapter, ledger, self.paper, config,
+        required = bool(self.risk_account_scope or self.acceptance_round_required
+                        or self._acceptance_round or callable(self.acceptance_round_provider)
+                        or self.safety_runtime_factory is not None)
+        service = DemoExecutionService(adapter, ledger, self.paper, config,
                                     clock_ms=self.clock_ms,
                                     risk_store=risk_store,
+                                    safety_runtime_required=required,
+                                    account_writer_lock=self._account_cycle_lock,
                                     native_protection_required=bool(
                                         self.acceptance_round_required or self._acceptance_round),
                                     gate_registry=self.gate_registry)
+        if callable(self.safety_runtime_factory):
+            try:
+                runtime = self.safety_runtime_factory(account_scope=scope, ledger=ledger,
+                    adapter=adapter, account_lock=self._account_cycle_lock,
+                    strategy_id=str(account_id), acceptance_round=copy.deepcopy(self._acceptance_round))
+                from demo_safety_runtime import SafetyRuntime
+                if not isinstance(runtime, SafetyRuntime):
+                    raise ValueError("内部安全工厂未返回 SafetyRuntime")
+                runtime.bind(service)
+                service.safety_runtime = runtime
+            except Exception as error:
+                # 保护恢复仍可启动；入口由最终执行边界关闭。
+                service._status["safety_runtime_error"] = type(error).__name__
+        return service
 
     def _create(self, account_id, *, entries_enabled, research_id=None):
         if entries_enabled:

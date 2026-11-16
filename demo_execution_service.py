@@ -327,13 +327,17 @@ class DemoExecutionService:
     """
 
     def __init__(self, adapter, demo_store, paper_source, config, *, clock_ms=None,
-                 gate_registry=None, risk_store=None, native_protection_required=False):
+                 gate_registry=None, risk_store=None, native_protection_required=False,
+                 safety_runtime=None, safety_runtime_required=False, account_writer_lock=None):
         self.adapter, self.store, self.paper = adapter, demo_store, paper_source
         # 订单仍按策略账本隔离；风险按同一交易所账户共享，切换策略不得
         # 重置日锁、冷却或阶段回撤。控制器注入稳定账户范围的风险账本。
         self.risk_store = risk_store if risk_store is not None else demo_store
         self._shared_risk_store = risk_store is not None
         self.native_protection_required = bool(native_protection_required)
+        self.safety_runtime = safety_runtime
+        self.safety_runtime_required = bool(safety_runtime_required or native_protection_required)
+        self._account_writer_lock = account_writer_lock
         self.config = config
         # Always keep a registry at the final execution boundary.  Production
         # injects the auth-owned instance; direct callers get the persisted
@@ -360,6 +364,10 @@ class DemoExecutionService:
         self._status = {"running": False, "entries_enabled": False, "status": "not_started",
                         "environment": "binance_demo", "endpoint_host": HOST,
                         "strategy_id": config.strategy_id, "demo_policy_hash": self.policy_hash,
+                        "safety_runtime_required": self.safety_runtime_required,
+                        "acceptance_eligible": False,
+                        "execution_safety_mode": ("authoritative_runtime_required"
+                            if self.safety_runtime_required else "legacy_research_ineligible"),
                         "live_enabled": False, "hypothesis_status": "forward_research",
                         "seconds_hypothesis_tested": False,
                         "experiment_scope": "selected_candle_strategy_execution_only",
@@ -398,7 +406,21 @@ class DemoExecutionService:
                                             observed_ms=self.clock_ms() if now is None else now)
 
     def _account_lock(self):
-        return self.account_coordinator.lock if self.account_coordinator is not None else nullcontext()
+        if self.account_coordinator is not None:
+            return self.account_coordinator.lock
+        return self._account_writer_lock if self._account_writer_lock is not None else nullcontext()
+
+    def _safety_denial(self, event, now):
+        self._status["safety_runtime_reason"] = "safety_runtime_unavailable"
+        try:
+            self._record("entry_denied", event["event_id"], {
+                "reason": "safety_runtime_unavailable", "pair": event["payload"]["pair"],
+                "reason_zh": "缺少权威安全运行时，拒绝新增风险并继续自有减仓与对账"},
+                fingerprint=event["data_fingerprint"], now=now)
+        except Exception as error:
+            self._status["safety_runtime_audit_error"] = type(error).__name__
+            LOGGER.error("缺少权威安全运行时且拒绝审计未提交：账户=%s 错误类型=%s；继续已有仓位保护",
+                         self.config.virtual_account_key, type(error).__name__)
 
     def _direct_signal_source(self):
         return self.account["definition"].get("signal_source") == BURST_SIGNAL_SOURCE
@@ -855,7 +877,13 @@ class DemoExecutionService:
                 finalized = True
         return finalized
 
-    def _submit(self, intent, *, protective=False):
+    def _submit(self, intent, *, protective=False, reservation=None, context_id=None):
+        if not protective and self.safety_runtime_required and (
+                self.safety_runtime is None or reservation is None):
+            self._safety_denial({"event_id": intent["signal_id"],
+                "data_fingerprint": intent["input_fingerprint"],
+                "payload": {"pair": intent["pair"]}}, self.clock_ms())
+            return None
         if self.account_coordinator is not None and not protective:
             denied = self.account_coordinator.entry_denial(self.config.virtual_account_key, intent["pair"])
             if denied:
@@ -863,6 +891,14 @@ class DemoExecutionService:
                              {"reason": denied, "pair": intent["pair"]})
                 return None
         existing = self.store.get_order(intent["client_id"])
+        if reservation is not None:
+            if (protective or self.safety_runtime is None or reservation.get("accepted") is not True
+                    or not isinstance(reservation.get("order"), dict)
+                    or reservation["order"].get("client_id") != intent["client_id"]
+                    or not reservation["order"].get("risk_reservation_decision_id")):
+                raise ValueError("安全预占订单身份不匹配")
+            if existing is None:
+                raise ValueError("安全预占订单尚未提交到策略账本")
         if existing is not None:
             # Crash recovery may repeat a source event at a later clock time.
             # Its frozen intent wins; never rebuild expiry/sizing or retry it.
@@ -892,7 +928,10 @@ class DemoExecutionService:
         if not protective and (not self._entries_enabled or
                                not self._entry_gates_open()):
             return row
-        if not self.store.claim_submission(row["client_id"], claimed_ms=self.clock_ms()):
+        claimed = (self.safety_runtime.claim_entry(self, row, context_id=context_id, now_ms=self.clock_ms())
+                   if reservation is not None else self.store.claim_submission(
+                       row["client_id"], claimed_ms=self.clock_ms()))
+        if not claimed:
             return row
         try:
             if protective:
@@ -913,8 +952,12 @@ class DemoExecutionService:
                      # below; the order raw projection remains generic.
                      "raw": {"error_kind": kind, "error_type": type(exc).__name__}})
             else:
-                self.store.mark_submission_unknown(row["client_id"], type(exc).__name__,
-                                                    observed_ms=self.clock_ms())
+                if reservation is not None:
+                    self.safety_runtime.mark_unknown(row["client_id"], type(exc).__name__,
+                                                     observed_ms=self.clock_ms())
+                else:
+                    self.store.mark_submission_unknown(row["client_id"], type(exc).__name__,
+                                                        observed_ms=self.clock_ms())
             self._record("submission_error", row["signal_id"],
                          {"client_id": row["client_id"], "error_kind": kind,
                           "exchange_error_kind": exchange_kind,
@@ -1072,6 +1115,16 @@ class DemoExecutionService:
         elif net or any(row["pair"] == pair and row["status"] not in TERMINAL
                         and row["signal_id"] != event["event_id"] for row in self._orders()):
             denied = "existing_demo_position_or_pending_order"
+        if self.safety_runtime_required or self.safety_runtime is not None:
+            # 生产必须在读取旧纸面定仓参数之前进入权威安全路径。
+            if self.safety_runtime is None:
+                self._safety_denial(event, now)
+            elif denied:
+                self._record("entry_denied", event["event_id"], {"reason": denied, "pair": pair},
+                             fingerprint=event["data_fingerprint"], now=now)
+            else:
+                self.safety_runtime.enter(self, event, now_ms=now)
+            return
         candle = self.paper.closed_candle(pair, self.account["execution"]["timeframe"],
                                           int(payload["signal_candle_ms"]))
         evidence = payload.get("evidence") or {}
@@ -1207,6 +1260,8 @@ class DemoExecutionService:
                     balance = None
                     entry_snapshot_errors.append("balance_snapshot_unavailable")
                     self._record("snapshot_error", "balance_snapshot", {"error_type": type(exc).__name__}, now=now)
+                if self.safety_runtime is not None:
+                    self.safety_runtime.record_completions(self, now_ms=now)
                 risk_state = self._observe_risk(balance, positions, now)
                 self._apply_risk_actions(risk_state, now)
                 open_orders_snapshot_available = True
@@ -1234,6 +1289,17 @@ class DemoExecutionService:
                                        and conflict.partition(":")[2]})
                 self._status["blocked_pairs"] = blocked_pairs
                 # Conflicting unrelated orders cannot suppress owned protection.
+                if self.safety_runtime is not None:
+                    self.safety_runtime.reconcile(self, now_ms=now, positions=positions)
+                elif self.safety_runtime_required:
+                    self._entries_enabled = False
+                    self._status.update(entries_enabled=False, safety_runtime_reason="safety_runtime_unavailable")
+                    try:
+                        self._reconcile(now, cancel_entries=True)
+                    except Exception as cancel_error:
+                        self._status['safety_runtime_cancel_error'] = type(cancel_error).__name__
+                        LOGGER.error('缺少安全运行时且入口撤销未完成：账户=%s 错误类型=%s；继续自有仓位保护',
+                                     self.config.virtual_account_key, type(cancel_error).__name__)
                 self._protect(now)
                 checkpoint_ms = now
                 for event in self.paper.events(self.config.strategy_id, self.last_sequence):

@@ -11,7 +11,6 @@ import time
 import uuid
 
 from demo_execution_service import DemoExecutionService, DemoRunnerConfig, PaperEventSource
-from gate_registry import GateRegistry
 
 STATE_KEY = "binance_demo_runner_controller.json"
 SHARED_STATE_KEY = "binance_demo_shared_sessions.json"
@@ -30,7 +29,8 @@ class DemoHandoffError(RuntimeError):
 class DemoRunnerController:
     def __init__(self, data_store, demo_store, credential_provider, adapter_factory=None,
                  *, paper_source=None, lock_path=None, clock_ms=None, ledger_factory=None,
-                 risk_gate_required=None, risk_account_scope=None, gate_registry=None):
+                 risk_gate_required=None, risk_account_scope=None, gate_registry=None,
+                 acceptance_round_provider=None, acceptance_round_required=False):
         self.data_store, self.demo_store = data_store, demo_store
         self.credential_provider = credential_provider
         if adapter_factory is None:
@@ -75,6 +75,64 @@ class DemoRunnerController:
         self._risk_gate = None
         self._research_id = None
         self._risk_gate_binding_missing = False
+        # The provider is a server-side durable approval authority, never an
+        # HTTP body flag. Legacy research sessions can remain outside formal
+        # acceptance; a persisted round binding always keeps this gate active.
+        self.acceptance_round_provider = acceptance_round_provider
+        self.acceptance_round_required = bool(acceptance_round_required)
+        self._acceptance_round = None
+
+    def _acceptance_mode(self):
+        # Lifecycle calls can precede resume_protection after a process restart.
+        # Never let an unloaded persisted binding silently become legacy mode.
+        if self._acceptance_round is None:
+            for key in (STATE_KEY, SHARED_STATE_KEY):
+                saved = self.data_store.get_document(key, {})
+                if isinstance(saved, dict) and saved.get("acceptanceRound") is not None:
+                    self._acceptance_round = copy.deepcopy(saved["acceptanceRound"])
+                    break
+        return (self.acceptance_round_required or self._acceptance_round is not None
+                or callable(self.acceptance_round_provider))
+
+    def _require_acceptance_exclusive(self):
+        if self._acceptance_mode():
+            raise DemoHandoffError("demo_acceptance_round_exclusive",
+                                   "an acceptance round cannot add or switch strategies")
+
+    def _require_acceptance_round(self, account_id):
+        try:
+            if not self._acceptance_mode():
+                return
+            if self._parallel_sessions or self._shared_records:
+                raise DemoHandoffError("demo_acceptance_round_exclusive",
+                                       "acceptance requires a single frozen strategy writer")
+            candidate = self.acceptance_round_provider()
+            required = ("round_id", "environment", "account_scope", "strategy_id",
+                        "rule_hash", "execution_hash", "status",
+                        "approval_id", "approved_by")
+            if not isinstance(candidate, dict) or any(
+                    not isinstance(candidate.get(key), str) or not candidate[key].strip()
+                    or candidate[key] != candidate[key].strip() for key in required):
+                raise ValueError("missing approval identity")
+            frozen = self.paper.account(str(account_id))
+            if (candidate["environment"] != "binance_demo"
+                    or candidate["status"] != "active"
+                    or candidate["account_scope"] != self.risk_account_scope
+                    or candidate["strategy_id"] != str(account_id)
+                    or any(candidate[key] != frozen.get(key)
+                           for key in ("strategy_id", "rule_hash", "execution_hash"))):
+                raise ValueError("approval identity mismatch")
+            binding = {key: candidate[key] for key in required}
+            if self._acceptance_round is not None and self._acceptance_round != binding:
+                raise ValueError("round identity is already frozen")
+        except DemoHandoffError:
+            self._pause_members()
+            raise
+        except Exception:
+            self._pause_members()
+            raise DemoHandoffError("demo_acceptance_approval_required",
+                                   "matching active acceptance approval is required") from None
+        self._acceptance_round = binding
 
     def _gate_enabled(self, key):
         """Use the injected process registry when the public API has one."""
@@ -193,6 +251,7 @@ class DemoRunnerController:
                 "credentialFingerprint": self._credential_fingerprint,
                 "researchId": self._research_id,
                 "riskGate": copy.deepcopy(self._risk_gate),
+                "acceptanceRound": copy.deepcopy(self._acceptance_round),
                 "yieldedFlat": yielded, "sessions": list(records.values()),
                 "recoveryPolicy": "register_all_members_pause_entries_continue_owned_risk_protection"}
 
@@ -284,6 +343,7 @@ class DemoRunnerController:
                 "credentialFingerprint": self._credential_fingerprint,
                 "researchId": self._research_id,
                 "riskGate": copy.deepcopy(self._risk_gate),
+                "acceptanceRound": copy.deepcopy(self._acceptance_round),
                 "entriesEnabled": state["entries_enabled"], "yieldedFlat": False,
                 "status": state, "recoveryPolicy": "pause_entries_continue_owned_risk_protection"}
 
@@ -299,6 +359,7 @@ class DemoRunnerController:
             identity is None or identity[0] != research_id)
         self._research_id = research_id if identity is not None and identity[0] == research_id else None
         self._risk_gate = copy.deepcopy(saved_gate) if self._research_id else None
+        self._acceptance_round = copy.deepcopy(persisted.get("acceptanceRound"))
 
     def _shared_research_id(self, shared, *, account_id=None, namespace=None):
         """Resolve a shared gate only when every persisted member agrees."""
@@ -417,11 +478,21 @@ class DemoRunnerController:
     def _service(self, account_id, ledger, adapter):
         config = DemoRunnerConfig(str(account_id),
             virtual_account_key=ledger.virtual_account_key, trading_enabled=True)
+        # 独立于策略 namespace 的账户风险账本。没有经核验账户范围时
+        # 沿用同一凭据身份；不把策略切换产生的新订单账本当作风险重置。
+        scope = self.risk_account_scope or self._credential_fingerprint
+        risk_store = (self.ledger_factory("account_risk_" + hashlib.sha256(
+            str(scope).encode()).hexdigest()[:48]) if scope else ledger)
         return DemoExecutionService(adapter, ledger, self.paper, config,
                                     clock_ms=self.clock_ms,
+                                    risk_store=risk_store,
+                                    native_protection_required=bool(
+                                        self.acceptance_round_required or self._acceptance_round),
                                     gate_registry=self.gate_registry)
 
     def _create(self, account_id, *, entries_enabled, research_id=None):
+        if entries_enabled:
+            self._require_acceptance_round(account_id)
         if self.risk_gate_required and entries_enabled:
             self._require_risk_gate(
                 self._research_id if research_id is None else research_id,
@@ -440,6 +511,7 @@ class DemoRunnerController:
             "credentialFingerprint": self._credential_fingerprint,
             "researchId": self._research_id,
             "riskGate": copy.deepcopy(self._risk_gate),
+            "acceptanceRound": copy.deepcopy(self._acceptance_round),
             "entriesEnabled": False, "recoveryPolicy": "pause_entries_continue_owned_risk_protection"})
         service = self._service(account_id, self.demo_store, adapter)
         if self._shared_enabled:
@@ -506,6 +578,7 @@ class DemoRunnerController:
                 raise DemoHandoffError("risk_gate_identity_mismatch",
                                        "the Demo session is bound to another research id")
             effective_research_id = self._research_id if research_id is None else research_id
+            self._require_acceptance_round(account_id)
             if self._shared_enabled and self.service:
                 if self.service.config.strategy_id != account_id:
                     raise ValueError("Demo primary session is bound to another frozen identity")
@@ -521,6 +594,8 @@ class DemoRunnerController:
                 # paused service. Establish continuous protection before an
                 # explicit start can synchronously submit its next entry.
                 self._start_worker()
+                if self._acceptance_round is not None:
+                    self._save()
                 self.service.enable_entries()
                 self._save()
             else:
@@ -541,6 +616,7 @@ class DemoRunnerController:
 
     def attach(self, account_id, *, research_id=None):
         """Add a new immutable, paused companion; explicit start opens its gate."""
+        self._require_acceptance_exclusive()
         self._require_risk_gate(research_id, account_id=account_id)
         return self._attach(account_id, research_id=research_id)
 
@@ -548,6 +624,7 @@ class DemoRunnerController:
         """Resume an existing immutable namespace without changing its boundary."""
         with self._mutex:
             self._require_not_closing()
+            self._require_acceptance_exclusive()
             if namespace == self.demo_store.virtual_account_key or namespace in self._parallel_sessions:
                 return self.status()
             ledger = self.ledger_factory(str(namespace))
@@ -561,6 +638,7 @@ class DemoRunnerController:
     def _attach(self, account_id, *, existing_ledger=None, research_id=None):
         with self._mutex:
             self._require_not_closing()
+            self._require_acceptance_exclusive()
             if existing_ledger is None:
                 self._require_risk_gate(research_id or self._research_id,
                                         account_id=account_id)
@@ -638,9 +716,12 @@ class DemoRunnerController:
             effective_research_id = self._research_id if research_id is None else research_id
             self._require_shared_ready()
             service = self._find_session(namespace)
+            self._require_acceptance_round(service.config.strategy_id)
             self._require_risk_gate(effective_research_id,
                                     account_id=service.config.strategy_id)
             self._start_worker()
+            if self._acceptance_round is not None:
+                self._save()
             # Persist membership before enable_entries can synchronously post.
             if self._shared_enabled:
                 self._commit_registry(self._registry_document())
@@ -685,7 +766,12 @@ class DemoRunnerController:
             self._error = "Demo shared recovery failed: invalid registry"
             self._restore_incomplete = True
             return self.status()
+        # Preserve an existing primary binding if the shared registry predates
+        # acceptance support. Paused recovery must not erase stronger policy.
+        self._acceptance_mode()
         self._shared_enabled = True
+        if self._acceptance_round is None:
+            self._acceptance_round = copy.deepcopy(persisted.get("acceptanceRound"))
         self._shared_records = {record["virtualAccountKey"]: copy.deepcopy(record) for record in records}
         self._credential_fingerprint = persisted.get("credentialFingerprint")
         research_id = persisted.get("researchId")
@@ -814,6 +900,7 @@ class DemoRunnerController:
                     "sharedSessionsEnabled": self._shared_enabled,
                     "researchId": self._research_id,
                     "riskGate": copy.deepcopy(self._risk_gate),
+                    "acceptanceRound": copy.deepcopy(self._acceptance_round),
                     "allEntriesEnabled": bool(sessions) and all(member["entriesEnabled"] for member in sessions),
                     "sharedRecoveryIncomplete": self._restore_incomplete,
                     "sharedRegistryPersistenceUnresolved": self._shared_persistence_unresolved}
@@ -827,6 +914,14 @@ class DemoRunnerController:
                     break
                 # Do not hold the controller mutex around HTTP requests.
                 for service in services:
+                    # Approval/round closure can change while a worker runs.
+                    # Revalidate before every cycle, but always keep protection
+                    # available when the authority is closed or unavailable.
+                    with self._mutex:
+                        try:
+                            self._require_acceptance_round(service.config.strategy_id)
+                        except DemoHandoffError as exc:
+                            self._error = exc.code
                     try:
                         with self._account_cycle_lock:
                             service.cycle()
@@ -923,6 +1018,7 @@ class DemoRunnerController:
         """
         with self._mutex:
             self._require_not_closing()
+            self._require_acceptance_exclusive()
             self._require_risk_gate(research_id, account_id=account_id)
             self._assert_companions_paused_flat()
             self._lock()

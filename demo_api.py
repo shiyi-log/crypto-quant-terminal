@@ -9,12 +9,14 @@ guard runs before body reads, DB access, or controller construction.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
 import threading
 import time
 from decimal import Decimal, InvalidOperation
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlsplit
 
 from binance_demo_credentials import DemoCredentialError, DemoCredentialStore
@@ -560,6 +562,71 @@ class DemoApi:
             self._check_lock.release()
 
 
+def _read_acceptance_approval(data_store, account_scope):
+    """只读追加式人工批准链；普通 documents 或 HTTP 参数不是批准权威。
+
+    写入批准/撤销仍需独立的人工操作流程。本读取器不创建批准，也不把
+    研究通过、按钮点击或恢复文档中的 active 状态升级成上线授权。
+    """
+    if (not isinstance(account_scope, str) or not account_scope.strip()
+            or account_scope != account_scope.strip()
+            or any(ord(char) < 32 for char in account_scope)):
+        return None
+    source_id = "demo-acceptance/" + hashlib.sha256(account_scope.encode()).hexdigest()
+    try:
+        with data_store._connection() as conn:
+            rows = conn.execute(
+                "SELECT event_id,event_type,payload,source_id FROM research_ledger_events "
+                "WHERE event_type=%s AND source_id=%s ORDER BY sequence_id",
+                ("demo_acceptance_approval", source_id),
+            ).fetchall()
+        latest, previous_id, previous_time, rounds = None, None, None, {}
+        fields = ("round_id", "environment", "account_scope", "strategy_id",
+                  "rule_hash", "execution_hash", "approval_id", "approved_by")
+        for event in rows:
+            payload = event["payload"]
+            if (not isinstance(payload, dict) or event["event_type"] != "demo_acceptance_approval"
+                    or event["source_id"] != source_id
+                    or any(not isinstance(payload.get(key), str) or not payload[key].strip()
+                           or payload[key] != payload[key].strip()
+                           or any(ord(char) < 32 for char in payload[key]) for key in fields)
+                    or payload.get("human_confirmed") is not True
+                    or payload.get("environment") != "binance_demo"
+                    or payload.get("account_scope") != account_scope
+                    or payload.get("previous_event_id") != previous_id
+                    or payload.get("decision") not in {"approved", "revoked", "completed"}
+                    or any(not re.fullmatch(r"[0-9a-f]{64}", payload[key])
+                           for key in ("rule_hash", "execution_hash"))):
+                raise ValueError("批准链身份或结构无效")
+            canonical = json.dumps({"event_type": "demo_acceptance_approval", "payload": payload},
+                                   ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                                   allow_nan=False)
+            if event["event_id"] != hashlib.sha256(canonical.encode()).hexdigest():
+                raise ValueError("批准事件内容指纹不匹配")
+            timestamp = datetime.fromisoformat(payload["timestamp_utc"].replace("Z", "+00:00"))
+            if (timestamp.tzinfo is None or timestamp.utcoffset() is None
+                    or timestamp.utcoffset().total_seconds() != 0
+                    or timestamp > datetime.now(timezone.utc)
+                    or (previous_time is not None and timestamp < previous_time)):
+                raise ValueError("批准时间无效")
+            binding = {key: payload[key] for key in fields}
+            old = rounds.get(payload["round_id"])
+            if old is None and payload["decision"] != "approved":
+                raise ValueError("未批准轮次不能直接结束")
+            if old is not None and old != binding:
+                raise ValueError("相同轮次的冻结批准身份冲突")
+            rounds[payload["round_id"]] = binding
+            latest, previous_id, previous_time = payload, event["event_id"], timestamp
+        if latest is None or latest["decision"] != "approved":
+            return None
+        return {**{key: latest[key] for key in fields}, "status": "active"}
+    except Exception as exc:
+        # 不打印数据库连接、账户凭据或原始异常信息；不可读也不能放行。
+        logger.warning("Demo 验收人工批准不可验证：错误类型=%s；停止新增风险",
+                       type(exc).__name__)
+        return None
+
+
 def create_demo_api(data_store, *, auth_dir, gate_registry=None):
     from demo_store import DemoStore
     from demo_runner_controller import DemoRunnerController
@@ -575,9 +642,13 @@ def create_demo_api(data_store, *, auth_dir, gate_registry=None):
     ledger = DemoStore(data_store, virtual_account_key=namespace)
     sources = DemoSignalSources(data_store)
     gate_registry = gate_registry or GateRegistry(storage_dir=auth_dir)
+    account_scope = os.environ.get("QUANT_DEMO_RISK_ACCOUNT_SCOPE")
     controller = DemoRunnerController(data_store, ledger, credentials.load_credentials,
                                       paper_source=sources,
-                                      risk_account_scope=os.environ.get("QUANT_DEMO_RISK_ACCOUNT_SCOPE"),
+                                      risk_account_scope=account_scope,
+                                      acceptance_round_required=True,
+                                      acceptance_round_provider=lambda: _read_acceptance_approval(
+                                          data_store, account_scope),
                                       gate_registry=gate_registry)
     return DemoApi(data_store, credentials, ledger, controller,
                    ledger_provider=lambda: controller.demo_store,

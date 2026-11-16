@@ -1,6 +1,7 @@
 """Demo HTTP guards, encrypted config lifecycle and Binance payload projection."""
 
 from contextlib import redirect_stderr
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import io
@@ -18,6 +19,91 @@ from demo_runner_controller import DemoHandoffError
 
 
 ORIGIN = "http://127.0.0.1:8888"
+
+
+class AcceptanceAuthorityStore:
+    def __init__(self, rows):
+        self.rows = rows
+        self.last_params = None
+
+    def get_document(self, key, default=None):
+        return default
+
+    @contextmanager
+    def _connection(self):
+        store = self
+
+        class Connection:
+            def execute(self, query, params):
+                store.last_params = params
+                return self
+
+            def fetchall(self):
+                return store.rows
+
+        yield Connection()
+
+
+def acceptance_approval_event(**updates):
+    payload = {"round_id": "round-1", "environment": "binance_demo",
+               "account_scope": "verified-account", "strategy_id": "frozen-strategy",
+               "rule_hash": "a" * 64, "execution_hash": "b" * 64,
+               "approval_id": "operator-approval-1", "approved_by": "operator",
+               "decision": "approved", "human_confirmed": True,
+               "timestamp_utc": "2026-11-16T00:00:00Z", "previous_event_id": None,
+               **updates}
+    encoded = json.dumps({"event_type": "demo_acceptance_approval", "payload": payload},
+                         ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return {"event_id": hashlib.sha256(encoded.encode()).hexdigest(),
+            "event_type": "demo_acceptance_approval",
+            "source_id": "demo-acceptance/" + hashlib.sha256(b"verified-account").hexdigest(),
+            "payload": payload}
+
+
+class AcceptanceApprovalAuthorityTests(unittest.TestCase):
+    def test_only_matching_human_approval_from_the_immutable_ledger_can_enable_a_round(self):
+        from demo_api import _read_acceptance_approval
+        store = AcceptanceAuthorityStore([acceptance_approval_event()])
+        self.assertEqual(_read_acceptance_approval(store, "verified-account"), {
+            "round_id": "round-1", "environment": "binance_demo",
+            "account_scope": "verified-account", "strategy_id": "frozen-strategy",
+            "rule_hash": "a" * 64, "execution_hash": "b" * 64,
+            "status": "active", "approval_id": "operator-approval-1",
+            "approved_by": "operator",
+        })
+        self.assertEqual(store.last_params, ("demo_acceptance_approval",
+            "demo-acceptance/" + hashlib.sha256(b"verified-account").hexdigest()))
+
+    def test_revocation_takes_effect_on_the_next_provider_read(self):
+        from demo_api import _read_acceptance_approval
+        first = acceptance_approval_event()
+        store = AcceptanceAuthorityStore([first])
+        self.assertEqual(_read_acceptance_approval(store, "verified-account")["status"], "active")
+        store.rows.append(acceptance_approval_event(
+            decision="revoked", timestamp_utc="2026-11-16T00:01:00Z",
+            previous_event_id=first["event_id"]))
+        self.assertIsNone(_read_acceptance_approval(store, "verified-account"))
+
+    def test_malformed_automatic_mismatched_or_broken_chain_cannot_authorize_entries(self):
+        from demo_api import _read_acceptance_approval
+        for updates in ({"human_confirmed": False}, {"environment": "live"},
+                        {"account_scope": "other-account"}, {"rule_hash": "bad"},
+                        {"previous_event_id": "unknown"}, {"approved_by": ""},
+                        {"timestamp_utc": "2026-11-16T00:00:00"}):
+            with self.subTest(updates=updates):
+                self.assertIsNone(_read_acceptance_approval(
+                    AcceptanceAuthorityStore([acceptance_approval_event(**updates)]), "verified-account"))
+        corrupted = acceptance_approval_event()
+        corrupted["payload"]["strategy_id"] = "changed-after-approval"
+        self.assertIsNone(_read_acceptance_approval(AcceptanceAuthorityStore([corrupted]),
+                                                   "verified-account"))
+
+    def test_missing_account_scope_never_looks_up_an_unscoped_approval(self):
+        from demo_api import _read_acceptance_approval
+        store = AcceptanceAuthorityStore([acceptance_approval_event()])
+        for scope in (None, "", " padded " ):
+            self.assertIsNone(_read_acceptance_approval(store, scope))
+        self.assertIsNone(store.last_params)
 
 
 class DemoHttpTests(unittest.TestCase):
@@ -88,6 +174,19 @@ class DemoHttpTests(unittest.TestCase):
             handler.headers["Content-Length"] = "0"
             self.assertIn(self.route(handler, method="GET")[0], {400, 404})
             self.provider.assert_not_called()
+
+    def test_http_entry_requests_cannot_supply_their_own_approval(self):
+        for suffix, base in (("/start", {"accountId": "selected"}),
+                             ("/switch", {"accountId": "selected"}),
+                             ("/attach", {"accountId": "selected"}),
+                             ("/start-session", {"session": "demo_default"})):
+            with self.subTest(suffix=suffix):
+                handler = self.handler(suffix, {**base, "approval_id": "forged",
+                                               "approved_by": "admin"})
+                code, payload = self.route(handler)
+                self.assertEqual(code, 400)
+                self.assertEqual(payload["errorCode"], "unexpected_or_missing_request_fields")
+                self.provider.assert_not_called()
 
     def test_error_text_never_returns_exception_message(self):
         handler = self.handler("/check")
@@ -557,6 +656,24 @@ class DemoApiTests(unittest.TestCase):
             api = create_demo_api(self.data, auth_dir=Path("/unused-offline-auth"))
         factory.assert_called_once_with(self.data, virtual_account_key=key)
         self.assertIs(api.demo_store, controller_factory.return_value.demo_store)
+
+    def test_production_factory_requires_server_side_acceptance_approval(self):
+        from demo_api import create_demo_api
+        with patch("demo_api.DemoCredentialStore"), patch("demo_store.DemoStore"), \
+                patch("demo_runner_controller.DemoRunnerController") as factory, \
+                patch.dict(os.environ, {"QUANT_DEMO_RISK_ACCOUNT_SCOPE": "verified-account"}):
+            create_demo_api(self.data, auth_dir=Path("/unused-offline-auth"))
+        options = factory.call_args.kwargs
+        self.assertTrue(options["acceptance_round_required"])
+        self.assertTrue(callable(options["acceptance_round_provider"]))
+        self.assertEqual(options["risk_account_scope"], "verified-account")
+        # 没有批准证据时返回空值；HTTP 请求不能自己批准自己。
+        empty_store = AcceptanceAuthorityStore([])
+        with patch("demo_api.DemoCredentialStore"), patch("demo_store.DemoStore"), \
+                patch("demo_runner_controller.DemoRunnerController") as empty_factory, \
+                patch.dict(os.environ, {"QUANT_DEMO_RISK_ACCOUNT_SCOPE": "verified-account"}):
+            create_demo_api(empty_store, auth_dir=Path("/unused-offline-auth"))
+        self.assertIsNone(empty_factory.call_args.kwargs["acceptance_round_provider"]())
 
     def test_retained_account_flock_blocks_credential_rotation_after_worker_failure(self):
         self.controller.status.return_value = {"running": False, "entriesEnabled": False,

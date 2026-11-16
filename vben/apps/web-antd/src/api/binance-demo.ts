@@ -189,6 +189,12 @@ export interface DemoRows<T extends DemoRecord = DemoRecord> {
   limit: number;
 }
 
+/** 共享交易账户的原始权益快照，不与策略账本余额相加。 */
+export interface DemoAccountSnapshot extends DemoRows {
+  account: DemoRecord;
+  observedAt: null | number;
+}
+
 const basePath = '/locals/binance-demo';
 
 function body(value: unknown): DemoRecord {
@@ -294,7 +300,21 @@ async function rows<T extends DemoRecord>(path: string, signal?: AbortSignal, se
 export const getBinanceDemoOrders = (signal?: AbortSignal, session?: string) => rows<DemoOrder>('orders', signal, session);
 export const getBinanceDemoFills = (signal?: AbortSignal, session?: string) => rows<DemoFill>('fills', signal, session);
 export const getBinanceDemoPositions = (signal?: AbortSignal) => rows('positions', signal);
-export const getBinanceDemoAccount = (signal?: AbortSignal) => rows('account', signal);
+export async function getBinanceDemoAccount(signal?: AbortSignal): Promise<DemoAccountSnapshot> {
+  authenticated();
+  const result = body(await ftClient.get(`${basePath}/account`, { signal }));
+  assertDemo(result);
+  return {
+    environment: 'binance_demo',
+    account: result.account && typeof result.account === 'object' && !Array.isArray(result.account)
+      ? result.account as DemoRecord : {},
+    observedAt: typeof result.observedAt === 'number' ? result.observedAt : null,
+    items: Array.isArray(result.items)
+      ? result.items.filter((item): item is DemoRecord => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+      : [],
+    limit: typeof result.limit === 'number' ? result.limit : 100,
+  };
+}
 export const getBinanceDemoComparisons = (signal?: AbortSignal, session?: string, view: 'signals' | 'audit' = 'signals') => rows('comparisons', signal, session, view);
 export const getBinanceDemoSessions = (signal?: AbortSignal) => rows<DemoSession>('sessions', signal);
 export const getBinanceDemoStrategies = (signal?: AbortSignal) => rows<DemoStrategySession>('strategies', signal);

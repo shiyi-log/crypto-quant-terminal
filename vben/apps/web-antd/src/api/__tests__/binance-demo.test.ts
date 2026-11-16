@@ -163,6 +163,16 @@ describe('authenticated Binance Demo API contract', () => {
     ]);
   });
 
+  it('preserves the observed account equity snapshot instead of reducing it to asset rows', async () => {
+    const account = { totalMarginBalance: '1000.12345678', totalWalletBalance: '998.00000000' };
+    const asset = { asset: 'USDT', marginBalance: '1000.12345678' };
+    mocks.get.mockResolvedValue({ environment: 'binance_demo', account, items: [asset], observedAt: 1794795000000 });
+    const snapshot = await getBinanceDemoAccount();
+    expect(snapshot.account).toEqual(account);
+    expect(snapshot.observedAt).toBe(1794795000000);
+    expect(snapshot.items).toEqual([asset]);
+  });
+
   it('loads all-history evidence without a 100-record limit and preserves unknown net and fee values', async () => {
     const value = { environment: 'binance_demo', endpoint: 'demo-fapi.binance.com',
       scope: 'selected_candle_strategy_execution_only', snapshotAt: '2026-10-12T03:00:00+08:00', questions: {

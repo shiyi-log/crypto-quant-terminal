@@ -30,6 +30,14 @@ describe('local authentication errors', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
+  it('opens the new trade desk after loading the authenticated user', async () => {
+    localStorage.setItem(FT_TOKEN_KEY, 'current-token');
+    mocks.fetch.mockResolvedValue(response(200, { username: 'operator' }));
+    await expect(getUserInfoApi()).resolves.toMatchObject({
+      homePath: '/quant/trade-desk', username: 'operator',
+    });
+  });
+
   it('propagates /auth/me 401 instead of inventing an authenticated admin user', async () => {
     localStorage.setItem(FT_TOKEN_KEY, 'expired-token');
     mocks.fetch.mockResolvedValue(response(401, { detail: '登录已过期' }));

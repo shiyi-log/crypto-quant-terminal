@@ -26,7 +26,7 @@ export async function getUserInfoApi(): Promise<UserInfo> {
   return {
     avatar: '',
     desc: 'Freqtrade 量化交易终端',
-    homePath: '/quant/overview',
+    homePath: '/quant/trade-desk',
     realName: 'Freqtrade',
     roles: ['admin'],
     token: '',

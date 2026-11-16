@@ -14,11 +14,29 @@ const routes: RouteRecordRaw[] = [
     path: '/quant',
     children: [
       {
+        name: 'QuantTradeDesk',
+        path: 'trade-desk',
+        component: () => import('#/views/quant/trade-desk/index.vue'),
+        meta: {
+          affixTab: true,
+          icon: 'lucide:layout-dashboard',
+          title: '交易台',
+        },
+      },
+      {
+        name: 'QuantAcceptance',
+        path: 'acceptance',
+        component: () => import('#/views/quant/acceptance/index.vue'),
+        meta: {
+          icon: 'lucide:clipboard-check',
+          title: '验收与上线',
+        },
+      },
+      {
         name: 'QuantOverview',
         path: 'overview',
         component: () => import('#/views/quant/overview/index.vue'),
         meta: {
-          affixTab: true,
           icon: 'lucide:layout-dashboard',
           title: '总览',
         },

@@ -22,20 +22,43 @@ function numberOf(value: unknown): number | null {
 function draw() {
   const points = props.points
     .filter((point) => numberOf(point.timestamp) !== null)
-    .toSorted((left, right) => Number(left.timestamp) - Number(right.timestamp));
+    .toSorted(
+      (left, right) => Number(left.timestamp) - Number(right.timestamp),
+    );
   void renderEcharts({
     animation: false,
-    color: ['#2563eb'],
+    color: ['#69b4e4'],
+    backgroundColor: '#132b3e',
+    textStyle: {
+      color: '#A2B8C9',
+      fontFamily: 'IBM Plex Sans, Noto Sans SC, sans-serif',
+    },
     grid: { left: 64, top: 28, right: 24, bottom: 44 },
     tooltip: { trigger: 'axis' },
-    xAxis: { type: 'category', data: points.map((point) => fullOrderTime(point.timestamp)) },
-    yAxis: { type: 'value', scale: true, name: '账户净值 USDT' },
-    series: [{
-      name: '净值', type: 'line',
-      data: points.map((point) => numberOf(point.equity)),
-      connectNulls: false, showSymbol: points.length <= 1, symbolSize: 8,
-      lineStyle: { width: 2 },
-    }],
+    xAxis: {
+      type: 'category',
+      axisLine: { lineStyle: { color: '#29485C' } },
+      axisLabel: { color: '#A2B8C9' },
+      data: points.map((point) => fullOrderTime(point.timestamp)),
+    },
+    yAxis: {
+      type: 'value',
+      scale: true,
+      splitLine: { lineStyle: { color: '#29485C' } },
+      axisLabel: { color: '#A2B8C9' },
+      name: '账户净值 USDT',
+    },
+    series: [
+      {
+        name: '净值',
+        type: 'line',
+        data: points.map((point) => numberOf(point.equity)),
+        connectNulls: false,
+        showSymbol: points.length <= 1,
+        symbolSize: 8,
+        lineStyle: { width: 2 },
+      },
+    ],
   });
 }
 

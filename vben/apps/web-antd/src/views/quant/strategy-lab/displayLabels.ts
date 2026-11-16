@@ -2,7 +2,8 @@ const reasonLabels: Readonly<Record<string, string>> = Object.freeze({
   account_budget_exhausted: '账户仓位预算已用尽',
   account_peer_data_unready: '另一币种数据尚未就绪',
   execution_disabled: '执行已暂停，保留账户与数据',
-  paired_atr_stop_policy_unimplemented: '配对级 ATR 止损规则待实现，双腿执行暂停',
+  paired_atr_stop_policy_unimplemented:
+    '配对级 ATR 止损规则待实现，双腿执行暂停',
   lead_lag_atr_stop_policy_unimplemented: '领先滞后 ATR 止损规则待实现',
   breadth_atr_stop_policy_unimplemented: '市场宽度 ATR 止损规则待实现',
   cross_sectional_atr_stop_policy_unimplemented: '横截面 ATR 止损规则待实现',
@@ -213,7 +214,7 @@ const familyLabels: Readonly<Record<string, string>> = Object.freeze({
   'cross-asset/confirmation': '跨资产 · 方向确认',
   '跨资产/价差': '跨资产 · 协整价差',
   '基差/期限结构': '基差 · 期限结构',
-  '均值回归': '均值回归',
+  均值回归: '均值回归',
   '清算/结构': '清算 · 连续波动结构',
   '跨资产/相关性': '跨资产 · 相关性区制',
   'orderbook/confirmation-filter': '订单簿 · 入场确认过滤',
@@ -243,7 +244,10 @@ export function labReason(value: unknown): string {
 export function labResearchReason(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) return '原因未知';
   const text = value.trim();
-  return reasonLabels[keyOf(text)] ?? (/\p{Script=Han}/u.test(text) ? text : '未识别研究原因');
+  return (
+    reasonLabels[keyOf(text)] ??
+    (/\p{Script=Han}/u.test(text) ? text : '未识别研究原因')
+  );
 }
 
 export function labOrderStatus(value: unknown): string {
@@ -256,7 +260,12 @@ export function labEventType(value: unknown): string {
 
 export function labFamily(value: unknown): string {
   const key = keyOf(value).replace(/\s*\/\s*/gu, '/');
-  return familyLabels[key] ?? (typeof value === 'string' && /\p{Script=Han}/u.test(value) ? value.trim() : '未知机制');
+  return (
+    familyLabels[key] ??
+    (typeof value === 'string' && /\p{Script=Han}/u.test(value)
+      ? value.trim()
+      : '未知机制')
+  );
 }
 
 /** A missing fill value is distinct from a known numeric zero. */

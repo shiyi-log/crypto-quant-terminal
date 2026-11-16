@@ -7,7 +7,12 @@ import type {
   StrategyLabRejectedStrategy,
   StrategyLabRow,
 } from '#/api/strategy-lab';
-import type { LabBookGroupFilter, LabPopulation, LabRiskFilter, LabStopFilter } from './accountFilters';
+import type {
+  LabBookGroupFilter,
+  LabPopulation,
+  LabRiskFilter,
+  LabStopFilter,
+} from './accountFilters';
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
@@ -15,12 +20,10 @@ import { useRoute } from 'vue-router';
 import {
   Alert,
   Button,
-  Card,
   Descriptions,
   DescriptionsItem,
   Drawer,
   Empty,
-  Select,
   Spin,
   Table,
   TabPane,
@@ -28,8 +31,9 @@ import {
   Tag,
 } from 'ant-design-vue';
 
-import { errText } from '#/api/freqtrade/client';
-import { getStrategyLab, getStrategyLabDetail } from '#/api/strategy-lab';
+import { ftClient, unwrap } from '#/api/freqtrade/client';
+import { requireSession } from '#/api/session';
+import { parsePaperDetail, parsePaperOverview } from './paperEvidence';
 import { fullOrderTime } from '../utils/orderDisplayId';
 import AccountEquityChart from './AccountEquityChart.vue';
 import {
@@ -44,13 +48,26 @@ import {
   selectedLabDetail,
   selectedLabExecution,
 } from './accountFilters';
-import { labEventType, labFamily, labOrderStatus, labReason, labResearchReason } from './displayLabels';
+import {
+  labEventType,
+  labFamily,
+  labOrderStatus,
+  labReason,
+  labResearchReason,
+} from './displayLabels';
 import { labBookDecisionEvidence, labRecordPayload } from './decisionEvidence';
 
 const overview = ref<StrategyLabOverview | null>(null);
 const detail = ref<StrategyLabDetail | null>(null);
 const selectedId = ref('');
-const expandedStrategy = ref('');
+const inspectorSection = ref('definition');
+const inspectorTabs = [
+  { key: 'definition', label: '定义' },
+  { key: 'time', label: '时间评估' },
+  { key: 'cost', label: '成本' },
+  { key: 'execution', label: '执行' },
+  { key: 'archive', label: '档案' },
+];
 const population = ref<LabPopulation>('factorial');
 const riskFilter = ref<LabRiskFilter>('all');
 const stopFilter = ref<LabStopFilter>('all');
@@ -63,7 +80,9 @@ const error = ref('');
 const detailError = ref('');
 const recordDetail = ref<Record<string, unknown> | null>(null);
 const recordDetailOpen = ref(false);
-const recordBookEvidence = computed(() => recordDetail.value ? labBookDecisionEvidence(recordDetail.value) : []);
+const recordBookEvidence = computed(() =>
+  recordDetail.value ? labBookDecisionEvidence(recordDetail.value) : [],
+);
 const refreshedAt = ref<number | null>(null);
 let overviewController: AbortController | undefined;
 let detailController: AbortController | undefined;
@@ -80,11 +99,20 @@ const scopedAccounts = computed(() => {
     return baseId === 's03_tsmom_vol_target' || baseId === 's05_bollinger_fade';
   });
 });
-const accounts = computed(() => filterLabAccounts(
-  scopedAccounts.value, population.value, riskFilter.value, stopFilter.value, bookGroupFilter.value,
-));
+const accounts = computed(() =>
+  filterLabAccounts(
+    scopedAccounts.value,
+    population.value,
+    riskFilter.value,
+    stopFilter.value,
+    bookGroupFilter.value,
+  ),
+);
 const strategyGroups = computed(() => {
-  const groups = new Map<string, { id: string; code: string; label: string; items: StrategyLabAccount[] }>();
+  const groups = new Map<
+    string,
+    { id: string; code: string; label: string; items: StrategyLabAccount[] }
+  >();
   for (const item of accounts.value) {
     const id = canonicalLabStrategy(item);
     let group = groups.get(id);
@@ -92,9 +120,10 @@ const strategyGroups = computed(() => {
       group = {
         id,
         code: item.strategy_id.split('_')[0]?.toUpperCase() ?? '',
-        label: labAccountPopulation(item) === 'microstructure'
-          ? '波动压缩 · 订单簿对照实验'
-          : accountName(item).split(' · ')[0] ?? accountName(item),
+        label:
+          labAccountPopulation(item) === 'microstructure'
+            ? '波动压缩 · 订单簿对照实验'
+            : (accountName(item).split(' · ')[0] ?? accountName(item)),
         items: [],
       };
       groups.set(id, group);
@@ -103,23 +132,12 @@ const strategyGroups = computed(() => {
   }
   return [...groups.values()];
 });
-const selectedStrategy = computed(() =>
-  strategyGroups.value.find((group) => group.items.some((item) => item.strategy_id === selectedId.value))?.id ?? '',
-);
-
-function toggleStrategyGroup(group: { id: string; items: StrategyLabAccount[] }) {
-  if (expandedStrategy.value === group.id) {
-    expandedStrategy.value = '';
-    return;
-  }
-  expandedStrategy.value = group.id;
-  if (!group.items.some((item) => item.strategy_id === selectedId.value)) {
-    selectedId.value = group.items[0]?.strategy_id ?? '';
-  }
-}
 
 function accountVariantName(item: StrategyLabAccount) {
-  const variant = accountName(item).split(' · ').slice(1).join(' · ') || factorLabel(item) || armLabel(item);
+  const variant =
+    accountName(item).split(' · ').slice(1).join(' · ') ||
+    factorLabel(item) ||
+    armLabel(item);
   return labAccountPopulation(item) === 'microstructure'
     ? `${labBookGroup(item) === 'filter' ? '订单簿确认过滤' : '无订单簿过滤对照'} · ${variant}`
     : variant;
@@ -132,7 +150,9 @@ const populationLabels: Record<LabPopulation, string> = {
   archived: '已归档账户',
 };
 const populationOptions = computed(() =>
-  (['factorial', 'fnew', 'microstructure', 'controls', 'archived'] as const).map((value) => ({
+  (
+    ['factorial', 'fnew', 'microstructure', 'controls', 'archived'] as const
+  ).map((value) => ({
     value,
     label: `${populationLabels[value]}（${scopedAccounts.value.filter((item) => labAccountPopulation(item) === value).length}）`,
   })),
@@ -154,19 +174,27 @@ const bookGroupOptions = [
   { value: 'control', label: '无订单簿过滤对照' },
   { value: 'filter', label: '订单簿确认过滤' },
 ];
-const riskFactorsVisible = computed(() => labPopulationHasRiskFactors(population.value));
+const riskFactorsVisible = computed(() =>
+  labPopulationHasRiskFactors(population.value),
+);
 const filterScope = computed(() => {
-  const count = scopedAccounts.value.filter((item) => labAccountPopulation(item) === population.value).length;
+  const count = scopedAccounts.value.filter(
+    (item) => labAccountPopulation(item) === population.value,
+  ).length;
   const factors = riskFactorsVisible.value
-    ? [riskFilter.value === 'all' ? '全部 R 档' : riskFilter.value,
-        stopFilter.value === 'all' ? '全部 k 档' : `k${stopFilter.value}`].join(' · ')
+    ? [
+        riskFilter.value === 'all' ? '全部 R 档' : riskFilter.value,
+        stopFilter.value === 'all' ? '全部 k 档' : `k${stopFilter.value}`,
+      ].join(' · ')
     : '保留原冻结规则与样本';
-  const bookGroup = population.value === 'microstructure'
-    ? ` · ${bookGroupOptions.find((item) => item.value === bookGroupFilter.value)?.label}` : '';
+  const bookGroup =
+    population.value === 'microstructure'
+      ? ` · ${bookGroupOptions.find((item) => item.value === bookGroupFilter.value)?.label}`
+      : '';
   return `${focusOnly.value ? '重点策略范围 · ' : ''}${populationLabels[population.value]} · ${factors}${bookGroup} · 当前显示 ${accounts.value.length} / ${count} 个账户`;
 });
 const blockedStrategies = computed<StrategyLabBlockedStrategy[]>(() =>
-  focusOnly.value ? [] : overview.value?.blocked_strategies ?? [],
+  focusOnly.value ? [] : (overview.value?.blocked_strategies ?? []),
 );
 const blockedStrategySummary = computed(() =>
   blockedStrategies.value
@@ -178,50 +206,87 @@ const blockedStrategySummary = computed(() =>
     .join('；'),
 );
 const rejectedStrategies = computed<StrategyLabRejectedStrategy[]>(() =>
-  focusOnly.value ? [] : overview.value?.rejected_strategies ?? [],
+  focusOnly.value ? [] : (overview.value?.rejected_strategies ?? []),
 );
 const rejectedStrategySummary = computed(() =>
   rejectedStrategies.value
-    .map((item) => `${item.label ?? item.strategy_id}：${labResearchReason(item.reason)}`)
+    .map(
+      (item) =>
+        `${item.label ?? item.strategy_id}：${labResearchReason(item.reason)}`,
+    )
     .join('；'),
 );
-const currentDetail = computed(() => selectedLabDetail(detail.value, selectedId.value));
-const account = computed(() => currentDetail.value?.account ??
-  accounts.value.find((item) => item.strategy_id === selectedId.value));
+const currentDetail = computed(() =>
+  selectedLabDetail(detail.value, selectedId.value),
+);
+const account = computed(
+  () =>
+    currentDetail.value?.account ??
+    accounts.value.find((item) => item.strategy_id === selectedId.value),
+);
 const definition = computed(() => account.value?.definition ?? {});
-const execution = computed(
-  () => selectedLabExecution(account.value,
-    overview.value?.execution ?? overview.value?.execution_model ?? {}),
+const execution = computed(() =>
+  selectedLabExecution(
+    account.value,
+    overview.value?.execution ?? overview.value?.execution_model ?? {},
+  ),
 );
 const orders = computed(() => currentDetail.value?.orders ?? []);
 const trades = computed(() => currentDetail.value?.trades ?? []);
 const events = computed(() => currentDetail.value?.events ?? []);
 const positions = computed(() => account.value?.open_positions ?? []);
 const equityPoints = computed(() => currentDetail.value?.equity_curve ?? []);
-const atrRiskAccount = computed(() => account.value &&
-  labPopulationHasRiskFactors(labAccountPopulation(account.value)));
-const selectedPopulation = computed(() => account.value ? labAccountPopulation(account.value) : population.value);
-const accountFamilyLabel = computed(() => selectedPopulation.value === 'microstructure'
-  ? '订单簿 · 波动压缩入场确认' : labFamily(account.value?.family ?? definition.value.family));
-const mechanismText = computed(() => selectedPopulation.value === 'microstructure'
-  ? '共同基线为 1h 波动压缩突破；对照保留原 K 线信号，过滤组使用有效订单簿特征确认新入场，两组使用相同的策略离场规则。'
-  : definition.value.mechanism ?? '未知');
+const atrRiskAccount = computed(
+  () =>
+    account.value &&
+    labPopulationHasRiskFactors(labAccountPopulation(account.value)),
+);
+const selectedPopulation = computed(() =>
+  account.value ? labAccountPopulation(account.value) : population.value,
+);
+const accountFamilyLabel = computed(() =>
+  selectedPopulation.value === 'microstructure'
+    ? '订单簿 · 波动压缩入场确认'
+    : labFamily(account.value?.family ?? definition.value.family),
+);
+const mechanismText = computed(() =>
+  selectedPopulation.value === 'microstructure'
+    ? '共同基线为 1h 波动压缩突破；对照保留原 K 线信号，过滤组使用有效订单簿特征确认新入场，两组使用相同的策略离场规则。'
+    : (definition.value.mechanism ?? '未知'),
+);
 const accountFactors = computed(() => labAccountFactors(account.value));
-const atrStopMult = computed(() => numeric(execution.value.risk_stop_atr_mult ??
-  definition.value.params_frozen?.risk_stop_atr_mult ??
-  definition.value.params?.risk_stop_atr_mult));
-const riskBudget = computed(() => execution.value.max_loss_per_trade_usdt ??
-  definition.value.max_loss_per_trade_usdt);
+const atrStopMult = computed(() =>
+  numeric(
+    execution.value.risk_stop_atr_mult ??
+      definition.value.params_frozen?.risk_stop_atr_mult ??
+      definition.value.params?.risk_stop_atr_mult,
+  ),
+);
+const riskBudget = computed(
+  () =>
+    execution.value.max_loss_per_trade_usdt ??
+    definition.value.max_loss_per_trade_usdt,
+);
 const executionBlockReason = computed(() => {
   const blockers = definition.value.execution_blockers;
-  return blockers?.length ? blockers.map(labResearchReason).join('；')
-    : labResearchReason(execution.value.blocked_execution_reason ??
-      definition.value.blocked_execution_reason);
+  return blockers?.length
+    ? blockers.map(labResearchReason).join('；')
+    : labResearchReason(
+        execution.value.blocked_execution_reason ??
+          definition.value.blocked_execution_reason,
+      );
 });
-const executionBlocked = computed(() => execution.value.execution_enabled === false ||
-  definition.value.execution_enabled === false);
-const executionUniverse = computed(() => execution.value.execution_universe ??
-  definition.value.execution_universe ?? definition.value.universe);
+const executionBlocked = computed(
+  () =>
+    execution.value.execution_enabled === false ||
+    definition.value.execution_enabled === false,
+);
+const executionUniverse = computed(
+  () =>
+    execution.value.execution_universe ??
+    definition.value.execution_universe ??
+    definition.value.universe,
+);
 const feeRate = computed(
   () => execution.value.fee_rate_per_side ?? execution.value.taker_fee_per_side,
 );
@@ -324,7 +389,7 @@ function positionRiskDistance(row: Record<string, unknown>) {
   const direction = positionDirection(row);
   if (liquidation === null || mark === null || mark === 0 || direction === null)
     return null;
-  return direction * (mark - liquidation) / mark;
+  return (direction * (mark - liquidation)) / mark;
 }
 
 function riskDistanceText(row: Record<string, unknown>) {
@@ -348,7 +413,8 @@ function protectionType(row: Record<string, unknown>) {
   const leverage = numeric(valueOf(row, 'leverage')) ?? strategyLeverage();
   const params = definition.value.params_frozen ?? {};
   const hasAtrProtection =
-    numeric(params.stop_atr_mult) !== null && numeric(params.tp_atr_mult) !== null;
+    numeric(params.stop_atr_mult) !== null &&
+    numeric(params.tp_atr_mult) !== null;
   const hasRiskStop = atrStopMult.value !== null;
   if (liquidation !== null && leverage !== null && leverage > 1) {
     return `${fixed(leverage, 0)} 倍强平 · ${hasRiskStop ? 'ATR 风险止损' : hasAtrProtection ? 'ATR 止损/止盈' : '策略离场'}`;
@@ -358,11 +424,47 @@ function protectionType(row: Record<string, unknown>) {
   return leverage === 1 ? '未启用统一强平' : '风险保护未知';
 }
 
+function stopRuleText() {
+  const mode = execution.value.stop_execution_mode;
+  const policy =
+    typeof execution.value.stop_policy === 'string'
+      ? execution.value.stop_policy
+      : '';
+  if (mode === 'intrabar' || policy.includes('intrabar'))
+    return '按盘中高低价触发，止损价或跳空开盘价代理成交；同根 OHLC 路径未知，止损优先。';
+  if (
+    mode === 'close_confirmed' ||
+    policy.includes('close_confirmed') ||
+    policy.includes('next_open') ||
+    execution.value.atomic_atr_stop_policy ===
+      'paired_close_confirmed_aggregate_return'
+  )
+    return '止损由收盘价确认，按下一根开盘价代理成交。';
+  return '止损触发方式未在所选冻结执行字段中明确提供，请核对原规则。';
+}
+function fillModelText() {
+  return typeof execution.value.fill_model === 'string'
+    ? execution.value.fill_model
+    : '成交模型未提供，无法确认成交代理';
+}
 function liquidationRuleText() {
   const leverage = strategyLeverage();
-  if (leverage === null || leverage <= 1)
-    return '当前账户未启用统一杠杆强平模型；请以策略离场规则为准。';
-  return `杠杆 ${fixed(leverage, 0)} 倍：多头价格跌至入场价 × (1 − 1/${fixed(leverage, 0)})，空头价格涨至入场价 × (1 + 1/${fixed(leverage, 0)}) 时，逐根使用已收盘 K 线的最低价/最高价触发强平，保证金按规则全额损失。`;
+  const nested = execution.value.liquidation;
+  const liquidation =
+    nested && typeof nested === 'object' && !Array.isArray(nested)
+      ? (nested as Record<string, unknown>)
+      : {};
+  const model = execution.value.liquidation_model ?? liquidation.model;
+  if (model === 'binance_tiered')
+    return (
+      '分层维持保证金模型：按所选杠杆档位与维持保证金条件，用 K 线高低价检查穿越，按穿越价格代理结算，未覆盖额外不利 tick 滑点。档位快照：' +
+      (execution.value.tier_snapshot_hash ?? '未提供，档位身份未知') +
+      '。'
+    );
+  if (model === 'bankruptcy_price')
+    return '冻结破产价模型：按入场价与所选杠杆的破产边界检查触发，保证金按规则全额损失；此为纸面代理。';
+  if (leverage === 1) return '所选账户杠杆为 1；统一强平模型未明确提供。';
+  return '冻结强平模型未明确提供，请核对所选账户原执行规则；无法从杠杆单独确认结算方式。';
 }
 
 function orderAction(value: unknown) {
@@ -377,7 +479,16 @@ function orderAction(value: unknown) {
 
 function paperNumber(row: Record<string, unknown>) {
   const time = fullOrderTime(
-    valueOf(row, 'signal_candle_ms', 'opened_candle_ms', 'entry_timestamp', 'created_at', 'timestamp', 'candle_ms', 'observed_at_ms'),
+    valueOf(
+      row,
+      'signal_candle_ms',
+      'opened_candle_ms',
+      'entry_timestamp',
+      'created_at',
+      'timestamp',
+      'candle_ms',
+      'observed_at_ms',
+    ),
   );
   const stamp =
     time === '—'
@@ -395,13 +506,18 @@ function showRecord(row: Record<string, unknown>) {
 
 function fillValue(row: Record<string, unknown>, value: unknown, digits = 4) {
   if (numeric(value) !== null) return fixed(value, digits);
-  return row.status === 'pending' ? '尚未成交'
-    : row.status === 'cancelled' || row.status === 'rejected' ? '未成交' : '未知';
+  return row.status === 'pending'
+    ? '尚未成交'
+    : row.status === 'cancelled' || row.status === 'rejected'
+      ? '未成交'
+      : '未知';
 }
 
 function recordStatus(row: Record<string, unknown>) {
   if (row.event_type) return labEventType(row.event_type);
-  return row.trade_id && row.closed_candle_ms != null ? '已平仓' : labOrderStatus(row.status);
+  return row.trade_id && row.closed_candle_ms != null
+    ? '已平仓'
+    : labOrderStatus(row.status);
 }
 
 function statusOf(value: unknown) {
@@ -430,8 +546,14 @@ function statusOf(value: unknown) {
     awaiting_data: { color: 'orange', label: '等待数据' },
     funding_data_pending: { color: 'orange', label: '资金费数据待接入' },
     data_blocked: { color: 'orange', label: '数据阻塞，暂不运行' },
-    cross_sectional_execution_pending: { color: 'orange', label: '等待多腿执行能力' },
-    awaiting_native_timeframe_adapter: { color: 'orange', label: '等待周期数据适配' },
+    cross_sectional_execution_pending: {
+      color: 'orange',
+      label: '等待多腿执行能力',
+    },
+    awaiting_native_timeframe_adapter: {
+      color: 'orange',
+      label: '等待周期数据适配',
+    },
     funding_data_unavailable: { color: 'orange', label: '资金费率数据缺失' },
     stopped_or_stale: { color: 'orange', label: '执行器已停或状态过期' },
     not_started: { color: 'default', label: '执行器尚未启动' },
@@ -440,15 +562,23 @@ function statusOf(value: unknown) {
     paired_execution_pending: { color: 'orange', label: '配对执行待接入' },
     forward_data_required: { color: 'orange', label: '等待前向输入数据' },
     orderbook_feature_pending: { color: 'orange', label: '等待订单簿特征' },
-    waiting_published_orderbook_feature: { color: 'orange', label: '等待订单簿特征发布' },
+    waiting_published_orderbook_feature: {
+      color: 'orange',
+      label: '等待订单簿特征发布',
+    },
     unknown: { color: 'default', label: '状态未知' },
   };
-  return labels[key] ?? { color: 'default', label: key };
+  return Object.hasOwn(labels, key)
+    ? labels[key]!
+    : { color: 'default', label: key };
 }
 
 function accountStatus(item: StrategyLabAccount) {
   if (labAccountPopulation(item) === 'archived') return statusOf('archived');
-  if (item.execution?.execution_enabled === false || item.definition?.execution_enabled === false)
+  if (
+    item.execution?.execution_enabled === false ||
+    item.definition?.execution_enabled === false
+  )
     return statusOf('execution_blocked');
   return statusOf(item.status);
 }
@@ -456,13 +586,27 @@ function accountStatus(item: StrategyLabAccount) {
 function factorLabel(item: StrategyLabAccount) {
   const factors = labAccountFactors(item);
   return factors.riskBudget
-    ? `${factors.riskBudget} · k${fixed(factors.stopWidth, 1)}${labAccountPopulation(item) === 'microstructure' ? ` · ${labBookGroup(item) === 'filter' ? '过滤组' : '对照组'}` : ''}` : '';
+    ? `${factors.riskBudget} · k${fixed(factors.stopWidth, 1)}${labAccountPopulation(item) === 'microstructure' ? ` · ${labBookGroup(item) === 'filter' ? '过滤组' : '对照组'}` : ''}`
+    : '';
 }
 
 function atrRiskText() {
-  if ((execution.value.risk_budget_scope ?? definition.value.risk_budget_scope) === 'atomic_pair_portfolio')
-    return `R = ${fixed(riskBudget.value, 0)} USDT 是整组配对双腿的计划止损与手续费预算；k = ${fixed(atrStopMult.value, 1)}。组合止损由收盘确认，按下一根开盘价代理成交；跳空、滑点与 ${fixed(strategyLeverage(), 0)} 倍强平可能使整组实际亏损超过 R。`;
-  return `R = ${fixed(riskBudget.value, 0)} USDT 是按入场冻结 ATR 止损距离与双边手续费反解仓位的计划预算；k = ${fixed(atrStopMult.value, 1)}。止损由收盘价确认，按下一根开盘价代理成交；跳空、滑点与 ${fixed(strategyLeverage(), 0)} 倍强平可能使实际亏损超过 R。`;
+  const scope =
+    (execution.value.risk_budget_scope ??
+      definition.value.risk_budget_scope) === 'atomic_pair_portfolio'
+      ? '整组配对双腿'
+      : '入场冻结 ATR 距离反解仓位';
+  return (
+    'R = ' +
+    fixed(riskBudget.value, 0) +
+    ' USDT 是' +
+    scope +
+    '的计划止损与手续费预算；k = ' +
+    fixed(atrStopMult.value, 1) +
+    '。' +
+    stopRuleText() +
+    '跳空、滑点与强平模型可能使实际亏损超过 R。'
+  );
 }
 
 function warmupText(item: StrategyLabAccount) {
@@ -496,7 +640,14 @@ function accountName(item?: StrategyLabAccount) {
   const fallback = item?.strategy_id
     ? fallbackLabels[canonicalLabStrategy(item)]
     : undefined;
-  return item?.label ?? item?.name ?? item?.definition?.name ?? fallback ?? item?.strategy_id ?? '未知';
+  return (
+    item?.label ??
+    item?.name ??
+    item?.definition?.name ??
+    fallback ??
+    item?.strategy_id ??
+    '未知'
+  );
 }
 
 function armId(item?: StrategyLabAccount) {
@@ -518,7 +669,9 @@ function armLabel(item?: StrategyLabAccount) {
 }
 
 function dataStatusLabel(item?: StrategyLabAccount) {
-  const value = String(item?.data_status ?? item?.definition?.data_status ?? '').trim();
+  const value = String(
+    item?.data_status ?? item?.definition?.data_status ?? '',
+  ).trim();
   const labels: Record<string, string> = {
     native_timeframe_adapter_active: '原生周期数据已接入',
     cross_sectional_execution_pending: '横截面执行待接入',
@@ -534,7 +687,9 @@ function dataStatusLabel(item?: StrategyLabAccount) {
 }
 
 function hasDataStatus(item?: StrategyLabAccount) {
-  return Boolean(String(item?.data_status ?? item?.definition?.data_status ?? '').trim());
+  return Boolean(
+    String(item?.data_status ?? item?.definition?.data_status ?? '').trim(),
+  );
 }
 
 type ObservationBadge = {
@@ -544,16 +699,21 @@ type ObservationBadge = {
 };
 
 function observationBadge(strategyOrAccount: unknown): ObservationBadge | null {
-  const account = strategyOrAccount && typeof strategyOrAccount === 'object'
-    ? (strategyOrAccount as StrategyLabAccount)
-    : undefined;
+  const account =
+    strategyOrAccount && typeof strategyOrAccount === 'object'
+      ? (strategyOrAccount as StrategyLabAccount)
+      : undefined;
   const strategyId = account?.strategy_id ?? strategyOrAccount;
-  const baseId = account ? canonicalLabStrategy(account)
+  const baseId = account
+    ? canonicalLabStrategy(account)
     : canonicalLabStrategy(typeof strategyId === 'string' ? strategyId : '');
-  const searchText = `${String(strategyId ?? '')} ${String(account?.label ?? '')} ${String(account?.name ?? '')}`.toLowerCase();
+  const searchText =
+    `${String(strategyId ?? '')} ${String(account?.label ?? '')} ${String(account?.name ?? '')}`.toLowerCase();
   if (
     baseId === 's11_tsmom_bollinger_pullback' ||
-    /s03.*s05|s05.*s03|tsmom.*bollinger|bollinger.*tsmom|combo|hybrid/.test(searchText)
+    /s03.*s05|s05.*s03|tsmom.*bollinger|bollinger.*tsmom|combo|hybrid/.test(
+      searchText,
+    )
   ) {
     return {
       color: 'purple',
@@ -599,7 +759,10 @@ function accountDataStatus(item?: StrategyLabAccount) {
   if (status === 'cross_sectional_execution_pending') {
     return '横截面信号需要多币种、多腿同时执行；当前账户仅保留研究上下文，未将 20 币误当作下单腿。';
   }
-  if (status === 'funding_data_unavailable' || status === 'funding_data_pending') {
+  if (
+    status === 'funding_data_unavailable' ||
+    status === 'funding_data_pending'
+  ) {
     return '该账户所需的资金费率事件数据尚未就绪；该策略暂不生成模拟成交。';
   }
   if (status === 'funding_series_loaded_rejected') {
@@ -620,8 +783,9 @@ function accountDataStatus(item?: StrategyLabAccount) {
   return '';
 }
 
-const accountEmptyDescription = computed(() =>
-  `当前筛选没有账户（${populationLabels[population.value]}）；可调整账户分组、风险档或止损宽度。`,
+const accountEmptyDescription = computed(
+  () =>
+    `当前接口返回的筛选中没有账户（${populationLabels[population.value]}）；可调整筛选。未枚举账户不代表历史数据库没有档案。`,
 );
 
 function eventSummary(row: Record<string, unknown>) {
@@ -633,8 +797,12 @@ function eventSummary(row: Record<string, unknown>) {
       payload.signals
         .map((value) => {
           const signal = value as Record<string, unknown>;
-          const target = signal.target_side == null ? '维持现状'
-            : signal.target_side === 0 ? '空仓' : sideText(signal.target_side);
+          const target =
+            signal.target_side == null
+              ? '维持现状'
+              : signal.target_side === 0
+                ? '空仓'
+                : sideText(signal.target_side);
           return `${textOf(signal, 'pair')} · ${target} · ${labReason(signal.reason)}`;
         })
         .join('；') || (payload.ready ? '数据就绪，等待信号' : '等待完整数据')
@@ -714,19 +882,31 @@ async function refreshDetail() {
   detailController = controller;
   detailLoading.value = true;
   try {
-    const response = await getStrategyLabDetail(
+    requireSession('请先登录后查看纸面策略档案');
+    const response = parsePaperDetail(
+      unwrap<unknown>(
+        await ftClient.get('/locals/strategy-lab', {
+          params: { strategy_id: strategyId, limit: 100 },
+          signal: controller.signal,
+        }),
+      ),
       strategyId,
-      controller.signal,
     );
     if (current !== detailSequence || strategyId !== selectedId.value) return;
     detail.value = response;
-  } catch (reason) {
-    if (current === detailSequence && strategyId === selectedId.value && !controller.signal.aborted) {
-      detail.value = null;
-      detailError.value = errText(reason);
+  } catch {
+    if (
+      current === detailSequence &&
+      strategyId === selectedId.value &&
+      !controller.signal.aborted
+    ) {
+      detailError.value = currentDetail.value
+        ? '明细读取失败，保留上次成功事实'
+        : '明细读取失败，尚无可用事实';
     }
   } finally {
-    if (current === detailSequence && strategyId === selectedId.value) detailLoading.value = false;
+    if (current === detailSequence && strategyId === selectedId.value)
+      detailLoading.value = false;
   }
 }
 
@@ -737,29 +917,50 @@ async function refresh() {
   loading.value = true;
   error.value = '';
   try {
-    const response = await getStrategyLab(overviewController.signal);
+    requireSession('请先登录后查看纸面策略档案');
+    const response = parsePaperOverview(
+      unwrap<unknown>(
+        await ftClient.get('/locals/strategy-lab', {
+          signal: overviewController.signal,
+        }),
+      ),
+    );
     if (current !== overviewSequence) return;
     const previousId = selectedId.value;
     overview.value = response;
     refreshedAt.value = Date.now();
     if (previousId && selectedId.value === previousId) await refreshDetail();
-  } catch (reason) {
-    if (current === overviewSequence) error.value = errText(reason);
+  } catch {
+    if (current === overviewSequence && !overviewController.signal.aborted)
+      error.value = overview.value
+        ? '概览读取失败，保留上次成功事实'
+        : '概览读取失败，尚无可用事实';
   } finally {
     if (current === overviewSequence) loading.value = false;
   }
 }
 
-watch(accounts, (items) => {
-  selectedId.value = selectLabAccount(items, selectedId.value, focusOnly.value);
-}, { flush: 'sync' });
-watch(selectedId, () => {
-  expandedStrategy.value = selectedStrategy.value;
-  recordDetailOpen.value = false;
-  recordDetail.value = null;
-  detail.value = null;
-  void refreshDetail();
-}, { flush: 'sync' });
+watch(
+  accounts,
+  (items) => {
+    selectedId.value = selectLabAccount(
+      items,
+      selectedId.value,
+      focusOnly.value,
+    );
+  },
+  { flush: 'sync' },
+);
+watch(
+  selectedId,
+  () => {
+    recordDetailOpen.value = false;
+    recordDetail.value = null;
+    detail.value = null;
+    void refreshDetail();
+  },
+  { flush: 'sync' },
+);
 watch(
   () => route.name,
   (name, previous) => {
@@ -781,231 +982,494 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="p-4 strategy-lab">
-    <Card
-      :bordered="false"
-      class="shadow-sm"
-      :title="focusOnly ? '重点策略观察' : '多策略模拟实验室'"
+  <main class="strategy-lab paper-workspace" aria-labelledby="paper-title">
+    <header class="paper-heading">
+      <div>
+        <h1 id="paper-title">
+          {{ focusOnly ? '重点策略纸面档案' : '纸面策略档案' }}
+        </h1>
+        <p>独立账户与实验臂，按冻结规则追溯定义、成本和执行记录。</p>
+      </div>
+      <Button
+        data-refresh-paper
+        :loading="loading || detailLoading"
+        @click="refresh"
+        >刷新账户</Button
+      >
+    </header>
+    <div class="paper-scope">
+      <strong>历史前向纸面</strong><span>账户资格未核验</span
+      ><span>滑点与资金费未知</span
+      ><Tag>{{
+        overview?.service?.running === true
+          ? '纸面执行器运行中'
+          : overview?.service?.running === false
+            ? '纸面执行器未运行'
+            : '执行器状态未知'
+      }}</Tag
+      ><span v-if="overview?.service?.status">{{
+        statusOf(overview.service.status).label
+      }}</span>
+    </div>
+    <section class="paper-policy" aria-label="账户筛选与观测摘要">
+      <div class="paper-filters">
+        <label class="lab-filter"
+          ><span>账户分组</span
+          ><select
+            v-model="population"
+            class="population-select"
+            aria-label="账户分组"
+          >
+            <option
+              v-for="option in populationOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select></label
+        ><label class="lab-filter"
+          ><span>计划风险预算</span
+          ><select
+            v-model="riskFilter"
+            :disabled="!riskFactorsVisible"
+            class="risk-select"
+            aria-label="计划风险预算"
+          >
+            <option
+              v-for="option in riskOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select></label
+        ><label class="lab-filter"
+          ><span>止损宽度</span
+          ><select
+            v-model="stopFilter"
+            :disabled="!riskFactorsVisible"
+            class="stop-select"
+            aria-label="止损宽度"
+          >
+            <option
+              v-for="option in stopOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select></label
+        ><label v-if="population === 'microstructure'" class="lab-filter"
+          ><span>对照方式</span
+          ><select
+            v-model="bookGroupFilter"
+            class="risk-select"
+            aria-label="订单簿对照方式"
+          >
+            <option
+              v-for="option in bookGroupOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select></label
+        >
+      </div>
+      <p class="paper-note">{{ filterScope }}。不同账户的资金与样本独立。</p>
+      <dl class="policy-totals">
+        <div>
+          <dt>筛选账户</dt>
+          <dd>{{ overview ? accounts.length : '未知' }}</dd>
+        </div>
+        <div>
+          <dt>初始纸面资金合计</dt>
+          <dd>{{ fixed(total('initial_capital')) }} USDT</dd>
+        </div>
+        <div>
+          <dt>纸面净值合计</dt>
+          <dd>{{ fixed(total('equity')) }} USDT</dd>
+        </div>
+        <div>
+          <dt>最近扫描（北京）</dt>
+          <dd>{{ fullOrderTime(overview?.service?.last_cycle_at) }}</dd>
+        </div>
+        <div>
+          <dt>页面读取时间（北京）</dt>
+          <dd>{{ fullOrderTime(refreshedAt) }}</dd>
+        </div>
+      </dl>
+    </section>
+    <p v-if="error" class="paper-error" role="status">{{ error }}</p>
+    <p v-if="overview?.service?.last_error" class="paper-error">
+      模拟执行器报告错误；请在受控日志中核对。
+    </p>
+    <details
+      v-if="blockedStrategies.length || rejectedStrategies.length"
+      class="candidate-boundaries"
     >
-      <template #extra>
-        <Button :loading="loading || detailLoading" @click="refresh"
-          >刷新账户</Button
+      <summary>待接入 / 淘汰研究候选</summary>
+      <p v-if="blockedStrategies.length">
+        未进入纸面：{{ blockedStrategySummary }}
+      </p>
+      <p v-if="rejectedStrategies.length">
+        已淘汰：{{ rejectedStrategySummary }}
+      </p>
+    </details>
+    <Spin :spinning="loading && !overview"
+      ><div class="paper-layout">
+        <section
+          class="account-ledger"
+          data-account-ledger
+          aria-label="纸面候选账户台账"
         >
-      </template>
-      <div class="flex flex-wrap items-center gap-2">
-        <Tag color="blue">前向研究假设</Tag>
-        <Tag :color="overview?.service?.running ? 'blue' : 'default'">
-          {{
-            overview?.service?.running === true
-              ? '模拟执行器运行中'
-              : overview?.service?.running === false
-                ? '模拟执行器未运行'
-                : '运行状态未知'
-          }}
-        </Tag>
-        <Tag
-          v-if="overview?.service?.status"
-          :color="statusOf(overview.service.status).color"
-        >
-          {{ statusOf(overview.service.status).label }}
-        </Tag>
-        <span class="text-xs text-muted-foreground"
-          >独立账户 · 独立订单 · 只使用已收盘数据</span
-        >
-      </div>
-      <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
-        <div class="metric-cell">
-          <div class="metric-label">当前筛选账户</div>
-          <div class="metric-value">
-            {{ overview ? accounts.length : '未知' }}
+          <div class="ledger-heading">
+            <h2>候选账户台账</h2>
+            <span
+              >{{ strategyGroups.length }} 项 /
+              {{ accounts.length }} 个账户</span
+            >
           </div>
-          <div class="metric-sub">
-            {{ populationLabels[population] }} · {{ riskFactorsVisible ? '每个 R/k 组合有独立账户' : '保留原规则与历史数据' }}
-          </div>
-        </div>
-        <div class="metric-cell">
-          <div class="metric-label">初始模拟资金合计</div>
-          <div class="metric-value">{{ fixed(total('initial_capital')) }}</div>
-          <div class="metric-sub">USDT · 仅当前筛选，账户不共享资金</div>
-        </div>
-        <div class="metric-cell">
-          <div class="metric-label">账户净值合计</div>
-          <div class="metric-value">{{ fixed(total('equity')) }}</div>
-          <div class="metric-sub">USDT · 仅当前筛选，不代表可调拨资金</div>
-        </div>
-        <div class="metric-cell">
-          <div class="metric-label">最近执行扫描（北京）</div>
-          <div class="metric-value metric-time">
-            {{ fullOrderTime(overview?.service?.last_cycle_at) }}
-          </div>
-          <div class="metric-sub">
-            页面更新 {{ fullOrderTime(refreshedAt) }}
-          </div>
-        </div>
-      </div>
-      <div class="mt-4 flex flex-wrap items-center gap-3">
-        <label class="lab-filter">
-          <span>账户分组</span>
-          <Select v-model:value="population" :options="populationOptions" class="population-select" aria-label="账户分组" />
-        </label>
-        <label class="lab-filter">
-          <span>计划风险预算</span>
-          <Select v-model:value="riskFilter" :options="riskOptions" :disabled="!riskFactorsVisible" class="risk-select" aria-label="计划风险预算" />
-        </label>
-        <label class="lab-filter">
-          <span>止损宽度</span>
-          <Select v-model:value="stopFilter" :options="stopOptions" :disabled="!riskFactorsVisible" class="stop-select" aria-label="止损宽度" />
-        </label>
-        <label v-if="population === 'microstructure'" class="lab-filter">
-          <span>对照方式</span>
-          <Select v-model:value="bookGroupFilter" :options="bookGroupOptions" class="risk-select" aria-label="订单簿对照方式" />
-        </label>
-      </div>
-      <p class="mt-3 text-xs text-muted-foreground">{{ filterScope }}。资金与净值合计只对应当前筛选；旧对照与新因子样本分开统计。</p>
-    </Card>
-
-    <Alert v-if="error" class="mt-3" type="error" show-icon :message="error" />
-    <Alert
-      v-if="overview?.service?.last_error"
-      class="mt-3"
-      type="error"
-      show-icon
-      message="模拟执行器最近发生错误"
-      :description="overview.service.last_error"
-    />
-    <Alert
-      class="mt-3"
-      type="info"
-      show-icon
-      :message="focusOnly ? '重点观察：时序动量与布林带偏离回归' : '这些策略是待检验的研究假设；每项前向模拟独立记录，已有 TrendFollowing 模拟盘继续独立运行。'"
-      :description="`成交按下一根开盘价代理；所选账户手续费 ${percent(feeRate)}/边。限价单未成交风险、滑点与资金费未知，扣手续费收益不能视为完整净收益。只记录上线后的真实信号，不补造历史模拟成交。`"
-    />
-    <Alert
-      v-if="blockedStrategies.length"
-      class="mt-3"
-      type="warning"
-      show-icon
-      message="部分研究策略尚未进入模拟执行"
-      :description="`${blockedStrategySummary}。这些策略不会伪造成交，也不会计入已登记账户。`"
-    />
-    <Alert
-      v-if="rejectedStrategies.length"
-      class="mt-3"
-      type="info"
-      show-icon
-      message="已淘汰的研究候选"
-      :description="`${rejectedStrategySummary}。仅保留审计记录，不启用账户，不计入活动模拟。`"
-    />
-
-    <Spin :spinning="loading && !overview">
-      <Card :bordered="false" class="mt-3 shadow-sm">
-        <Empty
-          v-if="overview && !accounts.length"
-          :description="accountEmptyDescription"
-        />
-        <Empty
-          v-else-if="!overview && !loading"
-          description="策略账户数据暂不可用，请点击“刷新账户”重试"
-        />
-        <div
-          v-else-if="overview && accounts.length"
-          class="strategy-layout"
-        >
-          <nav class="strategy-navigation" aria-label="策略账户导航">
-            <div class="strategy-navigation-heading">
-              <span>策略导航</span>
-              <span class="strategy-navigation-count">{{ strategyGroups.length }} 项 · {{ accounts.length }} 个账户</span>
-            </div>
-            <div class="strategy-navigation-list">
-              <div v-for="group in strategyGroups" :key="group.id" class="strategy-navigation-group">
-                <button
-                  type="button"
-                  class="strategy-group-button"
-                  :class="{ 'strategy-group-active': selectedStrategy === group.id }"
-                  :aria-expanded="expandedStrategy === group.id"
-                  :aria-controls="`strategy-accounts-${group.id}`"
-                  @click="toggleStrategyGroup(group)"
-                >
-                  <span class="strategy-group-code">{{ group.code }}</span>
-                  <span class="strategy-group-name">{{ group.label }}</span>
-                  <span class="strategy-group-count">{{ group.items.length }}</span>
-                  <span class="strategy-group-chevron" :class="{ 'is-expanded': expandedStrategy === group.id }" aria-hidden="true">›</span>
-                </button>
-                <div
-                  v-show="expandedStrategy === group.id"
-                  :id="`strategy-accounts-${group.id}`"
-                  class="strategy-account-list"
-                >
-                  <button
+          <div
+            class="ledger-scroll"
+            role="region"
+            aria-label="纸面账户表，可横向滚动"
+            tabindex="0"
+          >
+            <table>
+              <thead>
+                <tr>
+                  <th>账户 / 实验臂</th>
+                  <th>周期 / 风险</th>
+                  <th>纸面状态</th>
+                  <th>费用后收益</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template v-for="group in strategyGroups" :key="group.id"
+                  ><tr class="ledger-group">
+                    <th colspan="4">{{ group.code }} {{ group.label }}</th>
+                  </tr>
+                  <tr
                     v-for="item in group.items"
                     :key="item.strategy_id"
-                    type="button"
-                    class="strategy-account-button"
-                    :class="{ 'strategy-account-active': selectedId === item.strategy_id }"
-                    :aria-current="selectedId === item.strategy_id ? 'true' : undefined"
-                    :title="accountName(item)"
-                    @click="selectedId = item.strategy_id"
+                    :class="{ 'selected-row': selectedId === item.strategy_id }"
                   >
-                    <span class="strategy-account-name">{{ accountVariantName(item) }}</span>
-                    <span class="strategy-account-meta">{{ item.timeframe ?? item.definition?.timeframe ?? '5m' }} · {{ accountStatus(item).label }}</span>
-                    <Tag v-if="isFocusStrategy(item)" :color="observationColor(item)">{{ observationLabel(item) }}</Tag>
-                  </button>
-                </div>
+                    <th scope="row">
+                      <button
+                        type="button"
+                        :data-account-id="item.strategy_id"
+                        :aria-pressed="selectedId === item.strategy_id"
+                        @click="selectedId = item.strategy_id"
+                      >
+                        <strong>{{ accountName(item) }}</strong
+                        ><small
+                          >{{ accountVariantName(item) }} ·
+                          {{ armLabel(item) }}</small
+                        ><code>{{ item.strategy_id }}</code>
+                      </button>
+                    </th>
+                    <td>
+                      {{ item.timeframe ?? item.definition?.timeframe ?? '未知'
+                      }}<small>{{ factorLabel(item) || '原冻结规则' }}</small>
+                    </td>
+                    <td>
+                      {{ accountStatus(item).label
+                      }}<small>{{
+                        isFocusStrategy(item)
+                          ? observationLabel(item)
+                          : populationLabels[labAccountPopulation(item)]
+                      }}</small>
+                    </td>
+                    <td :class="pnlClass(item.realized_pnl)">
+                      {{ fixed(item.realized_pnl) }}<small>其它成本未齐</small>
+                    </td>
+                  </tr></template
+                >
+              </tbody>
+            </table>
+          </div>
+          <p v-if="overview && !accounts.length" class="paper-empty">
+            {{ accountEmptyDescription }}
+          </p>
+          <p v-else-if="!overview && !loading" class="paper-empty">
+            尚无可用账户事实，刷新可重试。
+          </p>
+        </section>
+        <section class="strategy-detail" aria-label="所选纸面账户详情">
+          <p v-if="detailError" class="paper-error" role="status">
+            {{ detailError }}
+          </p>
+          <Spin :spinning="detailLoading"
+            ><Empty
+              v-if="!account && !detailLoading"
+              description="选择账户查看独立档案" /><template
+              v-else-if="account"
+            >
+              <div class="mb-4 flex flex-wrap items-center gap-2">
+                <span class="text-lg font-semibold">{{
+                  accountName(account)
+                }}</span>
+                <Tag
+                  v-if="isFocusStrategy(account)"
+                  :color="observationColor(account)"
+                  >{{ observationLabel(account) }}</Tag
+                >
+                <Tag color="blue">前向研究假设</Tag>
+                <Tag :color="accountStatus(account).color">{{
+                  accountStatus(account).label
+                }}</Tag>
+                <Tag v-if="atrRiskAccount" color="purple"
+                  >{{ accountFactors.riskBudget }} · k{{
+                    fixed(accountFactors.stopWidth, 1)
+                  }}</Tag
+                >
+                <Tag v-else>{{
+                  populationLabels[labAccountPopulation(account)]
+                }}</Tag>
+                <Tag
+                  v-if="
+                    selectedPopulation === 'fnew' ||
+                    selectedPopulation === 'microstructure'
+                  "
+                  color="geekblue"
+                  >{{ populationLabels[selectedPopulation] }}</Tag
+                >
+                <Tag
+                  v-if="selectedPopulation === 'microstructure'"
+                  color="cyan"
+                  >{{
+                    labBookGroup(account) === 'filter'
+                      ? '订单簿确认过滤'
+                      : '无订单簿过滤对照'
+                  }}</Tag
+                >
+                <Tag v-if="armId(account)" color="geekblue">{{
+                  armLabel(account)
+                }}</Tag>
+                <Tag v-if="hasDataStatus(account)" color="orange">{{
+                  dataStatusLabel(account)
+                }}</Tag>
+                <span class="text-xs text-muted-foreground"
+                  >{{ accountFamilyLabel }} ·
+                  {{ account.timeframe ?? definition.timeframe ?? '未知' }} ·
+                  {{ armLabel(account) }}</span
+                >
               </div>
-            </div>
-          </nav>
-
-          <div class="strategy-detail">
-            <Alert
-              v-if="detailError"
-              class="mb-3"
-              type="error"
-              show-icon
-              :message="detailError"
-            />
-            <Spin :spinning="detailLoading">
-              <Empty
-                v-if="!account && !detailLoading"
-                description="当前策略明细暂不可用，请重新选择或刷新账户"
-              />
-              <template v-else-if="account">
-                <div class="mb-4 flex flex-wrap items-center gap-2">
-                  <span class="text-lg font-semibold">{{
-                    accountName(account)
-                  }}</span>
-                  <Tag
-                    v-if="isFocusStrategy(account)"
-                    :color="observationColor(account)"
-                    >{{ observationLabel(account) }}</Tag
-                  >
-                  <Tag color="blue">前向研究假设</Tag>
-                  <Tag :color="accountStatus(account).color">{{
-                    accountStatus(account).label
-                  }}</Tag>
-                  <Tag v-if="atrRiskAccount" color="purple">{{ accountFactors.riskBudget }} · k{{ fixed(accountFactors.stopWidth, 1) }}</Tag>
-                  <Tag v-else>{{ populationLabels[labAccountPopulation(account)] }}</Tag>
-                  <Tag v-if="selectedPopulation === 'fnew' || selectedPopulation === 'microstructure'" color="geekblue">{{ populationLabels[selectedPopulation] }}</Tag>
-                  <Tag v-if="selectedPopulation === 'microstructure'" color="cyan">{{ labBookGroup(account) === 'filter' ? '订单簿确认过滤' : '无订单簿过滤对照' }}</Tag>
-                  <Tag v-if="armId(account)" color="geekblue">{{ armLabel(account) }}</Tag>
-                  <Tag v-if="hasDataStatus(account)" color="orange">{{ dataStatusLabel(account) }}</Tag>
-                  <span class="text-xs text-muted-foreground"
-                    >{{ accountFamilyLabel }} ·
-                    {{ account.timeframe ?? definition.timeframe ?? '5m' }} ·
-                    {{ armLabel(account) }}</span
-                  >
+              <div class="selected-identity" data-selected-paper>
+                <span>纸面账户</span><code>{{ selectedId }}</code
+                ><span>账户资格未核验</span>
+              </div>
+              <nav class="inspector-tabs" aria-label="所选账户证据分区">
+                <button
+                  v-for="tab in inspectorTabs"
+                  :key="tab.key"
+                  type="button"
+                  :data-inspector-tab="tab.key"
+                  :aria-pressed="inspectorSection === tab.key"
+                  @click="inspectorSection = tab.key"
+                >
+                  {{ tab.label }}
+                </button>
+              </nav>
+              <section
+                v-show="inspectorSection === 'definition'"
+                class="inspector-section"
+                aria-label="冻结定义"
+              >
+                <div class="rule-grid">
+                  <div>
+                    <div class="rule-label">机制</div>
+                    <p>{{ mechanismText }}</p>
+                  </div>
+                  <div>
+                    <div class="rule-label">入场判据</div>
+                    <p>{{ definition.entry_formula ?? '未知' }}</p>
+                  </div>
+                  <div>
+                    <div class="rule-label">离场判据</div>
+                    <p>{{ definition.exit_formula ?? '未知' }}</p>
+                  </div>
+                  <div>
+                    <div class="rule-label">与其他策略的区别</div>
+                    <p>{{ definition.distinct_from ?? '未知' }}</p>
+                  </div>
+                  <div>
+                    <div class="rule-label">账户风险预算</div>
+                    <p v-if="atrRiskAccount">
+                      {{ accountFactors.riskBudget }} · 计划止损与手续费预算
+                      {{ fixed(riskBudget, 0) }} USDT · k =
+                      {{ fixed(atrStopMult, 1) }}
+                    </p>
+                    <p>
+                      目标投入
+                      {{ percent(definition.position_budget?.target_exposure) }}
+                      · 最多
+                      {{ fixed(definition.position_budget?.max_positions, 0) }}
+                      仓 · 每币
+                      {{ fixed(definition.position_budget?.max_per_coin, 0) }}
+                      仓 · 杠杆
+                      {{ fixed(strategyLeverage(), 0) }} 倍
+                    </p>
+                  </div>
+                  <div class="risk-rule-block">
+                    <div class="rule-label">风险保护与止损</div>
+                    <p>{{ liquidationRuleText() }}</p>
+                    <p v-if="atrStopMult != null">{{ atrRiskText() }}</p>
+                    <p
+                      v-else-if="
+                        definition.params_frozen?.stop_atr_mult != null
+                      "
+                    >
+                      s08 影线拒绝策略另有冻结 ATR 止损/止盈：止损倍数
+                      {{
+                        fixed(definition.params_frozen.stop_atr_mult, 2)
+                      }}，止盈倍数
+                      {{ fixed(definition.params_frozen.tp_atr_mult, 2) }}；ATR
+                      在入场时冻结，{{ stopRuleText() }}
+                    </p>
+                    <p v-else>
+                      当前策略没有统一固定百分比止损，主要依靠策略离场判据、持仓期限与杠杆强平保护。
+                    </p>
+                  </div>
+                  <div>
+                    <div class="rule-label">实际交易币池 / 成交模型</div>
+                    <p>
+                      {{ executionUniverse?.join(' · ') ?? '未知' }}<br />{{
+                        fillModelText()
+                      }}
+                    </p>
+                    <p v-if="definition.research_universe?.length">
+                      信号研究币池：{{
+                        definition.research_universe.join(' · ')
+                      }}
+                    </p>
+                    <p v-if="executionBlocked">
+                      执行暂停：{{ executionBlockReason }}
+                    </p>
+                  </div>
                 </div>
-                <div class="mb-4 rounded border p-3 text-xs text-muted-foreground">
+                <div class="rule-label mt-4">冻结参数</div>
+                <pre class="params-box">{{
+                  definition.params_frozen
+                    ? JSON.stringify(definition.params_frozen, null, 2)
+                    : '未知'
+                }}</pre>
+                <div class="mt-4 break-all text-xs text-muted-foreground">
+                  策略 ID：{{ account.strategy_id }}<br />规则哈希：{{
+                    account.rule_hash ?? '未知'
+                  }}<br />执行模型哈希：{{ account.execution_hash ?? '未知' }}
+                </div>
+              </section>
+              <section
+                v-show="inspectorSection === 'time'"
+                class="inspector-section"
+                aria-label="时间评估"
+              >
+                <div
+                  class="mb-4 rounded border p-3 text-xs text-muted-foreground"
+                >
                   {{ warmupText(account) }} · 最新收盘 K 线起点（北京）
                   {{ fullOrderTime(labWarmupCandleTime(account)) }}
                   · 最近执行 K 线起点
-                  {{ account.last_candle_ms == null ? '尚无执行记录' : fullOrderTime(account.last_candle_ms) }}
-                  <span v-if="account.warmup?.reason && account.warmup.reason !== 'ready'">
+                  {{
+                    account.last_candle_ms == null
+                      ? '尚无执行记录'
+                      : fullOrderTime(account.last_candle_ms)
+                  }}
+                  <span
+                    v-if="
+                      account.warmup?.reason &&
+                      account.warmup.reason !== 'ready'
+                    "
+                  >
                     · {{ labReason(account.warmup.reason) }}</span
                   >
                   <span v-if="hasDataStatus(account)">
                     · {{ dataStatusLabel(account) }}</span
                   >
                 </div>
+                <div class="mb-2 text-xs text-muted-foreground">
+                  仅绘制已落库的真实净值记录；初始资金不是历史交易收益，缺失点不补造。
+                </div>
+                <AccountEquityChart
+                  v-if="currentDetail && inspectorSection === 'time'"
+                  :key="selectedId"
+                  :points="equityPoints"
+                />
+                <Empty
+                  v-if="!equityPoints.length"
+                  description="尚无净值记录，等待执行扫描"
+                />
+                <div
+                  v-else-if="equityPoints.length === 1"
+                  class="py-2 text-center text-xs text-muted-foreground"
+                >
+                  当前仅有一个实际净值记录，尚未形成收益曲线。
+                </div>
+                <p class="paper-note">
+                  当前归档不提供新计划要求的逐阶段时间验收与封闭覆盖证明，时间资格仍未知。
+                </p>
+              </section>
+              <section
+                v-show="inspectorSection === 'cost'"
+                class="inspector-section"
+                aria-label="成本证据"
+              >
+                <h3>费用口径与完整度</h3>
+                <p class="cost-boundary">
+                  滑点与资金费未知，扣手续费收益不能视为完整净收益。
+                </p>
+                <dl class="paper-facts">
+                  <div>
+                    <dt>手续费 / 边</dt>
+                    <dd>{{ percent(feeRate) }}</dd>
+                  </div>
+                  <div>
+                    <dt>已支付手续费 USDT</dt>
+                    <dd>{{ fixed(feesPaid, 4) }}</dd>
+                  </div>
+                  <div>
+                    <dt>成交代理</dt>
+                    <dd>
+                      {{
+                        execution.fill_model ??
+                        '下一根开盘价代理，实际委托成交差异未建模'
+                      }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>资金费</dt>
+                    <dd>
+                      {{ execution.funding ?? account.funding ?? '未知' }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>滑点</dt>
+                    <dd>
+                      {{ execution.slippage ?? account.slippage ?? '未知' }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>限价单未成交风险</dt>
+                    <dd>{{ execution.non_fill_risk ?? '未知' }}</dd>
+                  </div>
+                  <div>
+                    <dt>冻结费用依据</dt>
+                    <dd>{{ execution.fee_basis ?? '来源未提供' }}</dd>
+                  </div>
+                </dl>
+                <p class="paper-note">
+                  费用后收益仅对应所选纸面账户，未与 Binance Demo
+                  或真实账户合并。
+                </p>
+              </section>
+              <section
+                v-show="inspectorSection === 'execution'"
+                class="inspector-section"
+                aria-label="纸面执行观测"
+              >
                 <Alert
                   v-if="executionBlocked"
                   class="mb-4"
@@ -1023,7 +1487,10 @@ onUnmounted(() => {
                   :description="atrRiskText()"
                 />
                 <Alert
-                  v-if="selectedPopulation === 'fnew' && canonicalLabStrategy(account) === 's33_basis_momentum_1h'"
+                  v-if="
+                    selectedPopulation === 'fnew' &&
+                    canonicalLabStrategy(account) === 's33_basis_momentum_1h'
+                  "
                   class="mb-4"
                   type="info"
                   show-icon
@@ -1062,7 +1529,9 @@ onUnmounted(() => {
                   message="当前账户存在执行边界"
                   :description="accountDataStatus(account)"
                 />
-                <div class="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
+                <div
+                  class="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7"
+                >
                   <div class="metric-cell">
                     <div class="metric-label">初始资金 USDT</div>
                     <div class="metric-value">
@@ -1117,7 +1586,14 @@ onUnmounted(() => {
                       percent(account.total_return_ratio ?? account.return_pct)
                     }}</span
                   >
-                  <span>已平仓胜率 {{ numeric(closedCount) === 0 ? '暂无平仓样本' : percent(account.win_rate) }}</span>
+                  <span
+                    >已平仓胜率
+                    {{
+                      numeric(closedCount) === 0
+                        ? '暂无平仓样本'
+                        : percent(account.win_rate)
+                    }}</span
+                  >
                   <span
                     >观测最大回撤
                     {{
@@ -1127,7 +1603,8 @@ onUnmounted(() => {
                     }}</span
                   >
                   <span
-                    >待成交订单 {{ fixed(account.pending_order_count, 0) }}</span
+                    >待成交订单
+                    {{ fixed(account.pending_order_count, 0) }}</span
                   >
                 </div>
                 <Alert
@@ -1138,6 +1615,15 @@ onUnmounted(() => {
                   message="已平仓 0 笔，尚无已实现策略表现样本。持仓浮盈与已平仓结果分开统计。"
                 />
 
+                <p class="paper-note">
+                  当前纸面执行观测不授予新增风险、Demo 或实盘资格。
+                </p>
+              </section>
+              <section
+                v-show="inspectorSection === 'archive'"
+                class="inspector-section"
+                aria-label="纸面账户档案"
+              >
                 <Tabs v-model:active-key="section" class="mt-5" size="small">
                   <TabPane
                     key="positions"
@@ -1148,7 +1634,7 @@ onUnmounted(() => {
                       type="warning"
                       show-icon
                       message="持仓风险保护"
-                      :description="`${liquidationRuleText()} ${atrStopMult != null ? atrRiskText() : definition.params_frozen?.stop_atr_mult != null ? '本策略同时按冻结的 ATR 止损/止盈规则，在收盘确认后按下一根开盘价代理成交。' : '本策略按冻结的收盘离场与持仓期限规则退出。'}`"
+                      :description="`${liquidationRuleText()} ${atrStopMult != null ? atrRiskText() : definition.params_frozen?.stop_atr_mult != null ? stopRuleText() : '策略离场与持仓期限以所选冻结规则为准。'}`"
                     />
                     <Table
                       :columns="positionColumns"
@@ -1197,11 +1683,20 @@ onUnmounted(() => {
                         <template v-else-if="column.key === 'prices'"
                           >{{ fixed(record.entry_price, 4) }} /
                           {{
-                            fixed(valueOf(record, 'mark_price', 'current_price'), 4)
+                            fixed(
+                              valueOf(record, 'mark_price', 'current_price'),
+                              4,
+                            )
                           }}</template
                         >
                         <template v-else-if="column.key === 'leverage'">
-                          {{ fixed(valueOf(record, 'leverage') ?? strategyLeverage(), 0) }} 倍
+                          {{
+                            fixed(
+                              valueOf(record, 'leverage') ?? strategyLeverage(),
+                              0,
+                            )
+                          }}
+                          倍
                         </template>
                         <template v-else-if="column.key === 'liquidation'">
                           {{ fixed(positionLiquidationPrice(record), 4) }}
@@ -1241,7 +1736,12 @@ onUnmounted(() => {
                     >
                       <template #bodyCell="{ column, record }">
                         <template v-if="column.key === 'id'">
-                          <Button type="link" class="!p-0 font-mono text-xs" @click="showRecord(record)">{{ paperNumber(record) }}</Button>
+                          <Button
+                            type="link"
+                            class="!p-0 font-mono text-xs"
+                            @click="showRecord(record)"
+                            >{{ paperNumber(record) }}</Button
+                          >
                         </template>
                         <template v-else-if="column.key === 'pair'"
                           >{{ textOf(record, 'pair') }}
@@ -1302,7 +1802,10 @@ onUnmounted(() => {
                           </div></template
                         >
                         <template v-else-if="column.key === 'price'">{{
-                          fillValue(record, valueOf(record, 'fill_price', 'price'))
+                          fillValue(
+                            record,
+                            valueOf(record, 'fill_price', 'price'),
+                          )
                         }}</template>
                         <template v-else-if="column.key === 'fee'">{{
                           fillValue(record, valueOf(record, 'fee', 'fee_paid'))
@@ -1312,7 +1815,8 @@ onUnmounted(() => {
                         }}</template>
                       </template>
                       <template #emptyText
-                        ><Empty description="暂无模拟订单；等待数据就绪及实际信号"
+                        ><Empty
+                          description="暂无模拟订单；等待数据就绪及实际信号"
                       /></template>
                     </Table>
                   </TabPane>
@@ -1328,12 +1832,15 @@ onUnmounted(() => {
                     >
                       <template #bodyCell="{ column, record }">
                         <template v-if="column.key === 'id'"
-                          ><Button type="link" class="!p-0 font-mono text-xs" @click="showRecord(record)">{{ paperNumber(record) }}</Button>
+                          ><Button
+                            type="link"
+                            class="!p-0 font-mono text-xs"
+                            @click="showRecord(record)"
+                            >{{ paperNumber(record) }}</Button
+                          >
                           <div class="row-sub">
                             {{ textOf(record, 'pair')
-                            }}<span v-if="record.group_id">
-                              · 双腿配对</span
-                            >
+                            }}<span v-if="record.group_id"> · 双腿配对</span>
                           </div></template
                         >
                         <template v-else-if="column.key === 'side'">{{
@@ -1373,7 +1880,13 @@ onUnmounted(() => {
                         >
                         <template v-else-if="column.key === 'fee'">{{
                           fixed(
-                            valueOf(record, 'fees_paid', 'fee_paid', 'fees', 'fee'),
+                            valueOf(
+                              record,
+                              'fees_paid',
+                              'fee_paid',
+                              'fees',
+                              'fee',
+                            ),
                             4,
                           )
                         }}</template>
@@ -1381,12 +1894,22 @@ onUnmounted(() => {
                           ><span
                             :class="
                               pnlClass(
-                                valueOf(record, 'net_pnl', 'realized_pnl', 'pnl'),
+                                valueOf(
+                                  record,
+                                  'net_pnl',
+                                  'realized_pnl',
+                                  'pnl',
+                                ),
                               )
                             "
                             >{{
                               fixed(
-                                valueOf(record, 'net_pnl', 'realized_pnl', 'pnl'),
+                                valueOf(
+                                  record,
+                                  'net_pnl',
+                                  'realized_pnl',
+                                  'pnl',
+                                ),
                               )
                             }}</span
                           ></template
@@ -1444,15 +1967,22 @@ onUnmounted(() => {
                         <div class="rule-label">账户风险预算</div>
                         <p v-if="atrRiskAccount">
                           {{ accountFactors.riskBudget }} · 计划止损与手续费预算
-                          {{ fixed(riskBudget, 0) }} USDT · k = {{ fixed(atrStopMult, 1) }}
+                          {{ fixed(riskBudget, 0) }} USDT · k =
+                          {{ fixed(atrStopMult, 1) }}
                         </p>
                         <p>
                           目标投入
-                          {{ percent(definition.position_budget?.target_exposure) }}
+                          {{
+                            percent(definition.position_budget?.target_exposure)
+                          }}
                           · 最多
-                          {{ fixed(definition.position_budget?.max_positions, 0) }}
+                          {{
+                            fixed(definition.position_budget?.max_positions, 0)
+                          }}
                           仓 · 每币
-                          {{ fixed(definition.position_budget?.max_per_coin, 0) }}
+                          {{
+                            fixed(definition.position_budget?.max_per_coin, 0)
+                          }}
                           仓 · 杠杆
                           {{ fixed(strategyLeverage(), 0) }} 倍
                         </p>
@@ -1461,23 +1991,38 @@ onUnmounted(() => {
                         <div class="rule-label">风险保护与止损</div>
                         <p>{{ liquidationRuleText() }}</p>
                         <p v-if="atrStopMult != null">{{ atrRiskText() }}</p>
-                        <p v-else-if="definition.params_frozen?.stop_atr_mult != null">
+                        <p
+                          v-else-if="
+                            definition.params_frozen?.stop_atr_mult != null
+                          "
+                        >
                           s08 影线拒绝策略另有冻结 ATR 止损/止盈：止损倍数
-                          {{ fixed(definition.params_frozen.stop_atr_mult, 2) }}，止盈倍数
-                          {{ fixed(definition.params_frozen.tp_atr_mult, 2) }}；ATR 在入场时冻结，触发只认收盘价，下一根开盘价代理成交。
+                          {{
+                            fixed(definition.params_frozen.stop_atr_mult, 2)
+                          }}，止盈倍数
+                          {{
+                            fixed(definition.params_frozen.tp_atr_mult, 2)
+                          }}；ATR 在入场时冻结，{{ stopRuleText() }}
                         </p>
-                        <p v-else>当前策略没有统一固定百分比止损，主要依靠策略离场判据、持仓期限与杠杆强平保护。</p>
+                        <p v-else>
+                          当前策略没有统一固定百分比止损，主要依靠策略离场判据、持仓期限与杠杆强平保护。
+                        </p>
                       </div>
                       <div>
                         <div class="rule-label">实际交易币池 / 成交模型</div>
                         <p>
-                          {{ executionUniverse?.join(' · ') ?? '未知'
-                          }}<br />连续下一根开盘价代理（下一根收盘时记录）
+                          {{ executionUniverse?.join(' · ') ?? '未知' }}<br />{{
+                            fillModelText()
+                          }}
                         </p>
                         <p v-if="definition.research_universe?.length">
-                          信号研究币池：{{ definition.research_universe.join(' · ') }}
+                          信号研究币池：{{
+                            definition.research_universe.join(' · ')
+                          }}
                         </p>
-                        <p v-if="executionBlocked">执行暂停：{{ executionBlockReason }}</p>
+                        <p v-if="executionBlocked">
+                          执行暂停：{{ executionBlockReason }}
+                        </p>
                       </div>
                     </div>
                     <div class="rule-label mt-4">冻结参数</div>
@@ -1516,10 +2061,17 @@ onUnmounted(() => {
                           )
                         }}</template>
                         <template v-else-if="column.key === 'kind'">{{
-                          labEventType(valueOf(record, 'event_type', 'kind', 'type'))
+                          labEventType(
+                            valueOf(record, 'event_type', 'kind', 'type'),
+                          )
                         }}</template>
                         <template v-else-if="column.key === 'reason'">
-                          <Button type="link" class="!h-auto !p-0 text-left !whitespace-normal" @click="showRecord(record)">{{ eventSummary(record) }}</Button>
+                          <Button
+                            type="link"
+                            class="!h-auto !p-0 text-left !whitespace-normal"
+                            @click="showRecord(record)"
+                            >{{ eventSummary(record) }}</Button
+                          >
                         </template>
                       </template>
                       <template #emptyText
@@ -1527,29 +2079,84 @@ onUnmounted(() => {
                       /></template>
                     </Table>
                   </TabPane>
-                </Tabs>
-              </template>
-            </Spin>
-          </div>
-        </div>
-      </Card>
-    </Spin>
+                </Tabs></section></template
+          ></Spin>
+        </section></div
+    ></Spin>
     <Drawer v-model:open="recordDetailOpen" title="模拟记录详情" :width="560">
       <Descriptions v-if="recordDetail" bordered :column="1" size="small">
-        <DescriptionsItem label="展示编号">{{ paperNumber(recordDetail) }}</DescriptionsItem>
-        <DescriptionsItem label="策略">{{ accountName(accounts.find(item => item.strategy_id === recordDetail?.strategy_id)) }}</DescriptionsItem>
-        <DescriptionsItem label="币种">{{ textOf(recordDetail, 'pair') }}</DescriptionsItem>
-        <DescriptionsItem label="状态">{{ recordStatus(recordDetail) }}</DescriptionsItem>
-        <DescriptionsItem label="原因">{{ recordDetail.event_type ? eventSummary(recordDetail) : labReason(valueOf(recordDetail, 'reason', 'signal_reason', 'exit_reason')) }}</DescriptionsItem>
-        <DescriptionsItem v-if="!recordDetail.event_type" label="完整模拟订单号"><span class="break-all">{{ textOf(recordDetail, 'order_id', 'paper_order_id', 'entry_order_id') }}</span></DescriptionsItem>
-        <DescriptionsItem v-if="recordDetail.trade_id" label="完整成交记录号"><span class="break-all">{{ recordDetail.trade_id }}</span></DescriptionsItem>
-        <DescriptionsItem v-if="recordDetail.group_id" label="完整配对组编号"><span class="break-all">{{ recordDetail.group_id }}</span></DescriptionsItem>
-        <DescriptionsItem v-if="!recordDetail.event_type" label="交易所原始订单号">{{ recordDetail.exchange_order_id ?? '无（模拟订单）' }}</DescriptionsItem>
-        <DescriptionsItem v-if="!recordDetail.event_type" label="原始原因代码"><span class="break-all">{{ textOf(recordDetail, 'reason', 'signal_reason', 'exit_reason') }}</span></DescriptionsItem>
-        <DescriptionsItem v-if="!recordDetail.event_type" label="成交价格">{{ fillValue(recordDetail, valueOf(recordDetail, 'fill_price', 'price', 'entry_price')) }}</DescriptionsItem>
-        <DescriptionsItem v-if="!recordDetail.event_type" label="手续费 USDT">{{ fillValue(recordDetail, valueOf(recordDetail, 'fee', 'fee_paid', 'fees')) }}</DescriptionsItem>
-        <DescriptionsItem v-if="recordDetail.event_type" label="记录时间（北京）">{{ fullOrderTime(recordDetail.observed_at_ms) }}</DescriptionsItem>
-        <DescriptionsItem v-for="(book, index) in recordBookEvidence" :key="`${book.pair}-${index}`" :label="`${book.pair} · 订单簿证据`">
+        <DescriptionsItem label="展示编号">{{
+          paperNumber(recordDetail)
+        }}</DescriptionsItem>
+        <DescriptionsItem label="策略">{{
+          accountName(
+            accounts.find(
+              (item) => item.strategy_id === recordDetail?.strategy_id,
+            ),
+          )
+        }}</DescriptionsItem>
+        <DescriptionsItem label="币种">{{
+          textOf(recordDetail, 'pair')
+        }}</DescriptionsItem>
+        <DescriptionsItem label="状态">{{
+          recordStatus(recordDetail)
+        }}</DescriptionsItem>
+        <DescriptionsItem label="原因">{{
+          recordDetail.event_type
+            ? eventSummary(recordDetail)
+            : labReason(
+                valueOf(recordDetail, 'reason', 'signal_reason', 'exit_reason'),
+              )
+        }}</DescriptionsItem>
+        <DescriptionsItem v-if="!recordDetail.event_type" label="完整模拟订单号"
+          ><span class="break-all">{{
+            textOf(recordDetail, 'order_id', 'paper_order_id', 'entry_order_id')
+          }}</span></DescriptionsItem
+        >
+        <DescriptionsItem v-if="recordDetail.trade_id" label="完整成交记录号"
+          ><span class="break-all">{{
+            recordDetail.trade_id
+          }}</span></DescriptionsItem
+        >
+        <DescriptionsItem v-if="recordDetail.group_id" label="完整配对组编号"
+          ><span class="break-all">{{
+            recordDetail.group_id
+          }}</span></DescriptionsItem
+        >
+        <DescriptionsItem
+          v-if="!recordDetail.event_type"
+          label="交易所原始订单号"
+          >{{
+            recordDetail.exchange_order_id ?? '无（模拟订单）'
+          }}</DescriptionsItem
+        >
+        <DescriptionsItem v-if="!recordDetail.event_type" label="原始原因代码"
+          ><span class="break-all">{{
+            textOf(recordDetail, 'reason', 'signal_reason', 'exit_reason')
+          }}</span></DescriptionsItem
+        >
+        <DescriptionsItem v-if="!recordDetail.event_type" label="成交价格">{{
+          fillValue(
+            recordDetail,
+            valueOf(recordDetail, 'fill_price', 'price', 'entry_price'),
+          )
+        }}</DescriptionsItem>
+        <DescriptionsItem v-if="!recordDetail.event_type" label="手续费 USDT">{{
+          fillValue(
+            recordDetail,
+            valueOf(recordDetail, 'fee', 'fee_paid', 'fees'),
+          )
+        }}</DescriptionsItem>
+        <DescriptionsItem
+          v-if="recordDetail.event_type"
+          label="记录时间（北京）"
+          >{{ fullOrderTime(recordDetail.observed_at_ms) }}</DescriptionsItem
+        >
+        <DescriptionsItem
+          v-for="(book, index) in recordBookEvidence"
+          :key="`${book.pair}-${index}`"
+          :label="`${book.pair} · 订单簿证据`"
+        >
           <p>{{ book.groupLabel }} · {{ book.gateLabel }}</p>
           <p>{{ book.qualityLabel }}</p>
           <p>{{ book.featureValidityLabel }}</p>
@@ -1557,245 +2164,562 @@ onUnmounted(() => {
           <p>{{ book.pairedSampleLabel }}</p>
         </DescriptionsItem>
       </Descriptions>
-      <details v-if="recordDetail && (recordDetail.event_type || recordBookEvidence.length)" class="mt-4">
+      <details
+        v-if="
+          recordDetail && (recordDetail.event_type || recordBookEvidence.length)
+        "
+        class="mt-4"
+      >
         <summary class="cursor-pointer text-xs">原始决策证据</summary>
-        <pre class="params-box mt-2">{{ JSON.stringify(recordDetail, null, 2) }}</pre>
+        <pre class="params-box mt-2">{{
+          JSON.stringify(recordDetail, null, 2)
+        }}</pre>
       </details>
     </Drawer>
-    <div class="mt-3 text-xs text-muted-foreground">
-      前向模拟结果仅扣除已记录手续费；滑点、资金费与真实订单成交差异尚未建模。
-      <span v-if="overview?.limitations?.length && selectedPopulation !== 'fnew' && selectedPopulation !== 'microstructure'">{{
-        overview.limitations.join('；').replace(/\bunknown\b/gi, '未知')
-      }}</span>
-    </div>
-  </div>
+    <p class="paper-footer">
+      前向纸面结果仅扣已记录手续费；持仓浮盈与已平仓收益分开。归档记录不等同批准或执行资格。
+    </p>
+  </main>
 </template>
-
 <style scoped>
+.paper-workspace {
+  --paper-bg: #0c1b2a;
+  --paper-panel: #132b3e;
+  --paper-border: #29485c;
+  --paper-text: #e5edf4;
+  --paper-muted: #a2b8c9;
+  --paper-accent: #69b4e4;
+  min-width: 0;
+  max-width: 100%;
+  padding: 24px;
+  background: var(--paper-bg);
+  color: var(--paper-text);
+  font:
+    13px/1.55 'IBM Plex Sans',
+    'Source Han Sans SC',
+    'Noto Sans SC',
+    system-ui,
+    sans-serif;
+  color-scheme: dark;
+}
+.paper-workspace * {
+  box-sizing: border-box;
+}
+.paper-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.paper-heading h1 {
+  margin: 0 0 4px;
+  font-size: 25px;
+  font-weight: 600;
+}
+.paper-heading p {
+  margin: 0;
+  color: var(--paper-muted);
+}
+.paper-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px 18px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--paper-border);
+  border-left: 3px solid var(--paper-accent);
+  background: #102437;
+  color: var(--paper-muted);
+}
+.paper-scope strong {
+  color: var(--paper-text);
+}
+.paper-policy {
+  margin: 16px 0;
+  border: 1px solid var(--paper-border);
+  background: var(--paper-panel);
+  padding: 16px;
+}
+.paper-filters {
+  display: flex;
+  gap: 12px 20px;
+  align-items: center;
+  flex-wrap: wrap;
+}
 .lab-filter {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
+  color: var(--paper-muted);
 }
 .population-select {
-  min-width: 215px;
+  min-width: 210px;
 }
 .risk-select {
-  min-width: 180px;
+  min-width: 160px;
 }
 .stop-select {
-  min-width: 135px;
+  min-width: 130px;
 }
-.metric-cell {
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
-  padding: 12px;
-  min-width: 0;
-}
-.metric-label {
+.paper-note {
+  margin: 10px 0;
+  color: var(--paper-muted);
   font-size: 12px;
-  color: hsl(var(--muted-foreground));
 }
-.metric-value {
-  margin-top: 8px;
-  font-size: 20px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-}
-.metric-sub {
-  margin-top: 6px;
-  font-size: 11px;
-  color: hsl(var(--muted-foreground));
-}
-.metric-time {
-  font-size: 14px;
-}
-.strategy-layout {
-  display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+.policy-totals {
+  display: flex;
   align-items: start;
-  gap: 20px;
+  gap: 12px 26px;
+  flex-wrap: wrap;
+  margin: 14px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--paper-border);
 }
-.strategy-navigation {
-  position: sticky;
-  top: 16px;
-  display: flex;
-  flex-direction: column;
-  max-height: calc(100dvh - 112px);
-  overflow: hidden;
-  border: 1px solid hsl(var(--border));
-  border-radius: 10px;
-}
-.strategy-navigation-heading {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 14px 12px;
-  border-bottom: 1px solid hsl(var(--border));
-  font-size: 13px;
-  font-weight: 600;
-}
-.strategy-navigation-count {
+.policy-totals dt {
+  color: var(--paper-muted);
   font-size: 11px;
-  font-weight: 400;
-  color: hsl(var(--muted-foreground));
 }
-.strategy-navigation-list {
-  min-height: 0;
-  padding: 6px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-}
-.strategy-group-button,
-.strategy-account-button {
-  width: 100%;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-.strategy-group-button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 8px;
-  font-size: 12px;
-}
-.strategy-group-button:hover,
-.strategy-account-button:hover {
-  background: hsl(var(--muted));
-}
-.strategy-group-button:focus-visible,
-.strategy-account-button:focus-visible {
-  outline: 2px solid hsl(var(--primary));
-  outline-offset: -2px;
-}
-.strategy-group-active {
-  color: hsl(var(--primary));
-}
-.strategy-group-code,
-.strategy-group-count {
-  flex-shrink: 0;
-  font-size: 11px;
+.policy-totals dd {
+  margin: 2px 0 0;
+  font-size: 14px;
   font-variant-numeric: tabular-nums;
-  color: hsl(var(--muted-foreground));
 }
-.strategy-group-name {
-  flex: 1;
-  min-width: 0;
-  font-weight: 600;
-  overflow-wrap: anywhere;
+.paper-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 42%) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
 }
-.strategy-group-chevron {
-  flex-shrink: 0;
-  font-size: 20px;
-  line-height: 1;
-  transition: transform 0.15s;
-}
-.strategy-group-chevron.is-expanded {
-  transform: rotate(90deg);
-}
-.strategy-account-list {
-  margin: 0 4px 8px 20px;
-  padding-left: 8px;
-  border-left: 1px solid hsl(var(--border));
-}
-.strategy-account-button {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 5px;
-  margin-top: 4px;
-  padding: 10px;
-}
-.strategy-account-active,
-.strategy-account-active:hover {
-  background: hsl(var(--primary) / 0.12);
-  box-shadow: inset 3px 0 0 hsl(var(--primary));
-  color: hsl(var(--primary));
-}
-.strategy-account-name {
-  font-size: 12px;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-.strategy-account-meta {
-  font-size: 11px;
-  color: hsl(var(--muted-foreground));
-}
+.account-ledger,
 .strategy-detail {
   min-width: 0;
+  border: 1px solid var(--paper-border);
+  background: var(--paper-panel);
 }
-.row-sub {
-  margin-top: 4px;
+.ledger-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--paper-border);
+}
+.ledger-heading h2 {
+  font-size: 14px;
+  margin: 0;
+}
+.ledger-heading span {
   font-size: 11px;
-  color: hsl(var(--muted-foreground));
+  color: var(--paper-muted);
 }
-.profit-up {
-  color: #c2413a;
+.ledger-scroll {
+  overflow-x: auto;
+  max-width: 100%;
 }
-.profit-down {
-  color: #157f78;
+.ledger-scroll table {
+  width: 100%;
+  min-width: 540px;
+  border-collapse: collapse;
+  text-align: left;
 }
-.risk-critical {
-  color: #b42318;
-  font-weight: 600;
+.ledger-scroll th,
+.ledger-scroll td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--paper-border);
+  vertical-align: top;
+  font-size: 12px;
+  font-weight: 400;
 }
-.risk-high {
-  color: #c2410c;
-  font-weight: 600;
+.ledger-scroll thead th {
+  color: var(--paper-muted);
+  font-size: 11px;
+  white-space: nowrap;
 }
-.risk-watch {
-  color: #a16207;
+.ledger-group th {
+  padding: 8px 12px;
+  background: #102437;
+  color: var(--paper-accent);
+  font-weight: 500;
 }
-.risk-rule-block {
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
-  padding: 12px;
+.ledger-scroll small {
+  display: block;
+  margin-top: 4px;
+  color: var(--paper-muted);
+  font-size: 10px;
+}
+.ledger-scroll code {
+  display: block;
+  margin-top: 5px;
+  color: var(--paper-muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.ledger-scroll button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  text-align: left;
+  color: var(--paper-text);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.ledger-scroll button strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.selected-row {
+  background: #1c3c53;
+}
+.selected-row th {
+  box-shadow: inset 3px 0 var(--paper-accent);
+}
+.ledger-scroll button:hover strong {
+  color: var(--paper-accent);
+}
+.strategy-detail {
+  padding: 16px;
+  overflow: hidden;
+}
+.selected-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 12px 0 16px;
+  padding: 10px 12px;
+  background: #102437;
+  border: 1px solid var(--paper-border);
+  font-size: 11px;
+  color: var(--paper-muted);
+}
+.selected-identity code {
+  color: var(--paper-accent);
+  overflow-wrap: anywhere;
+}
+.selected-identity span:last-child {
+  color: #f1bf86;
+}
+.inspector-tabs {
+  display: flex;
+  gap: 3px;
+  margin: 0 -16px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--paper-border);
+  overflow-x: auto;
+}
+.inspector-tabs button {
+  flex: 1;
+  min-width: 64px;
+  padding: 10px 6px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--paper-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.inspector-tabs button[aria-pressed='true'] {
+  border-bottom-color: var(--paper-accent);
+  color: var(--paper-text);
+  background: #1b394e;
+}
+.inspector-section {
+  padding: 16px 0 0;
+  min-width: 0;
+}
+.inspector-section h3 {
+  font-size: 15px;
+  margin: 0 0 12px;
 }
 .rule-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
+  gap: 18px;
 }
 .rule-grid p {
-  margin-top: 8px;
-  line-height: 1.7;
+  margin: 6px 0 0;
   overflow-wrap: anywhere;
 }
 .rule-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: hsl(var(--muted-foreground));
+  color: var(--paper-muted);
+  font-size: 11px;
+}
+.risk-rule-block {
+  padding: 10px;
+  border: 1px solid var(--paper-border);
+  border-radius: 3px;
 }
 .params-box {
-  margin-top: 8px;
-  border-radius: 8px;
-  background: hsl(var(--muted));
+  max-width: 100%;
   padding: 12px;
-  font-size: 12px;
+  border: 1px solid var(--paper-border);
+  border-radius: 3px;
+  background: #0c1b2a;
+  font-size: 11px;
   overflow-x: auto;
+  color: var(--paper-text);
 }
-@media (max-width: 767px) {
-  .strategy-layout {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 16px;
+.metric-cell {
+  padding: 10px;
+  border: 1px solid var(--paper-border);
+  border-radius: 3px;
+  min-width: 0;
+}
+.metric-label {
+  font-size: 11px;
+  color: var(--paper-muted);
+}
+.metric-value {
+  margin-top: 4px;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.metric-sub {
+  font-size: 10px;
+  color: var(--paper-muted);
+}
+.metric-time {
+  font-size: 13px;
+}
+.paper-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.paper-facts dt {
+  font-size: 11px;
+  color: var(--paper-muted);
+}
+.paper-facts dd {
+  margin: 4px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.cost-boundary {
+  padding: 10px 12px;
+  border: 1px solid #795e3f;
+  background: #3b3329;
+  color: #f1bf86;
+}
+.paper-error {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #805348;
+  background: #413032;
+  color: #f0b4aa;
+  font-size: 12px;
+}
+.paper-empty {
+  padding: 24px 14px;
+  color: var(--paper-muted);
+  text-align: center;
+}
+.candidate-boundaries {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--paper-border);
+  color: var(--paper-muted);
+  font-size: 12px;
+}
+.candidate-boundaries summary {
+  cursor: pointer;
+  color: var(--paper-text);
+}
+.paper-footer {
+  margin: 14px 0 0;
+  color: var(--paper-muted);
+  font-size: 11px;
+}
+.row-sub {
+  font-size: 10px;
+  margin-top: 4px;
+  color: var(--paper-muted);
+}
+.profit-up {
+  color: #f0a49b;
+}
+.profit-down {
+  color: #91d0bd;
+}
+.risk-critical,
+.risk-high {
+  color: #f0a49b;
+}
+.risk-watch {
+  color: #f1bf86;
+}
+.paper-workspace :deep(.text-muted-foreground) {
+  color: var(--paper-muted);
+}
+.paper-workspace :deep(.ant-table),
+.paper-workspace :deep(.ant-table-cell),
+.paper-workspace :deep(.ant-tabs-content-holder),
+.paper-workspace :deep(.ant-select-selector) {
+  color: var(--paper-text) !important;
+  background: var(--paper-panel) !important;
+  border-color: var(--paper-border) !important;
+}
+.paper-workspace :deep(.ant-table-thead > tr > th) {
+  color: var(--paper-muted) !important;
+  background: #102437 !important;
+  font-size: 11px;
+}
+.paper-workspace :deep(.ant-table-container) {
+  border-color: var(--paper-border) !important;
+}
+.paper-workspace :deep(.ant-table-row:hover > td) {
+  background: #1b394e !important;
+}
+.paper-workspace :deep(.ant-tabs-tab) {
+  color: var(--paper-muted);
+}
+.paper-workspace :deep(.ant-tabs-tab-active .ant-tabs-tab-btn) {
+  color: var(--paper-accent) !important;
+}
+.paper-workspace :deep(.ant-tabs-nav::before) {
+  border-color: var(--paper-border) !important;
+}
+.paper-workspace :deep(.ant-alert) {
+  background: #163247;
+  border: 1px solid var(--paper-border);
+  color: var(--paper-text);
+  font-size: 12px;
+}
+.paper-workspace :deep(.ant-alert-message),
+.paper-workspace :deep(.ant-alert-description),
+.paper-workspace :deep(.ant-empty-description) {
+  color: var(--paper-muted);
+}
+.paper-workspace :deep(.ant-btn) {
+  border-color: #45677d;
+  background: #1b394e;
+  color: var(--paper-text);
+}
+.paper-workspace :deep(.ant-btn-link) {
+  background: transparent;
+  color: var(--paper-accent);
+  border-color: transparent;
+}
+.paper-workspace :deep(.ant-table-wrapper) {
+  min-width: 0;
+  max-width: 100%;
+}
+.paper-workspace button:focus-visible,
+.paper-workspace a:focus-visible,
+.paper-workspace [tabindex]:focus-visible {
+  outline: 2px solid var(--paper-accent);
+  outline-offset: 3px;
+}
+.paper-workspace :deep(.ant-select-focused .ant-select-selector) {
+  outline: 2px solid var(--paper-accent);
+  outline-offset: 2px;
+}
+@media (min-width: 1700px) {
+  .paper-workspace {
+    padding: 28px 32px;
   }
-  .strategy-navigation {
-    position: static;
-    max-height: 320px;
+  .paper-layout {
+    grid-template-columns: minmax(600px, 43%) minmax(0, 1fr);
+  }
+}
+@media (max-width: 1150px) {
+  .paper-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ledger-scroll table {
+    min-width: 700px;
   }
   .rule-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .paper-workspace {
+    padding: 14px 12px;
+  }
+  .paper-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .paper-heading h1 {
+    font-size: 23px;
+  }
+  .paper-heading > .ant-btn {
+    width: 100%;
+  }
+  .paper-policy {
+    padding: 12px;
+  }
+  .paper-filters {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .lab-filter {
+    justify-content: space-between;
+  }
+  .lab-filter select {
+    min-width: 0;
+    width: 67%;
+  }
+  .policy-totals {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .policy-totals dd {
+    font-size: 12px;
+  }
+  .strategy-detail {
+    padding: 12px;
+  }
+  .inspector-tabs {
+    margin: 0 -12px;
+    padding: 0 6px;
+  }
+  .inspector-tabs button {
+    min-width: 58px;
+    font-size: 12px;
+  }
+  .rule-grid,
+  .paper-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .paper-scope {
+    gap: 6px 12px;
+    font-size: 11px;
   }
   .metric-value {
-    font-size: 18px;
+    font-size: 16px;
+  }
+}
+
+.lab-filter select {
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 1px solid #45677d;
+  border-radius: 3px;
+  background: #0c1b2a;
+  color: var(--paper-text);
+  font: inherit;
+  max-width: 100%;
+}
+.lab-filter select:focus-visible {
+  outline: 2px solid var(--paper-accent);
+  outline-offset: 2px;
+}
+.lab-filter select:disabled {
+  opacity: 0.6;
+}
+@media (max-width: 600px) {
+  .lab-filter select {
+    min-width: 0;
+    width: 67%;
   }
 }
 </style>

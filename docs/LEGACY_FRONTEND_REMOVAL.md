@@ -42,6 +42,21 @@ coinOrder、logText。应用壳不再导入或提供旧交易引擎命令插槽�
 实际 GET `http://127.0.0.1:8888/` 返回 200，字节与新 web/index.html
 完全一致，Cache-Control 为 no-store；不是只更新未服务的 dist。
 浏览器证据单独输出至 `/private/tmp/quant-legacy-removal-full-browser`，
-没有覆盖已跟踪截图。代码版本发布另按精确 SHA CI/CD 与下载包回执验证。
+没有覆盖已跟踪截图。
+
+## 正式发布回执
+
+附注标签 v0.2.3 固定于 `42f7ad89cd0c29183bbda39b7c1acd61ce4615ab`。
+精确 push CI 43959416690 成功，标签 CD 43960919815 的打包与 Release
+job 均成功，GitHub Release 447645971 已发布。远端前端同样为 973 项
+单测、11/11 构建和 98 项浏览器验证通过。
+
+独立下载实际 CD 工件，TAR 共 149959962 字节，SHA-256 为
+`2d7a65590600336d32f735bf43c82d7faaf3c17d7c484ba03af292a994ee0921`；
+sidecar、Release 资产 digest 和 build.json 提交/版本/包名均一致。4015 个
+归档成员路径唯一、均在包根内，无软硬链接和特殊类型。再次检查实际包内
+85 个生产源码文件与 195 个编译文本文件，旧入口和模板统计检出为零；
+78 个已删除文件、退役目录及七份并行后端新文件均未进入本版本。
+证据保留于 `/Volumes/yidong/quant-release-audit-v0.2.3-20261117`。
 
 本次界面退役不证明 P1 生产接线、P2 真实研究或自然 30 天验收完成。

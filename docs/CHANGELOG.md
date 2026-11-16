@@ -13,7 +13,16 @@
 本机完整 Vitest **122 文件、973 项通过**；类型检查、**11/11 构建**及
 四视口真实 Playwright **98 项通过**。旧页面专属测试随组件删除，不能直接
 与旧版测试总数比较覆盖率。退役范围和验证见 LEGACY_FRONTEND_REMOVAL.md。
-本版本发布前仍需精确 SHA CI、唯一标签 CD、Release 和独立下载包核验。
+发布提交 `42f7ad89cd0c29183bbda39b7c1acd61ce4615ab`，附注标签 `v0.2.3`。
+[精确 CI](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/43959416690)、
+[标签 CD](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/43960919815)
+成功，[Release](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.3)
+已发布。远端后端 3411 项通过、57 项跳过、3063 子测试通过；前端 973 项、
+11/11 构建及 98 项浏览器验证通过。独立下载最终 CD 归档核对 sidecar、
+Release 资产 digest 与 build.json 一致；TAR SHA-256 为
+`2d7a65590600336d32f735bf43c82d7faaf3c17d7c484ba03af292a994ee0921`。
+4015 个成员无重复、越界、软硬链接或特殊类型；78 个退役文件、旧页面目录
+及七个后续未提交文件均未进入归档，源码和编译产物未检出旧入口或模板统计。
 后续命令账本、统计模块、生产接线和自然验收继续按小节交付。
 
 ## 0.2.2 — 2026-11-17

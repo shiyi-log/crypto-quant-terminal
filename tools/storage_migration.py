@@ -23,7 +23,8 @@ from runtime_config import StorageLayout, load_environment, storage_layout
 DEFAULT_PATHS = (
     'bot/user_data/data', 'bot/user_data/models', 'bot/user_data/freqaimodels',
     'bot/user_data/backtest_results', 'bot/user_data/hyperopt_results',
-    'bot/user_data/t039_research_data', 'bot/user_data/logs', 'bot/logs',
+    'bot/user_data/t039_research_data', 'bot/user_data/iterations',
+    'bot/user_data/logs', 'bot/logs',
     'bot/user_data/auto_spaces', 'bot/user_data/*.json', 'bot/user_data/*.jsonl',
     'bot/tradesv3.dryrun.sqlite', 'database/runtime', 'logs',
 )
@@ -130,6 +131,9 @@ def _sqlite_backup(source: Path, target: Path) -> None:
 
 @contextmanager
 def _migration_lock(layout: StorageLayout):
+    # 清单与容量扫描期间外盘可能被卸载；首次创建目标目录前再次核对
+    # 挂载身份，避免把本机残留挂载点误当作外盘并继续写入。
+    validate_storage(layout)
     directory = layout.data_root / 'migration'
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (directory / 'precopy.lock').open('a') as lock:

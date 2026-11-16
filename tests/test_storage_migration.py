@@ -157,17 +157,43 @@ def test_default_inventory_includes_live_iteration_records_but_not_source_or_loc
     project, layout = _layout(tmp_path, monkeypatch)
     (project / 'bot/user_data/strategies').mkdir(parents=True)
     (project / 'bot/user_data/auto_spaces').mkdir()
+    (project / 'bot/user_data/iterations/run-001/evidence').mkdir(parents=True)
     (project / 'bot/user_data/auto_iteration_status.json').write_text('{}')
     (project / 'bot/user_data/model_versions_smoke.json').write_text('{}')
     (project / 'bot/user_data/auto_spaces/latest.json').write_text('{}')
+    (project / 'bot/user_data/iterations/run-001/manifest.json').write_text('{}')
+    (project / 'bot/user_data/iterations/run-001/evidence/report.json').write_text('{}')
     (project / 'bot/user_data/auto_iteration.lock').write_text('123')
     (project / 'bot/user_data/strategies/frozen.py').write_text('class Strategy: pass')
     report = migration.inventory(layout)
     assert sorted(item['path'] for item in report['entries']) == [
         'bot/user_data/auto_iteration_status.json',
         'bot/user_data/auto_spaces/latest.json',
+        'bot/user_data/iterations/run-001/evidence/report.json',
+        'bot/user_data/iterations/run-001/manifest.json',
         'bot/user_data/model_versions_smoke.json',
     ]
+
+
+def test_external_volume_is_revalidated_before_creating_migration_lock_directory(
+        tmp_path, monkeypatch):
+    project, layout = _layout(tmp_path, monkeypatch)
+    (project / 'logs').mkdir()
+    (project / 'logs/service.log').write_text('data')
+    original_validate = migration.validate_storage
+    calls = 0
+
+    def detach_after_inventory(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return original_validate(*args, **kwargs)
+        raise RuntimeError('external storage unavailable: volume is not mounted')
+
+    monkeypatch.setattr(migration, 'validate_storage', detach_after_inventory)
+    with pytest.raises(RuntimeError, match='unavailable'):
+        migration.precopy(layout, ['logs'])
+    assert not layout.data_root.exists()
 
 
 def test_modified_target_is_preserved_before_copy_and_manifest_excludes_process_lock(tmp_path, monkeypatch):

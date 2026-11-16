@@ -50,6 +50,6 @@ export QUANT_DATA_VOLUME_UUID=A6991AF4-5504-351A-BA2B-F0B615A17885
 .venv/bin/python -m tools.storage_migration precopy bot/tradesv3.dryrun.sqlite --apply
 ```
 
-预复制覆盖已有不同目标时，旧目标保留在 `migration/<run_id>/previous/`；原文件继续存在。根目录迭代状态、模型注册表 JSON/JSONL 与 `auto_spaces` 纳入默认清单，进程锁和 PID、SQLite WAL/SHM 排除。运行配置可能含私有凭据，复制目标和清单目录应仅当前用户可访问。
+预复制覆盖已有不同目标时，旧目标保留在 `migration/<run_id>/previous/`；原文件继续存在。根目录迭代状态、冻结运行目录 `bot/user_data/iterations/`、模型注册表 JSON/JSONL 与 `auto_spaces` 纳入默认清单，进程锁和 PID、SQLite WAL/SHM 排除。运行配置可能含私有凭据，复制目标和清单目录应仅当前用户可访问。
 
 当前预复制会对每个文件再次核验外盘身份，适合先迁移 SQLite、模型与回测产物；海量采集缓冲应在优化流式清单和挂载检查频率后单独批次执行，避免用全量扫描拖慢实时服务。

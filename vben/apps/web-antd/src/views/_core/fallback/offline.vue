@@ -1,9 +1,9 @@
 <script lang="ts" setup>
-import { Fallback } from '@vben/common-ui';
+import SystemState from './SystemState.vue';
 
-defineOptions({ name: 'FallbackOfflineDemo' });
+defineOptions({ name: 'SystemOffline' });
 </script>
 
 <template>
-  <Fallback status="offline" />
+  <SystemState status="offline" />
 </template>

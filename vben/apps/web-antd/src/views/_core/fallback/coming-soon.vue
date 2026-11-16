@@ -1,7 +1,9 @@
 <script lang="ts" setup>
-import { Fallback } from '@vben/common-ui';
+import SystemState from './SystemState.vue';
+
+defineOptions({ name: 'SystemUnavailable' });
 </script>
 
 <template>
-  <Fallback status="coming-soon" />
+  <SystemState status="coming-soon" />
 </template>

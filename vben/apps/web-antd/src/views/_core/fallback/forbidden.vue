@@ -1,9 +1,9 @@
 <script lang="ts" setup>
-import { Fallback } from '@vben/common-ui';
+import SystemState from './SystemState.vue';
 
-defineOptions({ name: 'Fallback403Demo' });
+defineOptions({ name: 'SystemForbidden' });
 </script>
 
 <template>
-  <Fallback status="403" />
+  <SystemState status="403" />
 </template>

@@ -1,9 +1,9 @@
 <script lang="ts" setup>
-import { Fallback } from '@vben/common-ui';
+import SystemState from './SystemState.vue';
 
-defineOptions({ name: 'Fallback404Demo' });
+defineOptions({ name: 'SystemNotFound' });
 </script>
 
 <template>
-  <Fallback status="404" />
+  <SystemState status="404" />
 </template>

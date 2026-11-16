@@ -1,9 +1,9 @@
 <script lang="ts" setup>
-import { Fallback } from '@vben/common-ui';
+import SystemState from './SystemState.vue';
 
-defineOptions({ name: 'Fallback500Demo' });
+defineOptions({ name: 'SystemInternalError' });
 </script>
 
 <template>
-  <Fallback status="500" />
+  <SystemState status="500" />
 </template>

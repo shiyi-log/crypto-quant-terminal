@@ -1,10 +1,5 @@
 <script lang="ts" setup>
-import { AuthenticationQrCodeLogin } from '@vben/common-ui';
-import { LOGIN_PATH } from '@vben/constants';
-
+import UnsupportedMethod from './UnsupportedMethod.vue';
 defineOptions({ name: 'QrCodeLogin' });
 </script>
-
-<template>
-  <AuthenticationQrCodeLogin :login-path="LOGIN_PATH" />
-</template>
+<template><UnsupportedMethod method="二维码登录" /></template>

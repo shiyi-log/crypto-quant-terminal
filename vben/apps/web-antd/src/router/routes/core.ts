@@ -22,6 +22,31 @@ const fallbackNotFoundRoute: RouteRecordRaw = {
 
 /** 基本路由，这些路由是必须存在的 */
 const coreRoutes: RouteRecordRaw[] = [
+  // 系统状态入口可独立访问，不依赖尚未加载的业务菜单。
+  {
+    name: 'SystemForbidden',
+    path: '/system/forbidden',
+    component: () => import('#/views/_core/fallback/forbidden.vue'),
+    meta: { hideInMenu: true, hideInTab: true, title: '访问权限' },
+  },
+  {
+    name: 'SystemInternalError',
+    path: '/system/internal-error',
+    component: () => import('#/views/_core/fallback/internal-error.vue'),
+    meta: { hideInMenu: true, hideInTab: true, title: '读取异常' },
+  },
+  {
+    name: 'SystemOffline',
+    path: '/system/offline',
+    component: () => import('#/views/_core/fallback/offline.vue'),
+    meta: { hideInMenu: true, hideInTab: true, title: '连接中断' },
+  },
+  {
+    name: 'SystemComingSoon',
+    path: '/system/coming-soon',
+    component: () => import('#/views/_core/fallback/coming-soon.vue'),
+    meta: { hideInMenu: true, hideInTab: true, title: '尚未开放' },
+  },
   /**
    * 根路由
    * 使用基础布局，作为所有页面的父级容器，子级就不必配置BasicLayout。

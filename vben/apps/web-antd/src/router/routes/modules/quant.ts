@@ -33,6 +33,30 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        name: 'QuantFactors',
+        path: 'factors',
+        component: () => import('#/views/quant/factors/index.vue'),
+        meta: { icon: 'lucide:chart-network', title: '因子实验室' },
+      },
+      {
+        name: 'QuantExperiments',
+        path: 'experiments',
+        component: () => import('#/views/quant/experiments/index.vue'),
+        meta: { icon: 'lucide:flask-conical', title: '实验任务' },
+      },
+      {
+        name: 'QuantDataQuality',
+        path: 'data-quality',
+        component: () => import('#/views/quant/data-quality/index.vue'),
+        meta: { icon: 'lucide:database', title: '数据质量' },
+      },
+      {
+        name: 'QuantOperations',
+        path: 'operations',
+        component: () => import('#/views/quant/operations/index.vue'),
+        meta: { icon: 'lucide:activity', title: '运维与证据' },
+      },
+      {
         name: 'QuantOverview',
         path: 'overview',
         component: () => import('#/views/quant/overview/index.vue'),

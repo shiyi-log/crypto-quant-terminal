@@ -14,6 +14,7 @@ import re
 import time
 
 from demo_account_reconciliation import EXTERNAL_TYPES, INTERNAL_TYPES, reconcile_account_risk_evidence
+from demo_evidence_store import _request
 
 LOGGER = logging.getLogger(__name__)
 DAY_MS = 86_400_000
@@ -21,6 +22,10 @@ WINDOW_MS = 7 * DAY_MS
 IDENTITY = re.compile(r'[A-Za-z0-9_./:@+-]{1,256}\Z')
 SHA = re.compile(r'[a-f0-9]{64}\Z')
 SCOPE_FIELDS = ('environment', 'account_id', 'stage_id')
+ARCHIVE_REASONS = frozenset({'archive_commit_failed', 'archive_commit_unverified',
+                             'request_evidence_unverified'})
+RUN_ERRORS = frozenset({'collection_identity_conflict', 'collection_manifest_commit_failed'})
+INCOME_REASONS = ARCHIVE_REASONS | frozenset({'income_rows_invalid'})
 
 
 class CollectionError(ValueError):
@@ -122,14 +127,28 @@ def _envelope(value, path, api, params):
             or not isinstance(evidence.get('response_sha256'), str)
             or not SHA.fullmatch(evidence['response_sha256'])):
         raise CollectionError('request_evidence_unverified')
+    try:
+        evidence = _request(evidence)
+    except (TypeError, ValueError):
+        raise CollectionError('request_evidence_unverified') from None
     return deepcopy(value['data']), deepcopy(evidence)
 
 
 class DemoAccountCollector:
     """只信内部注入的守卫适配器和已提交归档接口，不接受 HTTP 真实性旗标。"""
 
-    def __init__(self, adapter, archive, scope, *, clock_ms=None, max_requests=4096):
+    def __init__(self, adapter, archive, scope, *, clock_ms=None, max_requests=4096, run_binding=None):
         self.scope = _scope(scope)
+        self._archive_scope = deepcopy(self.scope)
+        self._identity_hashes = None
+        if run_binding is not None:
+            # 显式内部类型绑定；三字段旧归档不会推断或补写运行身份。
+            from demo_collection_run import FrozenCollectionBinding
+            if (not isinstance(run_binding, FrozenCollectionBinding)
+                    or any(run_binding.scope[key] != value for key, value in self.scope.items())):
+                raise ValueError('invalid frozen collection binding')
+            self._archive_scope = run_binding.scope
+            self._identity_hashes = run_binding.identity_hashes
         if type(max_requests) is not int or not 1 <= max_requests <= 100_000:
             raise ValueError('invalid request budget')
         if not callable(getattr(archive, 'append', None)):
@@ -139,13 +158,20 @@ class DemoAccountCollector:
         self.max_requests = max_requests
 
     def _archive(self, kind, payload, evidence):
+        payload = deepcopy(payload)
+        if self._identity_hashes is not None:
+            payload['identity_hashes'] = deepcopy(self._identity_hashes)
         try:
-            receipt = self.archive.append(kind, deepcopy(self.scope), deepcopy(payload), deepcopy(evidence))
+            receipt = self.archive.append(kind, deepcopy(self._archive_scope), payload, deepcopy(evidence))
+        except CollectionError as error:
+            if str(error) in RUN_ERRORS:
+                raise
+            raise CollectionError('archive_commit_failed') from None
         except Exception as error:
             LOGGER.warning('Demo账户归档提交失败 账户=%s 阶段=%s 类型=%s 错误类型=%s；停止新增风险',
                            self.scope['account_id'], self.scope['stage_id'], kind, type(error).__name__)
             raise CollectionError('archive_commit_failed') from None
-        return _receipt(receipt, kind, self.scope)
+        return _receipt(receipt, kind, self._archive_scope)
 
     def collect_income(self, *, since_ms, until_ms, limit=1000):
         """查询所有类型/币种流水，含端点分窗；单毫秒仍满页时拒绝完整结论。
@@ -210,7 +236,9 @@ class DemoAccountCollector:
                     'limit': limit, 'rows': rows, 'all_income_types': True,
                     'window_saturated': len(rows) == limit}, evidence)
             except CollectionError as error:
-                deny(str(error))
+                if str(error) in RUN_ERRORS:
+                    raise
+                deny(str(error) if str(error) in INCOME_REASONS else 'income_capture_failed')
                 break
             except Exception as error:
                 LOGGER.warning('Demo全类型资金流水采集失败 账户=%s 窗口=%s..%s 错误类型=%s；保留缺口',
@@ -255,9 +283,9 @@ class DemoAccountCollector:
     def capture_account(self):
         """归档账户、模式和订单读数；跨多个请求，不声称原子快照或精确时点。"""
         result = {**self.scope, 'source_refs': {}, 'reasons': [], 'capture_complete': False,
-                  'transport_evidence_complete': False, 'reconciled': False, 'as_of_ms': None,
+                  'transport_evidence_complete': False, 'reconciled': False, 'as_of': None, 'as_of_ms': None,
                   'boundary_verified': False, 'acceptance_eligible': False}
-        clocks = {}
+        clocks, receipts, transported = {}, {}, set()
 
         def capture(name, kind, function, path=None, api=None):
             try:
@@ -268,7 +296,6 @@ class DemoAccountCollector:
                     data, evidence = _envelope(response, path, api, {})
                 if name.startswith('clock_'):
                     _stamp(data)
-                    clocks[name] = data
                 if name == 'mode' and type(data) is not bool:
                     raise ValueError('multi asset mode unknown')
                 if name in {'normal_orders', 'conditional_orders'} and not isinstance(data, list):
@@ -289,9 +316,17 @@ class DemoAccountCollector:
                     'local_observed_ms': _stamp(self.clock_ms()),
                     'point_time_verified': False, 'transport_evidence_present': bool(evidence)}, evidence)
                 result['source_refs'][name] = receipt['ref']
+                receipts[name] = receipt
+                if name.startswith('clock_'):
+                    clocks[name] = data
+                if evidence:
+                    transported.add(name)
                 return data
             except CollectionError as error:
-                result['reasons'].append(str(error))
+                if str(error) in RUN_ERRORS:
+                    raise
+                result['reasons'].append(str(error) if str(error) in ARCHIVE_REASONS
+                                         else name + '_capture_failed')
             except Exception as error:
                 LOGGER.warning('Demo账户读数采集失败 账户=%s 组件=%s 错误类型=%s；不能把缺失记为空',
                                self.scope['account_id'], name, type(error).__name__)
@@ -305,19 +340,24 @@ class DemoAccountCollector:
         if isinstance(account, dict) and isinstance(account.get('positions'), list):
             # V3原文只列有仓位/挂单的symbol。派生记录引用同一次账户原文，不冒充独立REST。
             capture('positions', 'positions', lambda: {'positions': account['positions'],
-                    'source_ref': result['source_refs']['account_snapshot'], 'derived_from_account': True})
+                    'source_ref': result['source_refs']['account_snapshot'],
+                    'source_record_sha256': receipts['account_snapshot']['record_sha256'],
+                    'source_sequence': receipts['account_snapshot']['sequence'], 'derived_from_account': True})
         else:
             result['reasons'].append('positions_capture_failed')
         capture('mode', 'account_snapshot', lambda: self.adapter.fetch_multi_assets_mode(with_evidence=True),
                 'multiAssetsMargin', 'fapiPrivate')
-        # 现有订单接口没有原子请求证据封套。保存观察仍有价值，但明确保持传输证据不完整。
-        capture('normal_orders', 'normal_orders', self.adapter.fetch_open_orders)
-        capture('conditional_orders', 'conditional_orders', self.adapter.fetch_open_conditional_orders)
+        capture('normal_orders', 'normal_orders',
+                lambda: self.adapter.fetch_open_orders(with_evidence=True), 'openOrders', 'fapiPrivate')
+        capture('conditional_orders', 'conditional_orders',
+                lambda: self.adapter.fetch_open_conditional_orders(with_evidence=True), 'openAlgoOrders', 'fapiPrivate')
         capture('clock_after', 'clock', lambda: self.adapter.fetch_server_time(with_evidence=True),
                 'time', 'fapiPublic')
         if len(clocks) == 2 and clocks['clock_after'] < clocks['clock_before']:
             result['reasons'].append('exchange_clock_regressed')
         result['capture_complete'] = not result['reasons']
+        result['transport_evidence_complete'] = (result['capture_complete'] and transported == {
+            'clock_before', 'account_snapshot', 'mode', 'normal_orders', 'conditional_orders', 'clock_after'})
         result['clock_bracket'] = deepcopy(clocks)
         LOGGER.info('Demo账户多请求归档 账户=%s 阶段=%s 已提交组件=%s 采集完成=%s 原因=%s；'
                     '未授予原子时点、午夜或新增风险资格', self.scope['account_id'], self.scope['stage_id'],

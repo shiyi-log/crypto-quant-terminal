@@ -33,14 +33,23 @@ source_ref；读取失败不变成空列表。服务端时钟倒退标记失败�
 价格、数量或费用 float 的归档拒绝规则。
 
 账户、模式和时钟使用原子请求证据封套，避免并发借用 mutable last_call。
-当前普通与条件挂单旧接口没有该封套，保存观察并明确
-`transport_evidence_complete=false`；派生仓位引用账户原文，不冒称另一次
-独立 REST 查询。多次请求的收集完成不代表原子账户快照。返回值明确保留
-`as_of_ms=null`、`reconciled=false`、`boundary_verified=false`。
+普通与条件挂单也显式使用 `with_evidence=True`，对应全账户
+openOrders/openAlgoOrders。所有实际请求均通过 metadata 白名单、GET、
+endpoint/API/空 params、摘要基础和带时区时间戳核验并归档后，
+`transport_evidence_complete` 才可为 true；派生仓位引用账户原文的
+ref、record hash 和 sequence，不冒称另一次独立 REST 查询。多次请求的
+收集完成不代表原子账户快照。返回值明确保留 `as_of=null`、`as_of_ms=null`、
+`reconciled=false`、`boundary_verified=false`。
 
 原始 HTTP 字节摘要与 sanitized JSON 摘要基础由适配器分别声明。保存
 sanitized 原文和字节摘要不等于保存原始字节，也不独立证明凭据归属或账户
 独占。账户 scope 必须由服务端持久绑定，不能来自调用方 HTTP 布尔声明。
+
+默认采集仍保持三字段账户合同。新内部 `DemoCollectionRun` 使用类型化
+`FrozenCollectionBinding` 固定五字段 scope 和五项 hash，并以真实归档保存
+start/component/failure/end 清单。它不补写或复用旧三字段记录，完整清单
+重启时只从原文离线重放；未封存 ID 必须更换后重新采集。详见
+[冻结运行与持久采集清单](DEMO_COLLECTION_RUN.md)。
 
 ## 午夜槽位和风险投影
 

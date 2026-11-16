@@ -82,11 +82,13 @@ class Adapter:
         assert with_evidence is True
         return envelope(False, 'multiAssetsMargin')
 
-    def fetch_open_orders(self):
-        return []
+    def fetch_open_orders(self, *, with_evidence):
+        assert with_evidence is True
+        return envelope([], 'openOrders')
 
-    def fetch_open_conditional_orders(self):
-        return []
+    def fetch_open_conditional_orders(self, *, with_evidence):
+        assert with_evidence is True
+        return envelope([], 'openAlgoOrders')
 
 
 def collector(rows=(), **kwargs):
@@ -227,14 +229,15 @@ def test_rest_capture_archives_all_components_but_never_invents_exact_midnight_a
     assert result['reconciled'] is False
     assert result['as_of_ms'] is None
     assert result['boundary_verified'] is False
-    assert result['transport_evidence_complete'] is False
+    assert result['transport_evidence_complete'] is True
     assert result['acceptance_eligible'] is False
     assert [r['kind'] for r in archive.records].count('clock') == 2
 
 
 def test_capture_partial_failure_preserves_committed_refs_without_turning_missing_orders_into_empty():
     c, adapter, _ = collector()
-    def fail():
+    def fail(*, with_evidence):
+        assert with_evidence is True
         raise RuntimeError('signature=secret-token')
     adapter.fetch_open_orders = fail
     result = c.capture_account()
@@ -246,7 +249,7 @@ def test_capture_partial_failure_preserves_committed_refs_without_turning_missin
 
 def test_malformed_order_list_cannot_be_archived_as_successful_empty_read():
     c, adapter, _ = collector()
-    adapter.fetch_open_orders = lambda: None
+    adapter.fetch_open_orders = lambda **_: envelope(None, 'openOrders')
     result = c.capture_account()
     assert result['capture_complete'] is False
     assert 'normal_orders' not in result['source_refs']
@@ -493,8 +496,8 @@ def test_real_nonempty_adapter_orders_archive_latency_as_exact_metadata_without_
     archive, adapter = real_archive(), Adapter()
     ordinary = normalize_order(order(), BTC, 1.25)
     conditional = normalize_conditional_order(algo(), BTC, 2.75)
-    adapter.fetch_open_orders = lambda: [ordinary]
-    adapter.fetch_open_conditional_orders = lambda: [conditional]
+    adapter.fetch_open_orders = lambda **_: envelope([ordinary], 'openOrders')
+    adapter.fetch_open_conditional_orders = lambda **_: envelope([conditional], 'openAlgoOrders')
     result = DemoAccountCollector(adapter, archive, SCOPE).capture_account()
     assert result['capture_complete'] is True
     saved = archive.read(result['source_refs']['normal_orders'])['payload']['data'][0]
@@ -508,7 +511,7 @@ def test_real_nonempty_adapter_orders_archive_latency_as_exact_metadata_without_
 
 def test_non_metadata_float_order_amount_remains_rejected_by_real_archive():
     archive, adapter = real_archive(), Adapter()
-    adapter.fetch_open_orders = lambda: [{'quantity': 0.01, 'request_latency_ms': 1.25}]
+    adapter.fetch_open_orders = lambda **_: envelope([{'quantity': 0.01, 'request_latency_ms': 1.25}], 'openOrders')
     result = DemoAccountCollector(adapter, archive, SCOPE).capture_account()
     assert result['capture_complete'] is False
     assert 'normal_orders' not in result['source_refs']
@@ -527,3 +530,34 @@ def test_scope_rejects_connection_and_userinfo_before_network_or_sensitive_log(i
     assert adapter.calls == []
     assert archive.records == []
     assert 'hunter2' not in caplog.text
+
+
+@pytest.mark.parametrize('component,path', [('fetch_open_orders', 'openOrders'),
+                                           ('fetch_open_conditional_orders', 'openAlgoOrders')])
+@pytest.mark.parametrize('change', [
+    {'started_at_utc': 'missing-timezone'}, {'received_at_utc': '1969-01-01T00:00:00Z'},
+    {'extra': 'not-allowed'}, {'response_sha256': 'bad'}, {'latency_ms': '-1'},
+    {'request_params': {'symbol': 'BTCUSDT'}},
+])
+def test_invalid_order_transport_metadata_never_becomes_complete_even_with_legacy_archive(component, path, change):
+    c, adapter, archive = collector()
+    value = envelope([], path)
+    value['request_evidence'].update(change)
+    setattr(adapter, component, lambda **_: value)
+    result = c.capture_account()
+    assert result['capture_complete'] is False
+    assert result['transport_evidence_complete'] is False
+    assert result['reasons'] == ['request_evidence_unverified']
+    assert not any(r['request_evidence'].get('path') == path for r in archive.records)
+
+
+def test_adapter_collection_error_text_is_never_returned_or_persisted_as_reason(caplog):
+    from demo_account_collector import CollectionError
+    c, adapter, _ = collector()
+    def fail(**_):
+        raise CollectionError('signature=private-upstream-value')
+    adapter.fetch_open_orders = fail
+    result = c.capture_account()
+    assert result['reasons'] == ['normal_orders_capture_failed']
+    assert 'private-upstream-value' not in str(result)
+    assert 'private-upstream-value' not in caplog.text

@@ -43,9 +43,10 @@ class ExchangeStub:
         self.order_not_fillable_once = False
         self.visible_fill_limit = None
         self.balance_error = False
+        self.account_risk_evidence_complete = True
         self.server_trade_page_size = None
         self.hedged = False
-        self.actual_leverage = 100
+        self.actual_leverage = 10
 
     def _info(self):
         return {"symbols": [{"symbol": SYMBOL, "contractType": "PERPETUAL",
@@ -81,18 +82,33 @@ class ExchangeStub:
         if path == "positionSide/dual":
             return {"dualSidePosition": self.hedged}
         if path == "symbolConfig":
-            return [{"symbol": symbol, "leverage": self.actual_leverage, "marginType": "ISOLATED"}
+            return [{"symbol": symbol, "leverage": self.actual_leverage, "marginType": "ISOLATED",
+                     "isAutoAddMargin": "false"}
                     for symbol in (SYMBOL, "ETHUSDT", "TRXUSDT")]
         if path == "account":
             if self.balance_error:
                 raise ccxt.NetworkError("offline balance endpoint unavailable")
-            return {"totalWalletBalance": "10000", "totalMarginBalance": "10000",
-                    "availableBalance": "10000", "assets": [], "positions": []}
+            result = {"totalWalletBalance": "10000", "totalMarginBalance": "10000",
+                      "availableBalance": "10000", "assets": [], "positions": []}
+            if self.account_risk_evidence_complete:
+                # 离线 stub 明确提供已对账的日初权益与现金流，不从当次
+                # 余额推断费用完整性；北京时间日界为 UTC+8 的自然日。
+                day_start_ms = self.now - (self.now + 28_800_000) % 86_400_000
+                result.update(cumulative_external_net_flow_usdt="0",
+                              funding_fee_complete=True, data_complete=True,
+                              risk_day_opening={
+                                  "timestamp_ms": day_start_ms,
+                                  "net_equity_usdt": "10000",
+                                  "cumulative_external_net_flow_usdt": "0",
+                                  "data_complete": True,
+                                  "event_id": f"offline-day-opening-{day_start_ms}",
+                              })
+            return result
         if path == "positionRisk":
             signed = sum((Decimal(fill["qty"]) * (1 if fill["side"] == "BUY" else -1)
                           for fill in self.fills), Decimal(0))
             return [{"symbol": SYMBOL, "positionAmt": str(signed), "positionSide": "BOTH",
-                     "entryPrice": "60000.1", "leverage": "100", "marginType": "isolated"}]
+                     "entryPrice": "60000.1", "leverage": "10", "marginType": "isolated"}]
         if path == "userTrades":
             rows = self.fills
             if self.visible_fill_limit is not None:
@@ -148,7 +164,7 @@ class PaperStub:
             "definition": {"strategy_id": "offline-paper", "params": {"risk_stop_atr_mult": 1.5}},
             "execution": {"execution_enabled": True, "risk_sizing_mode": "entry_atr",
                 "execution_universe": [BTC], "timeframe": "15m", "fee_rate_per_side": .0002,
-                "max_loss_per_trade_usdt": 50, "leverage": 100}, "state": {"positions": {}}}
+                "max_loss_per_trade_usdt": 50, "leverage": 10}, "state": {"positions": {}}}
 
     def account(self, strategy_id):
         return copy.deepcopy(self.row)
@@ -588,10 +604,13 @@ class DemoContractIntegrationTests(unittest.TestCase):
         result = self.service.cycle()
         self.assertIsNone(result["last_error"], result)
         orders = self.ledger.runner_orders()
-        self.assertTrue(orders, {"status": result, "denied": self.ledger.list_comparisons(stage="entry_denied")})
-        order = orders[0]
-        self.assertEqual(order["rule_hash"], account["rule_hash"])
-        self.assertEqual(order["execution_hash"], account["execution_hash"])
+        # 历史 100 倍研究身份保持只读，不自动改杠杆或改写冻结哈希来
+        # 满足新准入协议；当前门禁必须拒绝此身份的新 Demo 订单。
+        self.assertGreater(account["execution"]["leverage"], 10)
+        self.assertEqual(orders, [])
+        self.assertIn("demo_frozen_leverage_invalid", result["ownership_conflicts"])
+        self.assertEqual(source.account(definition["strategy_id"])["rule_hash"], account["rule_hash"])
+        self.assertEqual(source.account(definition["strategy_id"])["execution_hash"], account["execution_hash"])
         self.assertEqual(source.account(definition["strategy_id"])["state"], account["state"])
 
     def test_flat_hedge_mode_refuses_new_orders_before_an_exchange_rejection(self):
@@ -603,12 +622,33 @@ class DemoContractIntegrationTests(unittest.TestCase):
         self.assertIn("demo_hedge_mode_unsupported", result["ownership_conflicts"])
         self.assertFalse(self.ledger.runner_orders())
 
+    def test_missing_account_risk_evidence_blocks_entries_without_creating_order(self):
+        self.client.account_risk_evidence_complete = False
+        initial = self.service.start()
+        self.assertFalse(initial["entries_enabled"])
+        self.clock += 1000
+        self.client.now = self.clock
+        self.paper.signal(self.clock)
+
+        result = self.service.cycle()
+
+        self.assertEqual(result["risk_policy"]["entries_mode"], "blocked_evidence_incomplete")
+        self.assertEqual(result["risk_alert"], "risk_evidence_incomplete")
+        self.assertEqual(self.ledger.runner_orders(), [])
+        self.assertEqual(self.order_post_count(), 0)
+
     def test_actual_demo_leverage_is_recorded_and_never_changed_to_paper_setting(self):
         self.client.actual_leverage = 20
-        self.enter()
+        self.service.start()
+        self.clock += 1000
+        self.client.now = self.clock
+        self.paper.signal(self.clock)
+        self.service.cycle()
         status = self.service.status()
         self.assertEqual(status["actual_symbol_config"][0]["leverage"], 20)
-        self.assertEqual(status["paper_leverage"], 100)
+        self.assertEqual(status["paper_leverage"], 10)
+        self.assertIn("demo_actual_leverage_invalid", status["ownership_conflicts"])
+        self.assertEqual(self.ledger.runner_orders(), [])
         self.assertFalse(any(path in ("leverage", "marginType", "positionSide/dual") and method == "POST"
                              for path, _, method, _ in self.client.calls))
 

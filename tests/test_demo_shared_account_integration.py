@@ -45,7 +45,7 @@ class MultiExchangeStub(ExchangeStub):
             return [{"symbol": symbol, "positionAmt": str(sum((
                 Decimal(fill["qty"]) * (1 if fill["side"] == "BUY" else -1)
                 for fill in self.fills if fill["symbol"] == symbol), Decimal(0))),
-                "positionSide": "BOTH", "entryPrice": "60000.1", "leverage": "100",
+                "positionSide": "BOTH", "entryPrice": "60000.1", "leverage": "10",
                 "marginType": "isolated"} for symbol in ("BTCUSDT", "ETHUSDT")]
         if path == "order" and method == "POST":
             self.calls.append((path, api, method, copy.deepcopy(params)))
@@ -83,24 +83,25 @@ class SharedAccountIntegrationTests(unittest.TestCase):
         if test.get("dbname") != "quant_test" or tuple(test.get(k, "") for k in keys) == tuple(
                 production.get(k, "") for k in keys):
             raise RuntimeError("requires independent quant_test database")
-        cls.schema = "quant_shared_demo_" + uuid.uuid4().hex
-        cls.root = tempfile.TemporaryDirectory()
-        cls.data = DataStore(root=cls.root.name, dsn=os.environ["QUANT_TEST_DATABASE_URL"],
-                             schema=cls.schema).initialize()
-        DemoStore(cls.data).ensure_schema()
 
-    @classmethod
-    def tearDownClass(cls):
+    def drop_test_schema(self):
         import psycopg
         from psycopg import sql
-        cls.data.close()
+        self.data.close()
         with psycopg.connect(os.environ["QUANT_TEST_DATABASE_URL"]) as conn:
-            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(cls.schema)))
-        cls.root.cleanup()
+            conn.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(self.schema)))
 
     def setUp(self):
-        with self.data._connection() as conn:
-            conn.execute("TRUNCATE demo_fills,demo_orders,demo_positions,demo_account,demo_signal_comparisons")
+        # 不可变风险事实不能逐表清空；每例独立 schema 保留固定
+        # namespace 的共享账户语义，也避免继承上一场景的冷却状态。
+        self.schema = "quant_shared_demo_" + uuid.uuid4().hex
+        self.root = tempfile.TemporaryDirectory()
+        self.addCleanup(self.root.cleanup)
+        self.data = DataStore(root=self.root.name, dsn=os.environ["QUANT_TEST_DATABASE_URL"],
+                              schema=self.schema)
+        self.addCleanup(self.drop_test_schema)
+        self.data.initialize()
+        DemoStore(self.data).ensure_schema()
         self.clock = NOW
         self.gates = demo_gate_registry(self.root.name)
         self.exchange = MultiExchangeStub()

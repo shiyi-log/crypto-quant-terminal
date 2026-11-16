@@ -21,6 +21,7 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 ADAPTER_VERSION = "binance-demo-usdm-v1"
+PROTECTION_CAPABILITY_VERSION = "demo-protection-capabilities-v1"
 SUPPORTED_CCXT_VERSION = "4.5.85"
 DEMO_HOST = "demo-fapi.binance.com"
 MAKER_LIMIT_POLICY = "ref_capped_by_book_maker_price_v1"
@@ -129,6 +130,28 @@ def _number(value: Any) -> str | None:
         return format(_decimal(value), "f")
     except DemoSafetyError:
         return None
+
+
+def _optional_bool(value: Any) -> bool | None:
+    """仅接受交易所明确布尔事实；缺失、数字和损坏字段保持未知。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value in {"true", "false"}:
+        return value == "true"
+    return None
+
+
+def _optional_leverage(value: Any) -> int | None:
+    if (isinstance(value, bool) or not isinstance(value, (str, int))
+            or not re.fullmatch(r"[0-9]+", str(value)) or int(value) <= 0):
+        return None
+    return int(value)
+
+
+def _optional_margin_type(value: Any) -> str | None:
+    if isinstance(value, str) and value.upper() in {"CROSSED", "ISOLATED"}:
+        return value.upper()
+    return None
 
 
 def _bracket_decimal(value: Any, field: str, *, positive: bool = False,
@@ -377,6 +400,34 @@ class BinanceDemoAdapter:
         """Trust only a runner's already-claimed durable order ledger identity."""
         _check_client_id(client_order_id)
         self._owned_client_ids.add(client_order_id)
+
+    def protection_capabilities(self) -> dict[str, Any]:
+        """Report exchange protection primitives without inferring support.
+
+        This adapter currently exposes a reduce-only market fallback and the
+        runner's closed-candle monitor.  Until native conditional order
+        submission, reconciliation and cancellation are implemented against
+        the reviewed Demo contract, acceptance must remain ineligible.
+        """
+        # 同名方法存在不代表已通过 Demo 原生接口核验、部分成交覆盖和安全
+        # 替换验证。当前版本没有这套合同，不能由反射或轮询回退签发资格。
+        return {
+            "version": PROTECTION_CAPABILITY_VERSION,
+            "native_conditional_orders": False,
+            "native_stop_loss": False,
+            "native_take_profit": False,
+            "conditional_order_reconciliation": False,
+            "conditional_order_cancel": False,
+            "native_contract_verified": False,
+            "partial_fill_coverage_verified": False,
+            "safe_replacement_verified": False,
+            "exchange_native_support": "unknown",
+            "reduce_only_market_fallback": callable(getattr(self, "submit_market_order", None)),
+            "confirmation_target_ms": 2000,
+            "acceptance_eligible": False,
+            "reason": "native_conditional_contract_unavailable_polling_fallback_only",
+        }
+
 
     @classmethod
     def from_demo_env(cls, *, env: Mapping[str, str] | None = None, **kwargs):
@@ -674,6 +725,8 @@ class BinanceDemoAdapter:
             raise DemoSafetyError("Demo symbol config response is incomplete")
         results = []
         for item in raw:
+            if not isinstance(item, dict):
+                raise DemoSafetyError("Demo symbol config response is incomplete")
             symbol = item.get("symbol")
             leverage = item.get("leverage")
             if (not isinstance(symbol, str) or not symbol or isinstance(leverage, bool)
@@ -683,15 +736,10 @@ class BinanceDemoAdapter:
                 raise DemoSafetyError("Demo symbol config response is incomplete")
             if pair is not None and symbol != _symbol(pair):
                 raise DemoSafetyError("Demo symbol config identity mismatch")
-            auto_margin = item.get("isAutoAddMargin")
-            if auto_margin in {"true", "false"}:
-                auto_margin = auto_margin == "true"
-            elif not isinstance(auto_margin, bool):
-                auto_margin = None
             results.append({"pair": SYMBOL_PAIRS.get(symbol, symbol), "symbol": symbol,
                             "allowed_pair": symbol in SYMBOL_PAIRS, "leverage": int(leverage),
                             "margin_type": item["marginType"],
-                            "is_auto_add_margin": auto_margin,
+                            "is_auto_add_margin": _optional_bool(item.get("isAutoAddMargin")),
                             "max_notional_value": _number(item.get("maxNotionalValue")),
                             "raw": sanitize_response(item)})
         if pair is not None and len(results) != 1:
@@ -822,16 +870,29 @@ class BinanceDemoAdapter:
                  "entry_price": _number(item.get("entryPrice")),
                  "notional": _number(item.get("notional")),
                  "unrealized_pnl": _number(item.get("unRealizedProfit")),
+                 # positionRisk 不保证返回完整配置。仅透传该响应明确给出的
+                 # 字段；缺失值不能作为逐仓、低杠杆或关闭自动追加的证明。
+                 "leverage": _optional_leverage(item.get("leverage")),
+                 "margin_type": _optional_margin_type(item.get("marginType")),
+                 "is_auto_add_margin": _optional_bool(item.get("isAutoAddMargin")),
                  "raw": sanitize_response(item)} for item in raw]
 
     def fetch_balance(self) -> dict:
         raw = self._call("account", "fapiPrivateV3", "GET")
-        return {"wallet_balance": _number(raw.get("totalWalletBalance")),
+        result = {"wallet_balance": _number(raw.get("totalWalletBalance")),
                 "margin_balance": _number(raw.get("totalMarginBalance")),
                 "available_balance": _number(raw.get("availableBalance")),
                 "assets": sanitize_response(raw.get("assets", [])),
                 "positions": sanitize_response(raw.get("positions", [])),
                 "raw": sanitize_response(raw)}
+        # Demo account risk evidence may be supplied by a reviewed account
+        # reconciler alongside the Binance account response. Never infer these
+        # fields from wallet balance; absent values remain unknown.
+        for key in ("cumulative_external_net_flow_usdt", "funding_fee_complete",
+                    "data_complete", "risk_observation_id", "risk_day_opening"):
+            if key in raw:
+                result[key] = raw[key]
+        return result
 
     def test_limit_order(self, pair: str, side: str, quantity: Any, price: Any,
                          *, position_side: str = "BOTH") -> dict:

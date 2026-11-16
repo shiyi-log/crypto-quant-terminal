@@ -104,6 +104,28 @@ class DemoAdapterTests(unittest.TestCase):
         return self.adapter.submit_limit_order(BTC, "buy", "0.010", "60000.10", ORDER_ID,
                                                **kwargs)
 
+    def test_protection_capabilities_fail_closed_without_native_conditional_contract(self):
+        capabilities = self.adapter.protection_capabilities()
+        self.assertFalse(capabilities["native_conditional_orders"])
+        self.assertTrue(capabilities["reduce_only_market_fallback"])
+        self.assertFalse(capabilities["acceptance_eligible"])
+        self.assertEqual(capabilities["confirmation_target_ms"], 2000)
+        self.assertEqual(capabilities["reason"],
+                         "native_conditional_contract_unavailable_polling_fallback_only")
+
+    def test_method_names_alone_cannot_certify_native_protection_for_acceptance(self):
+        # 同名方法或测试替身不是交易所条件订单已验证的证据。
+        for name in ("submit_stop_market_order", "submit_take_profit_order",
+                     "fetch_conditional_orders", "cancel_conditional_order"):
+            setattr(self.adapter, name, lambda *args, **kwargs: {})
+        capabilities = self.adapter.protection_capabilities()
+        self.assertFalse(capabilities["acceptance_eligible"])
+        self.assertFalse(capabilities["native_contract_verified"])
+        self.assertFalse(capabilities["partial_fill_coverage_verified"])
+        self.assertFalse(capabilities["safe_replacement_verified"])
+        self.assertEqual(capabilities["exchange_native_support"], "unknown")
+        self.assertEqual(self.client.calls, [])
+
     def test_stable_id_binds_signal_pair_side_and_role(self):
         self.assertEqual(ORDER_ID, stable_client_order_id("test", "candle-1", BTC, "buy"))
         self.assertNotEqual(ORDER_ID, stable_client_order_id("test", "candle-2", BTC, "buy"))
@@ -792,6 +814,47 @@ class DemoAdapterTests(unittest.TestCase):
             self.client.responses[("symbolConfig", "GET")] = raw
             with self.assertRaises(DemoSafetyError):
                 self.adapter.fetch_symbol_config(BTC)
+
+    def test_symbol_configuration_malformed_rows_fail_with_safe_error(self):
+        for item in (None, [], "BTCUSDT", 10):
+            with self.subTest(item=item):
+                self.client.responses[("symbolConfig", "GET")] = [item]
+                with self.assertRaises(DemoSafetyError):
+                    self.adapter.fetch_symbol_config(BTC)
+
+    def test_auto_add_margin_preserves_unknown_and_never_uses_truthiness(self):
+        for raw_value in (None, 0, 1, "0", "False", [], {}, ""):
+            with self.subTest(raw_value=raw_value):
+                self.client.responses[("symbolConfig", "GET")] = [{
+                    "symbol": "BTCUSDT", "leverage": 10, "marginType": "ISOLATED",
+                    "isAutoAddMargin": raw_value,
+                }]
+                result = self.adapter.fetch_symbol_config(BTC)
+                self.assertIsNone(result[0]["is_auto_add_margin"])
+        for raw_value, expected in ((True, True), (False, False),
+                                    ("true", True), ("false", False)):
+            with self.subTest(raw_value=raw_value):
+                self.client.responses[("symbolConfig", "GET")] = [{
+                    "symbol": "BTCUSDT", "leverage": 10, "marginType": "ISOLATED",
+                    "isAutoAddMargin": raw_value,
+                }]
+                self.assertIs(self.adapter.fetch_symbol_config(BTC)[0]["is_auto_add_margin"],
+                              expected)
+
+    def test_position_configuration_is_optional_evidence_without_inferred_defaults(self):
+        self.client.responses[("positionRisk", "GET")] = [
+            {"symbol": "BTCUSDT", "positionAmt": "0.002",
+             "positionSide": "BOTH", "leverage": "10",
+             "marginType": "isolated", "isAutoAddMargin": "false"},
+            {"symbol": "ETHUSDT", "positionAmt": "0", "positionSide": "BOTH"},
+        ]
+        actual, unknown = self.adapter.fetch_positions()
+        self.assertEqual(actual["leverage"], 10)
+        self.assertEqual(actual["margin_type"], "ISOLATED")
+        self.assertIs(actual["is_auto_add_margin"], False)
+        for field in ("leverage", "margin_type", "is_auto_add_margin"):
+            self.assertIsNone(unknown[field])
+        self.assertTrue(all(call[2] == "GET" for call in self.client.calls))
 
     def test_safe_raw_never_persists_authentication_material(self):
         result = sanitize_response({"orderId": "123", "apiKey": "secret-value",

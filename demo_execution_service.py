@@ -13,14 +13,17 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import logging
 import threading
 import time
 
 from demo_store import ABSENT_LOOKUP_TERMINAL_STATUS
+from demo_risk import DemoRiskPolicy
 from gate_registry import GateRegistry
 
 DEMO_POLICY_VERSION = "binance-demo-single-paper-v1"
 HOST = "demo-fapi.binance.com"
+LOGGER = logging.getLogger(__name__)
 TERMINAL = {"filled", "canceled", "cancelled", "rejected", "expired",
             ABSENT_LOOKUP_TERMINAL_STATUS}
 ACTUAL_STOP_EXECUTION_MODE = "close_confirmed_closed_candle_poll_reduce_only_market"
@@ -324,8 +327,13 @@ class DemoExecutionService:
     """
 
     def __init__(self, adapter, demo_store, paper_source, config, *, clock_ms=None,
-                 gate_registry=None):
+                 gate_registry=None, risk_store=None, native_protection_required=False):
         self.adapter, self.store, self.paper = adapter, demo_store, paper_source
+        # 订单仍按策略账本隔离；风险按同一交易所账户共享，切换策略不得
+        # 重置日锁、冷却或阶段回撤。控制器注入稳定账户范围的风险账本。
+        self.risk_store = risk_store if risk_store is not None else demo_store
+        self._shared_risk_store = risk_store is not None
+        self.native_protection_required = bool(native_protection_required)
         self.config = config
         # Always keep a registry at the final execution boundary.  Production
         # injects the auth-owned instance; direct callers get the persisted
@@ -347,6 +355,8 @@ class DemoExecutionService:
         self._metadata_checked_ms = None
         self._metadata_errors = []
         self._fee_rechecked_ms = {}
+        self.risk_policy = DemoRiskPolicy()
+        self._risk_events_loaded = False
         self._status = {"running": False, "entries_enabled": False, "status": "not_started",
                         "environment": "binance_demo", "endpoint_host": HOST,
                         "strategy_id": config.strategy_id, "demo_policy_hash": self.policy_hash,
@@ -445,6 +455,7 @@ class DemoExecutionService:
                                 "strategy_source_initially_flat" if self._direct_signal_source() else "paper_initially_flat":
                                     not bool(self.account["state"].get("positions"))}
                 self.store.bind_account(self.binding)
+            self._load_risk_events()
             self._started = True
             self._entries_enabled = (
                 self.config.trading_enabled and entries_enabled is not False
@@ -493,6 +504,169 @@ class DemoExecutionService:
     def _publish_status_snapshot(self):
         """Publish a complete state while the caller owns ``_mutex``."""
         self._status_snapshot = (copy.deepcopy(self._status), self.clock_ms())
+
+    def _load_risk_events(self):
+        """读取失败时关闭入口并保留内存硬失败，后续仍执行仓位保护。"""
+        try:
+            checker = getattr(self.risk_store, "check_schema", None)
+            if callable(checker):
+                checker()
+            loader = getattr(self.risk_store, "risk_events", None)
+            if not callable(loader):
+                raise TypeError("风险事件存储未实现")
+            rows = loader()
+            if not isinstance(rows, (list, tuple)):
+                raise TypeError("风险事件读取结果格式无效")
+            self.risk_policy = DemoRiskPolicy.from_events(rows)
+        except Exception as exc:
+            self._risk_load_error = type(exc).__name__
+            LOGGER.error("Demo 风险历史读取失败：账户=%s 错误类型=%s；停止新增风险并继续仓位保护",
+                         self.config.virtual_account_key, self._risk_load_error)
+            return False
+        self._risk_load_error = None
+        self._risk_events_loaded = True
+        return True
+
+    def _validate_execution_config(self, mode, actual_config):
+        """只核对交易所事实，拒绝时保留已有仓位的减仓通道。"""
+        from demo_account_policy import DemoAccountPolicyError, validate_demo_account_policy
+        try:
+            self._status["account_policy"] = validate_demo_account_policy(
+                self.account["execution"], mode, actual_config)
+        except DemoAccountPolicyError as exc:
+            self._status["account_policy"] = {"status": "blocked", "reason": exc.code}
+            return [exc.code]
+        if self.native_protection_required:
+            try:
+                capabilities = self.adapter.protection_capabilities()
+                self._status["protection_capabilities"] = capabilities
+                if not isinstance(capabilities, dict) or capabilities.get("acceptance_eligible") is not True:
+                    return ["demo_native_protection_unverified"]
+            except Exception:
+                return ["demo_native_protection_unverified"]
+        return []
+
+    def _observe_risk(self, balance, positions, now):
+        """用账户净值证据评估门禁；现金流或费用证据不全时立即锁住新开仓。"""
+        del positions  # 仓位保护仍由账本净成交量处理，不能由余额快照替代。
+        # 共享 writer 在同一账户锁内逐轮刷新，吸收其它策略已经提交的
+        # 风险；本地待提交事件未落库时先保留重试，不能被旧快照覆盖。
+        refresh = self._shared_risk_store and not self.risk_policy.pending_events()
+        loaded = self._load_risk_events() if refresh else (
+            self._risk_events_loaded or self._load_risk_events())
+        observed_ms = now
+        snapshot_valid = True
+        if isinstance(balance, dict) and balance.get("as_of_ms") is not None:
+            try:
+                observed_ms = _stamp(balance["as_of_ms"])
+                snapshot_valid = (0 <= now - observed_ms <= 5_000
+                                  and (observed_ms + 28_800_000) // 86_400_000
+                                  == (now + 28_800_000) // 86_400_000)
+            except (ValueError, TypeError, ArithmeticError):
+                snapshot_valid = False
+        complete = bool(
+            loaded and snapshot_valid and isinstance(balance, dict)
+            and balance.get("data_complete") is True
+            and balance.get("funding_fee_complete") is True
+            and balance.get("cumulative_external_net_flow_usdt") is not None
+            and balance.get("margin_balance") is not None
+        )
+        if (not loaded or not snapshot_valid or not isinstance(balance, dict)
+                or balance.get("margin_balance") is None):
+            state = self.risk_policy.status(now)
+            state["evidence_complete"] = False
+            state["daily_pnl_usdt"] = None
+            if state["entries_mode"] == "enabled":
+                state["entries_mode"] = "blocked_evidence_incomplete"
+            if not loaded:
+                state["risk_event_persistence_error"] = self._risk_load_error
+        else:
+            opening = balance.get("risk_day_opening")
+            opening_invalid = False
+            if opening is not None:
+                try:
+                    if not isinstance(opening, dict) or opening.get("data_complete") is not True:
+                        raise ValueError("日初证据不完整")
+                    opening_ms = _stamp(opening["timestamp_ms"])
+                    if opening_ms > now:
+                        raise ValueError("日初证据来自未来")
+                    self.risk_policy.record_day_opening(
+                        timestamp_ms=opening_ms, net_equity_usdt=opening["net_equity_usdt"],
+                        cumulative_external_net_flow_usdt=opening["cumulative_external_net_flow_usdt"],
+                        event_id=opening.get("event_id"))
+                except (KeyError, ValueError, TypeError, ArithmeticError):
+                    complete = False
+                    opening_invalid = True
+            try:
+                state = self.risk_policy.observe_equity(
+                    timestamp_ms=observed_ms,
+                    net_equity_usdt=balance["margin_balance"],
+                    cumulative_external_net_flow_usdt=balance.get("cumulative_external_net_flow_usdt"),
+                    data_complete=complete,
+                    event_id=balance.get("risk_observation_id"),
+                )
+                # 事实使用快照时间，门禁使用当前处理时间，避免改写事实
+                # 时间来获得新鲜度或跨日放行。
+                state = self.risk_policy.status(now)
+            except (KeyError, ValueError, TypeError, ArithmeticError):
+                # 坏金额或冲突快照只能关闭入口，不能让整个周期提前退出而
+                # 跳过已确认持仓的 reduce-only 风险保护。已确认硬失败保留。
+                state = self.risk_policy.status(now)
+                state.update(evidence_complete=False, daily_pnl_usdt=None,
+                             risk_snapshot_error="invalid_equity_evidence")
+                if state["entries_mode"] == "enabled":
+                    state["entries_mode"] = "blocked_evidence_incomplete"
+            if opening_invalid:
+                state["risk_day_opening_error"] = "invalid_day_opening_evidence"
+            events = self.risk_policy.pending_events()
+            if events:
+                writer = getattr(self.risk_store, "append_risk_events", None)
+                if not callable(writer):
+                    if state["entries_mode"] == "enabled":
+                        state["entries_mode"] = "blocked_evidence_incomplete"
+                    state["risk_event_persistence_error"] = "risk_event_store_unavailable"
+                else:
+                    try:
+                        writer(events)
+                        self.risk_policy.acknowledge_events(
+                            event["event_id"] for event in events
+                        )
+                    except Exception as exc:
+                        if state["entries_mode"] == "enabled":
+                            state["entries_mode"] = "blocked_evidence_incomplete"
+                        state["risk_event_persistence_error"] = type(exc).__name__
+        mode = state["entries_mode"]
+        previous = self._status.get("risk_policy", {})
+        self._status["risk_policy"] = state
+        self._status["risk_alert"] = None if mode == "enabled" else (
+            "risk_evidence_incomplete" if mode == "blocked_evidence_incomplete" else mode
+        )
+        if mode != "enabled":
+            self._entries_enabled = False
+            self._status["entries_enabled"] = False
+        if (previous.get("entries_mode"), previous.get("hard_failure"),
+                previous.get("risk_event_persistence_error")) != (
+                mode, state.get("hard_failure"), state.get("risk_event_persistence_error")):
+            LOGGER.warning("Demo 风控状态变化：账户=%s 时间毫秒=%s 北京日期=%s 状态=%s "
+                           "日损=%s 阶段回撤=%s 冷却截止=%s 证据完整=%s 持久化错误=%s",
+                           self.config.virtual_account_key, now, state["bjt_day"], mode,
+                           state["daily_loss_usdt"], state["stage_drawdown_usdt"],
+                           state["cooldown_until_ms"], state["evidence_complete"],
+                           state.get("risk_event_persistence_error"))
+        return state
+
+    def _apply_risk_actions(self, state, now):
+        """风险锁持续撤入口并减仓；提交请求本身不代表已完成对账。"""
+        mode = state["entries_mode"]
+        if mode == "enabled":
+            return
+        self._reconcile(now, cancel_entries=True)
+        if mode in {"lock_until_reconciled", "terminated"}:
+            reason = "account_risk_" + mode
+            self._flatten_owned(now, reason)
+            LOGGER.warning("Demo 账户风险退出：账户=%s 时间毫秒=%s 原因=%s；"
+                           "继续撤销入口并仅减仓，等待交易所事实与对账确认",
+                           self.config.virtual_account_key, now, reason)
 
     def stop(self, *, flatten=False):
         """Pause entries; retain polling/risk protection until all owned exposure closes."""
@@ -1016,6 +1190,7 @@ class DemoExecutionService:
                                             if row.get("pair") in self.account["execution"]["execution_universe"]}
                         if supported_config != set(self.account["execution"]["execution_universe"]):
                             self._metadata_errors.append("actual_demo_symbol_config_unavailable")
+                        self._metadata_errors.extend(self._validate_execution_config(mode, actual_config))
                         self._record("actual_execution_config", "actual_execution_config",
                                      {"account_mode": mode, "symbol_config": actual_config,
                                       "paper_leverage": self.account["execution"].get("leverage")}, now=now)
@@ -1029,8 +1204,11 @@ class DemoExecutionService:
                     balance = self.adapter.fetch_balance()
                     self.store.append_account_snapshot({"balance": balance, "demo_policy_hash": self.policy_hash}, observed_ms=now)
                 except Exception as exc:
+                    balance = None
                     entry_snapshot_errors.append("balance_snapshot_unavailable")
                     self._record("snapshot_error", "balance_snapshot", {"error_type": type(exc).__name__}, now=now)
+                risk_state = self._observe_risk(balance, positions, now)
+                self._apply_risk_actions(risk_state, now)
                 open_orders_snapshot_available = True
                 try:
                     open_orders = [order for order in self.adapter.fetch_open_orders()

@@ -20,7 +20,7 @@ from unittest.mock import Mock
 from binance_demo_adapter import BinanceDemoAdapter
 from data_store import DataStore
 from demo_api import DemoApi, DemoApiError
-from demo_runner_controller import DemoRunnerController, STATE_KEY
+from demo_runner_controller import DemoRunnerController
 from demo_store import DemoStore
 from runtime_config import load_environment
 from tests.demo_gate_fixtures import demo_gate_registry
@@ -105,25 +105,25 @@ class DemoSwitchIntegrationTests(unittest.TestCase):
             return tuple(info.get(key, "") for key in ("host", "port", "dbname"))
         if test.get("dbname") != "quant_test" or location(test) == location(production):
             raise RuntimeError("switch integration requires independent quant_test")
-        cls.schema = "quant_demo_switch_" + uuid.uuid4().hex
-        cls.root = tempfile.TemporaryDirectory()
-        cls.data = DataStore(root=cls.root.name, dsn=os.environ["QUANT_TEST_DATABASE_URL"],
-                             schema=cls.schema).initialize()
-        DemoStore(cls.data).ensure_schema()
 
-    @classmethod
-    def tearDownClass(cls):
+    def drop_test_schema(self):
         import psycopg
         from psycopg import sql
-        cls.data.close()
+        self.data.close()
         with psycopg.connect(os.environ["QUANT_TEST_DATABASE_URL"]) as conn:
-            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(cls.schema)))
-        cls.root.cleanup()
+            conn.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(self.schema)))
 
     def setUp(self):
-        with self.data._connection() as conn:
-            conn.execute("TRUNCATE demo_fills,demo_orders,demo_positions,demo_account,demo_signal_comparisons")
-            conn.execute("DELETE FROM documents WHERE key=%s", (STATE_KEY,))
+        # 切换断言需要固定 namespace；每例使用独立 schema，而不是
+        # 截断不可变风险事实，确保重启只恢复当前场景的会话与门禁。
+        self.schema = "quant_demo_switch_" + uuid.uuid4().hex
+        self.root = tempfile.TemporaryDirectory()
+        self.addCleanup(self.root.cleanup)
+        self.data = DataStore(root=self.root.name, dsn=os.environ["QUANT_TEST_DATABASE_URL"],
+                              schema=self.schema)
+        self.addCleanup(self.drop_test_schema)
+        self.data.initialize()
+        DemoStore(self.data).ensure_schema()
         self.clock = NOW
         self.gates = demo_gate_registry(self.root.name)
         self.client, self.paper = AccountExchangeStub(), TwoFrozenPaperSources()

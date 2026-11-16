@@ -52,6 +52,8 @@
 
 - CI/CD 发布身份：新增可执行的单一版本标签验证（9 项行为测试通过），CI纳入量化/API/认证 141 项前端测试及新Demo模块质量检查；CD仅打包精确SHA成功CI且属于main历史的来源，Release写权限任务复核远端标签、归档SHA256和build.json。YAML解析及13项契约/身份测试通过，手动标签调度流程见 `RELEASE_PROCESS.md`。前端提交 `9059603` 已生成；浏览器CI仍是明确未完成关口。
 
+- 0.2.1 阶段版本：同步 `pyproject.toml` 与 `uv.lock` 为 `0.2.1`，建立 `CHANGELOG.md`。2026-11-16 13:34 重新运行依赖锁检查与发布身份/工作流契约测试，13 项全部通过。上一发布链路提交 `382d73a9b8c502f596763de62200dc61aeb6358b` 的 [CI 43810503292](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/43810503292) 和 [CD 43810680292](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/43810680292) 均成功；这只能证明该提交的检查与主分支归档。本次版本提交仍需自身精确 SHA 的 CI 和标签 CD，尚未创建 `v0.2.1` 或 Release。本机最后一轮完整后端回归仍在运行，完成后补记实际结果；不把此前 2336 项的结果当成新一轮结果。
+
 ### 本轮中文运行日志（2026-11-16，Asia/Shanghai）
 
 - 03:38 核对仓库状态：`main` 与 `origin/main` 同步于 `6a01707`；未覆盖或清理用户工作树中的未提交文件。
@@ -59,7 +61,7 @@
 - 03:38 核对计划：风险阈值、北京时间自然日、资金流调整、Demo 30 日裁定、订单原生保护、数据库迁移和人工批准均属于硬关口；离线模块测试通过不等于 P1 或 Demo 验收完成。
 - 后续每个重构小节应在对应测试、运行日志和证据包形成后单独提交中文消息；提交前运行 `git diff --check` 与该小节完整验证，推送与发布仍受 CI 成功和人工上线批准约束。
 
-版本记录规则：版本号以 `pyproject.toml` 为唯一代码基线，发布标签必须为同版本的 `v<version>`；CHANGELOG 尚未建立，后续发布前需补充与提交、标签、Actions 和 Release 对应的变更记录。
+版本记录规则：版本号以 `pyproject.toml` 为唯一代码基线，发布标签必须为同版本的 `v<version>`；`CHANGELOG.md` 记录版本范围，本台账补记提交、标签、Actions 和 Release 的精确证据。上方 03:38 的 0.2.0 及无 CHANGELOG 描述是当时的基线，当前版本准备为 0.2.1。
 
 ## 本轮实现与验证
 

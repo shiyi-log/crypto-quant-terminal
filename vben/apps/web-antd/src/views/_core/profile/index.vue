@@ -1,48 +1,52 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 
-import { Profile } from '@vben/common-ui';
 import { useUserStore } from '@vben/stores';
 
 import ProfileBase from './base-setting.vue';
 import ProfilePasswordSetting from './password-setting.vue';
 import ProfileSecuritySetting from './security-setting.vue';
+import '../../quant/security/identity.css';
 
 const userStore = useUserStore();
-
-const tabsValue = ref<string>('basic');
-
-/**
- * 只保留有真实功能的标签页。
- * 原来的「新消息提醒」是一排不落库的开关 —— 本系统没有站内信/通知系统，
- * 顶栏的假通知也已一并移除，因此这个标签页删除而不是继续显示装饰性开关。
- */
-const tabs = ref([
-  {
-    label: '基本设置',
-    value: 'basic',
-  },
-  {
-    label: '安全设置',
-    value: 'security',
-  },
-  {
-    label: '修改密码',
-    value: 'password',
-  },
-]);
+const username = computed(() => userStore.userInfo?.username ?? '尚未确认');
+const selected = ref('basic');
+const tabs = [
+  { key: 'basic', label: '基本信息' },
+  { key: 'security', label: '安全状态' },
+  { key: 'password', label: '修改密码' },
+];
 </script>
 <template>
-  <Profile
-    v-model:model-value="tabsValue"
-    title="个人中心"
-    :user-info="userStore.userInfo"
-    :tabs="tabs"
-  >
-    <template #content>
-      <ProfileBase v-if="tabsValue === 'basic'" />
-      <ProfileSecuritySetting v-if="tabsValue === 'security'" />
-      <ProfilePasswordSetting v-if="tabsValue === 'password'" />
-    </template>
-  </Profile>
+  <main class="identity-workspace">
+    <header class="identity-page-heading">
+      <div>
+        <h1>个人身份</h1>
+        <p>工作站用户信息与登录安全。</p>
+      </div>
+    </header>
+    <div class="identity-workspace-grid">
+      <aside class="identity-summary">
+        <span class="identity-summary-label">当前登录身份</span
+        ><strong>{{ username }}</strong>
+        <p>登录身份不代表交易账户所有权或策略上线批准。</p>
+        <nav class="identity-tabs" aria-label="身份设置">
+          <button
+            v-for="tab in tabs"
+            :key="tab.key"
+            :aria-current="selected === tab.key ? 'page' : undefined"
+            type="button"
+            @click="selected = tab.key"
+          >
+            {{ tab.label }}
+          </button>
+        </nav>
+      </aside>
+      <section class="identity-content" aria-live="polite">
+        <ProfileBase v-if="selected === 'basic'" /><ProfileSecuritySetting
+          v-else-if="selected === 'security'"
+        /><ProfilePasswordSetting v-else />
+      </section>
+    </div>
+  </main>
 </template>

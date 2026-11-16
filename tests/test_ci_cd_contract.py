@@ -7,11 +7,11 @@ CI = (ROOT / ".github/workflows/ci.yml").read_text()
 CD = (ROOT / ".github/workflows/cd.yml").read_text()
 
 
-def test_ci_runs_new_frontend_business_unit_tests_before_build():
-    assert "pnpm --dir vben exec vitest run apps/web-antd/src/views/quant" in CI
-    assert "apps/web-antd/src/views/quant" in CI
-    assert "typecheck" in CI
-    assert "build:antd" in CI
+def test_ci_runs_full_frontend_units_and_browser_flows_around_build():
+    assert "pnpm --dir vben run test:unit" in CI
+    assert CI.index("test:unit") < CI.index("typecheck") < CI.index("build:antd")
+    assert CI.index("build:antd") < CI.index("playwright install chromium --with-deps")
+    assert CI.index("playwright install chromium --with-deps") < CI.index("run test:e2e")
 
 
 def test_ci_compiles_and_lints_demo_risk_modules():

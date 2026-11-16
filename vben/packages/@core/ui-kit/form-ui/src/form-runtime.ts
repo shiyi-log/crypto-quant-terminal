@@ -82,6 +82,12 @@ export function useFormRuntime<TValues extends FormValues>(
     for (const invalidator of validationInvalidators.get(fieldName) ?? []) {
       invalidator();
     }
+    // 异步规则可能尚在 debounce 队列，包装器还未开始执行。仅使运行编号失效
+    // 无法阻止它稍后读取重置后的值；同时撤销底层任务，避免旧校验重新写回错误。
+    const fieldInfo = rawForm.getFieldInfo(fieldName as never);
+    for (const validation of Object.values(fieldInfo.validationMetaMap)) {
+      validation?.lastAbortController.abort();
+    }
   }
 
   const RuntimeField = createRuntimeFieldComponent(

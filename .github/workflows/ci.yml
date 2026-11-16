@@ -149,12 +149,30 @@ jobs:
           root = Path('vben/apps/web-antd');
           copyfile(root / '.env.example', root / '.env')"
 
-      - name: 执行量化业务前端单元测试
-        # 只运行量化领域的离线业务测试；不得在 CI 中连接真实交易服务。
-        run: pnpm --dir vben exec vitest run apps/web-antd/src/views/quant apps/web-antd/src/api/__tests__ apps/web-antd/src/store/__tests__/auth.test.ts
+      - name: 执行全部前端单元测试
+        # 包含量化、认证、共享表单及偏好；所有测试均使用离线事实。
+        run: pnpm --dir vben run test:unit
 
       - name: 检查业务前端类型
         run: pnpm --dir vben/apps/web-antd typecheck
 
       - name: 构建业务前端
         run: pnpm --dir vben build:antd
+
+      - name: 安装锁定版本对应的 Chromium
+        run: pnpm --dir vben/apps/web-antd exec playwright install chromium --with-deps
+
+      - name: 验证真实构建页面与合成只读流程
+        # 夹具读取 dist 并拦截全部请求，不启动服务、不连接真实交易后端。
+        run: pnpm --dir vben/apps/web-antd run test:e2e
+
+      - name: 保存浏览器截图与失败证据
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: refactor-browser-${{ github.sha }}
+          path: |
+            output/playwright/refactor-ci/
+            output/playwright/refactor-ci-report/
+          if-no-files-found: warn
+          retention-days: 14

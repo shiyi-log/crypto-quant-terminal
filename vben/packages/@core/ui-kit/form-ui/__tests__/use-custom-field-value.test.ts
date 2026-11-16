@@ -168,6 +168,8 @@ afterEach(() => {
   for (const wrapper of wrappers.splice(0)) {
     wrapper.unmount();
   }
+  vi.clearAllTimers();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -190,16 +192,21 @@ describe('useCustomFieldValue', () => {
   });
 
   it('validates every in-place mutation when deep is enabled', async () => {
+    vi.useFakeTimers();
     const { formApi, wrapper } = mountDeepTagForm();
     await flushPromises();
 
     await wrapper.get('.tag-picker').trigger('click');
+    // 异步规则由定时器调度；推进已注册任务，不能只等待微任务队列。
+    await vi.runAllTimersAsync();
     await flushPromises();
 
     expect(await formApi.getValues()).toEqual({ tags: ['tag-0'] });
     expect(formApi.form.getFieldError('tags')).toBeUndefined();
 
     await wrapper.get('.tag-picker').trigger('click');
+    // 异步规则由定时器调度；推进已注册任务，不能只等待微任务队列。
+    await vi.runAllTimersAsync();
     await flushPromises();
 
     expect(await formApi.getValues()).toEqual({ tags: ['tag-0', 'tag-1'] });
@@ -221,6 +228,7 @@ describe('useCustomFieldValue', () => {
   });
 
   it('lets reset flow back into a form-driven component without validating', async () => {
+    vi.useFakeTimers();
     const { formApi, wrapper } = mountBoundTagForm();
     await flushPromises();
 
@@ -233,6 +241,8 @@ describe('useCustomFieldValue', () => {
     );
 
     await formApi.reset();
+    // 重置前排队的校验即使稍后执行，也不能对重置后的空值报告错误。
+    await vi.runAllTimersAsync();
     await flushPromises();
 
     expect(await formApi.getValues()).toEqual({ tags: [] });

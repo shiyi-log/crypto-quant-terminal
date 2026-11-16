@@ -88,9 +88,14 @@ API、全账户 params、摘要基础、请求/接收时间与 metadata 白名�
 
 ## 验证与未接入内容
 
-测试使用真实 `DemoEvidenceStore`，仅将 SQL 边界替换为内存；验证冻结、
+离线测试使用真实 `DemoEvidenceStore`，仅将 SQL 边界替换为内存；验证冻结、
 身份隔离、完整/失败重放、清单事务失败、合法链上的错误组装及来源投影
-核验。不访问数据库或交易所。根任务另行调度 PostgreSQL 和全仓验证。
+核验，不访问数据库或交易所。另有 `test_demo_collection_persistence.py` 六项
+真实 PostgreSQL 集成测试，仅使用独立 quant_test 随机 schema。2026-11-17
+实际 6 项通过（28.67 秒），覆盖新连接池重启、资金满页拆分、身份冲突、
+清单提交阶段的真实延迟约束失败、已提交原文保留、未完成旧 ID 零网络，
+以及 UPDATE/DELETE/联合 TRUNCATE 的 SQLSTATE 55000。测试后独立确认本组
+随机 schema 残留为零；该结果不等于全仓或生产验证。
 
 仍缺账户唯一 writer、生产 API 组合根、可信运行选择器、账户归属/独占
 证明、午夜事件重放、完整费用与风险语义验证器，以及实际 Demo 30 天

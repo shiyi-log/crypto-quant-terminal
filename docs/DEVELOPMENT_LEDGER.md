@@ -284,3 +284,14 @@
   当前策略读取端按既有设计回落到 5m 重采样，不阻塞决策。详见
   [数据落库与持续采集修复记录](DATA_REPAIR_AND_INTEGRITY_20261013.md)。
 - 验证：`tests.test_candle_flow_backfill` 17 项、`tests.test_candle_integrity` 18 项全通过；Ruff 通过。
+
+## 2026-11-16 重构计划续行
+
+- P3 浏览器验收复跑：生产构建后执行 `pnpm --dir vben/apps/web-antd run test:e2e`，**86 项通过**（四种宽度覆盖交易台、验收、研究/运维工作区和系统页）。截图、HTML 报告保留在 `output/playwright/refactor-ci/` 与 `output/playwright/refactor-ci-report/`；未触碰并行纸面研究产物。
+- P3 前端总验收：`pnpm --dir vben exec vitest run --dom` **144 个测试文件、1161 项通过**；`pnpm --dir vben/apps/web-antd typecheck` 通过；`pnpm --dir vben build:antd` 11/11 成功。iteration/task/shell 新增及变更定向测试 **12 个文件、124 项通过**。本次改动文件 `oxfmt --check` 发现 9 个纯格式差异并逐一格式化，随后尚需最终复核。
+- P1 Demo 只读验收服务复核：新增服务与测试，固定 `acceptance_eligible=false`，未接生产 selector/语义验证器。定向代理报告 **17 项通过**；主任务 `tests/test_demo_acceptance_service.py tests/test_refactor_workflow_sources.py` **18 项通过**，Ruff、compileall 通过。
+- P2 研究注册表：版本、实验族、完整尝试、产物、一次性留出 claim 与候选裁定写入显式不可变迁移。代理报告纯研究/注册表协议 **100 项通过**；本轮独立复核时数据库连接 `quant_test` 超时，未取得数据库注册表测试结果，不能以先前报告替代本轮 DB 验证。
+- P1/P2 恢复指纹工具：隔离定向测试首轮 26 项通过、4 项失败，均因 `0006_research_registry` 缺少 Demo 物理锚点；已补 `0006` 复用 `0005` 的 Demo 结构锚点，新增研究表仍由全量业务 manifest 检查。修复后的复跑结果待记录。没有现成数据库归档；因生产库已有长查询，没有执行备份/恢复演练。未停止容器或删除隔离库/目录。
+- CI/CD 清单：精确 SHA `5672df954f2c155c54e41432b65790ba3d91ff43` 的 CI 失败于 checkout 中尚不存在的后端源码文件，CD 按门禁跳过；前端类型、构建、Vitest、Playwright jobs 成功。待后端三个模块/迁移先进入 Git，再为新 SHA 复跑完整 Actions。此次只是代码接入，`v0.2.1` 标签不移动，也不宣称新版本发布。
+- 保留并行前向研究产物、截图/报告与工具输出；不将 `artifacts/r11_forward_paper_t032_20261025/`、`output/playwright/`、`.playwright-cli/`、`tools/r11_forward_watchdog.py` 纳入本次重构提交。P0–P4 与 30 天自然验收仍未完成，实盘审批门禁保持人工。
+- 恢复锚点修正复测：`uv run --frozen --group dev pytest -q tests/test_database_restore_verification.py` **30 项通过**（95.31 秒），包括隔离 PostgreSQL 结构/约束检查。`0006_research_registry` 只扩展独立研究表，Demo 的 `0005` 物理锚点保持冻结；新增表内容由完整业务指纹验证。

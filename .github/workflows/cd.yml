@@ -22,6 +22,7 @@ env:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   package:
@@ -30,8 +31,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
-       (github.event.workflow_run.head_branch == 'main' ||
-        github.event.workflow_run.head_branch == null))
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -51,6 +51,10 @@ jobs:
             checkout_ref="$WORKFLOW_RUN_SHA"
           else
             checkout_ref="${DISPATCH_REF:-main}"
+            [[ "$checkout_ref" == "main" || "$checkout_ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "手动发布来源必须是 main 或 vX.Y.Z 标签。" >&2
+              exit 1
+            }
           fi
           printf 'checkout_ref=%s\n' "$checkout_ref" >> "$GITHUB_OUTPUT"
 
@@ -65,8 +69,33 @@ jobs:
         run: |
           set -euo pipefail
           commit_sha="$(git rev-parse HEAD)"
+          # 发布代码必须属于可信主分支历史，不能打包任意实验分支。
+          git merge-base --is-ancestor "$commit_sha" origin/main
           printf 'commit_sha=%s\n' "$commit_sha" >> "$GITHUB_OUTPUT"
           printf 'commit_sha=%s\n' "$commit_sha" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 验证同一提交的 CI 已成功
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ steps.commit.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          # 只接受精确提交 SHA 对应的 push CI 成功记录。
+          successful_runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --commit "$COMMIT_SHA" --json headSha,conclusion,event | jq --arg sha "$COMMIT_SHA" '[.[] | select(.headSha == $sha and .conclusion == "success" and .event == "push")] | length')"
+          [[ "$successful_runs" -gt 0 ]] || {
+            echo "未找到提交 $COMMIT_SHA 的成功 push CI，拒绝打包。" >&2
+            exit 1
+          }
+
+      - name: 读取项目版本
+        id: version
+        run: |
+          project_version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          [[ "$project_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "项目版本必须为 X.Y.Z" >&2
+            exit 1
+          }
+          printf 'project_version=%s\n' "$project_version" >> "$GITHUB_OUTPUT"
 
       - name: 安装 uv 与 Python
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -81,10 +110,14 @@ jobs:
           uv sync --locked --group dev
           uv run --frozen --group dev python -m compileall -q \
             auth_service.py serve_web.py runtime_config.py manage.py \
-            data_store.py data_sync.py market_stream.py market_live.py candle_archive.py tests
+            data_store.py data_sync.py market_stream.py market_live.py candle_archive.py \
+            demo_risk.py demo_acceptance.py demo_account_policy.py demo_account_reconciliation.py \
+            demo_execution_service.py demo_runner_controller.py demo_store.py binance_demo_adapter.py demo_api.py tests
           uv run --frozen --group dev ruff check \
             auth_service.py manage.py runtime_config.py data_store.py data_sync.py \
-            market_stream.py market_live.py candle_archive.py tests
+            market_stream.py market_live.py candle_archive.py demo_risk.py demo_acceptance.py \
+            demo_account_policy.py demo_account_reconciliation.py demo_execution_service.py \
+            demo_runner_controller.py demo_store.py binance_demo_adapter.py demo_api.py tools/release_identity.py tests
           uv run --frozen --group dev python tools/check_frozen_strategy_identities.py --ci
 
       - name: 安装锁定的前端依赖
@@ -113,11 +146,16 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           COMMIT_SHA: ${{ steps.commit.outputs.commit_sha }}
+          PROJECT_VERSION: ${{ steps.version.outputs.project_version }}
         run: |
           set -euo pipefail
           short_sha="${COMMIT_SHA:0:12}"
-          release_tag="$(git tag --points-at HEAD 'v*.*.*' | head -n 1)"
+          release_tag="$(python3 tools/release_identity.py)"
           if [[ -n "$release_tag" ]]; then
+            [[ "$release_tag" == "v$PROJECT_VERSION" ]] || {
+              echo "发布标签 $release_tag 与 pyproject.toml 版本 $PROJECT_VERSION 不一致。" >&2
+              exit 1
+            }
             package_name="quant-terminal-${release_tag}"
           else
             package_name="quant-terminal-main-${short_sha}"
@@ -126,8 +164,8 @@ jobs:
           mkdir -p "release/$package_name"
           git archive --format=tar --prefix="$package_name/" HEAD | tar -xf - -C release
           cp -R vben/apps/web-antd/dist "release/$package_name/web-dist"
-          printf '{\n  "commit": "%s",\n  "package": "%s"\n}\n' \
-            "$COMMIT_SHA" "$package_name" > "release/$package_name/build.json"
+          printf '{\n  "commit": "%s",\n  "version": "%s",\n  "package": "%s"\n}\n' \
+            "$COMMIT_SHA" "$PROJECT_VERSION" "$package_name" > "release/$package_name/build.json"
           tar -czf "release/$package_name.tar.gz" -C release "$package_name"
           sha256sum "release/$package_name.tar.gz" > "release/$package_name.tar.gz.sha256"
           printf 'package_name=%s\n' "$package_name" >> "$GITHUB_OUTPUT"
@@ -162,11 +200,39 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.package.outputs.release_tag }}
           COMMIT_SHA: ${{ needs.package.outputs.commit_sha }}
+          PACKAGE_NAME: ${{ needs.package.outputs.package_name }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "release tag must match vX.Y.Z" >&2
             exit 1
           }
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PACKAGE_NAME" == "quant-terminal-$RELEASE_TAG" ]]
+          remote_commit="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)"
+          [[ "$remote_commit" == "$COMMIT_SHA" ]] || {
+            echo "远端标签在打包后已变化，拒绝发布。" >&2
+            exit 1
+          }
+          # 写权限任务不运行归档代码，只读取清单并验证归档哈希及身份。
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import tarfile
+          package = os.environ["PACKAGE_NAME"]
+          archive = Path("release") / (package + ".tar.gz")
+          sidecar = Path(str(archive) + ".sha256")
+          expected = sidecar.read_text().split()
+          assert len(expected) == 2 and Path(expected[1]).name == archive.name
+          assert hashlib.file_digest(archive.open("rb"), "sha256").hexdigest() == expected[0]
+          with tarfile.open(archive) as bundle:
+              entries = [item for item in bundle.getmembers() if item.name == package + "/build.json"]
+              assert len(entries) == 1 and entries[0].isfile() and entries[0].size < 4096
+              identity = json.load(bundle.extractfile(entries[0]))
+          assert identity == {"commit": os.environ["COMMIT_SHA"],
+                              "version": os.environ["RELEASE_TAG"][1:], "package": package}
+          PY
           gh release create "$RELEASE_TAG" release/* --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "Quant Terminal $RELEASE_TAG" --generate-notes

@@ -60,13 +60,17 @@ jobs:
         run: >-
           uv run --frozen --group dev python -m compileall -q
           auth_service.py serve_web.py runtime_config.py manage.py
-          data_store.py data_sync.py market_stream.py market_live.py candle_archive.py tests
+          data_store.py data_sync.py market_stream.py market_live.py candle_archive.py
+          demo_risk.py demo_acceptance.py demo_account_policy.py demo_account_reconciliation.py
+          demo_execution_service.py demo_runner_controller.py demo_store.py binance_demo_adapter.py demo_api.py tests
 
       - name: 检查新增后端代码质量
         run: >-
           uv run --frozen --group dev ruff check
           auth_service.py manage.py runtime_config.py data_store.py data_sync.py
-          market_stream.py market_live.py candle_archive.py tests
+          market_stream.py market_live.py candle_archive.py demo_risk.py demo_acceptance.py
+          demo_account_policy.py demo_account_reconciliation.py demo_execution_service.py
+          demo_runner_controller.py demo_store.py binance_demo_adapter.py demo_api.py tools/release_identity.py tests
 
       - name: 冻结策略身份兼容性硬门禁
         run: >-
@@ -144,6 +148,10 @@ jobs:
           from shutil import copyfile;
           root = Path('vben/apps/web-antd');
           copyfile(root / '.env.example', root / '.env')"
+
+      - name: 执行量化业务前端单元测试
+        # 只运行量化领域的离线业务测试；不得在 CI 中连接真实交易服务。
+        run: pnpm --dir vben exec vitest run apps/web-antd/src/views/quant apps/web-antd/src/api/__tests__ apps/web-antd/src/store/__tests__/auth.test.ts
 
       - name: 检查业务前端类型
         run: pnpm --dir vben/apps/web-antd typecheck

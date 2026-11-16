@@ -130,6 +130,7 @@ def database():
     assert conninfo_to_dict(dsn).get('dbname') == 'quant_test'
     schema = 'restore_fingerprint_' + uuid.uuid4().hex
     with psycopg.connect(dsn, autocommit=True) as conn:
+        assert conn.execute('SELECT current_database()').fetchone()[0] == 'quant_test'
         conn.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(schema)))
         conn.execute(sql.SQL('SET search_path TO {},pg_catalog').format(sql.Identifier(schema)))
         conn.execute('''CREATE TABLE demo_orders(id bigint PRIMARY KEY,
@@ -144,6 +145,7 @@ def database():
             yield conn, schema, dsn
         finally:
             conn.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(schema)))
+            assert conn.execute('SELECT 1 FROM pg_namespace WHERE nspname=%s', (schema,)).fetchone() is None
 
 
 def test_capture_is_readonly_stable_exact_and_contains_no_raw_facts(database):
@@ -434,3 +436,36 @@ def test_empty_column_collation_change_is_part_of_business_fingerprint(database)
     conn.execute('ALTER TABLE collated_orders ALTER COLUMN label TYPE text COLLATE "POSIX"')
     after = tool.capture_business_manifest(conn, schema)
     assert before['catalog_sha256'] != after['catalog_sha256']
+
+
+def test_current_command_migration_accepts_only_complete_real_physical_schema(database):
+    conn, schema, _ = database
+    tool = capability()
+    bundle = install_real_demo_prefix(conn, schema)
+    assert next(reversed(bundle)) == '0007_writer_commands'
+    result = tool.validate_database_invariants(conn, schema=schema)
+    assert result['demo_migrations'] == 'current'
+    assert re.fullmatch('[0-9a-f]{64}', result['demo_physical_sha256'])
+    # 三张新表即使为空也必须存在，不能以历史记录代替真实结构。
+    conn.execute('DROP TABLE demo_command_events')
+    with pytest.raises(tool.VerificationError, match='Demo physical'):
+        tool.validate_database_invariants(conn, schema=schema)
+
+
+@pytest.mark.parametrize('mutation', [
+    'ALTER TABLE demo_command_bindings DISABLE TRIGGER demo_command_bindings_immutable',
+    'ALTER TABLE demo_command_intents DISABLE TRIGGER demo_command_intents_immutable',
+    'ALTER TABLE demo_command_events DISABLE TRIGGER demo_command_events_immutable',
+    'ALTER TABLE demo_command_events ENABLE TRIGGER demo_command_events_immutable',
+    "CREATE OR REPLACE FUNCTION prevent_demo_command_mutation() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NULL; END'",
+    'ALTER TABLE demo_command_intents DROP CONSTRAINT demo_command_intents_environment_account_id_binding_id_fkey',
+    'DROP INDEX demo_command_events_by_command',
+])
+def test_command_physical_schema_rejects_weakened_immutability_and_identity(database, mutation):
+    conn, schema, _ = database
+    tool = capability()
+    install_real_demo_prefix(conn, schema)
+    assert tool.validate_database_invariants(conn, schema=schema)['demo_migrations'] == 'current'
+    conn.execute(mutation)
+    with pytest.raises(tool.VerificationError, match='Demo physical'):
+        tool.validate_database_invariants(conn, schema=schema)

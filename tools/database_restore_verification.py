@@ -318,6 +318,16 @@ DEMO_PHYSICAL_ANCHORS = {'0001_demo_risk_events': {'demo_account': '12add6e16b9d
 # Demo 物理结构继续使用 0005 冻结锚点；研究表仍参与完整业务指纹比对。
 DEMO_PHYSICAL_ANCHORS['0006_research_registry'] = DEMO_PHYSICAL_ANCHORS['0005_account_evidence_archive']
 
+# 在独立 quant_test 随机 schema 安装完整 0007 后读取 catalog：
+# 旧表摘要逐一相同；下列三表新增约束、索引和 ALWAYS 不可变触发器。
+# 完整 Demo 结构摘要：50e16cab88edd1146da7af90cdc2ad803509d504d84d8779d2d944c2c74d2846。
+DEMO_PHYSICAL_ANCHORS['0007_writer_commands'] = {
+    **DEMO_PHYSICAL_ANCHORS['0006_research_registry'],
+    'demo_command_bindings': '643ef3ff8a8468591657396f9b4e9da2dc8caed23b6abd2fc45507c7bd308c10',
+    'demo_command_events': '62fa29584fbe0da2d9f0399a121653961be1d1de3a33b280635aa94de1122ee8',
+    'demo_command_intents': 'bb451c4c4d966560882eff90fb7fe0aa171e9ee2c910d8f1d9082fac2851f745',
+}
+
 
 def _demo_physical_shape(conn, schema):
     from database_migrations import catalog_shape

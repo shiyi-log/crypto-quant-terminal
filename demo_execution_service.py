@@ -690,6 +690,14 @@ class DemoExecutionService:
                            "继续撤销入口并仅减仓，等待交易所事实与对账确认",
                            self.config.virtual_account_key, now, reason)
 
+    def pause_entries_without_cycle(self):
+        """只关闭本地入口并发布暂停状态；对账和自有保护留给下一轮周期。"""
+        with self._account_lock(), self._mutex:
+            self._entries_enabled = False
+            self._status.update(entries_enabled=False, status="paused_protecting")
+            self._publish_status_snapshot()
+            return self.status()
+
     def stop(self, *, flatten=False):
         """Pause entries; retain polling/risk protection until all owned exposure closes."""
         with self._account_lock(), self._mutex:

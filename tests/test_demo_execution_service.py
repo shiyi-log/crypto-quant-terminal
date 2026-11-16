@@ -162,6 +162,108 @@ class ExecutionEvidenceTests(unittest.TestCase):
         self.assertTrue(snapshot["status_lock_busy"])
 
 
+class PurePauseTests(unittest.TestCase):
+    def test_pause_closes_entries_without_cycle_or_dependency_access_and_publishes_snapshot(self):
+        class NoIO:
+            def __getattr__(self, name):
+                raise AssertionError("纯暂停不能访问外部依赖")
+
+        service = DemoExecutionService(NoIO(), NoIO(), NoIO(),
+            DemoRunnerConfig("paper", trading_enabled=True), clock_ms=lambda: 1000,
+            gate_registry=Mock(is_enabled=lambda key: True),
+            account_writer_lock=threading.RLock())
+        service._started = True
+        service._entries_enabled = True
+        service._status.update(running=True, entries_enabled=True, status="observing")
+        service._publish_status_snapshot()
+
+        paused = service.pause_entries_without_cycle()
+
+        self.assertFalse(service._entries_enabled)
+        self.assertFalse(paused["entries_enabled"])
+        self.assertEqual(paused["status"], "paused_protecting")
+        self.assertTrue(paused["running"])
+        self.assertTrue(service._started)
+        self.assertTrue(service.config.trading_enabled)
+        release, held = threading.Event(), threading.Event()
+
+        def hold_cycle_lock():
+            with service._mutex:
+                held.set()
+                release.wait(timeout=2)
+
+        worker = threading.Thread(target=hold_cycle_lock)
+        worker.start()
+        try:
+            self.assertTrue(held.wait(timeout=1))
+            during_cycle = service.status()
+            self.assertTrue(during_cycle["status_lock_busy"])
+            self.assertFalse(during_cycle["entries_enabled"])
+            self.assertEqual(during_cycle["status"], "paused_protecting")
+        finally:
+            release.set()
+            worker.join(timeout=1)
+        paused["entries_enabled"] = True
+        self.assertFalse(service.status()["entries_enabled"])
+
+    def test_pause_retains_reduce_only_protection_in_the_next_real_cycle(self):
+        pair, now = "BTC/USDT:USDT", 1_800_000
+        entry = {"client_id": "owned-entry", "pair": pair, "side": "buy",
+                 "status": "filled", "filled_quantity": "1", "quantity": "1",
+                 "reduce_only": False, "created_ms": 1000, "average_price": "100",
+                 "intent_payload": {"entry_atr": "10", "risk_stop_atr_mult": "1"}}
+        owned_fill = {"client_id": "owned-entry", "pair": pair, "side": "buy",
+                      "quantity": "1", "price": "100", "timestamp_ms": 1000,
+                      "commission": "0.1", "commission_asset": "USDT",
+                      "realized_pnl": "0", "is_maker": True, "exchange_trade_id": "1"}
+        ledger, adapter, paper = Mock(), Mock(), Mock()
+        ledger.virtual_account_key = "owned-ns"
+        ledger.risk_events.return_value = []
+        ledger.runner_orders.return_value = [entry]
+        ledger.runner_fills.return_value = [owned_fill]
+        ledger.net_fill_positions.return_value = {pair: "1"}
+        ledger.get_order.return_value = None
+        ledger.reserve_order.side_effect = lambda value: ({**value, "status": "intent"}, True)
+        ledger.claim_submission.return_value = True
+        ledger.list_comparisons.return_value = []
+        adapter.fetch_positions.return_value = [{"pair": pair, "signed_qty": "1"}]
+        adapter.fetch_open_orders.return_value = []
+        adapter.fetch_balance.return_value = None
+        adapter.submit_market_order.return_value = {"status": "open"}
+        account = {"rule_hash": "rule", "execution_hash": "execution",
+                   "definition": {"params": {}},
+                   "execution": {"timeframe": "15m", "execution_universe": [pair]}}
+        paper.account.return_value = account
+        paper.events.return_value = []
+        paper.closed_candle.return_value = {"timestamp": 900_000, "close": "80",
+                                            "extras": {"closed": True}}
+        service = DemoExecutionService(adapter, ledger, paper,
+            DemoRunnerConfig("paper", virtual_account_key="owned-ns", trading_enabled=True),
+            clock_ms=lambda: now, gate_registry=Mock(is_enabled=lambda key: True))
+        service.account, service.binding = account, {"input_fingerprint": "input"}
+        service._metadata_checked_ms = now
+        service._started, service._entries_enabled = True, True
+        service._status.update(running=True, entries_enabled=True)
+
+        service.pause_entries_without_cycle()
+        self.assertEqual(adapter.mock_calls, [])
+        self.assertEqual(ledger.mock_calls, [])
+        self.assertEqual(paper.mock_calls, [])
+        result = service.cycle(now)
+
+        self.assertIsNone(result["last_error"])
+        self.assertFalse(result["entries_enabled"])
+        self.assertTrue(service.config.trading_enabled)
+        adapter.submit_limit_order.assert_not_called()
+        adapter.submit_market_order.assert_called_once()
+        args, kwargs = adapter.submit_market_order.call_args
+        self.assertEqual(args[:3], (pair, "sell", "1"))
+        self.assertEqual(kwargs, {"reduce_only": True})
+        reserved = ledger.reserve_order.call_args.args[0]
+        self.assertTrue(reserved["reduce_only"])
+        self.assertEqual(reserved["raw"]["exit_reason"], "stop_loss_close_confirmed")
+
+
 @dataclass
 class Credentials:
     api_key: str = "offline-placeholder-key"
@@ -190,8 +292,13 @@ class ControllerRecoveryTests(unittest.TestCase):
         self.ledger.pending_orders.return_value = []
         self.ledger.runner_orders.return_value = []
         self.ledger.runner_fills.return_value = []
+        self.ledger.account_reconciliation_status.return_value = {"safeToSwitch": True}
         self.paper.account.return_value = {"execution": {"risk_sizing_mode": "entry_atr"}}
         self.provider, self.factory = Mock(return_value=Credentials()), Mock()
+        self.factory.return_value.fetch_positions.return_value = []
+        self.factory.return_value.fetch_open_orders.return_value = []
+        self.factory.return_value.fetch_open_conditional_orders.return_value = []
+        self.factory.return_value.fetch_position_mode.return_value = {"hedged": False}
         self.created = []
 
         def service_factory(adapter, store, source, config, **kwargs):
@@ -223,7 +330,12 @@ class ControllerRecoveryTests(unittest.TestCase):
         self.controller = DemoRunnerController(self.data, self.ledger, self.provider, self.factory,
             paper_source=self.paper, lock_path=Path(self.temp.name) / "demo.lock",
             risk_gate_required=False)
-        self.addCleanup(self.controller.close_if_flat)
+        def close_flat_fixture():
+            # 用例可注入凭据读取故障；清理只恢复该离线账户的明确空仓事实。
+            self.provider.side_effect = None
+            self.provider.return_value = Credentials()
+            self.controller.close_if_flat()
+        self.addCleanup(close_flat_fixture)
 
     def test_human_start_saves_recovery_identity_before_exchange_work(self):
         self.controller.start("paper")

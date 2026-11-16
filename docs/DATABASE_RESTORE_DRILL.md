@@ -135,3 +135,32 @@ pg_dump 边界使用替身，真实 PostgreSQL 连接证明导出快照导入和
 独立真实 Python 子进程回归先失败，改为归档头检查使用无缓冲二进制读取后
 通过，再完成上述真实演练。没有采用自动重试或忽略归档校验绕过问题。
 相邻备份/恢复校验定向 43 项通过；该结果与实际演练回执分别记录。
+
+## 2026-11-17 非空研究注册表恢复回执
+
+前次演练中的八张研究注册表均为空。本次通过正式存储接口新增冻结版本、
+12 配置实验族、base/stress 尝试及事件、一次留出 claim、两份产物和候选裁定，
+再次实际执行共享快照备份、新库恢复与全业务指纹验证，补足非空数据覆盖。
+
+- 源库：quant_restore_research_source_20261116_200220_126353。
+- 恢复库：quant_restore_research_checked_20261116_200220_126353。
+- 审计目录：/Volumes/yidong/quant-refactor-backups/nonempty-research-drill-20261116_200220_126353。
+- 实际完成时间：2026-11-16T20:02:28Z（北京时间 2026-11-17 04:02）。
+- quant schema 共 47 表、34 行；研究八表均非空，共 17 行。业务内容、catalog、
+  约束、索引与序列精确匹配，全局/Demo 迁移均为 current。
+- 归档 SHA-256：e04f12a696c77dbcffaecb84a43cfa138b976750d334fa873ce8ab650681e856。
+- 业务清单 SHA-256：7583d483595bcd00010dbc89842b3d60aedee8acc718aa2545b7b398238017b2。
+- 研究语义回执 SHA-256：2fb564248b7fff0027b5a860aa3fae95879cde1e240b07891c303290aeaadff0。
+
+恢复后的 family、两条 completed attempt 及各自事件、claim、产物和裁定与源端
+相同；留出仍为 completed，同 claim 精确重试 execution_ticket=False，未重新
+出票。八表逐一 UPDATE/DELETE 加一次联合八表 TRUNCATE，共 17 个事务探针均
+得到 SQLSTATE 55000 并回滚；catalog 另确认八表不可变触发器为 ALWAYS。联合
+TRUNCATE 只证明整个语句被拒绝，不声称逐表独立执行了截断触发器。探针后再次
+比对完整业务清单，行内容、catalog 与序列保持相同。
+
+原始归档、全部回执、research-semantic-verification.json、演练脚本与中文日志
+均以 0600 保留；目录 0700，源库与恢复库均保留。独立审阅和主任务均重新计算
+关键工件摘要并核对回执链接。该结果是合成业务恢复证据，未备份或恢复生产库，
+不证明真实研究数据来源、收益、全族统计或自然 30 天验收通过；所有来源、
+验收和生产授权标志继续为 false。

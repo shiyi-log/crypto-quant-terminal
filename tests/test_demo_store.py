@@ -72,7 +72,9 @@ class DemoStoreUnitTests(unittest.TestCase):
         migration_dir = Path(__file__).resolve().parents[1] / "database" / "demo_migrations"
         connection = Connection()
         applied = _apply_demo_migrations(connection, migration_dir=migration_dir)
-        self.assertEqual(applied, ["0001_demo_risk_events", "0002_risk_event_integrity"])
+        self.assertEqual(applied, sorted(path.stem for path in migration_dir.glob("*.sql")))
+        self.assertEqual(applied[:3], ["0001_demo_risk_events", "0002_risk_event_integrity",
+                                      "0003_native_conditional_orders"])
         first_execution_count = len(connection.executed)
         self.assertEqual(_apply_demo_migrations(connection, migration_dir=migration_dir), [])
         self.assertEqual(len(connection.executed), first_execution_count + 2)
@@ -245,16 +247,17 @@ class DemoStoreIntegrationTests(unittest.TestCase):
             with self.data._connection() as conn:
                 conn.execute("DELETE FROM demo_schema_migrations WHERE migration_id='9999_future'")
         with self.data._connection() as conn:
-            latest = conn.execute("DELETE FROM demo_schema_migrations "
-                                  "WHERE migration_id='0002_risk_event_integrity' RETURNING *").fetchone()
+            pending = conn.execute("DELETE FROM demo_schema_migrations "
+                                   "WHERE migration_id >= '0002' RETURNING *").fetchall()
         try:
             with self.assertRaisesRegex(RuntimeError, "migrations pending"):
                 ledger.check_schema()
         finally:
             with self.data._connection() as conn:
-                conn.execute("INSERT INTO demo_schema_migrations (migration_id,checksum,applied_at) "
-                             "VALUES (%s,%s,%s)",
-                             (latest["migration_id"], latest["checksum"], latest["applied_at"]))
+                for migration in pending:
+                    conn.execute("INSERT INTO demo_schema_migrations (migration_id,checksum,applied_at) "
+                                 "VALUES (%s,%s,%s)",
+                                 (migration["migration_id"], migration["checksum"], migration["applied_at"]))
 
     def test_concurrent_risk_event_retry_preserves_exactly_one_fact(self):
         ledger = DemoStore(self.data, "risk-concurrent-" + uuid.uuid4().hex)

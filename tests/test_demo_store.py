@@ -1,13 +1,19 @@
 """Demo ledger tests; integration refuses every database except quant_test."""
 import copy
+from contextlib import contextmanager
+import hashlib
 import os
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
 from data_store import DataStore
-from demo_store import DemoStore, binance_fill, binance_order, scrub_exchange_raw, scrub_payload
+from demo_store import (DemoStore, _apply_demo_migrations, binance_fill, binance_order,
+                        scrub_exchange_raw, scrub_payload)
 from runtime_config import load_environment
 
 load_environment()
@@ -41,6 +47,71 @@ class DemoStoreUnitTests(unittest.TestCase):
         self.assertEqual(demo.virtual_account_key, "research-session")
         data.assert_not_called()
         data._connection.assert_not_called()
+
+    def test_demo_migrations_are_versioned_idempotent_and_detect_file_drift(self):
+        class Cursor:
+            def __init__(self, rows=()):
+                self.rows = list(rows)
+
+            def fetchall(self):
+                return self.rows
+
+        class Connection:
+            def __init__(self, applied=()):
+                self.applied = list(applied)
+                self.executed = []
+
+            def execute(self, sql, params=None, **kwargs):
+                self.executed.append((sql, params))
+                if sql.startswith("SELECT migration_id,checksum"):
+                    return Cursor(self.applied)
+                if sql.startswith("INSERT INTO demo_schema_migrations"):
+                    self.applied.append({"migration_id": params[0], "checksum": params[1]})
+                return Cursor()
+
+        migration_dir = Path(__file__).resolve().parents[1] / "database" / "demo_migrations"
+        connection = Connection()
+        applied = _apply_demo_migrations(connection, migration_dir=migration_dir)
+        self.assertEqual(applied, ["0001_demo_risk_events", "0002_risk_event_integrity"])
+        first_execution_count = len(connection.executed)
+        self.assertEqual(_apply_demo_migrations(connection, migration_dir=migration_dir), [])
+        self.assertEqual(len(connection.executed), first_execution_count + 2)
+
+        drifted = Connection([{"migration_id": "0001_demo_risk_events",
+                               "checksum": "not-the-current-checksum"}])
+        with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
+            _apply_demo_migrations(drifted, migration_dir=migration_dir)
+
+    def test_missing_or_empty_migration_bundle_is_rejected(self):
+        connection = Mock()
+        connection.execute.return_value.fetchall.return_value = []
+        with tempfile.TemporaryDirectory() as temporary:
+            for directory in (Path(temporary), Path(temporary) / "missing"):
+                with self.subTest(directory=directory), self.assertRaisesRegex(
+                        RuntimeError, "migration bundle"):
+                    _apply_demo_migrations(connection, migration_dir=directory)
+
+    def test_unknown_database_migration_prevents_any_schema_upgrade(self):
+        connection = Mock()
+        connection.execute.return_value.fetchall.return_value = [
+            {"migration_id": "9999_future_change", "checksum": "future"}]
+        with self.assertRaisesRegex(RuntimeError, "unknown Demo migration"):
+            _apply_demo_migrations(connection)
+
+    def test_migration_history_gap_and_duplicate_version_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "0001_first.sql").write_text("SELECT 1;", encoding="utf-8")
+            (directory / "0002_second.sql").write_text("SELECT 2;", encoding="utf-8")
+            connection = Mock()
+            connection.execute.return_value.fetchall.return_value = [
+                {"migration_id": "0002_second",
+                 "checksum": hashlib.sha256(b"SELECT 2;").hexdigest()}]
+            with self.assertRaisesRegex(RuntimeError, "history has a gap"):
+                _apply_demo_migrations(connection, migration_dir=directory)
+            (directory / "0002_duplicate.sql").write_text("SELECT 3;", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "duplicate Demo migration version"):
+                _apply_demo_migrations(connection, migration_dir=directory)
 
     def test_environment_and_host_fail_closed(self):
         for change in ({"environment": "live"}, {"endpoint_host": "fapi.binance.com"},
@@ -115,6 +186,82 @@ class DemoStoreIntegrationTests(unittest.TestCase):
         row, created = self.demo.reserve_order(intent(client_id="client_1", **changes))
         self.assertTrue(created)
         return row
+
+    def risk_event(self, event_id, timestamp_ms, **changes):
+        return {"event_id": event_id, "event_type": "equity_observed",
+                "timestamp_ms": timestamp_ms,
+                "payload": {"net_equity_usdt": "1000", "data_complete": True},
+                **changes}
+
+    def test_risk_event_replay_preserves_persisted_order_even_for_equal_or_late_timestamps(self):
+        ledger = DemoStore(self.data, "risk-order-" + uuid.uuid4().hex)
+        events = [self.risk_event("z", 2000), self.risk_event("a", 2000),
+                  self.risk_event("late", 1000)]
+        ledger.append_risk_events(events[:2])
+        ledger.append_risk_events(events[2:])
+        self.assertEqual(ledger.risk_events(), events)
+
+    def test_risk_event_exact_retry_is_idempotent_but_changed_fact_rolls_back_batch(self):
+        ledger = DemoStore(self.data, "risk-retry-" + uuid.uuid4().hex)
+        original = self.risk_event("original", 1000)
+        ledger.append_risk_events([original])
+        ledger.append_risk_events([original])
+        self.assertEqual(ledger.risk_events(), [original])
+        with self.assertRaisesRegex(ValueError, "different risk event"):
+            ledger.append_risk_events([
+                self.risk_event("must-rollback", 2000),
+                self.risk_event("original", 1000, payload={"net_equity_usdt": "900"}),
+            ])
+        self.assertEqual(ledger.risk_events(), [original])
+
+    def test_risk_events_reject_direct_update_delete_and_truncate(self):
+        import psycopg
+        ledger = DemoStore(self.data, "risk-immutable-" + uuid.uuid4().hex)
+        ledger.append_risk_events([self.risk_event("original", 1000)])
+        for sql in ("UPDATE demo_risk_events SET timestamp_ms=timestamp_ms+1",
+                    "DELETE FROM demo_risk_events", "TRUNCATE demo_risk_events"):
+            with self.subTest(sql=sql), self.assertRaises(psycopg.Error):
+                with self.data._connection() as conn:
+                    conn.execute(sql)
+        self.assertEqual(len(ledger.risk_events()), 1)
+
+    def test_read_only_schema_check_rejects_missing_or_unknown_migrations(self):
+        @contextmanager
+        def read_only_connection():
+            with self.data._connection() as conn:
+                conn.execute("SET TRANSACTION READ ONLY")
+                yield conn
+
+        # 用真实 PostgreSQL 只读事务验证检查不会隐式写入或执行迁移。
+        ledger = DemoStore(SimpleNamespace(_connection=read_only_connection))
+        self.assertTrue(ledger.check_schema())
+        with self.data._connection() as conn:
+            conn.execute("INSERT INTO demo_schema_migrations (migration_id,checksum) "
+                         "VALUES ('9999_future','future')")
+        try:
+            with self.assertRaisesRegex(RuntimeError, "unknown Demo migration"):
+                self.demo.check_schema()
+        finally:
+            with self.data._connection() as conn:
+                conn.execute("DELETE FROM demo_schema_migrations WHERE migration_id='9999_future'")
+        with self.data._connection() as conn:
+            latest = conn.execute("DELETE FROM demo_schema_migrations "
+                                  "WHERE migration_id='0002_risk_event_integrity' RETURNING *").fetchone()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "migrations pending"):
+                ledger.check_schema()
+        finally:
+            with self.data._connection() as conn:
+                conn.execute("INSERT INTO demo_schema_migrations (migration_id,checksum,applied_at) "
+                             "VALUES (%s,%s,%s)",
+                             (latest["migration_id"], latest["checksum"], latest["applied_at"]))
+
+    def test_concurrent_risk_event_retry_preserves_exactly_one_fact(self):
+        ledger = DemoStore(self.data, "risk-concurrent-" + uuid.uuid4().hex)
+        original = self.risk_event("same-event", 1000)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            list(executor.map(lambda _: ledger.append_risk_events([original]), range(8)))
+        self.assertEqual(ledger.risk_events(), [original])
 
     def test_schema_install_is_explicit_idempotent_and_existing_ledger_untouched(self):
         self.demo.ensure_schema()

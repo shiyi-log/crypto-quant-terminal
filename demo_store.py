@@ -29,6 +29,7 @@ ABSENT_LOOKUP_MIN_AGE_MS = 5 * 60 * 1000
 COMPARISON_VIEWS = frozenset({"audit", "signals"})
 ROUTINE_COMPARISON_STAGES = ("binding", "runner_checkpoint", "actual_execution_config")
 MAX_PAYLOAD_BYTES = 262_144
+DEMO_MIGRATION_ID = re.compile(r"^[0-9]{4}_[a-z0-9_]+$")
 RAW_FIELDS = frozenset({
     "orderId", "clientOrderId", "symbol", "side", "type", "status", "origQty",
     "executedQty", "cumQty", "cumQuote", "avgPrice", "price", "stopPrice", "time",
@@ -138,6 +139,67 @@ def _symbol(pair):
     return str(pair).replace("/", "").replace(":USDT", "")
 
 
+def _demo_migration_bundle(migration_dir=None):
+    """加载完整迁移包；部署漏文件不能被误判为兼容旧数据库。"""
+    directory = Path(migration_dir or Path(__file__).parent / "database" / "demo_migrations")
+    paths = sorted(directory.glob("*.sql")) if directory.is_dir() else []
+    if not paths:
+        raise RuntimeError("Demo migration bundle is missing or empty")
+    bundle, versions = {}, set()
+    for path in paths:
+        migration_id = path.stem
+        if not DEMO_MIGRATION_ID.fullmatch(migration_id):
+            raise ValueError(f"invalid Demo migration name: {migration_id}")
+        version = migration_id.split("_", 1)[0]
+        if version in versions:
+            raise RuntimeError(f"duplicate Demo migration version: {version}")
+        versions.add(version)
+        source = path.read_text(encoding="utf-8")
+        bundle[migration_id] = (hashlib.sha256(source.encode("utf-8")).hexdigest(), source)
+    return bundle
+
+
+def _validate_demo_migration_records(existing, bundle, *, require_current=False):
+    unknown = set(existing) - set(bundle)
+    if unknown:
+        raise RuntimeError("unknown Demo migration: " + ",".join(sorted(unknown)))
+    for migration_id, checksum in existing.items():
+        if bundle[migration_id][0] != checksum:
+            raise RuntimeError(f"Demo migration checksum mismatch: {migration_id}")
+    # 已应用较新版本而旧版本缺失，说明登记或部署已损坏，不能靠补跑掩盖。
+    ids = list(bundle)
+    applied = [migration_id in existing for migration_id in ids]
+    if any(not present and any(applied[index + 1:])
+           for index, present in enumerate(applied)):
+        raise RuntimeError("Demo migration history has a gap")
+    if require_current and set(existing) != set(bundle):
+        raise RuntimeError("Demo migrations pending; run explicit schema setup")
+
+
+def _apply_demo_migrations(conn, *, migration_dir=None):
+    """显式按版本应用 Demo 专属 SQL 迁移，并拒绝历史迁移文件漂移。"""
+    bundle = _demo_migration_bundle(migration_dir)
+    conn.execute("""CREATE TABLE IF NOT EXISTS demo_schema_migrations (
+        migration_id TEXT PRIMARY KEY,
+        checksum TEXT NOT NULL,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    existing = {row["migration_id"]: row["checksum"] for row in conn.execute(
+        "SELECT migration_id,checksum FROM demo_schema_migrations ORDER BY migration_id").fetchall()}
+    _validate_demo_migration_records(existing, bundle)
+    applied = []
+    for migration_id, (checksum, source) in bundle.items():
+        if migration_id in existing:
+            continue
+        conn.execute(source, prepare=False)
+        conn.execute(
+            "INSERT INTO demo_schema_migrations (migration_id,checksum) VALUES (%s,%s)",
+            (migration_id, checksum),
+        )
+        applied.append(migration_id)
+    return applied
+
+
 class DemoPairOwnershipError(ValueError):
     """A committed foreign intent, fill or gap prevents using this pair."""
 
@@ -165,6 +227,20 @@ class DemoStore:
         with self.store._connection() as conn:
             conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"demo-schema:{self.store.schema}",))
             conn.execute((Path(__file__).parent / "database" / "demo_schema.sql").read_text(encoding="utf-8"), prepare=False)
+            return _apply_demo_migrations(conn)
+
+    def check_schema(self):
+        """仅核对 Demo 迁移身份；普通交易启动不得在这里自动升级。"""
+        bundle = _demo_migration_bundle()
+        with self.store._connection() as conn:
+            exists = conn.execute(
+                "SELECT to_regclass('demo_schema_migrations') AS name").fetchone()
+            if not exists or exists["name"] is None:
+                raise RuntimeError("Demo migrations missing; run explicit schema setup")
+            existing = {row["migration_id"]: row["checksum"] for row in conn.execute(
+                "SELECT migration_id,checksum FROM demo_schema_migrations ORDER BY migration_id").fetchall()}
+            _validate_demo_migration_records(existing, bundle, require_current=True)
+        return True
 
     def _identity(self):
         return self.environment, self.virtual_account_key
@@ -769,6 +845,52 @@ class DemoStore:
 
     def get_latest_position_snapshot(self):
         return self._latest_snapshot("demo_positions")
+
+    def append_risk_events(self, events):
+        """原子追加风险事实；重复 event_id 幂等，绝不更新历史事件。"""
+        if not isinstance(events, (list, tuple)):
+            raise ValueError("风险事件必须是列表")
+        rows = []
+        for event in events:
+            if not isinstance(event, dict):
+                raise ValueError("风险事件格式无效")
+            event_id = _text(event.get("event_id"), "event_id", 128)
+            event_type = _text(event.get("event_type"), "event_type", 64)
+            timestamp_ms = _timestamp(event.get("timestamp_ms"))
+            payload = _payload(event.get("payload", {}))
+            rows.append((event_id, event_type, timestamp_ms, payload))
+        with self.store._connection() as conn:
+            # 同一账户的写入串行分配持久化顺序，重启按追加顺序恢复，
+            # 不按交易所时间或任意 event_id 重排已经做过的风险判断。
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                         ("demo-risk:" + ":".join(self._identity()),))
+            for event_id, event_type, timestamp_ms, payload in rows:
+                conn.execute(
+                    "INSERT INTO demo_risk_events "
+                    "(environment,virtual_account_key,event_id,event_type,timestamp_ms,payload) "
+                    "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                    (*self._identity(), event_id, event_type, timestamp_ms, self.store._json(payload)),
+                )
+                existing = conn.execute(
+                    "SELECT event_type,timestamp_ms,payload FROM demo_risk_events "
+                    "WHERE environment=%s AND virtual_account_key=%s AND event_id=%s",
+                    (*self._identity(), event_id),
+                ).fetchone()
+                if (existing is None or existing["event_type"] != event_type
+                        or existing["timestamp_ms"] != timestamp_ms or existing["payload"] != payload):
+                    raise ValueError("event_id already belongs to a different risk event")
+        return len(rows)
+
+    def risk_events(self):
+        """按已提交追加顺序读取风险账本，避免迟到事实重排历史判断。"""
+        with self.store._connection() as conn:
+            rows = conn.execute(
+                "SELECT event_id,event_type,timestamp_ms,payload FROM demo_risk_events "
+                "WHERE environment=%s AND virtual_account_key=%s "
+                "ORDER BY sequence_id",
+                self._identity(),
+            ).fetchall()
+        return _serializable(rows)
 
     def append_comparison(self, payload, stage, observed_ms=None):
         payload = _payload(payload)

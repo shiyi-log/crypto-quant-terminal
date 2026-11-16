@@ -137,7 +137,12 @@ def _envelope(value, path, api, params):
 class DemoAccountCollector:
     """只信内部注入的守卫适配器和已提交归档接口，不接受 HTTP 真实性旗标。"""
 
-    def __init__(self, adapter, archive, scope, *, clock_ms=None, max_requests=4096, run_binding=None):
+    def __init__(self, adapter, archive, scope, *, clock_ms=None, max_requests=4096, run_binding=None,
+                 readonly_replay=False):
+        if type(readonly_replay) is not bool:
+            raise ValueError('invalid replay diagnostic option')
+        # 仅影响本实例的诊断；真实采集默认保留原有详细日志，绝不修改全局LOGGER。
+        self._readonly_replay = readonly_replay
         self.scope = _scope(scope)
         self._archive_scope = deepcopy(self.scope)
         self._identity_hashes = None
@@ -157,6 +162,12 @@ class DemoAccountCollector:
         self.clock_ms = clock_ms or (lambda: int(time.time() * 1000))
         self.max_requests = max_requests
 
+    def _diagnostic(self, level, code, message, *args):
+        if self._readonly_replay:
+            LOGGER.log(level, 'Demo离线采集重放诊断 原因=%s；不记录账户身份或原文', code)
+        else:
+            LOGGER.log(level, message, *args)
+
     def _archive(self, kind, payload, evidence):
         payload = deepcopy(payload)
         if self._identity_hashes is not None:
@@ -168,7 +179,8 @@ class DemoAccountCollector:
                 raise
             raise CollectionError('archive_commit_failed') from None
         except Exception as error:
-            LOGGER.warning('Demo账户归档提交失败 账户=%s 阶段=%s 类型=%s 错误类型=%s；停止新增风险',
+            self._diagnostic(logging.WARNING, 'archive_commit_failed',
+                           'Demo账户归档提交失败 账户=%s 阶段=%s 类型=%s 错误类型=%s；停止新增风险',
                            self.scope['account_id'], self.scope['stage_id'], kind, type(error).__name__)
             raise CollectionError('archive_commit_failed') from None
         return _receipt(receipt, kind, self._archive_scope)
@@ -241,7 +253,8 @@ class DemoAccountCollector:
                 deny(str(error) if str(error) in INCOME_REASONS else 'income_capture_failed')
                 break
             except Exception as error:
-                LOGGER.warning('Demo全类型资金流水采集失败 账户=%s 窗口=%s..%s 错误类型=%s；保留缺口',
+                self._diagnostic(logging.WARNING, 'income_capture_failed',
+                               'Demo全类型资金流水采集失败 账户=%s 窗口=%s..%s 错误类型=%s；保留缺口',
                                self.scope['account_id'], left, right, type(error).__name__)
                 deny('income_capture_failed')
                 break
@@ -274,7 +287,8 @@ class DemoAccountCollector:
         if leaves_cover_window and any(seen.get(key) != fingerprint for key, fingerprint in observed.items()):
             deny('income_window_changed_during_capture')
         result['complete'] = not result['reasons'] and not stack and leaves_cover_window
-        LOGGER.info('Demo资金流水窗口归档 账户=%s 阶段=%s 窗口=%s..%s 请求数=%s 叶窗口=%s '
+        self._diagnostic(logging.INFO, 'income_replay_completed',
+                    'Demo资金流水窗口归档 账户=%s 阶段=%s 窗口=%s..%s 请求数=%s 叶窗口=%s '
                     '流水数=%s 结构完整=%s 原因=%s；仍须钱包和延迟入账对账',
                     self.scope['account_id'], self.scope['stage_id'], start, end, requests,
                     len(result['income_scans']), len(result['rows']), result['complete'], result['reasons'])
@@ -328,7 +342,8 @@ class DemoAccountCollector:
                 result['reasons'].append(str(error) if str(error) in ARCHIVE_REASONS
                                          else name + '_capture_failed')
             except Exception as error:
-                LOGGER.warning('Demo账户读数采集失败 账户=%s 组件=%s 错误类型=%s；不能把缺失记为空',
+                self._diagnostic(logging.WARNING, 'account_component_capture_failed',
+                               'Demo账户读数采集失败 账户=%s 组件=%s 错误类型=%s；不能把缺失记为空',
                                self.scope['account_id'], name, type(error).__name__)
                 result['reasons'].append(name + '_capture_failed')
             return None
@@ -359,7 +374,8 @@ class DemoAccountCollector:
         result['transport_evidence_complete'] = (result['capture_complete'] and transported == {
             'clock_before', 'account_snapshot', 'mode', 'normal_orders', 'conditional_orders', 'clock_after'})
         result['clock_bracket'] = deepcopy(clocks)
-        LOGGER.info('Demo账户多请求归档 账户=%s 阶段=%s 已提交组件=%s 采集完成=%s 原因=%s；'
+        self._diagnostic(logging.INFO, 'account_replay_completed',
+                    'Demo账户多请求归档 账户=%s 阶段=%s 已提交组件=%s 采集完成=%s 原因=%s；'
                     '未授予原子时点、午夜或新增风险资格', self.scope['account_id'], self.scope['stage_id'],
                     sorted(result['source_refs']), result['capture_complete'], result['reasons'])
         return result

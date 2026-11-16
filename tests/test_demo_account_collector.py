@@ -96,6 +96,20 @@ def collector(rows=(), **kwargs):
     return DemoAccountCollector(adapter, archive, SCOPE, clock_ms=lambda: 60_000_000, **kwargs), adapter, archive
 
 
+def test_replay_diagnostics_are_instance_local_and_live_capture_keeps_scoped_log(caplog):
+    import logging
+    live, _, _ = collector()
+    replay, _, _ = collector(readonly_replay=True)
+    with caplog.at_level(logging.INFO):
+        replay.capture_account()
+    assert '离线采集重放诊断' in caplog.text
+    assert 'exclusive-demo' not in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        live.capture_account()
+    assert '账户=exclusive-demo' in caplog.text and '阶段=stage-1000' in caplog.text
+
+
 def test_full_windows_split_into_contiguous_short_leaves_and_parent_is_not_counted_twice():
     c, adapter, archive = collector([row(1, 1), row(2, 2), row(3, 4)])
     result = c.collect_income(since_ms=1, until_ms=4, limit=2)

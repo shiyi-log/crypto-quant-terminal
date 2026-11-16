@@ -131,6 +131,75 @@ def test_restart_replays_sealed_facts_without_new_requests_or_archive_writes():
     assert adapter.reads == ['normal', 'conditional']
 
 
+@pytest.mark.parametrize('operation', ['capture_account', 'collect_income'])
+def test_public_read_only_replay_never_touches_adapter_clock_or_archive_writer(operation):
+    run, archive, _, binding = setup()
+    expected = (run.capture_account() if operation == 'capture_account' else
+                run.collect_income(since_ms=1, until_ms=2))
+    before = deepcopy(archive.records())
+    class MustNotRead:
+        def __getattribute__(self, _name):
+            raise AssertionError('只读重放不能读取远端适配器')
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError('只读重放不能写归档或读取当前时间')
+    archive.append = forbidden
+    restarted = api().DemoCollectionRun(MustNotRead(), archive, binding,
+        collection_id='capture-1', clock_ms=forbidden)
+    assert hasattr(restarted, 'replay_completed'), '缺少显式只读重放入口'
+    assert restarted.replay_completed() == expected
+    assert archive.records() == before
+
+
+@pytest.mark.parametrize('state', ['missing', 'incomplete', 'wrong_binding', 'wrong_budget'])
+def test_public_read_only_replay_refuses_missing_or_conflicting_plan_without_new_start(state):
+    run, archive, _, binding = setup()
+    if state == 'incomplete':
+        run._manifest('start', 'start', plan={'operation': 'capture_account',
+            'parameters': {}, 'max_requests': 4096, 'expected_components': list(api().COMPONENTS)},
+            local_started_ms=1)
+    elif state != 'missing':
+        run.capture_account()
+    if state == 'wrong_binding':
+        binding = api().FrozenCollectionBinding({**SCOPE, 'run_id': 'run-2'}, IDENTITY)
+    before = deepcopy(archive.records())
+    class MustNotRead:
+        def __getattribute__(self, _name):
+            raise AssertionError('只读失败不能触碰适配器')
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError('只读失败不能写入')
+    archive.append = forbidden
+    restarted = api().DemoCollectionRun(MustNotRead(), archive, binding,
+        collection_id='capture-1', max_requests=4095 if state == 'wrong_budget' else 4096)
+    assert hasattr(restarted, 'replay_completed'), '缺少显式只读重放入口'
+    with pytest.raises(CollectionError):
+        restarted.replay_completed()
+    assert archive.records() == before
+
+
+@pytest.mark.parametrize('change', ['operation', 'parameters', 'extra_plan', 'budget_type'])
+def test_public_read_only_replay_rejects_legitimate_chain_with_invalid_plan(change):
+    run, archive, _, binding = setup()
+    run.capture_account()
+    other = DemoEvidenceStore(MemorySQL(), 'exclusive-demo', 'stage-1000')
+    def mutate(kind, body, metadata):
+        if body.get('event') == 'start':
+            if change == 'operation':
+                body['plan']['operation'] = 'unknown-operation'
+            if change == 'parameters':
+                body['plan']['parameters'] = {'verified': True}
+            if change == 'extra_plan':
+                body['plan']['verified'] = True
+            if change == 'budget_type':
+                body['plan']['max_requests'] = True
+        return kind, metadata
+    rebuild_collection_rows(archive.records(), other, mutate)
+    reader = api().DemoCollectionRun(object(), other, binding, collection_id='capture-1')
+    before = deepcopy(other.records())
+    with pytest.raises(CollectionError, match='collection_archive_unverified'):
+        reader.replay_completed()
+    assert other.records() == before
+
+
 def test_partial_failure_archives_bounded_failure_then_seals_remaining_facts(caplog):
     adapter = EvidenceAdapter()
     def fail(**_):

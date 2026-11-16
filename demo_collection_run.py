@@ -316,7 +316,7 @@ class DemoCollectionRun:
         collector = DemoAccountCollector(ReplayAdapter(), ReplayArchive(), self.binding.scope,
             # 当前原文归档后才推进 cursor；失败派生组件不能消耗下一条事实。
             clock_ms=lambda: facts[cursor]['payload']['local_observed_ms'] if cursor < len(facts) else 0,
-            max_requests=plan['max_requests'], run_binding=owner.binding)
+            max_requests=plan['max_requests'], run_binding=owner.binding, readonly_replay=True)
         if plan['operation'] == 'capture_account':
             rebuilt = collector.capture_account()
         else:
@@ -382,6 +382,56 @@ class DemoCollectionRun:
 
     def capture_account(self):
         return self._execute('capture_account', {})
+
+    def replay_completed(self):
+        """仅重放已封存运行；缺少清单时不创建 start、不读适配器或当前时钟。
+
+        已封存失败也会原样返回失败事实，调用者仍须检查 collection_status。
+        本入口不调用可能启动采集的 _prepare/_execute。
+        """
+        rows = self._read_collection()
+        if not rows:
+            raise CollectionError('collection_missing_read_only')
+        for row in rows:
+            body = row['payload']
+            if (row['scope'] != self.binding.scope
+                    or body.get('identity_hashes') != self.binding.identity_hashes
+                    or body.get('binding_sha256') != self.binding.sha256):
+                raise CollectionError('collection_identity_conflict')
+        starts = [row for row in rows if row['payload'].get('schema') == SCHEMA
+                  and row['payload'].get('event') == 'start']
+        ends = [row for row in rows if row['payload'].get('schema') == SCHEMA
+                and row['payload'].get('event') == 'end']
+        if not ends:
+            raise CollectionError('collection_incomplete_requires_new_id')
+        try:
+            if len(starts) != 1 or len(ends) != 1:
+                raise ValueError('ambiguous sealed collection')
+            plan = starts[0]['payload']['plan']
+            operation, parameters = plan['operation'], plan['parameters']
+            expected = {'operation': operation, 'parameters': parameters,
+                        'max_requests': self.max_requests}
+            if operation == 'capture_account':
+                expected['expected_components'] = list(COMPONENTS)
+                if parameters != {}:
+                    raise ValueError('invalid capture plan')
+            elif operation == 'collect_income':
+                if type(parameters) is not dict or set(parameters) != {'since_ms', 'until_ms', 'limit'}:
+                    raise ValueError('invalid income plan')
+                start, end = _stamp(parameters['since_ms']), _stamp(parameters['until_ms'])
+                limit = parameters['limit']
+                if end < start or type(limit) is not int or not 1 <= limit <= 1000:
+                    raise ValueError('invalid income plan')
+            else:
+                raise ValueError('unknown collection operation')
+            if plan != expected:
+                raise ValueError('frozen collection plan mismatch')
+            result = self._replay(rows, starts[0], ends, operation)
+        except Exception:
+            raise CollectionError('collection_archive_unverified') from None
+        LOGGER.info('Demo采集只读重放完成 操作=%s 组件数=%s 状态=%s；未触发采集或写入',
+                    operation, len(ends[0]['payload']['components']), result['collection_status'])
+        return result
 
     def collect_income(self, *, since_ms, until_ms, limit=1000):
         start, end = _stamp(since_ms), _stamp(until_ms)

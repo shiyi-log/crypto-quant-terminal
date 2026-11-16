@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,26 @@ import pytest
 DSN = "postgresql://quant_app:private-password@127.0.0.1:5433/quant_terminal"
 RESTORE_DSN = "postgresql://quant_app:other-password@127.0.0.1:5433/quant_restore_drill"
 DUMP = b"PGDMP\x01synthetic-database-archive"
+
+
+def test_archive_magic_probe_does_not_advance_external_restore_stdin(tmp_path, monkeypatch):
+    """真实子进程必须从文件头读取；缓冲预读不能把文件描述符留在中途。"""
+    tool = module()
+
+    def command(name, arguments, environment, container):
+        if name == 'pg_dump':
+            script = 'import sys; sys.stdout.buffer.write(' + repr(DUMP) + ')'
+        elif name == 'pg_restore':
+            script = 'import sys; assert sys.stdin.buffer.read() == ' + repr(DUMP)
+        else:
+            script = 'pass'
+        return [sys.executable, '-c', script]
+
+    monkeypatch.setattr(tool, '_command', command)
+    directory = tmp_path / 'external-stdin'
+    tool.backup_database(DSN, directory)
+    receipt = tool.restore_database(directory, RESTORE_DSN)
+    assert receipt['status'] == 'restored'
 
 
 def module():

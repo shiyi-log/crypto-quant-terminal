@@ -8,7 +8,7 @@
 
 - observations: `13 / 20`
 - decision: `enter`
-- entry IV: `39.94`
+- entry IV: `50.02`
 - trailing median: `38.894999999999996`
 - equity: `49910.02159517527`; cumulative PnL: `-89.97840482473111` USDT
 - active positions: `8`; cap: `10`; margin: `3840.0` / `480.0` USDT per position; spread: `3.3613431621572305`%
@@ -16,11 +16,11 @@
 
 ## Unconditional
 
-- observations: `15 / 20`
+- observations: `16 / 20`
 - decision: `unconditional`
 - entry IV: `unknown`
 - trailing median: `unknown`
-- equity: `54817.1030618298`; cumulative PnL: `4817.103061829803` USDT
+- equity: `54792.18872896858`; cumulative PnL: `4792.1887289685765` USDT
 - active positions: `10`; cap: `10`; margin: `4800.0` / `480.0` USDT per position; spread: `3.3613431621572305`%
 - annualized / Sharpe / maxDD / CVaR99: pending until 20 real observations
 

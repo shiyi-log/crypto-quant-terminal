@@ -12,15 +12,15 @@ The conditional and unconditional tracks share the read-only quote cache and kee
 
 | track | decision | entry DVOL 1h | trailing median | active / cap | margin used | equity | daily PnL | observations | skipped_low_iv |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| conditional | enter | 39.94 | 38.894999999999996 | 8 / 10 | 3840.0 / 480.0 | 49910.02159517527 | 0.0 | 13 | 3 |
-| unconditional | unconditional | unknown | unknown | 10 / 10 | 4800.0 / 480.0 | 54817.1030618298 | 6734.75044439108 | 15 | 0 |
+| conditional | enter | 50.02 | 38.894999999999996 | 8 / 10 | 3840.0 / 480.0 | 49910.02159517527 | 0.0 | 13 | 3 |
+| unconditional | unconditional | unknown | unknown | 10 / 10 | 4800.0 / 480.0 | 54792.18872896858 | -24.914332861226285 | 16 | 0 |
 
 ## Files
 
 - Conditional: `conditional_ledger_events.jsonl`, `conditional_equity_state.json`, `conditional_equity_daily.jsonl`.
 - Baseline: `unconditional_ledger_events.jsonl`, `unconditional_equity_state.json`, `unconditional_equity_daily.jsonl`.
 - Shared DVOL history: `conditional_dvol_history.jsonl`.
-- DVOL gate history: `330` daily rows, spacing `86400000` ms, span `329` days.
+- DVOL gate history: `331` daily rows, spacing `86400000` ms, span `330` days.
 - Live files are appended only at a UTC boundary and are idempotent by timestamp.
 
 At least 20–30 daily observations are required before an execution comparison. A low-IV decision is recorded as `skipped_low_iv` and creates no conditional fill. A missing current DVOL or incomplete trailing window is fail-closed as `conditional_unknown`.

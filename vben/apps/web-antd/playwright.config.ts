@@ -11,7 +11,16 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 10_000 },
   outputDir: '../../../output/playwright/refactor-ci',
-  reporter: [['list'], ['html', { open: 'never', outputFolder: '../../../output/playwright/refactor-ci-report' }]],
+  reporter: [
+    ['list'],
+    [
+      'html',
+      {
+        open: 'never',
+        outputFolder: '../../../output/playwright/refactor-ci-report',
+      },
+    ],
+  ],
   use: {
     baseURL: process.env.QUANT_E2E_BASE_URL || 'http://quant-e2e.invalid',
     browserName: 'chromium',

@@ -88,7 +88,7 @@ class FakeClient:
             return exchange_info()
         if path == "order":
             return order(status="CANCELED" if method == "DELETE" else "PARTIALLY_FILLED")
-        if path in {"allOrders", "userTrades", "positionRisk"}:
+        if path in {"allOrders", "openOrders", "openAlgoOrders", "userTrades", "positionRisk"}:
             return []
         return {}
 

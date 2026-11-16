@@ -1,8 +1,8 @@
 {
-  "cash_equity": 49887.30865357749,
+  "cash_equity": 49862.39432071627,
   "initial_equity": 50000.0,
-  "last_equity": 54817.1030618298,
-  "last_timestamp": 1794700806724,
+  "last_equity": 54792.18872896858,
+  "last_timestamp": 1794787205814,
   "positions": {
     "1792886405422-1795766400000-80000.0": {
       "entry_premium_usd": 719.1369755000001,

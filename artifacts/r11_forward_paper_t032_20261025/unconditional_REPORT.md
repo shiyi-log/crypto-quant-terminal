@@ -3,7 +3,7 @@
 - execution_evidence: `forward_paper`
 - run_mode: `real_boundary`
 - status: `collecting`
-- observations: `15` (live observations: `15`) / `20` minimum
+- observations: `16` (live observations: `16`) / `20` minimum
 - spec_sha256: `34b1707989c60444a93e502e4c5a64be8005e1290747398e3ffa1deae822e128`
 - active-position cap: `min(10, floor(initial_equity / 480))`; margin per position: `480 USDT` (`4800 USDT/BTC straddle × 0.1 BTC`)
 
@@ -15,10 +15,10 @@ Dry-run lifecycle records are isolated under `dryrun_*` files and do not advance
 
 - observed bid/ask spread: `3.3613%` of bid
 - executable premium at bid: `885.7488 USDT`
-- today paper PnL: `6734.7504 USDT`
-- cumulative equity: `54817.1031 USDT`
-- monthlyized paper PnL: `125806.3382 bp`
-- deviation from synthetic +163.45 bp/month: `125642.8882 bp`
+- today paper PnL: `-24.9143 USDT`
+- cumulative equity: `54792.1887 USDT`
+- monthlyized paper PnL: `-465.4042 bp`
+- deviation from synthetic +163.45 bp/month: `-628.8542 bp`
 - active positions: `10` / `10`; margin used: `4800.00 USDT`
 
 The same-snapshot dry-run is explicitly excluded from trading-day performance conclusions.

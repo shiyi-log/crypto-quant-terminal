@@ -22,6 +22,11 @@ def main() -> int:
         with LOG.open("a") as fh:
             fh.write(f"{now.isoformat()} sleeping until {target.isoformat()}\n")
         time.sleep(max(1.0, (target - now).total_seconds()))
+        # macOS sleep can return a few hundred ms early.  The runner keys the
+        # DVOL observation to the UTC-day boundary, so a pre-boundary wake
+        # would record the previous day and fail as unknown.
+        while datetime.now().astimezone() < target:
+            time.sleep(0.05)
         with LOG.open("a") as fh:
             fh.write(f"{datetime.now().astimezone().isoformat()} running forward job\n")
         for attempt in range(1, 7):

@@ -15,6 +15,7 @@ import re
 import threading
 import time
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from typing import Any, Mapping
@@ -109,6 +110,45 @@ def _archive_text(value, *, empty=False):
     if (not isinstance(value, str) or len(value) > 256
             or (not empty and not value) or any(ord(char) < 32 for char in value)):
         raise DemoSafetyError("invalid Demo archived text identity")
+
+
+def _open_order_rows(raw, *, pair, conditional, strict):
+    """快照不丢弃外来订单；归档模式拒绝缺失、浮点或损坏的关键事实。"""
+    if not isinstance(raw, list):
+        raise DemoSafetyError("invalid Demo open-orders snapshot")
+    for row in raw:
+        if not isinstance(row, dict):
+            raise DemoSafetyError("invalid Demo open-order row")
+        symbol = row.get("symbol")
+        _archive_text(symbol)
+        actual_pair = SYMBOL_PAIRS.get(symbol, symbol)
+        if pair is not None and actual_pair != pair:
+            raise DemoSafetyError("Demo open-order snapshot scope mismatch")
+        if not strict:
+            continue
+        identity = _identifier(row.get("algoId" if conditional else "orderId"))
+        if int(identity) <= 0:
+            raise DemoSafetyError("invalid Demo archived order identity")
+        for name in (("clientAlgoId", "orderType", "algoStatus") if conditional else
+                     ("clientOrderId", "type", "status")):
+            _archive_text(row.get(name))
+        if row.get("side") not in {"BUY", "SELL"}:
+            raise DemoSafetyError("invalid Demo archived order side")
+        required_amounts = (("quantity", "triggerPrice") if conditional else
+                            ("origQty", "executedQty", "price"))
+        optional_amounts = (("price", "actualPrice", "actualQty") if conditional else
+                            ("avgPrice", "stopPrice", "cumQuote", "activatePrice", "priceRate"))
+        for name in (*required_amounts, *(name for name in optional_amounts if name in row)):
+            _archive_amount(row.get(name))
+            if _decimal(row[name]) < 0:
+                raise DemoSafetyError("negative Demo archived order amount")
+        if not conditional and _decimal(row["executedQty"]) > _decimal(row["origQty"]):
+            raise DemoSafetyError("Demo archived executed quantity exceeds order quantity")
+        for name in (("createTime", "updateTime", "triggerTime") if conditional else
+                     ("time", "updateTime", "goodTillDate")):
+            if name in row:
+                _timestamp(row[name])
+    return raw
 
 
 def _income_rows(raw, *, since_ms, until_ms, limit):
@@ -535,12 +575,10 @@ class BinanceDemoAdapter:
         self._owned_client_ids.add(client_order_id)
 
     def protection_capabilities(self) -> dict[str, Any]:
-        """Report exchange protection primitives without inferring support.
+        """报告已有保护接口及其验证边界，不从方法存在推导交易所资格。
 
-        This adapter currently exposes a reduce-only market fallback and the
-        runner's closed-candle monitor.  Until native conditional order
-        submission, reconciliation and cancellation are implemented against
-        the reviewed Demo contract, acceptance must remain ineligible.
+        原生条件单提交、查询与取消接口已经实现；受控 Demo 合同、部分
+        成交覆盖、安全替换及生产接线尚未验证，正式验收继续不具备资格。
         """
         # 同名方法存在不代表已通过 Demo 原生接口核验、部分成交覆盖和安全
         # 替换验证。当前版本没有这套合同，不能由反射或轮询回退签发资格。
@@ -639,12 +677,13 @@ class BinanceDemoAdapter:
                     raise DemoSafetyError("invalid Demo archive response encoding") from None
                 response_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
                 response_basis = "canonical_json"
-            evidence = {**self.last_call, "request_params": dict(params),
+            evidence = {**self.last_call, "request_params": deepcopy(params),
                         "response_sha256": response_hash,
                         "response_hash_basis": response_basis,
                         "received_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
-            self.last_call = evidence
-            return {"data": data, "request_evidence": dict(evidence)} if with_evidence else data
+            self.last_call = deepcopy(evidence)
+            # 调用方、最近请求与客户端原文不得共享嵌套可变引用。
+            return {"data": deepcopy(data), "request_evidence": deepcopy(evidence)} if with_evidence else data
 
     def fetch_income_window(self, *, since_ms, until_ms, limit=1000, with_evidence=False):
         """读取含端点的全部类型流水；满页不代表已完整，后续采集器需继续分窗。"""
@@ -858,19 +897,22 @@ class BinanceDemoAdapter:
             self._attempts[client_order_id] = "confirmed"
         return result
 
-    def fetch_open_orders(self, pair: str | None = None) -> list[dict]:
-        # Unscoped snapshots expose foreign symbols, so a runner can stop on
-        # ownership conflicts rather than accidentally hiding the exposure.
+    def fetch_open_orders(self, pair: str | None = None, *, with_evidence=False) -> list[dict] | dict:
+        """默认保留旧列表合同；归档封套与原文在同一请求锁内绑定。"""
         params = {"symbol": _symbol(pair)} if pair is not None else {}
-        raw = self._call("openOrders", "fapiPrivate", "GET", params)
-        result = []
-        for item in raw:
-            symbol = item.get("symbol")
-            if not isinstance(symbol, str) or not symbol:
-                raise DemoSafetyError("invalid Demo open-order symbol")
-            actual_pair = SYMBOL_PAIRS.get(symbol, symbol)
-            result.append(normalize_order(item, actual_pair, self.last_call["latency_ms"],
-                                           allow_external=actual_pair not in PAIR_SYMBOLS))
+        def validate(raw):
+            rows = _open_order_rows(raw, pair=pair, conditional=False, strict=with_evidence)
+            result = []
+            for item in rows:
+                actual_pair = SYMBOL_PAIRS.get(item["symbol"], item["symbol"])
+                result.append(normalize_order(item, actual_pair, self.last_call["latency_ms"],
+                    allow_external=actual_pair not in PAIR_SYMBOLS))
+            return result
+        result = self._read_archive("openOrders", "fapiPrivate", params, validate,
+                                    with_evidence=with_evidence)
+        LOGGER.info("Demo普通挂单只读快照已读取 范围=%s 订单数=%s 请求证据封套=%s；不代表账户对账完成",
+                    "全账户" if pair is None else pair,
+                    len(result["data"] if with_evidence else result), with_evidence)
         return result
 
     def fetch_trades(self, pair: str, *, since_ms: int | None = None,
@@ -1321,21 +1363,22 @@ class BinanceDemoAdapter:
             self._attempts[client_algo_id] = "confirmed"
         return result
 
-    def fetch_open_conditional_orders(self, pair=None):
+    def fetch_open_conditional_orders(self, pair=None, *, with_evidence=False):
+        """算法单原文与请求证据原子配对；未知保护语义仍保持未知。"""
         params = {} if pair is None else {"symbol": _symbol(pair)}
-        raw = self._call("openAlgoOrders", "fapiPrivate", "GET", params)
-        if not isinstance(raw, list):
-            raise DemoSafetyError("invalid Demo open conditional-orders snapshot")
-        result = []
-        for item in raw:
-            symbol = item.get("symbol") if isinstance(item, dict) else None
-            if not isinstance(symbol, str) or not symbol:
-                raise DemoSafetyError("invalid Demo conditional-order symbol")
-            actual_pair = SYMBOL_PAIRS.get(symbol, symbol)
-            if pair is not None and actual_pair != pair:
-                raise DemoSafetyError("Demo conditional-order snapshot scope mismatch")
-            result.append(normalize_conditional_order(item, actual_pair, self.last_call["latency_ms"],
-                          allow_external=actual_pair not in PAIR_SYMBOLS))
+        def validate(raw):
+            rows = _open_order_rows(raw, pair=pair, conditional=True, strict=with_evidence)
+            result = []
+            for item in rows:
+                actual_pair = SYMBOL_PAIRS.get(item["symbol"], item["symbol"])
+                result.append(normalize_conditional_order(item, actual_pair, self.last_call["latency_ms"],
+                    allow_external=actual_pair not in PAIR_SYMBOLS))
+            return result
+        result = self._read_archive("openAlgoOrders", "fapiPrivate", params, validate,
+                                    with_evidence=with_evidence)
+        LOGGER.info("Demo条件挂单只读快照已读取 范围=%s 算法单数=%s 请求证据封套=%s；触发与结束不等于退出成交",
+                    "全账户" if pair is None else pair,
+                    len(result["data"] if with_evidence else result), with_evidence)
         return result
 
     def fetch_conditional_child_order(self, pair, client_algo_id):

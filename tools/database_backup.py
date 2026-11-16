@@ -110,7 +110,8 @@ def backup_database(dsn: str, destination: str | Path, *,
                  container, output=output)
             output.flush()
             os.fsync(output.fileno())
-        with archive.open("rb") as source:
+        # 子进程直接继承文件描述符；无缓冲读取保证 magic 检查后的 seek 真正回到文件头。
+        with archive.open("rb", buffering=0) as source:
             if source.read(5) != b"PGDMP":
                 raise BackupError("database archive format invalid")
             source.seek(0)

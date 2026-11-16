@@ -57,7 +57,9 @@ const validState = (value: unknown): value is ConnectionState =>
 function notifyState() {
   for (const subscriber of subscribers) {
     subscriber.onState({
-      source: sourceStates.get(marketOf(subscriber.subscription.pair)) ?? 'connecting',
+      source:
+        sourceStates.get(marketOf(subscriber.subscription.pair)) ??
+        'connecting',
       transport,
     });
   }
@@ -69,7 +71,9 @@ function sendSubscriptions() {
   for (const { subscription } of subscribers) {
     unique.set(`${subscription.pair}|${subscription.timeframe}`, subscription);
   }
-  socket.send(JSON.stringify({ type: 'subscribe', subscriptions: [...unique.values()] }));
+  socket.send(
+    JSON.stringify({ type: 'subscribe', subscriptions: [...unique.values()] }),
+  );
 }
 
 function scheduleSubscriptions() {
@@ -101,7 +105,10 @@ function isKline(message: any): message is LiveKline {
     candle.timestamp > 0 &&
     typeof candle.closed === 'boolean' &&
     ['exchange_event_timestamp', 'received_timestamp', 'sent_timestamp'].every(
-      (key) => typeof message[key] === 'number' && Number.isFinite(message[key]) && message[key] > 0,
+      (key) =>
+        typeof message[key] === 'number' &&
+        Number.isFinite(message[key]) &&
+        message[key] > 0,
     )
   );
 }
@@ -114,10 +121,13 @@ async function connect() {
   sourceStates.clear();
   notifyState();
   try {
-    const info = unwrap<{ url: string }>(await ftClient.get('/locals/market-stream-info'));
+    const info = unwrap<{ url: string }>(
+      await ftClient.get('/locals/market-stream-info'),
+    );
     if (connectionEpoch !== epoch || !subscribers.size) return;
     const url = new URL(info.url, window.location.href);
-    if (!['ws:', 'wss:'].includes(url.protocol)) throw new Error('Invalid market stream URL');
+    if (!['ws:', 'wss:'].includes(url.protocol))
+      throw new Error('Invalid market stream URL');
     const ws = new WebSocket(url.href);
     socket = ws;
     handshakeTimer = setTimeout(() => ws.close(), 10_000);
@@ -158,13 +168,17 @@ async function connect() {
         notifyState();
         if (message.state === 'connected' && oldState === 'reconnecting') {
           for (const subscriber of subscribers) {
-            if (marketOf(subscriber.subscription.pair) === message.market) subscriber.onReconnect();
+            if (marketOf(subscriber.subscription.pair) === message.market)
+              subscriber.onReconnect();
           }
         }
       } else if (isKline(message)) {
         for (const subscriber of subscribers) {
           const { subscription } = subscriber;
-          if (subscription.pair === message.pair && subscription.timeframe === message.timeframe) {
+          if (
+            subscription.pair === message.pair &&
+            subscription.timeframe === message.timeframe
+          ) {
             subscriber.onKline(message);
           }
         }
@@ -188,7 +202,9 @@ async function connect() {
   }
 }
 
-export function subscribeLiveMarket(subscriber: LiveMarketSubscriber): () => void {
+export function subscribeLiveMarket(
+  subscriber: LiveMarketSubscriber,
+): () => void {
   subscribers.add(subscriber);
   notifyState();
   scheduleSubscriptions();

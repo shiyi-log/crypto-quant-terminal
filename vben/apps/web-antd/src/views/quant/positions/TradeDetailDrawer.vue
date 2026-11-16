@@ -5,7 +5,7 @@ import { computed, onUnmounted, ref, watch } from 'vue';
 
 import { Alert, Button, Drawer, Table, Tag } from 'ant-design-vue';
 
-import { errText, getTrade } from '#/api/freqtrade';
+import { getTrade } from '#/api/freqtrade';
 import {
   fullOrderDisplayId,
   fullOrderTime,
@@ -235,7 +235,8 @@ async function loadDetail() {
     }
     payload.value = data;
   } catch (e) {
-    if (current === requestId) error.value = errText(e);
+    if (current === requestId)
+      error.value = '所选交易详情未能读取；保留列表快照，可重试。';
   } finally {
     if (current === requestId) loading.value = false;
   }

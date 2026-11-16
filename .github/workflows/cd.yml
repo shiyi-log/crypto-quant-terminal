@@ -111,11 +111,11 @@ jobs:
           uv run --frozen --group dev python -m compileall -q \
             auth_service.py serve_web.py runtime_config.py manage.py \
             data_store.py data_sync.py market_stream.py market_live.py candle_archive.py \
-            demo_risk_reservation_store.py demo_round_trip_costs.py research_protocol.py demo_native_protection.py demo_conditional_store.py demo_entry_decision.py demo_risk.py demo_acceptance.py demo_account_policy.py demo_account_reconciliation.py \
+            database_migrations.py demo_risk_reservation_store.py demo_round_trip_costs.py research_protocol.py demo_native_protection.py demo_conditional_store.py demo_entry_decision.py demo_risk.py demo_acceptance.py demo_account_policy.py demo_account_reconciliation.py \
             demo_execution_service.py demo_runner_controller.py demo_store.py binance_demo_adapter.py demo_api.py tests
           uv run --frozen --group dev ruff check \
             auth_service.py manage.py runtime_config.py data_store.py data_sync.py \
-            market_stream.py market_live.py candle_archive.py demo_risk_reservation_store.py demo_round_trip_costs.py research_protocol.py demo_native_protection.py demo_conditional_store.py demo_entry_decision.py demo_risk.py demo_acceptance.py \
+            market_stream.py market_live.py candle_archive.py database_migrations.py demo_risk_reservation_store.py demo_round_trip_costs.py research_protocol.py demo_native_protection.py demo_conditional_store.py demo_entry_decision.py demo_risk.py demo_acceptance.py \
             demo_account_policy.py demo_account_reconciliation.py demo_execution_service.py \
             demo_runner_controller.py demo_store.py binance_demo_adapter.py demo_api.py tools/release_identity.py tests
           uv run --frozen --group dev python tools/check_frozen_strategy_identities.py --ci

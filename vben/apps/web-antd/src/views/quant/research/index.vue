@@ -1,698 +1,801 @@
 <script lang="ts" setup>
-/**
- * 策略研究 —— 把全部研究结论汇总到面板
- *
- * 三块内容：
- *   1. 路线对比：每条研究方向的证据与结论（哪些已证伪、哪个推荐主攻）
- *   2. 模型对比：各 FreqAI 模型的表现 + 决策质量指标
- *   3. Carry 回测：参数扫描、强平风险、保证金缓冲情景
- */
-import { computed, onMounted, onUnmounted, ref } from 'vue';
-
-import {
-  Alert,
-  Button,
-  Card,
-  Col,
-  Empty,
-  Row,
-  Spin,
-  Table,
-  Tag,
-  Tooltip,
-} from 'ant-design-vue';
-
+import type { ResearchRecord, ResearchSnapshot } from './researchState';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { getResearch, getResearchStatus } from '#/api/freqtrade';
+import {
+  metricText,
+  parseResearchSnapshot,
+  pickResearchCandidate,
+  researchLevel,
+  researchTime,
+} from './researchState';
 
-const data = ref<any>(null);
-const rstatus = ref<any>(null);
-const loading = ref(false);
-const refreshing = ref(false);
+const route = useRoute();
+const router = useRouter();
+const data = ref<ResearchSnapshot | null>(null);
+const status = ref<Record<string, unknown> | null>(null);
 const loadError = ref('');
 const statusError = ref('');
-
-/* ══════════ 板块清单：跳转标签与卡片标题的唯一来源 ══════════
- * 之前标签写死 7 个、卡片标题各自写死，跳转还靠
- * document.querySelectorAll('.ant-card-head-title') 做中文子串匹配 ——
- * 标题一改标签就静默失效。现在两边同源，滚动改用模板 ref。
- */
-const SECTIONS = [
-  { key: 'routes', label: '研究方向', title: '研究方向对比' },
-  { key: 'models', label: '模型对比', title: 'FreqAI 模型对比（预测路线证伪证据）' },
-  { key: 'carry', label: 'Carry', title: 'Carry 回测 · 收益拆解' },
-  { key: 'liquidation', label: '强平风险', title: '⛔ 强平风险（决定成败）' },
-  { key: 'sweep', label: '参数扫描', title: '参数扫描' },
-  { key: 'buffers', label: '保证金缓冲', title: '加入真实保证金缓冲后的年化' },
-  { key: 'schemes', label: '保证金方案', title: '💥 保证金方案对比 —— 逐小时模拟，含真实强平' },
+const refreshing = ref(false);
+const now = ref(Date.now());
+const sections = [
+  { key: 'routes', label: '研究方向' },
+  { key: 'models', label: '模型对比' },
+  { key: 'carry', label: 'Carry 拆解' },
+  { key: 'liquidation', label: '强平情景' },
+  { key: 'sweep', label: '参数扫描' },
+  { key: 'buffers', label: '保证金缓冲' },
+  { key: 'schemes', label: '保证金方案' },
 ];
-const titleOf = (key: string) => SECTIONS.find((s) => s.key === key)?.title ?? '';
-
-const sectionEls = ref<Record<string, any>>({});
-const bindSection = (key: string) => (el: any) => {
-  if (el) sectionEls.value[key] = el;
-};
-function jump(key: string) {
-  const el = sectionEls.value[key];
-  (el?.$el ?? el)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-const fmt = (v: any, n = 2) =>
-  v === null || v === undefined || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(n);
-const cls = (v: any) =>
-  Number(v) > 0 ? 'text-red-500' : Number(v) < 0 ? 'text-emerald-500' : '';
-
-/* ══════════ 结论：全部由数据推导，不在模板里写死 ══════════ */
-const carry = computed<any>(() => data.value?.carry ?? null);
-const cash = computed<any>(() => carry.value?.cash ?? null);
-
-/** 主攻方向取 level==='good' 的路线，与总览页同源 */
-const goodRoutes = computed(() =>
-  (data.value?.routes ?? []).filter((r: any) => r.level === 'good'),
-);
-
-/** 最大单期涨幅（= 最坏情况缓冲所需的保证金比例） */
-const maxBufferPct = computed(() => {
-  const vals = (carry.value?.buffers ?? [])
-    .map((b: any) => b.buffer_pct)
-    .filter((v: any) => typeof v === 'number');
-  return vals.length ? Math.max(...vals) : null;
-});
-
-/** 保证金方案对比 */
-const schemes = computed<any[]>(() => carry.value?.schemes ?? []);
-const unifiedSchemes = computed(() =>
-  schemes.value.filter((s: any) => s.mode === 'unified'),
-);
-const isolatedSchemes = computed(() =>
-  schemes.value.filter((s: any) => s.mode === 'isolated'),
-);
-const reserveSchemes = computed(() =>
-  schemes.value.filter((s: any) => s.mode === 'reserve'),
-);
-
-const schemeTotals = computed(() => {
-  const vals = schemes.value
-    .map((s: any) => s.total_pct)
-    .filter((v: any) => typeof v === 'number');
-  return vals.length ? { min: Math.min(...vals), max: Math.max(...vals) } : null;
-});
-
-const unifiedAnnual = computed(() => {
-  const vals = unifiedSchemes.value
-    .map((s: any) => s.annual_pct)
-    .filter((v: any) => typeof v === 'number');
-  return vals.length ? { min: Math.min(...vals), max: Math.max(...vals) } : null;
-});
-
-/** 逐仓里【最低】的那档杠杆也会被强平吗 */
-const isolatedLowestLiquidated = computed(() => {
-  const rows = isolatedSchemes.value.filter((s: any) => (s.liquidations ?? 0) > 0);
-  if (!rows.length) return null;
-  return rows.reduce((a: any, b: any) => (b.leverage < a.leverage ? b : a));
-});
-
-/** 加备用金 vs 同杠杆逐仓 */
-const reserveVsIsolated = computed(() => {
-  const r = reserveSchemes.value[0];
-  if (!r) return null;
-  const base = isolatedSchemes.value.find((s: any) => s.leverage === r.leverage);
-  return base ? { base, reserve: r } : null;
-});
-
-const unifiedNoLiquidation = computed(
+const section = ref('routes');
+const invalidSection = computed(
   () =>
-    unifiedSchemes.value.length > 0 &&
-    unifiedSchemes.value.every((s: any) => !s.liquidations),
+    Object.hasOwn(route.query, 'section') &&
+    (typeof route.query.section !== 'string' ||
+      !sections.some((item) => item.key === route.query.section)),
 );
-
-/**
- * 数据新鲜度。
- *
- * 这一页曾经「很久没更新」：build_research.py 是纯手工脚本，没有任何调度。
- * 现在由 bot/refresh_research.py 每 6 小时重建，页面按生成时间显式提示新旧，
- * 超过 12 小时标红，避免再次出现「看不出数据是旧的」。
- */
-const staleness = computed(() => {
-  const g = data.value?.generated_at;
-  if (!g) return null;
-  const t = new Date(String(g).replace(' ', 'T')).getTime();
-  if (Number.isNaN(t)) return null;
-  const hours = (Date.now() - t) / 3_600_000;
-  const label =
-    hours < 1 ? `${Math.max(1, Math.round(hours * 60))} 分钟前` : `${hours.toFixed(1)} 小时前`;
-  return { hours, label, stale: hours > 12 };
+const candidate = computed(() =>
+  typeof route.query.candidate === 'string' ? route.query.candidate : '',
+);
+const invalidCandidate = computed(
+  () =>
+    Object.hasOwn(route.query, 'candidate') &&
+    (typeof route.query.candidate !== 'string' ||
+      !route.query.candidate.trim()),
+);
+const selected = computed(() =>
+  invalidCandidate.value
+    ? null
+    : pickResearchCandidate(data.value?.routes ?? [], candidate.value),
+);
+const carry = computed(() => data.value?.carry);
+const cash = computed(() => carry.value?.cash);
+const sourceTime = computed(() => researchTime(data.value?.generated_at));
+const freshness = computed(() => {
+  if (sourceTime.value === null) return '生成时间未知';
+  const age = now.value - sourceTime.value;
+  if (age < -60_000) return '生成时间晚于本机时钟，需核对';
+  return age > 12 * 3_600_000
+    ? '历史快照已超过 12 小时'
+    : '历史快照在 12 小时内生成';
 });
-
-const LEVEL: Record<string, { color: string; label: string }> = {
-  bad: { color: 'red', label: '已证伪' },
-  warn: { color: 'orange', label: '辅助' },
-  good: { color: 'green', label: '推荐' },
-};
-
-const routeCols = [
-  { dataIndex: 'name', key: 'name', title: '研究方向', width: 210 },
-  { dataIndex: 'evidence', key: 'evidence', title: '实测证据' },
-  { dataIndex: 'annual', key: 'annual', title: '年化', width: 120, align: 'center' as const },
-  { key: 'verdict', title: '结论', width: 110, align: 'center' as const },
-];
-
-const modelCols = [
-  { dataIndex: 'label', key: 'label', title: '模型', width: 170 },
-  { dataIndex: 'trades', key: 'trades', title: '交易', width: 70, align: 'right' as const },
-  { key: 'profit_pct', title: '收益率', width: 100, align: 'right' as const },
-  { key: 'winrate', title: '胜率', width: 90, align: 'right' as const },
-  { key: 'max_drawdown_pct', title: '最大回撤', width: 100, align: 'right' as const },
-  { key: 'pred_ic', title: '预测-实际 IC', width: 120, align: 'right' as const },
-  { key: 'sign_hit_rate', title: '方向命中率', width: 110, align: 'right' as const },
-  { key: 'verdict', title: '结论', width: 90, align: 'center' as const },
-];
-
-const sweepCols = [
-  { key: 'cfg', title: '配置', width: 200 },
-  { key: 'annual_pct', title: '年化', align: 'right' as const },
-  { key: 'total_pct', title: '累计', align: 'right' as const },
-  { key: 'max_drawdown_pct', title: '回撤', align: 'right' as const },
-  { key: 'win_rate', title: '按期胜率', align: 'right' as const },
-];
-
-const liqCols = computed(() => [
-  { key: 'leverage', title: '杠杆', width: 80 },
-  { key: 'threshold_pct', title: '强平阈值（币价涨幅）', align: 'right' as const },
+const matrixRows = computed<ResearchRecord[]>(() => {
+  const key = section.value;
+  return key === 'models'
+    ? (data.value?.models ?? [])
+    : key === 'carry'
+      ? (cash.value?.yearly ?? [])
+      : (carry.value?.[key] ?? []);
+});
+const columns: Record<
+  string,
   {
-    key: 'liquidated_periods',
-    title: `被强平期数 / ${cash.value?.periods ?? '—'}`,
-    align: 'right' as const,
-  },
-  { key: 'violation_rate', title: '触发比例', align: 'right' as const },
-]);
-
-async function load() {
-  if (refreshing.value) return;
-  refreshing.value = true;
-  if (!data.value) loading.value = true;
-  try {
-    const [researchResult, statusResult] = await Promise.allSettled([
-      getResearch().then((snapshot) => {
-        if (
-          !snapshot ||
-          !Array.isArray(snapshot.routes) ||
-          !Array.isArray(snapshot.models)
-        ) {
-          throw new Error('研究汇总格式不完整，无法展示');
-        }
-        return snapshot;
-      }),
-      getResearchStatus(),
-    ]);
-    if (researchResult.status === 'fulfilled') {
-      data.value = researchResult.value;
-      loadError.value = '';
-    } else {
-      loadError.value = researchResult.reason?.message || '研究汇总读取失败';
-    }
-    if (statusResult.status === 'fulfilled') {
-      rstatus.value = statusResult.value;
-      statusError.value = '';
-    } else {
-      statusError.value = statusResult.reason?.message || '刷新状态读取失败';
-    }
-  } finally {
-    loading.value = false;
-    refreshing.value = false;
-  }
+    key: string;
+    label: string;
+    digits?: number;
+    percent?: boolean;
+    signed?: boolean;
+  }[]
+> = {
+  models: [
+    { key: 'label', label: '模型' },
+    { key: 'trades', label: '交易数', digits: 0 },
+    { key: 'profit_pct', label: '历史收益', percent: true, signed: true },
+    { key: 'winrate', label: '胜率', percent: true },
+    { key: 'max_drawdown_pct', label: '最大回撤', percent: true },
+    { key: 'profit_factor', label: '利润因子' },
+    { key: 'pred_ic', label: '预测 IC', digits: 4 },
+    { key: 'sign_hit_rate', label: '方向命中率', percent: true },
+    { key: 'verdict', label: '历史结论' },
+  ],
+  carry: [
+    { key: 'year', label: '年份', digits: 0 },
+    { key: 'periods', label: '期数', digits: 0 },
+    { key: 'net_pct', label: '区间净收益', percent: true, signed: true },
+    { key: 'funding_pct', label: '资金费', percent: true, signed: true },
+    { key: 'annualized_pct', label: '折算年化', percent: true, signed: true },
+  ],
+  liquidation: [
+    { key: 'leverage', label: '情景杠杆' },
+    { key: 'threshold_pct', label: '强平阈值', percent: true },
+    { key: 'liquidated_periods', label: '输入击穿期数', digits: 0 },
+    { key: 'violation_rate', label: '情景触发比例', percent: true },
+  ],
+  sweep: [
+    { key: 'rebalance_days', label: '调仓天数', digits: 0 },
+    { key: 'topn', label: '币种数', digits: 0 },
+    { key: 'leverage', label: '杠杆' },
+    { key: 'annual_pct', label: '年化', percent: true, signed: true },
+    { key: 'total_pct', label: '累计', percent: true, signed: true },
+    { key: 'max_drawdown_pct', label: '回撤', percent: true },
+    { key: 'win_rate', label: '按期胜率', percent: true },
+  ],
+  buffers: [
+    { key: 'label', label: '缓冲情景' },
+    { key: 'buffer_pct', label: '保证金比例', percent: true },
+    { key: 'capital_multiple', label: '资金占用倍数' },
+    { key: 'annual_pct', label: '假设年化', percent: true, signed: true },
+  ],
+  schemes: [
+    { key: 'label', label: '保证金方案' },
+    { key: 'mode', label: '账户模型' },
+    { key: 'leverage', label: '杠杆' },
+    { key: 'liquidations', label: '模拟强平次数', digits: 0 },
+    { key: 'total_pct', label: '累计收益', percent: true, signed: true },
+    { key: 'annual_pct', label: '年化', percent: true, signed: true },
+    { key: 'max_drawdown_pct', label: '最大回撤', percent: true },
+  ],
+};
+function cell(
+  row: ResearchRecord,
+  col: { key: string; digits?: number; percent?: boolean; signed?: boolean },
+) {
+  const value = row[col.key];
+  if (['label', 'mode', 'verdict'].includes(col.key))
+    return typeof value === 'string' && value ? value : '未知';
+  const result = metricText(value, col.digits ?? 2, col.signed);
+  return result === '未知' ? result : result + (col.percent ? '%' : '');
 }
-
-let timer: any = null;
+function selectCandidate(name: string) {
+  void router.replace({ query: { ...route.query, candidate: name } });
+}
+watch(
+  () => route.query.section,
+  (value) => {
+    if (
+      typeof value === 'string' &&
+      sections.some((item) => item.key === value)
+    )
+      section.value = value;
+    else section.value = 'routes';
+  },
+  { immediate: true },
+);
+function selectSection(key: string) {
+  section.value = key;
+  void router.replace({ query: { ...route.query, section: key } });
+}
+let generation = 0;
+let disposed = false;
+let controller: AbortController | undefined;
+async function load() {
+  controller?.abort();
+  const activeController = new AbortController();
+  controller = activeController;
+  const current = ++generation;
+  refreshing.value = true;
+  // 旧 API 不接收 AbortSignal；generation 仍阻止已卸载页面和迟到结果写入。
+  const [researchResult, statusResult] = await Promise.allSettled([
+    getResearch(),
+    getResearchStatus(),
+  ]);
+  if (disposed || current !== generation || activeController.signal.aborted)
+    return;
+  if (researchResult.status === 'fulfilled') {
+    try {
+      data.value = parseResearchSnapshot(researchResult.value);
+      loadError.value = '';
+    } catch {
+      loadError.value = '研究汇总合同不完整，刷新失败。';
+    }
+  } else loadError.value = '研究汇总读取失败，请重试。';
+  if (
+    statusResult.status === 'fulfilled' &&
+    statusResult.value &&
+    typeof statusResult.value === 'object' &&
+    !Array.isArray(statusResult.value)
+  ) {
+    status.value = statusResult.value;
+    statusError.value = '';
+  } else statusError.value = '刷新任务状态读取失败。';
+  refreshing.value = false;
+  now.value = Date.now();
+}
+let timer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
-  load();
-  // 研究结论由 build_research.py 重新生成，页面必须自动跟上
+  void load();
   timer = setInterval(load, 60_000);
 });
-onUnmounted(() => clearInterval(timer));
+onUnmounted(() => {
+  disposed = true;
+  generation++;
+  controller?.abort();
+  clearInterval(timer);
+});
 </script>
 
 <template>
-  <div class="p-4">
-    <div class="mb-3 flex justify-end">
-      <Button :loading="refreshing" size="small" @click="load">刷新研究数据</Button>
+  <main class="strategy-research-workspace">
+    <header class="research-heading">
+      <div>
+        <h1>策略研究</h1>
+        <p>候选方向、历史模型与 Carry 证据按来源逐项核对。</p>
+      </div>
+      <button type="button" :aria-busy="refreshing" @click="load">
+        {{ refreshing ? '读取中' : '刷新研究证据' }}
+      </button>
+    </header>
+    <div class="research-boundary" role="status">
+      <strong>历史研究</strong><span>尚无 Demo 准入裁定</span
+      ><span>研究推荐不构成策略上线批准</span>
     </div>
-    <Alert
-      v-if="loadError"
-      class="mb-3"
-      :type="data ? 'warning' : 'error'"
-      show-icon
-      :message="loadError"
-      :description="data ? '本次刷新失败，以下保留上一次成功读取的研究快照。' : '研究汇总暂时无法读取，请重试。'"
-    />
-    <Alert
-      v-if="statusError"
-      class="mb-3"
-      type="warning"
-      show-icon
-      :message="statusError"
-      description="刷新任务的当前状态未知；研究内容以已显示的快照和生成时间为准。"
-    />
-    <Spin :spinning="loading">
-      <Empty v-if="!data && !loading && !loadError" description="暂无研究汇总记录" />
-
-      <template v-if="data">
-        <!-- 结论横幅 -->
-        <Card :bordered="false" class="shadow-sm">
-          <div class="flex flex-wrap items-center gap-3">
-            <Tag color="green" class="!px-3 !py-1 text-sm">主攻方向</Tag>
-            <span class="text-base font-semibold">
-              {{ goodRoutes.map((r: any) => r.name).join(' · ') || '暂无结论' }}
-            </span>
-            <span v-if="goodRoutes.length" class="text-sm text-muted-foreground">
-              {{ goodRoutes.map((r: any) => r.evidence).join('；') }} · 实测年化
-              {{ goodRoutes.map((r: any) => r.annual).join(' · ') }}
-            </span>
-            <span class="ml-auto flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <Tag v-if="staleness" :color="staleness.stale ? 'orange' : 'default'">
-                数据更新于 {{ staleness.label }}
-              </Tag>
-              <Tag v-if="statusError" color="orange">刷新任务状态未知</Tag>
-              <Tag v-else-if="rstatus?.ok === false" color="red">最近刷新失败</Tag>
-              <Tag v-else-if="rstatus?.refresh_running" color="blue">刷新守护运行中</Tag>
-              <span>生成于 {{ data.generated_at }}</span>
-            </span>
+    <p v-if="loadError" role="alert" class="research-error">
+      {{ loadError }}
+      {{ data ? '保留上次成功快照，请核对生成时间。' : '尚无成功快照。' }}
+    </p>
+    <p v-if="statusError" role="alert" class="research-error">
+      {{ statusError }} 守护状态未知。
+    </p>
+    <p v-if="invalidSection" role="alert" class="research-error">
+      板块定位无效，已显示研究方向；请使用单个有效板块。
+    </p>
+    <div class="research-source">
+      <span>生成于 {{ data?.generated_at || '未知' }}</span
+      ><span>{{ freshness }}</span
+      ><span
+        >最近重建：{{
+          statusError
+            ? '未知'
+            : status?.ok === false
+              ? '失败'
+              : status?.ok === true
+                ? '成功'
+                : '未知'
+        }}</span
+      >
+      <span
+        >刷新守护：{{
+          statusError
+            ? '未知'
+            : status?.refresh_running === true
+              ? '运行中'
+              : status?.refresh_running === false
+                ? '未检测到'
+                : '未知'
+        }}</span
+      >
+      <span>最近尝试 {{ status?.attempt_at || '未知' }}</span>
+      <span>任务记录生成于 {{ status?.summary_generated_at || '未知' }}</span>
+    </div>
+    <nav aria-label="研究板块" class="research-sections">
+      <button
+        v-for="item in sections"
+        :key="item.key"
+        type="button"
+        :aria-pressed="section === item.key"
+        @click="selectSection(item.key)"
+      >
+        {{ item.label }}
+      </button>
+    </nav>
+    <div class="research-grid">
+      <section class="research-ledger" aria-label="研究内容">
+        <template v-if="section === 'routes'">
+          <div class="section-title">
+            <h2>候选方向账本</h2>
+            <span>{{ data?.routes.length ?? '未知' }} 条历史方向</span>
           </div>
-        </Card>
-
-        <!-- 板块导航：标签与下方卡片标题同源（SECTIONS），不会各改各的 -->
-        <div class="mt-3 flex flex-wrap items-center gap-2">
-          <span class="text-xs text-muted-foreground">快速跳转：</span>
-          <Tag
-            v-for="sec in SECTIONS"
-            :key="sec.key"
-            class="cursor-pointer"
-            @click="jump(sec.key)"
+          <p v-if="!data && refreshing">正在读取研究汇总。</p>
+          <p v-else-if="!data">无可读取的研究快照。</p>
+          <p v-else-if="!data.routes.length">本次成功快照无研究方向记录。</p>
+          <div
+            v-else
+            class="research-table-scroll"
+            tabindex="0"
+            aria-label="候选方向表格"
           >
-            {{ sec.label }}
-          </Tag>
-        </div>
-
-        <!-- 路线对比 -->
-        <Card
-          :ref="bindSection('routes')"
-          :bordered="false"
-          class="mt-4 shadow-sm"
-          :title="titleOf('routes')"
-        >
-          <template #extra>
-            <span class="text-xs text-muted-foreground">
-              每条方向都经过了实测检验，不是文献引用
-            </span>
-          </template>
-          <Table
-            :columns="routeCols"
-            :data-source="data.routes"
-            :pagination="false"
-            row-key="name"
-            size="small"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'name'">
-                <span class="font-medium">{{ record.name }}</span>
-              </template>
-              <template v-else-if="column.key === 'annual'">
-                <span class="font-mono text-xs">{{ record.annual }}</span>
-              </template>
-              <template v-else-if="column.key === 'verdict'">
-                <Tag :color="LEVEL[record.level]?.color">
-                  {{ LEVEL[record.level]?.label }}
-                </Tag>
-              </template>
-            </template>
-            <template #emptyText>
-              <div class="py-6 text-center text-xs text-gray-400">暂无已记录的研究路线</div>
-            </template>
-          </Table>
-        </Card>
-
-        <!-- 模型对比 -->
-        <Card
-          :ref="bindSection('models')"
-          :bordered="false"
-          class="mt-4 shadow-sm"
-          :title="titleOf('models')"
-        >
-          <template #extra>
-            <Tooltip title="IC = 模型预测值与实际收益的秩相关。为正说明预测方向正确；为负说明系统性判断反了。方向命中率 50% 才是随机水平。">
-              <span class="cursor-help text-xs text-blue-500">指标说明</span>
-            </Tooltip>
-          </template>
-          <Table
-            :columns="modelCols"
-            :data-source="data.models"
-            :pagination="false"
-            row-key="identifier"
-            size="small"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'label'">
-                <span class="font-medium">{{ record.label }}</span>
-              </template>
-              <template v-else-if="column.key === 'profit_pct'">
-                <span :class="cls(record.profit_pct)" class="font-semibold">
-                  {{ record.profit_pct > 0 ? '+' : '' }}{{ fmt(record.profit_pct) }}%
-                </span>
-              </template>
-              <template v-else-if="column.key === 'winrate'">
-                {{ fmt(record.winrate) }}%
-              </template>
-              <template v-else-if="column.key === 'max_drawdown_pct'">
-                <span class="text-emerald-500">{{ fmt(record.max_drawdown_pct) }}%</span>
-              </template>
-              <template v-else-if="column.key === 'pred_ic'">
-                <span :class="cls(record.pred_ic)" class="font-mono font-semibold">
-                  {{ fmt(record.pred_ic, 4) }}
-                </span>
-              </template>
-              <template v-else-if="column.key === 'sign_hit_rate'">
-                <span :class="record.sign_hit_rate >= 50 ? 'text-red-500' : 'text-emerald-500'"
-                      class="font-semibold">
-                  {{ fmt(record.sign_hit_rate) }}%
-                </span>
-              </template>
-              <template v-else-if="column.key === 'verdict'">
-                <Tag color="red">{{ record.verdict }}</Tag>
-              </template>
-            </template>
-            <template #emptyText>
-              <div class="py-6 text-center text-xs text-gray-400">暂无模型对比数据</div>
-            </template>
-          </Table>
-        </Card>
-
-        <!-- Carry 回测 -->
-        <Row :gutter="[12, 12]" class="mt-4">
-          <Col :lg="12" :xs="24">
-            <Card
-              :ref="bindSection('carry')"
-              :bordered="false"
-              class="h-full shadow-sm"
-              :title="titleOf('carry')"
-            >
-              <div v-if="cash && cash.funding_pct !== undefined" class="space-y-3">
-                <div class="grid grid-cols-2 gap-3">
-                  <div class="rounded-lg border border-gray-100 p-3 dark:border-gray-800">
-                    <div class="text-xs text-muted-foreground">资金费收入（每期）</div>
-                    <div class="text-lg font-semibold text-red-500">
-                      +{{ cash.funding_pct }}%
-                    </div>
-                  </div>
-                  <div class="rounded-lg border border-gray-100 p-3 dark:border-gray-800">
-                    <div class="text-xs text-muted-foreground">基差盈亏（每期）</div>
-                    <div class="text-lg font-semibold">
-                      {{ cash.basis_pct }}%
-                    </div>
-                    <div class="text-[11px] text-muted-foreground">≈0，基差不是问题</div>
-                  </div>
-                  <div class="rounded-lg border border-gray-100 p-3 dark:border-gray-800">
-                    <div class="text-xs text-muted-foreground">手续费滑点（每期）</div>
-                    <div class="text-lg font-semibold text-emerald-500">
-                      {{ cash.cost_pct }}%
-                    </div>
-                  </div>
-                  <div class="rounded-lg border border-gray-100 p-3 dark:border-gray-800">
-                    <div class="text-xs text-muted-foreground">净收益（每期）</div>
-                    <div class="text-lg font-semibold text-red-500">
-                      +{{ cash.net_pct }}%
-                    </div>
-                  </div>
-                </div>
-                <div>
-                  <div class="mb-1 text-xs text-muted-foreground">
-                    基差统计（永续/现货−1）：均值 {{ cash.basis_stats?.mean }}% ·
-                    标准差 {{ cash.basis_stats?.std }}% ·
-                    95% 区间 [{{ cash.basis_stats?.p95_low }}%,
-                    {{ cash.basis_stats?.p95_high }}%]
-                  </div>
-                </div>
-                <div>
-                  <div class="mb-2 text-xs text-muted-foreground">
-                    边际衰减趋势（折算年化口径）
-                  </div>
-                  <div class="flex gap-2">
-                    <div
-                      v-for="y in cash.yearly"
-                      :key="y.year"
-                      class="flex-1 rounded-lg border border-gray-100 p-2 text-center dark:border-gray-800"
+            <table>
+              <thead>
+                <tr>
+                  <th>研究方向</th>
+                  <th>历史结论</th>
+                  <th>历史收益口径</th>
+                  <th>来源证据</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="item in data.routes"
+                  :key="item.name"
+                  :data-selected="selected?.name === item.name"
+                >
+                  <th>
+                    <button
+                      type="button"
+                      :aria-pressed="selected?.name === item.name"
+                      @click="selectCandidate(item.name)"
                     >
-                      <div class="text-xs text-muted-foreground">{{ y.year }}</div>
-                      <div class="font-semibold" :class="cls(y.net_pct)">
-                        {{ y.net_pct > 0 ? '+' : '' }}{{ y.net_pct }}%
-                      </div>
-                      <div class="text-[11px] text-muted-foreground">
-                        年化 {{ y.annualized_pct }}%
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div class="rounded-lg bg-orange-50/60 p-3 text-xs dark:bg-orange-950/20">
-                  <div class="font-medium text-orange-600">⚠️ 前瞻预期修正</div>
-                  <div class="mt-1 text-muted-foreground">
-                    回测均值 <b>{{ cash.backtest_avg_1x }}%</b>（1x）是被最近一年拉高的。
-                    按当前实际运行速率，前瞻应取
-                    <b class="text-orange-600">{{ cash.forward_annual_1x }}%</b>（1x）/
-                    <b class="text-orange-600">{{ cash.forward_annual_3x }}%</b>（3x）。
-                    边际正在被套利掉。
-                  </div>
-                </div>
-              </div>
-              <div v-else class="py-8 text-center text-sm text-muted-foreground">
-                暂无 Carry 回测数据
-              </div>
-            </Card>
-          </Col>
-
-          <Col :lg="12" :xs="24">
-            <Card
-              :ref="bindSection('liquidation')"
-              :bordered="false"
-              class="h-full shadow-sm"
-              :title="titleOf('liquidation')"
-            >
-              <div class="mb-2 text-xs text-muted-foreground">
-                永续空头是独立保证金账户，币价涨到阈值即被强平 ——
-                <span class="text-orange-500">现货腿的盈利救不了它</span>。
-                <template v-if="maxBufferPct !== null">
-                  回测区间内最大单期涨幅为
-                  <span class="font-semibold">+{{ maxBufferPct }}%</span>（最坏情况缓冲即按此设定）。
-                </template>
-              </div>
-              <Table
-                :columns="liqCols"
-                :data-source="carry?.liquidation ?? []"
-                :pagination="false"
-                row-key="leverage"
-                size="small"
-              >
-                <template #bodyCell="{ column, record }">
-                  <template v-if="column.key === 'leverage'">
-                    <span class="font-semibold">{{ record.leverage }}x</span>
-                  </template>
-                  <template v-else-if="column.key === 'threshold_pct'">
-                    涨 {{ record.threshold_pct }}%
-                  </template>
-                  <template v-else-if="column.key === 'liquidated_periods'">
-                    <span :class="record.violation_rate > 30 ? 'text-red-500' : 'text-orange-500'"
-                          class="font-semibold">
-                      {{ record.liquidated_periods }} 期
-                    </span>
-                  </template>
-                  <template v-else-if="column.key === 'violation_rate'">
-                    <span :class="record.violation_rate > 30 ? 'text-red-500' : 'text-orange-500'">
-                      {{ record.violation_rate }}%
-                    </span>
-                  </template>
-                </template>
-                <template #emptyText>
-                  <div class="py-6 text-center text-xs text-gray-400">暂无强平统计数据</div>
-                </template>
-              </Table>
-            </Card>
-          </Col>
-        </Row>
-
-        <Row :gutter="[12, 12]" class="mt-4">
-          <Col :lg="12" :xs="24">
-            <Card
-              :ref="bindSection('sweep')"
-              :bordered="false"
-              class="h-full shadow-sm"
-              :title="titleOf('sweep')"
-            >
-              <Table
-                :columns="sweepCols"
-                :data-source="carry?.sweep ?? []"
-                :pagination="false"
-                :row-key="(record: any) => `${record.rebalance_days}-${record.topn}-${record.leverage}`"
-                size="small"
-              >
-                <template #bodyCell="{ column, record }">
-                  <template v-if="column.key === 'cfg'">
-                    调仓 {{ record.rebalance_days }}d · {{ record.topn }} 币 ·
-                    {{ record.leverage }}x
-                  </template>
-                  <template v-else-if="column.key === 'annual_pct'">
-                    <span :class="cls(record.annual_pct)" class="font-semibold">
-                      +{{ fmt(record.annual_pct) }}%
-                    </span>
-                  </template>
-                  <template v-else-if="column.key === 'total_pct'">
-                    +{{ fmt(record.total_pct) }}%
-                  </template>
-                  <template v-else-if="column.key === 'max_drawdown_pct'">
-                    <span class="text-emerald-500">{{ fmt(record.max_drawdown_pct) }}%</span>
-                  </template>
-                  <template v-else-if="column.key === 'win_rate'">
-                    {{ fmt(record.win_rate, 1) }}%
-                  </template>
-                </template>
-                <template #emptyText>
-                  <div class="py-6 text-center text-xs text-gray-400">暂无参数扫描数据</div>
-                </template>
-              </Table>
-              <div class="mt-2 text-xs text-orange-500">
-                ⚠ 表中的年化未计入强平 —— 高杠杆配置在现实中会被强平，见右上表
-              </div>
-            </Card>
-          </Col>
-
-          <Col :lg="12" :xs="24">
-            <Card
-              :ref="bindSection('buffers')"
-              :bordered="false"
-              class="h-full shadow-sm"
-              :title="titleOf('buffers')"
-            >
-              <Table
-                :columns="[
-                  { key: 'label', title: '缓冲策略' },
-                  { key: 'buffer_pct', title: '保证金', align: 'right' },
-                  { key: 'capital_multiple', title: '资金占用', align: 'right' },
-                  { key: 'annual_pct', title: '年化', align: 'right' },
-                ]"
-                :data-source="carry?.buffers ?? []"
-                :pagination="false"
-                row-key="label"
-                size="small"
-              >
-                <template #bodyCell="{ column, record }">
-                  <template v-if="column.key === 'label'">
-                    <span :class="record.buffer_pct === null ? 'text-muted-foreground line-through' : ''">
-                      {{ record.label }}
-                    </span>
-                  </template>
-                  <template v-else-if="column.key === 'buffer_pct'">
-                    {{ record.buffer_pct === null ? '—' : record.buffer_pct + '%' }}
-                  </template>
-                  <template v-else-if="column.key === 'capital_multiple'">
-                    {{ record.capital_multiple }}N
-                  </template>
-                  <template v-else-if="column.key === 'annual_pct'">
-                    <span class="font-semibold text-red-500">+{{ fmt(record.annual_pct) }}%</span>
-                  </template>
-                </template>
-                <template #emptyText>
-                  <div class="py-6 text-center text-xs text-gray-400">暂无保证金缓冲数据</div>
-                </template>
-              </Table>
-              <div class="mt-2 text-xs text-muted-foreground">
-                <span class="font-medium">唯一能救回收益的前提：</span>
-                现货可作期货抵押品（统一账户/组合保证金）→ 强平看合并净值
-                <template v-if="unifiedAnnual">
-                  → 年化回到 {{ unifiedAnnual.min.toFixed(1) }}% ~
-                  {{ unifiedAnnual.max.toFixed(1) }}%
-                </template>。
-                <span class="text-orange-500">币安 USDT-M 默认不支持，必须实盘前确认。</span>
-              </div>
-            </Card>
-          </Col>
-        </Row>
-        <!-- 保证金方案（逐小时模拟，含真实强平） -->
-        <Card
-          :ref="bindSection('schemes')"
-          :bordered="false"
-          class="mt-4 shadow-sm"
-          :title="titleOf('schemes')"
-        >
-          <template #extra>
-            <span v-if="schemeTotals" class="text-xs text-muted-foreground">
-              同一策略、仅保证金账户结构不同：累计收益 {{ schemeTotals.min }}% ~
-              {{ schemeTotals.max }}%（相差
-              {{ (schemeTotals.max - schemeTotals.min).toFixed(1) }} 个百分点）
-            </span>
-          </template>
-          <Table
-            :columns="[
-              { key: 'label', title: '保证金方案' },
-              { key: 'leverage', title: '杠杆', align: 'right', width: 80 },
-              { key: 'liquidations', title: '强平次数', align: 'right', width: 110 },
-              { key: 'total_pct', title: '累计收益', align: 'right', width: 120 },
-              { key: 'annual_pct', title: '年化', align: 'right', width: 110 },
-              { key: 'max_drawdown_pct', title: '最大回撤', align: 'right', width: 120 },
-            ]"
-            :data-source="schemes"
-            :pagination="false"
-            :row-key="(r: any) => `${r.label}-${r.leverage}`"
-            size="small"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'label'">
-                <Tag :color="record.mode === 'unified' ? 'green' : 'red'">
-                  {{ record.mode === 'unified' ? '统一账户' : '逐仓' }}
-                </Tag>
-                <span class="ml-1">{{ record.label }}</span>
-              </template>
-              <template v-else-if="column.key === 'leverage'">
-                {{ record.leverage }}x
-              </template>
-              <template v-else-if="column.key === 'liquidations'">
-                <span :class="record.liquidations > 0 ? 'font-semibold text-red-500' : 'text-emerald-500'">
-                  {{ record.liquidations }}
-                </span>
-              </template>
-              <template v-else-if="column.key === 'total_pct'">
-                <span :class="cls(record.total_pct)">{{ fmt(record.total_pct) }}%</span>
-              </template>
-              <template v-else-if="column.key === 'annual_pct'">
-                <span :class="cls(record.annual_pct)" class="font-semibold">
-                  {{ record.annual_pct === null ? '—' : fmt(record.annual_pct) + '%' }}
-                </span>
-              </template>
-              <template v-else-if="column.key === 'max_drawdown_pct'">
-                <span class="text-emerald-500">{{ fmt(record.max_drawdown_pct) }}%</span>
-              </template>
-            </template>
-            <template #emptyText>
-              <div class="py-6 text-center text-xs text-gray-400">暂无保证金方案模拟数据</div>
-            </template>
-          </Table>
-          <div class="mt-3 rounded-lg bg-orange-50/60 p-3 text-xs dark:bg-orange-950/20">
-            <div class="font-medium text-orange-600">关键结论</div>
-            <ul class="mt-1 list-inside list-disc space-y-0.5 text-muted-foreground">
-              <li v-if="isolatedLowestLiquidated">
-                逐仓模式<b>最低 {{ isolatedLowestLiquidated.leverage }}x 也会被强平</b>
-                —— 该档在回测区间被强平 {{ isolatedLowestLiquidated.liquidations }} 次
-              </li>
-              <li v-if="reserveVsIsolated">
-                <b>加备用金反而更差</b>：同为 {{ reserveVsIsolated.reserve.leverage }}x，
-                逐仓累计 {{ reserveVsIsolated.base.total_pct }}%，
-                加备用金后 {{ reserveVsIsolated.reserve.total_pct }}%，
-                强平次数都是 {{ reserveVsIsolated.reserve.liquidations }} 次
-              </li>
-              <li v-if="unifiedNoLiquidation">
-                只有<b>统一账户/组合保证金</b>能从根上解决 ——
-                该模式下强平次数为 0，Delta 中性头寸的合并净值几乎不动
-              </li>
-              <li>所以 Carry 能否落地，<b>完全取决于保证金基础设施</b>，而非策略本身</li>
-            </ul>
+                      {{ item.name }}
+                    </button>
+                  </th>
+                  <td>{{ researchLevel(item.level) }}</td>
+                  <td>{{ item.annual ?? '未知' }}</td>
+                  <td>{{ item.evidence ?? '未知' }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-        </Card>
-      </template>
-    </Spin>
-  </div>
+        </template>
+        <template v-else>
+          <div class="section-title">
+            <h2>{{ sections.find((item) => item.key === section)?.label }}</h2>
+            <span>历史研究档案</span>
+          </div>
+          <template v-if="section === 'carry'">
+            <p>
+              以下为历史回测的资金费、基差与成本拆解，尚无实际账户成本核对。
+            </p>
+            <dl class="carry-breakdown">
+              <div>
+                <dt>每期资金费</dt>
+                <dd>{{ metricText(cash?.funding_pct, 4, true) }}%</dd>
+              </div>
+              <div>
+                <dt>每期基差</dt>
+                <dd>{{ metricText(cash?.basis_pct, 4, true) }}%</dd>
+              </div>
+              <div>
+                <dt>每期费用与滑点</dt>
+                <dd>{{ metricText(cash?.cost_pct, 4, true) }}%</dd>
+              </div>
+              <div>
+                <dt>每期净收益</dt>
+                <dd>{{ metricText(cash?.net_pct, 4, true) }}%</dd>
+              </div>
+            </dl>
+            <p>
+              基差均值 {{ metricText(cash?.basis_stats?.mean, 4) }}%，标准差
+              {{ metricText(cash?.basis_stats?.std, 4) }}%，95%区间 [{{
+                metricText(cash?.basis_stats?.p95_low, 3)
+              }}%, {{ metricText(cash?.basis_stats?.p95_high, 3) }}%]。
+            </p>
+            <p>
+              历史平均年化：1x {{ metricText(cash?.backtest_avg_1x) }}%，3x
+              {{ metricText(cash?.backtest_avg_3x) }}%；原研究前瞻输入：1x
+              {{ metricText(cash?.forward_annual_1x) }}%，3x
+              {{
+                metricText(cash?.forward_annual_3x)
+              }}%。这些输入不代表当前收益预期。
+            </p>
+          </template>
+          <p v-if="section === 'models'">
+            IC
+            为预测与实际收益的秩相关；缺失值保留未知。历史模型评估不授予当前冻结版本资格。
+          </p>
+          <p v-if="section === 'liquidation'" class="research-caution">
+            击穿期数是原研究情景输入，阈值来自维持保证金模型；它们不是交易所实际强平成交。
+          </p>
+          <p v-if="section === 'sweep'" class="research-caution">
+            参数扫描收益未计入强平，不能用高杠杆年化作为当前逐仓、最高 10x
+            政策的准入证据。
+          </p>
+          <p v-if="section === 'buffers'" class="research-caution">
+            保证金缓冲及年化属于情景假设。统一账户与现货抵押模型不符合本轮逐仓协议，保留作历史比较。
+          </p>
+          <p v-if="section === 'schemes'" class="research-caution">
+            逐小时模拟包含模型强平；模拟零强平不证明真实账户保护，也不改变本轮逐仓账户约束。
+          </p>
+          <p v-if="!data || (section !== 'models' && !carry)">
+            {{
+              data
+                ? 'Carry 证据尚未提供，当前板块不可评估。'
+                : '尚无成功研究快照，当前板块不可评估。'
+            }}
+          </p>
+          <p v-else-if="!matrixRows.length">
+            当前快照无此板块记录；缺少数据不视为零收益或通过。
+          </p>
+          <div
+            v-else
+            class="research-table-scroll"
+            tabindex="0"
+            aria-label="历史研究表格"
+          >
+            <table>
+              <thead>
+                <tr>
+                  <th v-for="col in columns[section]" :key="col.key">
+                    {{ col.label }}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="(row, index) in matrixRows"
+                  :key="row.identifier || index"
+                >
+                  <td v-for="col in columns[section]" :key="col.key">
+                    {{ cell(row, col) }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <details class="research-raw">
+            <summary>查看本板块原始研究字段</summary>
+            <pre>{{
+              JSON.stringify(section === 'carry' ? cash : matrixRows, null, 2)
+            }}</pre>
+          </details>
+        </template>
+      </section>
+      <aside class="research-inspector" aria-label="所选研究证据">
+        <h2>所选方向证据</h2>
+        <template v-if="selected"
+          ><h3>{{ selected.name }}</h3>
+          <p class="historical-verdict">{{ researchLevel(selected.level) }}</p>
+          <p>{{ selected.evidence || '历史说明未知' }}</p>
+          <dl>
+            <div>
+              <dt>历史收益口径</dt>
+              <dd>{{ selected.annual ?? '未知' }}</dd>
+            </div>
+            <div>
+              <dt>原研究裁定</dt>
+              <dd>{{ selected.verdict ?? '未知' }}</dd>
+            </div>
+          </dl></template
+        >
+        <p v-else-if="invalidCandidate">
+          研究身份无效。请使用单个非空的候选名称，原定位未自动替换。
+        </p>
+        <p v-else-if="candidate">
+          未找到指定研究：{{ candidate }}。保留原定位，不替换为其它方向。
+        </p>
+        <p v-else>尚无所选研究。</p>
+        <h3>准入所需证据</h3>
+        <dl class="evidence-gaps">
+          <div>
+            <dt>冻结策略、代码与数据指纹</dt>
+            <dd>未取得</dd>
+          </div>
+          <div>
+            <dt>完整成本与压力场景</dt>
+            <dd>未取得</dd>
+          </div>
+          <div>
+            <dt>样本外下界与一次性留出</dt>
+            <dd>未取得</dd>
+          </div>
+          <div>
+            <dt>执行与原生保护预检</dt>
+            <dd>未取得</dd>
+          </div>
+          <div>
+            <dt>人工上线批准</dt>
+            <dd>未取得</dd>
+          </div>
+        </dl>
+        <nav aria-label="相关档案">
+          <RouterLink to="/quant/strategy-lab">纸面账户档案</RouterLink
+          ><RouterLink to="/quant/experiments">实验任务</RouterLink
+          ><RouterLink to="/quant/detail">历史模型产物</RouterLink>
+        </nav>
+      </aside>
+    </div>
+  </main>
 </template>
+
+<style scoped>
+.strategy-research-workspace {
+  --research-bg: #0c1b2a;
+  --research-panel: #132b3e;
+  --research-line: #29485c;
+  --research-text: #e5edf4;
+  --research-muted: #a2b8c9;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 100%;
+  padding: 24px;
+  background: var(--research-bg);
+  color: var(--research-text);
+  font-family:
+    'IBM Plex Sans', 'Source Han Sans SC', 'Noto Sans CJK SC', sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.strategy-research-workspace * {
+  box-sizing: border-box;
+}
+.research-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+.research-heading h1 {
+  font-size: 28px;
+  line-height: 1.25;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.research-heading p {
+  margin: 0;
+  color: var(--research-muted);
+  max-width: 65ch;
+}
+button {
+  cursor: pointer;
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--research-line);
+  padding: 8px 12px;
+  border-radius: 4px;
+  font: inherit;
+}
+button:hover {
+  border-color: #69b4e4;
+}
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+.research-table-scroll:focus-visible {
+  outline: 2px solid #69b4e4;
+  outline-offset: 3px;
+}
+.research-heading button {
+  white-space: nowrap;
+  background: #173b53;
+  color: #bde4ff;
+}
+.research-boundary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  border-block: 1px solid var(--research-line);
+  padding: 10px 0;
+  color: #f0c17b;
+}
+.research-boundary strong {
+  color: var(--research-text);
+}
+.research-source {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  color: var(--research-muted);
+  font-size: 12px;
+  padding: 12px 0;
+}
+.research-error {
+  border-left: 3px solid #f19a9a;
+  padding: 10px 14px;
+  background: #3d2734;
+  color: #ffd4d4;
+}
+.research-sections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  border-bottom: 1px solid var(--research-line);
+  margin: 10px 0 20px;
+}
+.research-sections button {
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  padding: 12px 16px;
+  color: var(--research-muted);
+}
+.research-sections button[aria-pressed='true'] {
+  border-color: #69b4e4;
+  color: #e5edf4;
+  background: #183548;
+}
+.research-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 24px;
+  align-items: start;
+}
+.research-ledger,
+.research-inspector {
+  min-width: 0;
+}
+.research-ledger {
+  background: var(--research-panel);
+  border: 1px solid var(--research-line);
+  padding: 20px;
+}
+.section-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.section-title h2,
+.research-inspector h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+}
+.section-title span {
+  font-size: 12px;
+  color: var(--research-muted);
+}
+.research-table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  border-top: 1px solid var(--research-line);
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--research-line);
+  padding: 12px;
+  min-width: 92px;
+}
+thead th {
+  color: var(--research-muted);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+tbody th {
+  min-width: 150px;
+}
+tbody th button {
+  padding: 0;
+  border: 0;
+  color: #bde4ff;
+  text-align: left;
+}
+tr[data-selected='true'] {
+  background: #1c3c53;
+}
+tbody td:last-child {
+  max-width: 48ch;
+  min-width: 160px;
+}
+.research-inspector {
+  padding: 0 0 0 20px;
+  border-left: 1px solid var(--research-line);
+}
+.research-inspector h3 {
+  font-size: 15px;
+  margin: 24px 0 8px;
+}
+.research-inspector p {
+  overflow-wrap: anywhere;
+  color: var(--research-muted);
+}
+.historical-verdict {
+  color: #f0c17b !important;
+}
+dl {
+  margin: 16px 0;
+}
+dl > div {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--research-line);
+}
+dt {
+  font-size: 12px;
+  color: var(--research-muted);
+}
+dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+.evidence-gaps dd {
+  color: #f0c17b;
+}
+.research-inspector nav {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 24px;
+}
+.research-inspector a {
+  color: #8ed0fa;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.research-caution {
+  border-left: 2px solid #f0c17b;
+  padding-left: 12px;
+  color: #f0c17b;
+  max-width: 80ch;
+}
+.carry-breakdown {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.carry-breakdown dd {
+  font-size: 18px;
+}
+.research-raw {
+  margin-top: 20px;
+  color: var(--research-muted);
+}
+summary {
+  cursor: pointer;
+}
+pre {
+  font:
+    12px/1.6 'IBM Plex Mono',
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 400px;
+  overflow: auto;
+  border-top: 1px solid var(--research-line);
+  padding-top: 12px;
+}
+@media (max-width: 1100px) {
+  .research-grid {
+    grid-template-columns: minmax(0, 1fr) 260px;
+    gap: 16px;
+  }
+  .research-ledger {
+    padding: 16px;
+  }
+}
+@media (max-width: 900px) {
+  .research-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .research-inspector {
+    border-left: 0;
+    border-top: 1px solid var(--research-line);
+    padding: 20px 0;
+  }
+  .evidence-gaps {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 20px;
+  }
+  .research-inspector nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .carry-breakdown {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 480px) {
+  .strategy-research-workspace {
+    padding: 16px;
+  }
+  .research-heading {
+    display: block;
+  }
+  .research-heading h1 {
+    font-size: 24px;
+  }
+  .research-heading button {
+    margin-top: 14px;
+  }
+  .research-boundary {
+    display: grid;
+    gap: 4px;
+  }
+  .research-sections button {
+    padding: 10px;
+  }
+  .research-ledger {
+    padding: 12px;
+  }
+  .evidence-gaps {
+    display: block;
+  }
+  .research-source {
+    display: grid;
+    gap: 3px;
+  }
+  .research-grid {
+    gap: 20px;
+  }
+}
+</style>

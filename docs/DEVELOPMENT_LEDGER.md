@@ -54,6 +54,8 @@
 
 - 0.2.1 阶段版本：同步 `pyproject.toml` 与 `uv.lock` 为 `0.2.1`，建立 `CHANGELOG.md`。2026-11-16 13:34 重新运行依赖锁检查与发布身份/工作流契约测试，13 项全部通过。上一发布链路提交 `382d73a9b8c502f596763de62200dc61aeb6358b` 的 [CI 43810503292](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/43810503292) 和 [CD 43810680292](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/43810680292) 均成功；这只能证明该提交的检查与主分支归档。本次版本提交仍需自身精确 SHA 的 CI 和标签 CD，尚未创建 `v0.2.1` 或 Release。本机最后一轮完整后端回归仍在运行，完成后补记实际结果；不把此前 2336 项的结果当成新一轮结果。
 
+- 0.2.1 发布完成证据（2026-11-16 13:45）：版本提交 `9137e5a11a0bf4f998359b18aaf5171f3b53b8fb` 已推送；精确提交 [CI 43811420687](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/43811420687) 成功。附注标签 `v0.2.1` 指向同一提交，标签调度 [CD 43811970357](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/43811970357) 成功，[GitHub Release](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.1) 已公开。独立下载 129134667 字节归档，SHA-256 为 `2bdffb78242fcf49b78e62945427f217ef2ad4f9d24fbef2e6f2545ba4ab76e8`，与 sidecar 及 GitHub asset digest 一致；包内 build.json 的 commit/version/package 精确匹配。最后一轮完整后端 **2345 项通过、8 项可选跳过、3133 子测试通过**（736.97 秒）。这里只完成首批重构的代码发布；P0–P4、生产迁移恢复演练、原生保护、真实采集和自然经过的验收仍未完成。后续原生条件单改动不包含在 0.2.1 归档中。
+
 ### 本轮中文运行日志（2026-11-16，Asia/Shanghai）
 
 - 03:38 核对仓库状态：`main` 与 `origin/main` 同步于 `6a01707`；未覆盖或清理用户工作树中的未提交文件。

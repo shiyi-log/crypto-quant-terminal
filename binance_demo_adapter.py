@@ -38,6 +38,7 @@ _PRIVATE_GET = {
     ("fapiPrivate", "leverageBracket"),
     ("fapiPrivate", "algoOrder"), ("fapiPrivate", "openAlgoOrders"),
     ("fapiPrivate", "allAlgoOrders"),
+    ("fapiPrivate", "income"), ("fapiPrivate", "multiAssetsMargin"),
     ("fapiPrivateV3", "positionRisk"),
     ("fapiPrivateV3", "account"),
 }
@@ -67,10 +68,97 @@ REQUEST_COSTS = {
     ("fapiPrivate", "GET", "allAlgoOrders"): {"cost": 5},
     ("fapiPrivate", "POST", "algoOrder"): {"cost": 1},
     ("fapiPrivate", "DELETE", "algoOrder"): {"cost": 1},
+    ("fapiPrivate", "GET", "income"): {"cost": 30},
+    ("fapiPrivate", "GET", "multiAssetsMargin"): {"cost": 30},
 }
 _SECRET_KEYS = {"apikey", "secret", "signature", "authorization", "headers",
                 "requestheaders", "signedurl", "requesturl", "key", "password",
                 "token", "accesskey", "apisecret", "xmbxapikey", "privatekey"}
+_ACCOUNT_SNAPSHOT_FIELDS = {
+    "feeTier", "canTrade", "canDeposit", "canWithdraw", "updateTime",
+    "totalInitialMargin", "totalMaintMargin", "totalWalletBalance",
+    "totalUnrealizedProfit", "totalMarginBalance", "totalPositionInitialMargin",
+    "totalOpenOrderInitialMargin", "totalCrossWalletBalance", "totalCrossUnPnl",
+    "availableBalance", "maxWithdrawAmount", "assets", "positions",
+}
+_ACCOUNT_ASSET_AMOUNTS = {
+    "walletBalance", "unrealizedProfit", "marginBalance", "maintMargin",
+    "initialMargin", "positionInitialMargin", "openOrderInitialMargin",
+    "crossWalletBalance", "crossUnPnl", "availableBalance", "maxWithdrawAmount",
+}
+_ACCOUNT_POSITION_AMOUNTS = {
+    "initialMargin", "maintMargin", "unrealizedProfit", "positionInitialMargin",
+    "openOrderInitialMargin", "leverage", "entryPrice", "breakEvenPrice",
+    "maxNotional", "positionAmt", "notional", "isolatedWallet", "bidNotional",
+    "askNotional", "isolatedMargin",
+}
+_ACCOUNT_ASSET_FIELDS = _ACCOUNT_ASSET_AMOUNTS | {"asset", "marginAvailable", "updateTime"}
+_ACCOUNT_POSITION_FIELDS = _ACCOUNT_POSITION_AMOUNTS | {
+    "symbol", "positionSide", "isolated", "marginType", "updateTime",
+}
+
+
+def _archive_amount(value):
+    """归档保留原十进制文本，先拒绝会伪造精度或无穷值的输入。"""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise DemoSafetyError("invalid Demo archived decimal")
+    _decimal(value)
+
+
+def _archive_text(value, *, empty=False):
+    if (not isinstance(value, str) or len(value) > 256
+            or (not empty and not value) or any(ord(char) < 32 for char in value)):
+        raise DemoSafetyError("invalid Demo archived text identity")
+
+
+def _income_rows(raw, *, since_ms, until_ms, limit):
+    if not isinstance(raw, list) or len(raw) > limit:
+        raise DemoSafetyError("invalid Demo income response")
+    for row in raw:
+        if not isinstance(row, dict):
+            raise DemoSafetyError("invalid Demo income row")
+        _identifier(row.get("tranId"))
+        _archive_text(row.get("incomeType"))
+        _archive_text(row.get("asset"))
+        _archive_text(row.get("symbol"), empty=True)
+        _archive_amount(row.get("income"))
+        if not since_ms <= _timestamp(row.get("time")) <= until_ms:
+            raise DemoSafetyError("Demo income row is outside requested window")
+    return sanitize_response(raw)
+
+
+def _account_snapshot(raw):
+    if not isinstance(raw, dict):
+        raise DemoSafetyError("invalid Demo account response")
+    for name in ("totalWalletBalance", "totalUnrealizedProfit", "totalMarginBalance"):
+        _archive_amount(raw.get(name))
+    for name in (_ACCOUNT_SNAPSHOT_FIELDS - {
+            "feeTier", "canTrade", "canDeposit", "canWithdraw", "updateTime", "assets", "positions"}) & raw.keys():
+        _archive_amount(raw[name])
+    assets, positions = raw.get("assets"), raw.get("positions")
+    if not isinstance(assets, list) or not isinstance(positions, list):
+        raise DemoSafetyError("invalid Demo account assets or positions")
+    for asset in assets:
+        if not isinstance(asset, dict):
+            raise DemoSafetyError("invalid Demo account asset")
+        _archive_text(asset.get("asset"))
+        _archive_amount(asset.get("walletBalance"))
+        for name in _ACCOUNT_ASSET_AMOUNTS & asset.keys():
+            _archive_amount(asset[name])
+    for position in positions:
+        if not isinstance(position, dict):
+            raise DemoSafetyError("invalid Demo account position")
+        _archive_text(position.get("symbol"))
+        _archive_amount(position.get("positionAmt"))
+        for name in _ACCOUNT_POSITION_AMOUNTS & position.keys():
+            _archive_amount(position[name])
+    # 只返回账户官方字段，不透传测试替身可能附加的“已对账/精确午夜”声明。
+    result = {name: raw[name] for name in raw if name in _ACCOUNT_SNAPSHOT_FIELDS}
+    result["assets"] = [{name: row[name] for name in row if name in _ACCOUNT_ASSET_FIELDS}
+                        for row in assets]
+    result["positions"] = [{name: row[name] for name in row if name in _ACCOUNT_POSITION_FIELDS}
+                           for row in positions]
+    return sanitize_response(result)
 
 
 class DemoSafetyError(ValueError):
@@ -526,6 +614,69 @@ class BinanceDemoAdapter:
                           "rate_limit_cost": effective_cost,
                           "started_at_utc": started_at_utc}
         return result
+
+    def _read_archive(self, path, api, params, validator, *, with_evidence):
+        """响应与请求证据在同一锁内配对，防止并发读取借用另一请求哈希。"""
+        if not isinstance(with_evidence, bool):
+            raise DemoSafetyError("with_evidence must be boolean")
+        with self._request_lock:
+            # 旧响应摘要绝不能充作本次传输事实。受守卫的HTTP层会重新填入。
+            self._client._quant_last_response_sha256 = None
+            self._client._quant_last_response_hash_basis = None
+            raw = self._call_locked(path, api, "GET", params)
+            data = validator(raw)
+            raw_hash = getattr(self._client, "_quant_last_response_sha256", None)
+            raw_basis = getattr(self._client, "_quant_last_response_hash_basis", None)
+            if (isinstance(raw_hash, str) and re.fullmatch(r"[0-9a-f]{64}", raw_hash)
+                    and raw_basis == "raw_http_response_bytes"):
+                response_hash, response_basis = raw_hash, raw_basis
+            else:
+                # 注入的离线替身没有传输字节，规范化摘要明确标注其证据基础。
+                try:
+                    canonical = json.dumps(sanitize_response(raw), ensure_ascii=False,
+                                           sort_keys=True, allow_nan=False, separators=(",", ":"))
+                except (TypeError, ValueError):
+                    raise DemoSafetyError("invalid Demo archive response encoding") from None
+                response_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+                response_basis = "canonical_json"
+            evidence = {**self.last_call, "request_params": dict(params),
+                        "response_sha256": response_hash,
+                        "response_hash_basis": response_basis,
+                        "received_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+            self.last_call = evidence
+            return {"data": data, "request_evidence": dict(evidence)} if with_evidence else data
+
+    def fetch_income_window(self, *, since_ms, until_ms, limit=1000, with_evidence=False):
+        """读取含端点的全部类型流水；满页不代表已完整，后续采集器需继续分窗。"""
+        start, end, page_size = _timestamp(since_ms), _timestamp(until_ms), _limit(limit)
+        if end < start or end - start >= 7 * 86400000:
+            raise DemoSafetyError("Demo income window must be ordered and shorter than seven days")
+        return self._read_archive("income", "fapiPrivate",
+            {"startTime": start, "endTime": end, "limit": page_size},
+            lambda raw: _income_rows(raw, since_ms=start, until_ms=end, limit=page_size),
+            with_evidence=with_evidence)
+
+    def fetch_multi_assets_mode(self, *, with_evidence=False):
+        """只读取明确的多资产模式；False也必须来自响应中的真实布尔字段。"""
+        def validate(raw):
+            if not isinstance(raw, dict) or type(raw.get("multiAssetsMargin")) is not bool:
+                raise DemoSafetyError("Demo multi-assets mode is not an explicit boolean")
+            return raw["multiAssetsMargin"]
+        return self._read_archive("multiAssetsMargin", "fapiPrivate", {}, validate,
+                                  with_evidence=with_evidence)
+
+    def fetch_server_time(self, *, with_evidence=False):
+        """服务端时间只用于时钟对照，不证明账户余额的精确历史时点。"""
+        def validate(raw):
+            if not isinstance(raw, dict):
+                raise DemoSafetyError("invalid Demo server-time response")
+            return _timestamp(raw.get("serverTime"))
+        return self._read_archive("time", "fapiPublic", {}, validate, with_evidence=with_evidence)
+
+    def fetch_account_snapshot(self, *, with_evidence=False):
+        """保留账户原始字段与金额文本；不填充对账声明、as_of或午夜快照。"""
+        return self._read_archive("account", "fapiPrivateV3", {}, _account_snapshot,
+                                  with_evidence=with_evidence)
 
     def fetch_exchange_info(self) -> dict:
         raw = self._call("exchangeInfo", "fapiPublic", "GET")

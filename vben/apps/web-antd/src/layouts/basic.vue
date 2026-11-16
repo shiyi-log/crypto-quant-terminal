@@ -11,7 +11,6 @@ import { useAccessStore, useUserStore } from '@vben/stores';
 import { $t } from '#/locales';
 import { useAuthStore } from '#/store';
 import LoginForm from '#/views/_core/authentication/login.vue';
-import BotControls from '#/views/quant/components/BotControls.vue';
 
 import QuantShellHeader from './components/QuantShellHeader.vue';
 
@@ -106,10 +105,7 @@ watch(
     @logout="handleLogout"
   >
     <template #content-top>
-      <!-- 插槽仅由明确的旧引擎白名单调用；Demo 页面不挂载原交易控制器。 -->
-      <QuantShellHeader>
-        <template #legacy-controls><BotControls /></template>
-      </QuantShellHeader>
+      <QuantShellHeader />
     </template>
     <template #user-dropdown>
       <UserDropdown

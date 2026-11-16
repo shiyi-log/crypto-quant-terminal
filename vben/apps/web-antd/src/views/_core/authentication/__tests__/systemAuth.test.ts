@@ -1,19 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, nextTick } from 'vue';
+import { createApp, h, nextTick } from 'vue';
 import type { Component } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { createMemoryHistory, createRouter, RouterView } from 'vue-router';
 
 const boundary = vi.hoisted(() => ({ login: vi.fn(), reset: vi.fn() }));
 vi.mock('#/store', () => ({
   useAuthStore: () => ({ authLogin: boundary.login, loginLoading: false }),
 }));
 vi.mock('#/api/core/auth', () => ({ resetPasswordApi: boundary.reset }));
+vi.mock('#/locales', () => ({ $t: (key: string) => key }));
+import {
+  coreRoutes,
+  fallbackNotFoundRoute,
+} from '../../../../router/routes/core';
 import AuthLayout from '../../../../layouts/auth.vue';
 import Login from '../login.vue';
-import CodeLogin from '../code-login.vue';
-import QrcodeLogin from '../qrcode-login.vue';
-import ForgetPassword from '../forget-password.vue';
-import Register from '../register.vue';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -342,32 +343,33 @@ describe('recovery identity and local secret lifecycle', () => {
   });
 });
 
-describe('retired authentication methods', () => {
-  it.each([
-    ['code', CodeLogin],
-    ['QR', QrcodeLogin],
-    ['email', ForgetPassword],
-    ['register', Register],
-  ] as const)(
-    '%s provides real login links instead of an inert form or synthetic code',
-    async (_, component) => {
-      const { element } = await mount(
-        component,
-        '/auth/unsupported?redirect=%2Fquant%2Facceptance',
-      );
-      expect(element.textContent).toContain('当前不支持');
-      expect(element.querySelector('form, input, canvas, img')).toBeNull();
-      const links = [...element.querySelectorAll<HTMLAnchorElement>('a')];
+describe('旧认证入口完全退役', () => {
+  it.each(['code-login', 'qrcode-login', 'forget-password', 'register'])(
+    '%s 不再加载兼容界面，也不触发登录或恢复请求',
+    async (method) => {
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [...coreRoutes, fallbackNotFoundRoute],
+      });
+      await router.push(`/auth/${method}?redirect=%2Fquant%2Facceptance`);
+      await router.isReady();
+      expect(router.currentRoute.value.name).toBe('FallbackNotFound');
+      const element = document.createElement('div');
+      document.body.append(element);
+      const app = createApp({ render: () => h(RouterView) });
+      app.use(router).mount(element);
+      cleanups.push(() => {
+        app.unmount();
+        element.remove();
+      });
+      await flush();
+      expect(element.querySelector('h1')?.textContent).toBe('找不到这个页面');
       expect(
-        links.some(
-          (link) =>
-            link.href.includes('/auth/login') &&
-            link.href.includes('redirect='),
-        ),
-      ).toBe(true);
-      expect(links.some((link) => link.href.includes('recovery=local'))).toBe(
-        true,
-      );
+        element.querySelector('[data-current-location]')?.textContent,
+      ).toBe(`/auth/${method}`);
+      expect(
+        element.querySelector('form, input, .unsupported-method'),
+      ).toBeNull();
       expect(boundary.login).not.toHaveBeenCalled();
       expect(boundary.reset).not.toHaveBeenCalled();
     },

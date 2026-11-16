@@ -1,7 +1,7 @@
 import type { RouteRecordRaw } from 'vue-router';
 
 /**
- * 量化交易终端路由
+ * 新版量化工作区；旧版界面已退役，旧地址由统一 404 处理
  */
 const routes: RouteRecordRaw[] = [
   {
@@ -48,7 +48,7 @@ const routes: RouteRecordRaw[] = [
         name: 'QuantDataQuality',
         path: 'data-quality',
         component: () => import('#/views/quant/data-quality/index.vue'),
-        meta: { icon: 'lucide:database', title: '数据质量' },
+        meta: { icon: 'lucide:database', title: '数据中心' },
       },
       {
         name: 'QuantOperations',
@@ -57,48 +57,12 @@ const routes: RouteRecordRaw[] = [
         meta: { icon: 'lucide:activity', title: '运维与证据' },
       },
       {
-        name: 'QuantOverview',
-        path: 'overview',
-        component: () => import('#/views/quant/overview/index.vue'),
-        meta: {
-          icon: 'lucide:layout-dashboard',
-          title: '总览',
-        },
-      },
-      {
-        name: 'QuantPositions',
-        path: 'positions',
-        component: () => import('#/views/quant/positions/index.vue'),
-        meta: {
-          icon: 'lucide:wallet',
-          title: '持仓与成交',
-        },
-      },
-      {
-        name: 'QuantMarket',
-        path: 'market',
-        component: () => import('#/views/quant/market/index.vue'),
-        meta: {
-          icon: 'lucide:candlestick-chart',
-          title: '行情图表',
-        },
-      },
-      {
-        name: 'QuantData',
-        path: 'data',
-        component: () => import('#/views/quant/data/index.vue'),
-        meta: {
-          icon: 'lucide:database',
-          title: '数据中心',
-        },
-      },
-      {
         name: 'QuantOrderflow',
         path: 'orderflow',
         component: () => import('#/views/quant/orderflow/index.vue'),
         meta: {
           icon: 'lucide:chart-no-axes-combined',
-          title: '订单流突增',
+          title: '订单流与价格',
         },
       },
       {
@@ -106,48 +70,9 @@ const routes: RouteRecordRaw[] = [
         path: 'price-spikes',
         component: () => import('#/views/quant/orderflow/price-spikes.vue'),
         meta: {
+          hideInMenu: true,
           icon: 'lucide:chart-no-axes-combined',
-          title: '爆发行情观测',
-        },
-      },
-      {
-        name: 'QuantBacktest',
-        path: 'backtest',
-        component: () => import('#/views/quant/backtest/index.vue'),
-        meta: {
-          icon: 'lucide:flask-conical',
-          title: '回测与任务',
-        },
-      },
-      {
-        name: 'QuantDetail',
-        path: 'detail',
-        component: () => import('#/views/quant/detail/index.vue'),
-        meta: {
-          icon: 'lucide:list-tree',
-          title: '回测明细',
-        },
-      },
-      {
-        name: 'QuantTasks',
-        path: 'tasks',
-        component: () => import('#/views/quant/tasks/index.vue'),
-        meta: {
-          // 2026-10-09 合并：已并入「回测与任务」/「实盘运维」，研究任务从菜单隐藏但路由保留
-          hideInMenu: true,
-          icon: 'lucide:list-checks',
-          title: '研究任务',
-        },
-      },
-      {
-        name: 'QuantLive',
-        path: 'live',
-        component: () => import('#/views/quant/live/index.vue'),
-        meta: {
-          // 2026-10-09 合并：已并入「回测与任务」/「实盘运维」，实盘统计从菜单隐藏但路由保留
-          hideInMenu: true,
-          icon: 'lucide:bar-chart-3',
-          title: '实盘统计',
+          title: '价格事件研究',
         },
       },
       {
@@ -164,8 +89,9 @@ const routes: RouteRecordRaw[] = [
         path: 'strategy-lab',
         component: () => import('#/views/quant/strategy-lab/index.vue'),
         meta: {
+          hideInMenu: true,
           icon: 'lucide:panels-top-left',
-          title: '多策略模拟',
+          title: '纸面账户档案',
         },
       },
       {
@@ -173,55 +99,9 @@ const routes: RouteRecordRaw[] = [
         path: 'binance-demo',
         component: () => import('#/views/quant/binance-demo/index.vue'),
         meta: {
-          icon: 'lucide:landmark',
-          title: '币安 Demo',
-        },
-      },
-      {
-        name: 'QuantStrategyFocus',
-        path: 'strategy-focus',
-        component: () => import('#/views/quant/strategy-lab/index.vue'),
-        meta: {
-          icon: 'lucide:star',
-          title: '重点策略观察',
-        },
-      },
-      {
-        name: 'QuantResearchLedger',
-        path: 'research-ledger',
-        component: () => import('#/views/quant/research-ledger/index.vue'),
-        meta: {
-          icon: 'lucide:book-open-check',
-          title: '研究账本',
-        },
-      },
-      {
-        name: 'QuantIteration',
-        path: 'iteration',
-        component: () => import('#/views/quant/iteration/index.vue'),
-        meta: {
-          // 2026-10-09 合并：已并入「回测与任务」/「实盘运维」，模型迭代从菜单隐藏但路由保留
           hideInMenu: true,
-          icon: 'lucide:refresh-cw',
-          title: '模型迭代',
-        },
-      },
-      {
-        name: 'QuantOps',
-        path: 'ops',
-        component: () => import('#/views/quant/ops/index.vue'),
-        meta: {
-          icon: 'lucide:activity',
-          title: '实盘运维',
-        },
-      },
-      {
-        name: 'QuantPairlist',
-        path: 'pairlist',
-        component: () => import('#/views/quant/pairlist/index.vue'),
-        meta: {
-          icon: 'lucide:shield-alert',
-          title: '交易对与锁',
+          icon: 'lucide:landmark',
+          title: 'Demo 账户设置',
         },
       },
       {
@@ -229,17 +109,9 @@ const routes: RouteRecordRaw[] = [
         path: 'security',
         component: () => import('#/views/quant/security/index.vue'),
         meta: {
+          hideInMenu: true,
           icon: 'lucide:shield-check',
-          title: '密码管理',
-        },
-      },
-      {
-        name: 'QuantLogs',
-        path: 'logs',
-        component: () => import('#/views/quant/logs/index.vue'),
-        meta: {
-          icon: 'lucide:scroll-text',
-          title: '运行日志',
+          title: '身份与安全',
         },
       },
     ],

@@ -33,7 +33,7 @@ vi.mock('@vben/stores', () => ({
   useUserStore: () => mocks.userStore,
 }));
 vi.mock('@vben/preferences', () => ({
-  preferences: { app: { defaultHomePath: '/quant/overview' } },
+  preferences: { app: { defaultHomePath: '/quant/trade-desk' } },
 }));
 vi.mock('ant-design-vue', () => ({ notification: { success: vi.fn() } }));
 vi.mock('#/api', () => ({

@@ -68,7 +68,7 @@ function open(loaders: Partial<Loaders> = {}) {
     history: createMemoryHistory('/#'),
     routes: [
       { path: '/', component: { template: '<div />' } },
-      ...['logs', 'ops', 'research-ledger'].map((path) => ({
+      ...['data-quality', 'experiments'].map((path) => ({
         path: '/quant/' + path,
         component: { template: '<div />' },
       })),
@@ -95,12 +95,14 @@ afterEach(() =>
 );
 
 describe('运维与证据工作区', () => {
-  it('历史入口遵循应用的 hash 路由', async () => {
-    const { element, get } = open();
+  it('相关证据只链接新工作区并遵循应用的 hash 路由', async () => {
+    const { element } = open();
     await vi.waitFor(() => expect(element.textContent).toContain('event-1'));
-    expect(get('[aria-label="历史运维入口"] a').getAttribute('href')).toContain(
-      '#/quant/logs',
-    );
+    expect(
+      [...element.querySelectorAll('a')].map((link) =>
+        link.getAttribute('href'),
+      ),
+    ).toEqual(['#/quant/data-quality', '#/quant/experiments']);
   });
   it('展示真实服务与事件身份，健康状态不改变账户门禁', async () => {
     const { element, get } = open();

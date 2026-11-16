@@ -138,14 +138,22 @@ describe('实验任务事实', () => {
     expect(state.detail).toBeNull();
   });
 
-  it('仅为已记录的产物创建精确历史明细链接', async () => {
-    const { artifactLink, identityFacts } = await source();
-    expect(artifactLink(run())).toBeNull();
-    expect(artifactLink({ ...run(), identifier: 'archive a/b' })).toBe(
-      '/quant/detail?identifier=archive%20a%2Fb',
-    );
-    expect(
-      identityFacts(run()).find((fact) => fact.label === '数据指纹')?.value,
-    ).toBe('未知');
+  it('运行证据覆盖登记证据，缺少的冻结身份保持未知', async () => {
+    const { identityFacts } = await source();
+    const facts = identityFacts({
+      ...run(),
+      entry: {
+        evidence: { code_hash: 'registered-code', dataset_sha256: 'data-1' },
+      },
+      evidence: { code_hash: 'runtime-code', execution_hash: 'execution-1' },
+    });
+    expect(facts).toEqual([
+      { label: '代码指纹', value: 'runtime-code' },
+      { label: '数据指纹', value: 'data-1' },
+      { label: '策略指纹', value: '未知' },
+      { label: '执行指纹', value: 'execution-1' },
+      { label: '成本指纹', value: '未知' },
+      { label: '风险指纹', value: '未知' },
+    ]);
   });
 });

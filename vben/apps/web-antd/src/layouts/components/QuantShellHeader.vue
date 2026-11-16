@@ -7,34 +7,17 @@ const expanded = ref(false);
 const navigationToggle = ref<HTMLButtonElement>();
 const quantArea = computed(() => route.path.startsWith('/quant/'));
 const view = computed(() => route.path.slice('/quant/'.length));
-// 旧交易入口是明确白名单；新增页面不会因为遗漏条件而挂载写操作。
-const legacyViews = new Set([
-  'overview',
-  'positions',
-  'market',
-  'live',
-  'pairlist',
-  'logs',
-]);
 const demoViews = new Set(['trade-desk', 'acceptance', 'binance-demo']);
-const paperViews = new Set(['strategy-lab', 'strategy-focus']);
+const paperViews = new Set(['strategy-lab']);
 const researchViews = new Set([
   'factors',
   'experiments',
   'data-quality',
   'operations',
   'research',
-  'backtest',
-  'detail',
-  'tasks',
-  'iteration',
   'orderflow',
   'price-spikes',
-  'data',
-  'ops',
-  'research-ledger',
 ]);
-const legacyControls = computed(() => legacyViews.has(view.value));
 const environment = computed(() => {
   if (demoViews.has(view.value))
     return {
@@ -42,13 +25,6 @@ const environment = computed(() => {
       detail: '账户身份未核验',
       tone: 'demo',
       note: '账户与风险事实见当前页面，页面入口不授予交易资格。',
-    };
-  if (legacyControls.value)
-    return {
-      label: '旧交易引擎',
-      detail: '账户模式未核验',
-      tone: 'legacy',
-      note: '实际模拟盘 / 实盘模式以旧引擎配置读取结果为准。',
     };
   if (paperViews.has(view.value))
     return {
@@ -79,7 +55,7 @@ const environment = computed(() => {
   };
 });
 
-// 导航使用独立工作区；各页继续提供原历史入口与原始身份查询。
+// 导航只提供新版工作区，历史事实在各新版页面按原始身份读取。
 const workspaces = [
   {
     key: 'trading',
@@ -132,27 +108,13 @@ const workspaces = [
 ];
 const activeWorkspace = computed(() => {
   if (view.value === 'factors') return 'factors';
-  if (view.value === 'ops' && route.query.workspace === 'factors')
-    return 'factors';
-  if (
-    ['trade-desk', 'overview', 'positions', 'market', 'live'].includes(
-      view.value,
-    )
-  )
-    return 'trading';
+  if (view.value === 'trade-desk') return 'trading';
   if (['orderflow', 'price-spikes'].includes(view.value)) return 'orderflow';
-  if (['research', 'strategy-lab', 'strategy-focus'].includes(view.value))
-    return 'strategies';
-  if (
-    ['experiments', 'backtest', 'detail', 'tasks', 'iteration'].includes(
-      view.value,
-    )
-  )
-    return 'experiments';
+  if (['research', 'strategy-lab'].includes(view.value)) return 'strategies';
+  if (view.value === 'experiments') return 'experiments';
   if (view.value === 'acceptance') return 'acceptance';
-  if (['data', 'data-quality'].includes(view.value)) return 'data';
-  if (['operations', 'ops', 'research-ledger', 'logs'].includes(view.value))
-    return 'operations';
+  if (view.value === 'data-quality') return 'data';
+  if (view.value === 'operations') return 'operations';
   return '';
 });
 const currentWorkspace = computed(
@@ -224,17 +186,6 @@ watch(
     </nav>
     <p class="quant-shell-boundary">{{ environment.note }}</p>
   </header>
-  <section
-    v-if="quantArea && legacyControls"
-    class="quant-shell-legacy"
-    aria-label="旧交易引擎操作"
-  >
-    <div class="quant-shell-legacy-heading">
-      <h2>旧交易引擎操作</h2>
-      <span>仅作用于原 Freqtrade 账户</span>
-    </div>
-    <slot name="legacy-controls" />
-  </section>
 </template>
 
 <style scoped>
@@ -306,7 +257,6 @@ watch(
   color: #a2b8c9;
   font-size: 12px;
 }
-.quant-shell-environment[data-tone='legacy'] strong,
 .quant-shell-environment[data-tone='unknown'] strong {
   color: #f0ce88;
 }
@@ -368,29 +318,6 @@ watch(
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.quant-shell-legacy {
-  margin: 16px 24px 0;
-  padding: 16px;
-  color: #e5edf4;
-  background: #132b3e;
-  border: 1px solid #29485c;
-}
-.quant-shell-legacy-heading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 16px;
-  margin-bottom: 12px;
-}
-.quant-shell-legacy-heading h2 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-}
-.quant-shell-legacy-heading span {
-  color: #a2b8c9;
-  font-size: 12px;
-}
 @media (max-width: 900px) {
   .quant-shell-summary {
     gap: 10px 16px;
@@ -427,10 +354,6 @@ watch(
   .quant-shell-boundary {
     padding-right: 16px;
     padding-left: 16px;
-  }
-  .quant-shell-legacy {
-    margin-right: 12px;
-    margin-left: 12px;
   }
 }
 @media (max-width: 420px) {

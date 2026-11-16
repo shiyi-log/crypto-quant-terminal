@@ -94,19 +94,16 @@ describe('quant workspace shell boundaries', () => {
   );
 
   it.each(['overview', 'positions', 'market', 'live', 'pairlist', 'logs'])(
-    '%s keeps legacy commands within an explicitly named engine boundary',
+    '%s 旧地址也不会重新挂载旧交易命令',
     async (path) => {
       const { element, get } = await open('/quant/' + path);
-      expect(get('[role="status"]').textContent).toContain('旧交易引擎');
-      expect(get('[role="status"]').textContent).toContain('账户模式未核验');
-      expect(element.textContent).toContain('旧交易引擎操作');
-      expect(
-        get('section[aria-label="旧交易引擎操作"] button').textContent,
-      ).toBe('启动旧引擎');
+      expect(get('[role="status"]').textContent).toContain('环境未确认');
+      expect(element.textContent).not.toContain('旧交易引擎操作');
+      expect(element.textContent).not.toContain('启动旧引擎');
     },
   );
 
-  it.each(['research', 'orderflow', 'backtest', 'data', 'ops'])(
+  it.each(['research', 'orderflow', 'factors', 'data-quality', 'operations'])(
     '%s does not imply a live or Demo trading account',
     async (path) => {
       const { element, get } = await open('/quant/' + path);
@@ -118,11 +115,11 @@ describe('quant workspace shell boundaries', () => {
 
   it('identifies paper views and keeps focus filtering in the route', async () => {
     const { router, element, get } = await open(
-      '/quant/strategy-focus?strategy=s03',
+      '/quant/strategy-lab?strategy=s03',
     );
     expect(get('[role="status"]').textContent).toContain('纸面研究');
     expect(router.currentRoute.value.fullPath).toBe(
-      '/quant/strategy-focus?strategy=s03',
+      '/quant/strategy-lab?strategy=s03',
     );
     expect(element.textContent).not.toContain('启动旧引擎');
   });
@@ -177,15 +174,15 @@ describe('quant workspace shell boundaries', () => {
     expect(document.activeElement).toBe(toggle);
   });
 
-  it('distinguishes the temporary factor monitor from the operations workspace', async () => {
-    const { router, element, get } = await open('/quant/ops?workspace=factors');
+  it('新版因子与运维使用各自独立路由', async () => {
+    const { router, element, get } = await open('/quant/factors');
     expect(element.querySelectorAll('nav [aria-current="page"]')).toHaveLength(
       1,
     );
     expect(get('nav [aria-current="page"]').textContent?.trim()).toBe(
       '因子实验室',
     );
-    await router.push('/quant/ops');
+    await router.push('/quant/operations');
     await nextTick();
     expect(element.querySelectorAll('nav [aria-current="page"]')).toHaveLength(
       1,

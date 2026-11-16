@@ -102,9 +102,11 @@ describe('因子实验室真实读取展示', () => {
     expect(view.element.textContent).toContain('不授予 Demo 准入');
     expect(view.get('tbody').textContent).toContain('0');
     expect(view.get('tbody').textContent).toContain('未知');
-    expect(view.get('a[href="/quant/ops"]').textContent).toContain(
-      '旧监控详情',
-    );
+    expect(
+      [...view.element.querySelectorAll('a')].map((link) =>
+        link.getAttribute('href'),
+      ),
+    ).toEqual(['/quant/operations', '/quant/research', '/quant/experiments']);
   });
   it('失败时保留表格，刷新按钮只发读取事件', async () => {
     const view = open({

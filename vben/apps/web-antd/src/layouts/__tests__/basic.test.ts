@@ -1,15 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  createApp,
-  defineComponent,
-  h,
-  nextTick,
-  onMounted,
-  onUnmounted,
-} from 'vue';
+import { describe, expect, it, vi } from 'vitest';
+import { createApp, defineComponent, h, nextTick } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
-
-const effects = vi.hoisted(() => ({ pollerStarts: 0, pollerStops: 0 }));
 
 vi.mock('@vben/common-ui', () => ({
   AuthenticationLoginExpiredModal: { template: '<div />' },
@@ -48,27 +39,7 @@ vi.mock('#/locales', () => ({ $t: (key: string) => key }));
 vi.mock('#/views/_core/authentication/login.vue', () => ({
   default: { template: '<div />' },
 }));
-// Mock at the external polling boundary: the real shell decides whether it is mounted.
-vi.mock('#/views/quant/components/BotControls.vue', () => ({
-  default: defineComponent({
-    setup() {
-      onMounted(() => {
-        effects.pollerStarts += 1;
-      });
-      onUnmounted(() => {
-        effects.pollerStops += 1;
-      });
-      return () => h('button', '旧引擎写命令');
-    },
-  }),
-}));
-
 import Basic from '../basic.vue';
-
-beforeEach(() => {
-  effects.pollerStarts = 0;
-  effects.pollerStops = 0;
-});
 
 async function run(
   path: string,
@@ -79,21 +50,25 @@ async function run(
 ) {
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: ['trade-desk', 'acceptance', 'overview', 'ops', 'binance-demo'].map(
-      (view) => ({
-        path: '/quant/' + view,
-        name: (
-          {
-            'trade-desk': 'QuantTradeDesk',
-            acceptance: 'QuantAcceptance',
-            overview: 'QuantOverview',
-            ops: 'QuantOps',
-            'binance-demo': 'QuantBinanceDemo',
-          } as Record<string, string>
-        )[view],
-        component: { template: '<div />' },
-      }),
-    ),
+    routes: [
+      'trade-desk',
+      'acceptance',
+      'factors',
+      'operations',
+      'binance-demo',
+    ].map((view) => ({
+      path: '/quant/' + view,
+      name: (
+        {
+          'trade-desk': 'QuantTradeDesk',
+          acceptance: 'QuantAcceptance',
+          factors: 'QuantFactors',
+          operations: 'QuantOperations',
+          'binance-demo': 'QuantBinanceDemo',
+        } as Record<string, string>
+      )[view],
+      component: { template: '<div />' },
+    })),
   });
   await router.push(path);
   await router.isReady();
@@ -110,26 +85,25 @@ async function run(
 }
 
 describe('application shell external command boundary', () => {
-  it.each(['trade-desk', 'acceptance', 'binance-demo', 'ops'])(
+  it.each(['trade-desk', 'acceptance', 'binance-demo', 'operations'])(
     '%s never mounts the legacy command poller',
     async (view) => {
       await run('/quant/' + view, async (_, element) => {
         await nextTick();
-        expect(effects.pollerStarts).toBe(0);
         expect(element.textContent).not.toContain('旧引擎写命令');
         expect(element.textContent).not.toContain('web-login-identity');
       });
     },
   );
 
-  it('stops the legacy poller before entering a Demo account view', async () => {
-    await run('/quant/overview', async (router, element) => {
+  it('切换新版工作区始终没有旧交易控制栏', async () => {
+    await run('/quant/factors', async (router, element) => {
       await nextTick();
-      expect(effects.pollerStarts).toBe(1);
-      expect(element.textContent).toContain('旧交易引擎操作');
+      expect(element.textContent).toContain('因子实验室');
+      expect(element.querySelector('.quant-shell-legacy')).toBeNull();
       await router.push('/quant/trade-desk');
       await nextTick();
-      expect(effects.pollerStops).toBe(1);
+      expect(element.querySelector('.quant-shell-legacy')).toBeNull();
       expect(element.textContent).not.toContain('旧引擎写命令');
       expect(element.querySelector('[role="status"]')?.textContent).toContain(
         'Binance Demo',

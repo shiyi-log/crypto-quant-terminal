@@ -3,13 +3,13 @@ import { createMemoryHistory, createRouter } from 'vue-router';
 
 vi.mock('#/locales', () => ({ $t: (key: string) => key }));
 
-import { coreRoutes } from '../routes/core';
+import { coreRoutes, fallbackNotFoundRoute } from '../routes/core';
 import quantRoutes from '../routes/modules/quant';
 
-describe('workspace and historical route identity', () => {
+describe('新版工作区与旧版入口退役', () => {
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: [...coreRoutes, ...quantRoutes],
+    routes: [...coreRoutes, ...quantRoutes, fallbackNotFoundRoute],
   });
 
   it.each(['factors', 'experiments', 'data-quality', 'operations'])(
@@ -25,26 +25,12 @@ describe('workspace and historical route identity', () => {
   );
 
   it.each([
-    'overview',
-    'positions',
-    'market',
-    'data',
     'orderflow',
     'price-spikes',
-    'backtest',
-    'detail',
-    'tasks',
-    'live',
     'research',
     'strategy-lab',
-    'strategy-focus',
     'binance-demo',
-    'research-ledger',
-    'iteration',
-    'ops',
-    'pairlist',
     'security',
-    'logs',
     'trade-desk',
     'acceptance',
   ])('preserves exact historical %s query identity', (path) => {
@@ -53,6 +39,29 @@ describe('workspace and historical route identity', () => {
     expect(resolved.matched).toHaveLength(2);
     expect(resolved.fullPath).toBe(address);
     expect(resolved.matched.at(-1)?.redirect).toBeUndefined();
+  });
+
+  it.each([
+    'overview',
+    'positions',
+    'market',
+    'data',
+    'backtest',
+    'detail',
+    'tasks',
+    'live',
+    'strategy-focus',
+    'research-ledger',
+    'iteration',
+    'ops',
+    'pairlist',
+    'logs',
+  ])('旧版 %s 入口不再解析为可挂载业务页面', (path) => {
+    const resolved = router.resolve('/quant/' + path + '?run_id=old-7');
+    expect(resolved.name).toBe('FallbackNotFound');
+    expect(resolved.matched.some((record) => record.name === 'Quant')).toBe(
+      false,
+    );
   });
 
   it.each(['forbidden', 'internal-error', 'offline', 'coming-soon'])(

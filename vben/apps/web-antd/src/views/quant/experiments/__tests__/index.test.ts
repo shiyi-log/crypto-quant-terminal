@@ -79,6 +79,9 @@ describe('实验任务页面', () => {
     expect(wrapper.text()).toContain('成本指纹');
     expect(wrapper.text()).toContain('未知');
     expect(wrapper.text()).toContain('不构成上线批准');
+    expect(
+      wrapper.findAll('a').map((link) => link.getAttribute('href')),
+    ).toEqual(['/quant/research', '/quant/operations']);
   });
 
   it('任务按钮更新深链与详情，失败刷新保留原记录', async () => {

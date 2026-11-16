@@ -70,7 +70,7 @@ function get(element: Element, selector: string) {
   if (!target) throw Error('Missing rendered element ' + selector);
   return target;
 }
-async function open(focus = false) {
+async function open() {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -79,14 +79,9 @@ async function open(focus = false) {
         name: 'QuantStrategyLab',
         component: { template: '<div />' },
       },
-      {
-        path: '/quant/strategy-focus',
-        name: 'QuantStrategyFocus',
-        component: { template: '<div />' },
-      },
     ],
   });
-  await router.push('/quant/' + (focus ? 'strategy-focus' : 'strategy-lab'));
+  await router.push('/quant/strategy-lab');
   await router.isReady();
   const element = document.createElement('div');
   document.body.append(element);
@@ -265,22 +260,36 @@ describe('纸面策略档案工作区', () => {
     );
     expect(get(element, '[data-selected-paper]').textContent).toContain(second);
   });
-  it('重点路线始终只保留固定s03和s05账户', async () => {
-    api.get.mockResolvedValue({
-      accounts: [
-        ...accounts,
-        account(
-          's11_tsmom_bollinger_pullback_B15m_R50_k1.0_100x_maker',
-          '其他账户',
-        ),
-      ],
-    });
-    const { element } = await open(true);
+  it('唯一策略档案入口保留全部账户，选择非重点账户后仍可查看原身份', async () => {
+    const other = account(
+      's11_tsmom_bollinger_pullback_B15m_R50_k1.0_100x_maker',
+      '其他账户',
+    );
+    api.get.mockImplementation(async (_url, options) =>
+      options?.params?.strategy_id
+        ? {
+            ...details(options.params.strategy_id),
+            account: [...accounts, other].find(
+              (item) => item.strategy_id === options.params.strategy_id,
+            ),
+          }
+        : { accounts: [...accounts, other] },
+    );
+    const { element, router } = await open();
     await vi.waitFor(() =>
       expect(element.textContent).toContain('动量纸面账户'),
     );
-    expect(get(element, '[data-account-ledger]').textContent).not.toContain(
+    expect(get(element, '[data-account-ledger]').textContent).toContain(
       '其他账户',
     );
+    get(element, '[data-account-id="' + other.strategy_id + '"]').click();
+    await vi.waitFor(() =>
+      expect(get(element, '[data-selected-paper]').textContent).toContain(
+        other.strategy_id,
+      ),
+    );
+    expect(router.currentRoute.value.fullPath).toBe('/quant/strategy-lab');
+    expect(get(element, '#paper-title').textContent).toContain('纸面策略档案');
+    expect(get(element, '#paper-title').textContent).not.toContain('重点');
   });
 });

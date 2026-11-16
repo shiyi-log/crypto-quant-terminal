@@ -349,14 +349,12 @@ onUnmounted(() => cancelExperiments(state));
           </ul>
           <p>未接通的证据保持未知，不从旧研究通过推导 Demo 资格。</p>
         </section>
-        <nav class="history-links" aria-label="历史实验入口">
-          <RouterLink to="/quant/backtest">历史回测列表</RouterLink
-          ><RouterLink to="/quant/iteration">旧迭代与优选登记</RouterLink
-          ><RouterLink to="/quant/research-ledger">历史研究证据</RouterLink
-          ><RouterLink to="/quant/detail">旧产物明细 · 手动选择</RouterLink>
+        <nav class="history-links" aria-label="相关证据工作区">
+          <RouterLink to="/quant/research">策略研究</RouterLink
+          ><RouterLink to="/quant/operations">运维与证据</RouterLink>
         </nav>
         <p class="history-note">
-          旧产物页尚未接通按本轮身份精确定位，请核对并手动选择；旧优选登记不授予新上线批准。
+          历史产物尚未建立按本轮身份精确定位的读取合同；当前仅展示已返回证据，历史研究结论不授予上线批准。
         </p>
       </aside>
     </div>

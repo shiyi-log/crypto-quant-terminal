@@ -244,10 +244,10 @@ function display(value: null | string) {
           历史横截面 IC 不替代 BTC、ETH、TRX
           的单币时序研究；也不证明完整成本后收益。
         </p>
-        <nav class="history-links" aria-label="历史研究入口">
-          <RouterLink to="/quant/ops">旧监控详情</RouterLink
-          ><RouterLink to="/quant/research">历史策略研究</RouterLink
-          ><RouterLink to="/quant/research-ledger">研究证据账</RouterLink>
+        <nav class="history-links" aria-label="相关研究工作区">
+          <RouterLink to="/quant/operations">运维与证据</RouterLink
+          ><RouterLink to="/quant/research">策略研究</RouterLink
+          ><RouterLink to="/quant/experiments">实验任务</RouterLink>
         </nav>
       </aside>
     </div>

@@ -460,17 +460,14 @@ onBeforeUnmount(() => {
           </p>
         </section>
 
-        <nav class="inspector-panel history-links" aria-label="历史运维入口">
-          <p class="eyebrow">HISTORICAL REFERENCES</p>
-          <h2>历史入口</h2>
-          <RouterLink to="/quant/logs"
-            >历史运行日志 <span aria-hidden="true">↗</span></RouterLink
+        <nav class="inspector-panel history-links" aria-label="相关证据工作区">
+          <p class="eyebrow">EVIDENCE WORKSPACES</p>
+          <h2>相关证据</h2>
+          <RouterLink to="/quant/data-quality"
+            >数据与质量 <span aria-hidden="true">↗</span></RouterLink
           >
-          <RouterLink to="/quant/ops"
-            >历史运维监控 <span aria-hidden="true">↗</span></RouterLink
-          >
-          <RouterLink to="/quant/research-ledger"
-            >研究账本原始视图 <span aria-hidden="true">↗</span></RouterLink
+          <RouterLink to="/quant/experiments"
+            >实验任务 <span aria-hidden="true">↗</span></RouterLink
           >
         </nav>
       </aside>

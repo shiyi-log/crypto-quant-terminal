@@ -291,11 +291,6 @@ export function metricText(value: unknown): string {
     ? String(value)
     : '未知';
 }
-export function artifactLink(run: ExperimentRun): null | string {
-  return run.identifier?.trim()
-    ? `/quant/detail?identifier=${encodeURIComponent(run.identifier)}`
-    : null;
-}
 export function identityFacts(
   run: ExperimentRun,
 ): Array<{ label: string; value: string }> {

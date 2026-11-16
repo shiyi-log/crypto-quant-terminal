@@ -8,7 +8,7 @@ const viewports = [
   { width: 768, height: 1024 },
   { width: 390, height: 844 },
 ];
-const unsupported = [
+const retiredAuthenticationRoutes = [
   'code-login',
   'qrcode-login',
   'register',
@@ -16,35 +16,38 @@ const unsupported = [
 ];
 
 for (const viewport of viewports) {
-  for (const method of unsupported) {
-    test(`未支持认证 ${method} · ${viewport.width} · 不产生虚假表单或请求`, async ({
+  for (const method of retiredAuthenticationRoutes) {
+    test(`旧认证入口 ${method} · ${viewport.width} · 已认证访问进入404且不额外认证`, async ({
       page,
     }) => {
       await page.setViewportSize(viewport);
       const fixture = await installDemoFixture(page);
-      await page.goto(`/#/auth/${method}?redirect=%2Fquant%2Facceptance`);
-      const content = page.locator('.unsupported-method');
-      await expect(content.getByRole('heading')).toContainText('当前不支持');
+      await page.goto('/#/quant/trade-desk');
+      await expect(page.locator('.desk-page')).toBeVisible();
+      const authenticationBefore = [...fixture.authRequests];
+      // 保持同一合成会话，仅切换路由；未知页面仍遵循现有访问守卫。
+      await page.evaluate((retiredRoute) => {
+        location.hash = `/auth/${retiredRoute}?redirect=%2Fquant%2Facceptance`;
+      }, method);
+      const content = page.locator('.system-state');
+      await expect(content.getByRole('heading')).toHaveText('找不到这个页面');
+      await expect(content.locator('.state-code')).toHaveText('404');
+      await expect(content.locator('[data-current-location]')).toHaveText(
+        `/auth/${method}`,
+      );
       await expect(content.locator('form,input,canvas,img')).toHaveCount(0);
-      const login = content.getByRole('link', {
-        name: '返回用户名密码登录',
-        exact: true,
-      });
-      const loginHref = await login.getAttribute('href');
-      expect(loginHref).toContain('#/auth/login');
-      expect(
-        new URLSearchParams(loginHref!.split('?')[1]).get('redirect'),
-      ).toBe('/quant/acceptance');
+      await expect(page.locator('.unsupported-method')).toHaveCount(0);
+      await expect(page).toHaveURL(new RegExp(`#/auth/${method}\?`));
       await expect(
-        content.getByRole('link', { name: '本机恢复密码', exact: true }),
-      ).toHaveAttribute('href', /recovery=local/);
+        content.getByRole('link', { name: '返回交易台', exact: true }),
+      ).toHaveAttribute('href', '#/quant/trade-desk');
       await expect(page.locator('#__app-loading__')).toHaveCount(0);
       const widths = await page.evaluate(() => ({
         document: document.documentElement.scrollWidth,
         viewport: innerWidth,
       }));
       expect(widths.document).toBeLessThanOrEqual(widths.viewport);
-      expect(fixture.authRequests).toEqual([]);
+      expect(fixture.authRequests).toEqual(authenticationBefore);
       expect(fixture.mutations).toEqual([]);
       expect(fixture.unexpected).toEqual([]);
       expect(fixture.pageErrors).toEqual([]);

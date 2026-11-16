@@ -62,7 +62,7 @@ async function open(
 ) {
   const router = createRouter({
     history: hash ? createWebHashHistory('/') : createMemoryHistory(),
-    routes: ['data-quality', 'data', 'logs'].map((path) => ({
+    routes: ['data-quality', 'operations'].map((path) => ({
       path: '/quant/' + path,
       component: { template: '<div />' },
     })),
@@ -95,13 +95,18 @@ afterEach(() =>
 );
 
 describe('数据质量工作区', () => {
-  it('历史入口保留生产 hash 路由并可在应用内导航', async () => {
-    const { get, router } = await open(async () => response(), true);
-    const link = get<HTMLAnchorElement>('a[href$="#/quant/data"]');
+  it('从采集来源进入新运维工作区，保留生产 hash 路由', async () => {
+    const { element, get, router } = await open(async () => response(), true);
+    expect(
+      [...element.querySelectorAll('a')].map((link) =>
+        link.getAttribute('href'),
+      ),
+    ).toEqual(['#/quant/operations']);
+    const link = get<HTMLAnchorElement>('a[href$="#/quant/operations"]');
     link.click();
     await flush();
     await vi.waitFor(() =>
-      expect(router.currentRoute.value.path).toBe('/quant/data'),
+      expect(router.currentRoute.value.path).toBe('/quant/operations'),
     );
   });
   it('呈现清单与证据限制，不把一年端点或运行状态提升为研究通过', async () => {
@@ -115,7 +120,7 @@ describe('数据质量工作区', () => {
     expect(element.textContent).toContain('首末时间与记录数无法证明连续覆盖');
     expect(get('[data-dataset-inspector]').textContent).toContain('105,121');
     expect(element.querySelectorAll('button')).toHaveLength(3);
-    expect(element.querySelector('a[href="/quant/data"]')).not.toBeNull();
+    expect(element.querySelector('a[href="/quant/operations"]')).not.toBeNull();
   });
 
   it('精确筛选交易对和频率，并把所选事实交给明细检查器', async () => {

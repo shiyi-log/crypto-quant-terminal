@@ -46,7 +46,6 @@ async function open(path = '/quant/research') {
       { path: '/quant/research', component: ResearchWorkspace },
       { path: '/quant/strategy-lab', component: { template: '<p>paper</p>' } },
       { path: '/quant/experiments', component: { template: '<p>runs</p>' } },
-      { path: '/quant/detail', component: { template: '<p>history</p>' } },
     ],
   });
   await router.push(path);
@@ -85,6 +84,9 @@ describe('strategy research workspace behavior', () => {
   it('keeps historical recommendation separate from cost and approval and switches evidence candidate', async () => {
     const { el, router } = await open();
     expect(el.textContent).toContain('尚无 Demo 准入裁定');
+    expect(
+      [...el.querySelectorAll('a')].map((link) => link.getAttribute('href')),
+    ).toEqual(['/quant/strategy-lab', '/quant/experiments']);
     expect(
       el.querySelector('[aria-label="所选研究证据"]')?.textContent,
     ).toContain('Carry');

@@ -92,9 +92,6 @@ onUnmounted(reader.dispose);
         <p class="intro">核对数据存量、频率与来源，逐项查看研究需要的证据。</p>
       </div>
       <div class="heading-actions">
-        <RouterLink to="/quant/data"
-          >历史数据浏览器 <span aria-hidden="true">↗</span></RouterLink
-        >
         <button
           data-refresh
           :disabled="state.loading"
@@ -319,8 +316,8 @@ onUnmounted(reader.dispose);
           <p class="eyebrow">COLLECTION / SOURCES</p>
           <h2 id="source-title">采集状态与来源</h2>
         </div>
-        <RouterLink to="/quant/logs"
-          >历史日志 <span aria-hidden="true">↗</span></RouterLink
+        <RouterLink to="/quant/operations"
+          >运维与证据 <span aria-hidden="true">↗</span></RouterLink
         >
       </div>
       <dl class="collection-facts">

@@ -15,7 +15,6 @@ import type {
 } from './accountFilters';
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
 
 import {
   Alert,
@@ -72,7 +71,6 @@ const population = ref<LabPopulation>('factorial');
 const riskFilter = ref<LabRiskFilter>('all');
 const stopFilter = ref<LabStopFilter>('all');
 const bookGroupFilter = ref<LabBookGroupFilter>('all');
-const route = useRoute();
 const section = ref('positions');
 const loading = ref(false);
 const detailLoading = ref(false);
@@ -90,15 +88,7 @@ let overviewSequence = 0;
 let detailSequence = 0;
 let timer: ReturnType<typeof setInterval> | undefined;
 
-const focusOnly = computed(() => route.name === 'QuantStrategyFocus');
-const scopedAccounts = computed(() => {
-  const all = overview.value?.accounts ?? [];
-  if (!focusOnly.value) return all;
-  return all.filter((item) => {
-    const baseId = canonicalLabStrategy(item);
-    return baseId === 's03_tsmom_vol_target' || baseId === 's05_bollinger_fade';
-  });
-});
+const scopedAccounts = computed(() => overview.value?.accounts ?? []);
 const accounts = computed(() =>
   filterLabAccounts(
     scopedAccounts.value,
@@ -191,10 +181,10 @@ const filterScope = computed(() => {
     population.value === 'microstructure'
       ? ` · ${bookGroupOptions.find((item) => item.value === bookGroupFilter.value)?.label}`
       : '';
-  return `${focusOnly.value ? '重点策略范围 · ' : ''}${populationLabels[population.value]} · ${factors}${bookGroup} · 当前显示 ${accounts.value.length} / ${count} 个账户`;
+  return `${populationLabels[population.value]} · ${factors}${bookGroup} · 当前显示 ${accounts.value.length} / ${count} 个账户`;
 });
-const blockedStrategies = computed<StrategyLabBlockedStrategy[]>(() =>
-  focusOnly.value ? [] : (overview.value?.blocked_strategies ?? []),
+const blockedStrategies = computed<StrategyLabBlockedStrategy[]>(
+  () => overview.value?.blocked_strategies ?? [],
 );
 const blockedStrategySummary = computed(() =>
   blockedStrategies.value
@@ -205,8 +195,8 @@ const blockedStrategySummary = computed(() =>
     })
     .join('；'),
 );
-const rejectedStrategies = computed<StrategyLabRejectedStrategy[]>(() =>
-  focusOnly.value ? [] : (overview.value?.rejected_strategies ?? []),
+const rejectedStrategies = computed<StrategyLabRejectedStrategy[]>(
+  () => overview.value?.rejected_strategies ?? [],
 );
 const rejectedStrategySummary = computed(() =>
   rejectedStrategies.value
@@ -943,11 +933,7 @@ async function refresh() {
 watch(
   accounts,
   (items) => {
-    selectedId.value = selectLabAccount(
-      items,
-      selectedId.value,
-      focusOnly.value,
-    );
+    selectedId.value = selectLabAccount(items, selectedId.value, false);
   },
   { flush: 'sync' },
 );
@@ -960,13 +946,6 @@ watch(
     void refreshDetail();
   },
   { flush: 'sync' },
-);
-watch(
-  () => route.name,
-  (name, previous) => {
-    if (name === previous) return;
-    void refresh();
-  },
 );
 onMounted(() => {
   void refresh();
@@ -985,9 +964,7 @@ onUnmounted(() => {
   <main class="strategy-lab paper-workspace" aria-labelledby="paper-title">
     <header class="paper-heading">
       <div>
-        <h1 id="paper-title">
-          {{ focusOnly ? '重点策略纸面档案' : '纸面策略档案' }}
-        </h1>
+        <h1 id="paper-title">纸面策略档案</h1>
         <p>独立账户与实验臂，按冻结规则追溯定义、成本和执行记录。</p>
       </div>
       <Button

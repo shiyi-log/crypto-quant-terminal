@@ -469,8 +469,7 @@ onUnmounted(() => {
         </dl>
         <nav aria-label="相关档案">
           <RouterLink to="/quant/strategy-lab">纸面账户档案</RouterLink
-          ><RouterLink to="/quant/experiments">实验任务</RouterLink
-          ><RouterLink to="/quant/detail">历史模型产物</RouterLink>
+          ><RouterLink to="/quant/experiments">实验任务</RouterLink>
         </nav>
       </aside>
     </div>

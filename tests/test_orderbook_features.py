@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 
 from orderbook_features import (HOUR_MS, compute_hour_features,
@@ -371,17 +372,28 @@ class FeaturePublicationDatabaseTests(unittest.TestCase):
         if not test_dsn or test_dsn == os.getenv("QUANT_DATABASE_URL"):
             raise unittest.SkipTest("an isolated QUANT_TEST_DATABASE_URL is required")
         from data_store import DataStore
-        cls.store = DataStore(dsn=test_dsn, max_connections=1)
+        from psycopg.conninfo import conninfo_to_dict
+        test_config = conninfo_to_dict(test_dsn)
+        production = conninfo_to_dict(os.getenv("QUANT_DATABASE_URL", ""))
+        def location(config):
+            return tuple(config.get(key, "") for key in ("host", "port", "dbname"))
+        if ("test" not in test_config.get("dbname", "").lower()
+                or (production and location(test_config) == location(production))):
+            raise RuntimeError("refusing publication test outside an isolated test database")
+        cls.dsn = test_dsn
+        cls.schema = "book_publication_test_" + uuid.uuid4().hex
+        cls.store = DataStore(dsn=test_dsn, schema=cls.schema, max_connections=1)
+        cls.store.migrate_schema()
         cls.store.initialize()
-        with cls.store._connection() as conn:
-            name = conn.execute("SELECT current_database() AS name").fetchone()["name"]
-        if "test" not in name.lower():
-            cls.store.close()
-            raise unittest.SkipTest("refusing publication test outside an isolated test database")
 
     @classmethod
     def tearDownClass(cls):
+        import psycopg
+        from psycopg import sql
         cls.store.close()
+        with psycopg.connect(cls.dsn) as conn:
+            conn.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE")
+                         .format(sql.Identifier(cls.schema)))
 
     def test_postgres_atomic_first_acceptance_idempotence_and_correction(self):
         opening = OPEN + os.getpid() * HOUR_MS

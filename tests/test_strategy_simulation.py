@@ -486,6 +486,7 @@ class StrategySimulationStorageTests(unittest.TestCase):
             raise RuntimeError("integration tests require an independent test database")
         cls.schema = "quant_strategy_test_" + uuid.uuid4().hex
         cls.store = DataStore(dsn=os.environ["QUANT_TEST_DATABASE_URL"], schema=cls.schema)
+        cls.store.migrate_schema()
         cls.store.initialize()
 
     @classmethod

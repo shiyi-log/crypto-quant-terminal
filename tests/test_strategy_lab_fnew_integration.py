@@ -41,6 +41,7 @@ class FnewAccountCreationTests(unittest.TestCase):
         # them, and the real creation path is exercised on every run.
         self.schema = "quant_test_" + uuid.uuid4().hex
         self.store = DataStore(dsn=TEST_URL, schema=self.schema)
+        self.store.migrate_schema()
         self.store.initialize()
         self.simulation = StrategySimulation(self.store)
 

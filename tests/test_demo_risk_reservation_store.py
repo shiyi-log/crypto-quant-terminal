@@ -76,6 +76,7 @@ def data():
     schema='risk_reserve_test_'+uuid.uuid4().hex
     store=DataStore(dsn=dsn,schema=schema,max_connections=6)
     try:
+        store.migrate_schema()
         cls()(store,'setup','setup').ensure_schema()
         yield store
     finally:

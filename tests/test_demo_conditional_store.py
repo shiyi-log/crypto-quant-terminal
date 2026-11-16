@@ -88,6 +88,7 @@ def isolated_data():
     schema = 'conditional_test_' + uuid.uuid4().hex
     data = DataStore(dsn=dsn, schema=schema, max_connections=6)
     try:
+        data.migrate_schema()
         store_class()(data, 'setup').ensure_schema()
         yield data
     finally:

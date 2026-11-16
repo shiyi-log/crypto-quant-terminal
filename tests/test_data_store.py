@@ -53,6 +53,7 @@ class DataStoreIntegrationTests(unittest.TestCase):
         cls.schema = "quant_test_" + uuid.uuid4().hex
         cls.store = DataStore(dsn=os.environ["QUANT_TEST_DATABASE_URL"], schema=cls.schema)
         # 环境已配置时连接失败必须成为测试失败，不能转成 skip。
+        cls.store.migrate_schema()
         cls.store.initialize()
 
     @classmethod

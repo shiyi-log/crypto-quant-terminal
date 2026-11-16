@@ -10,7 +10,7 @@ import pytest
 from data_store import DataStore
 import research_ledger as ledger
 
-SCHEMA_SQL = (Path(__file__).resolve().parents[1] / "database/schema.sql").read_text(
+SCHEMA_SQL = (Path(__file__).resolve().parents[1] / "database/migrations/0001_global_baseline.sql").read_text(
     encoding="utf-8")
 
 
@@ -36,6 +36,7 @@ def store():
     schema = "test_research_ledger_" + uuid.uuid4().hex[:20]
     value = DataStore(dsn=dsn, schema=schema, max_connections=2)
     try:
+        value.migrate_schema()
         value.initialize()
         yield value
     finally:
@@ -82,13 +83,12 @@ def test_direct_mutation_is_rejected_and_original_evidence_survives(store, state
     assert new_id != event_id
 
 
-def test_reapplying_schema_keeps_existing_event_ids_sequences_and_protection(store):
+def test_explicit_migration_retry_keeps_existing_event_ids_sequences_and_protection(store):
     # Break caught: initialization loses protection or rewrites historical sequence IDs.
     import psycopg
 
     _, before = original_fact(store)
-    with store._connection() as conn:
-        conn.execute(SCHEMA_SQL)
+    store.migrate_schema()
     with store._connection() as conn:
         assert conn.execute("SELECT * FROM research_ledger_events").fetchall() == [before]
     with pytest.raises(psycopg.Error):

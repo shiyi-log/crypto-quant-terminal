@@ -169,6 +169,7 @@ class DemoStoreIntegrationTests(unittest.TestCase):
                 raise RuntimeError("test database must differ from production")
         cls.schema = "demo_test_" + uuid.uuid4().hex
         cls.data = DataStore(dsn=os.environ["QUANT_TEST_DATABASE_URL"], schema=cls.schema)
+        cls.data.migrate_schema()
         cls.demo = DemoStore(cls.data, "session_a")
         cls.demo.ensure_schema()
 

@@ -114,6 +114,7 @@ class DataStore:
             except ImportError as exc:
                 raise RuntimeError("请安装 psycopg[binary,pool] 数据库依赖") from exc
             self._sql, self._Jsonb = sql, Jsonb
+            from database_migrations import check_schema
 
             def configure(conn):
                 # schema 名作为 SQL 标识符转义，不拼接未经转义的连接配置。
@@ -122,27 +123,74 @@ class DataStore:
                 conn.execute("SET lock_timeout TO '15s'")
                 conn.commit()
 
-            pool = ConnectionPool(
-                conninfo=self.dsn, min_size=1, max_size=self.max_connections,
-                timeout=20, open=False, configure=configure,
-                kwargs={"row_factory": dict_row, "connect_timeout": 10},
-                name="quant-data",
-            )
+            pool = None
             try:
+                pool = ConnectionPool(
+                    conninfo=self.dsn, min_size=1, max_size=self.max_connections,
+                    timeout=20, open=False, configure=configure,
+                    kwargs={"row_factory": dict_row, "connect_timeout": 10},
+                    name="quant-data",
+                )
                 pool.open(wait=True, timeout=20)
                 with pool.connection() as conn:
                     with conn.transaction():
-                        # 多个服务首次启动时串行执行 DDL，防止系统目录冲突。
-                        conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"quant-schema:{self.schema}",))
-                        conn.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(self.schema)))
-                        schema_file = Path(__file__).resolve().parent / "database" / "schema.sql"
-                        conn.execute(schema_file.read_text(encoding="utf-8"), prepare=False)
-                        self._migrate_orderflow_surges(conn)
+                        # 服务启动只核对已安装结构；DDL 与旧事实导入由独立命令执行。
+                        conn.execute("SET TRANSACTION READ ONLY")
+                        check_schema(conn, schema=self.schema)
                 self._pool = pool
             except Exception:
-                pool.close()
-                raise
+                try:
+                    if pool is not None:
+                        pool.close()
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    "数据库连接或结构检查失败；请运行 manage.py db check，按诊断显式迁移"
+                ) from None
         return self
+
+    def _schema_operation(self, *, migrate, adopt=False, backup_evidence=None):
+        """运维连接独立于业务连接池，避免尚未建库时递归初始化。"""
+        if not self.dsn:
+            raise RuntimeError("请在私有 .env 中设置 QUANT_DATABASE_URL")
+        try:
+            import psycopg
+            from psycopg import sql
+            from psycopg.rows import dict_row
+            from psycopg.types.json import Jsonb
+            from database_migrations import MigrationError, check_schema, migrate_schema
+        except ImportError:
+            raise RuntimeError("请安装 psycopg[binary,pool] 数据库依赖") from None
+        self._sql, self._Jsonb = sql, Jsonb
+        try:
+            with psycopg.connect(self.dsn, row_factory=dict_row, connect_timeout=10) as conn:
+                with conn.transaction():
+                    if not migrate:
+                        conn.execute("SET TRANSACTION READ ONLY")
+                    conn.execute(sql.SQL("SET LOCAL search_path TO {}, pg_catalog")
+                                 .format(sql.Identifier(self.schema)))
+                    conn.execute("SET LOCAL statement_timeout TO '120s'")
+                    conn.execute("SET LOCAL lock_timeout TO '15s'")
+                    if migrate:
+                        return migrate_schema(conn, schema=self.schema, adopt=adopt,
+                                              backup_evidence=backup_evidence,
+                                              legacy_import=self._migrate_orderflow_surges)
+                    return check_schema(conn, schema=self.schema)
+        except MigrationError as exc:
+            # MigrationError 只含模块内固定诊断码，不携带 PostgreSQL 错误文本。
+            raise RuntimeError(str(exc)) from None
+        except Exception:
+            raise RuntimeError("数据库迁移失败" if migrate else "数据库结构检查失败") from None
+
+    def migrate_schema(self, *, adopt=False, backup_evidence=None):
+        """显式安装/升级结构；接管已有无版本结构需要独立恢复验证证据。"""
+        with self._init_lock:
+            return self._schema_operation(migrate=True, adopt=adopt,
+                                          backup_evidence=backup_evidence)
+
+    def check_schema(self):
+        """只读核对结构、迁移历史与校验和；不会创建连接池或安装结构。"""
+        return self._schema_operation(migrate=False)
 
     def close(self):
         with self._init_lock:

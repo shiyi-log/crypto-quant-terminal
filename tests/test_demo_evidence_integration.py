@@ -32,7 +32,9 @@ class DemoEvidenceIntegrationTests(unittest.TestCase):
         cls.schema = "demo_evidence_test_" + uuid.uuid4().hex
         cls.root = tempfile.TemporaryDirectory()
         cls.data = DataStore(root=cls.root.name, dsn=os.environ["QUANT_TEST_DATABASE_URL"],
-                             schema=cls.schema).initialize()
+                             schema=cls.schema)
+        cls.data.migrate_schema()
+        cls.data.initialize()
         DemoStore(cls.data).ensure_schema()
 
     @classmethod

@@ -1004,6 +1004,7 @@ class DataSyncTests(unittest.TestCase):
         dsn = os.environ["QUANT_TEST_DATABASE_URL"]
         store = DataStore(root=project, dsn=dsn, schema=schema)
         try:
+            store.migrate_schema()
             store.initialize()
             write_json(project, "models/demo/backtest_detail.json", {"value": 42})
             directory = project / "bot/user_data/data/binance/futures"
@@ -1055,6 +1056,7 @@ class DataSyncTests(unittest.TestCase):
         schema = "test_sync_prune_" + uuid.uuid4().hex
         store = DataStore(root=self.project, dsn=os.environ["QUANT_TEST_DATABASE_URL"], schema=schema)
         try:
+            store.migrate_schema()
             store.initialize()
             temporary_key = "bot/user_data/cache/panel_seq.npy.tmp.npy"
             regular_key = "bot/user_data/cache/panel_seq.npy"

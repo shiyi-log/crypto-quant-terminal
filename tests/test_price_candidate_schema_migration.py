@@ -1,4 +1,4 @@
-"""Verify an older provenance-free table upgrades without losing its rows."""
+"""已登记结构漂移必须保留事实并拒绝隐式修复。"""
 import os
 import unittest
 import uuid
@@ -11,7 +11,7 @@ load_environment()
 
 @unittest.skipUnless(os.getenv("QUANT_TEST_DATABASE_URL"), "independent quant_test required")
 class PriceCandidateSchemaMigrationTests(unittest.TestCase):
-    def test_legacy_table_upgrades_and_preserves_existing_candidate(self):
+    def test_missing_provenance_column_blocks_startup_without_rewriting_candidate(self):
         import psycopg
         from psycopg import sql
         from psycopg.conninfo import conninfo_to_dict
@@ -22,6 +22,7 @@ class PriceCandidateSchemaMigrationTests(unittest.TestCase):
         schema = "price_upgrade_" + uuid.uuid4().hex
         store = DataStore(dsn=dsn, schema=schema)
         try:
+            store.migrate_schema()
             with store._connection() as conn:
                 conn.execute("INSERT INTO orderflow_price_candidates "
                     "(event_id,method_version,data_fingerprint,exchange,market,pair,timeframe,"
@@ -33,17 +34,22 @@ class PriceCandidateSchemaMigrationTests(unittest.TestCase):
             store.close()
             store = DataStore(dsn=dsn, schema=schema)
             for _ in range(2):
-                with store._connection() as conn:
-                    row = conn.execute("SELECT event_id,observation,source_id FROM "
+                with self.assertRaisesRegex(RuntimeError, "结构检查失败"):
+                    store.initialize()
+                with self.assertRaisesRegex(RuntimeError, "shape"):
+                    store.migrate_schema()
+                # 直接只读核对失败前后的事实，不能靠普通连接补回缺列。
+                with psycopg.connect(dsn) as conn:
+                    conn.execute(sql.SQL("SET search_path TO {}, pg_catalog")
+                                 .format(sql.Identifier(schema)))
+                    row = conn.execute("SELECT event_id,observation FROM "
                                        "orderflow_price_candidates").fetchone()
-                    self.assertEqual(row, {"event_id": "legacy", "observation": {"legacy": True},
-                                           "source_id": None})
-                    conn.execute("UPDATE orderflow_price_candidates SET source_id='collector' "
-                                 "WHERE event_id='legacy'")
-                    conn.execute("UPDATE orderflow_price_candidates SET source_id=NULL "
-                                 "WHERE event_id='legacy'")
-                store.close()
-                store = DataStore(dsn=dsn, schema=schema)
+                    self.assertEqual(row, ("legacy", {"legacy": True}))
+                    column = conn.execute("SELECT 1 FROM information_schema.columns "
+                                          "WHERE table_schema=%s AND table_name=%s "
+                                          "AND column_name='source_id'",
+                                          (schema, "orderflow_price_candidates")).fetchone()
+                    self.assertIsNone(column)
         finally:
             store.close()
             with psycopg.connect(dsn) as conn:

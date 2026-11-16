@@ -827,6 +827,43 @@ def database_status() -> int:
     return 0
 
 
+def _migration_backup_evidence(receipt_path: Path | None) -> dict:
+    """运维者显式指定本地恢复验收回执；不接受 HTTP 调用者的布尔声明。"""
+    if receipt_path is None:
+        raise RuntimeError("adopt_requires_verified_backup_receipt")
+    try:
+        # 限制回执体积，不读取数据库归档或将文件内容写到诊断输出。
+        with receipt_path.open("rb") as source:
+            raw = source.read(1_048_577)
+        if len(raw) > 1_048_576:
+            raise ValueError
+        value = json.loads(raw)
+    except (OSError, ValueError, UnicodeError):
+        raise RuntimeError("backup_receipt_invalid") from None
+    if (not isinstance(value, dict) or value.get("business_validation") != "passed"
+            or not isinstance(value.get("reference"), str)
+            or not re.fullmatch(r"[A-Za-z0-9_.:/@-]{1,256}", value["reference"])
+            or not isinstance(value.get("archive_sha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", value["archive_sha256"])):
+        raise RuntimeError("verified_backup_and_restore_receipt_required")
+    return {key: value[key] for key in ("reference", "archive_sha256", "business_validation")}
+
+
+def database_schema_operation(operation: str, *, adopt=False,
+                              backup_receipt: Path | None = None) -> int:
+    from data_store import DataStore
+
+    evidence = _migration_backup_evidence(backup_receipt) if adopt else None
+    store = DataStore()
+    try:
+        receipt = (store.migrate_schema(adopt=adopt, backup_evidence=evidence)
+                   if operation == "migrate" else store.check_schema())
+        print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))
+    finally:
+        store.close()
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="量化终端 Python 运维入口")
     commands = result.add_subparsers(dest="action", required=True)
@@ -847,13 +884,15 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("init-config", help="从公开模板创建随机凭据的本地模拟盘配置")
     command = commands.add_parser("audit", help="后端测试与前端类型检查")
     command.add_argument("--skip-frontend", action="store_true")
-    command = commands.add_parser("db", help="查看 PostgreSQL 状态")
+    command = commands.add_parser("db", help="PostgreSQL 状态、显式迁移与备份恢复")
     command.add_argument("operation", nargs="?", default="status",
-                         choices=("init", "start", "stop", "status", "backup", "restore"))
+                         choices=("init", "start", "stop", "status", "backup", "restore", "migrate", "check"))
     command.add_argument("--output", type=Path, help="全新备份目录")
     command.add_argument("--backup", type=Path, help="已验证的备份目录")
     command.add_argument("--target-dsn-env", help="隔离恢复目标连接的环境变量名")
     command.add_argument("--container", help="复用现有 PostgreSQL 容器客户端")
+    command.add_argument("--adopt", action="store_true", help="显式接管已验收的无版本存量结构")
+    command.add_argument("--backup-receipt", type=Path, help="本地独立恢复验收回执（仅 migrate --adopt）")
     command = commands.add_parser("storage", help="运行存储清单与预复制（默认预览）")
     command.add_argument("storage_args", nargs=argparse.REMAINDER)
     commands.add_parser("sync", help="单次同步文件到数据库，额外参数原样传给 data_sync.py")
@@ -900,6 +939,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "audit":
             return audit(skip_frontend=args.skip_frontend)
         if args.action == "db":
+            if ((args.adopt or args.backup_receipt is not None) and args.operation != "migrate"
+                    or args.backup_receipt is not None and not args.adopt):
+                raise RuntimeError("adoption_flags_require_migrate_adopt")
+            if args.operation in {"migrate", "check"}:
+                return database_schema_operation(args.operation, adopt=args.adopt,
+                                                 backup_receipt=args.backup_receipt)
             if args.operation in {"backup", "restore"}:
                 from tools.database_backup import backup_database, restore_database
 

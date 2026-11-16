@@ -384,7 +384,8 @@ class TrxBackfillTests(unittest.TestCase):
             conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
             self.addCleanup(lambda: self.drop_schema(schema))
             conn.execute(sql.SQL("SET search_path TO {},pg_catalog").format(sql.Identifier(schema)))
-            conn.execute((Path(__file__).resolve().parents[1] / "database" / "schema.sql").read_text(), prepare=False)
+            from database_migrations import migrate_schema
+            migrate_schema(conn, schema=schema)
             rows = official(2)
             final = deepcopy(rows[0])
             final["extras"] = {"closed": True, "live_event_timestamp": BASE + 1, "flow_imbal": 0.3}

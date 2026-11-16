@@ -263,6 +263,7 @@ class TradingAuditPostgreSQLTests(unittest.TestCase):
         self.schema = "test_trading_audit_" + uuid.uuid4().hex[:16]
         self.store = DataStore(dsn=self.dsn, schema=self.schema, max_connections=2)
         self.addCleanup(self._drop_owned_schema)
+        self.store.migrate_schema()
         self.store.initialize()
 
     def _drop_owned_schema(self):

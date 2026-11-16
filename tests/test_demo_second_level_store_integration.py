@@ -43,6 +43,7 @@ class SecondLevelStoreIntegrationTests(unittest.TestCase):
         ledgers = {arm: DemoStore(data, "second_level_contract_" + arm)
                    for arm in ("maker", "taker")}
         try:
+            data.migrate_schema()
             ledgers["maker"].ensure_schema()
             report = run_second_level_session(
                 adapter, ledgers, Source(clock), config=config, clock_ms=clock.now,

@@ -334,6 +334,7 @@ class SpotBackfillDatabaseTests(unittest.TestCase):
         self.assertEqual(conninfo_to_dict(dsn).get("dbname"), "quant_test")
         schema = "spot_basis_test_" + uuid.uuid4().hex[:12]
         store = DataStore(dsn=dsn, schema=schema)
+        store.migrate_schema()
         store.initialize()
         try:
             spot_rows = official()

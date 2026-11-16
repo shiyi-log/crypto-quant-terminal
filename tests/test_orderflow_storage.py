@@ -64,6 +64,7 @@ class OrderflowStorageIntegrationTests(unittest.TestCase):
             raise RuntimeError("QUANT_TEST_DATABASE_URL 必须指向独立测试数据库")
         cls.schema = "quant_orderflow_test_" + uuid.uuid4().hex
         cls.store = DataStore(dsn=os.environ["QUANT_TEST_DATABASE_URL"], schema=cls.schema)
+        cls.store.migrate_schema()
         cls.store.initialize()
 
     @classmethod
@@ -538,7 +539,16 @@ class OrderflowStorageIntegrationTests(unittest.TestCase):
             conn.execute("""INSERT INTO orderflow_surge_events
                 (event_id,event_type,payload) VALUES (%s,%s,%s)""",
                 (invalid_id, event["event_type"], Jsonb({"pair": event["pair"]})))
+            # 先显式执行冻结的历史基线迁移，再凭隔离测试回执登记接管。
+            # 这验证旧脚本的数据保留；普通 initialize 不得代为修复。
+            from pathlib import Path
+            baseline = Path(__file__).resolve().parents[1] / 'database/migrations/0001_global_baseline.sql'
+            conn.execute(baseline.read_text(), prepare=False)
             conn.commit()
+            store.migrate_schema(adopt=True, backup_evidence={
+                'reference': 'isolated-test/legacy-baseline-fixture',
+                'archive_sha256': 'a' * 64, 'business_validation': 'passed',
+            })
             store.initialize()
             rows = store.read_orderflow_surges(limit=None, include_revisions=True)
             self.assertEqual(len(rows), 2)
@@ -556,6 +566,7 @@ class OrderflowStorageIntegrationTests(unittest.TestCase):
             self.assertTrue(diagnostic["legacy_tables_retained"])
             self.assertEqual([item["event_id"] for item in diagnostic["skipped"]], [invalid_id])
             store.close()
+            store.migrate_schema()
             store.initialize()
             self.assertEqual(len(store.read_orderflow_surges(limit=None, include_revisions=True)), 2)
 
@@ -577,7 +588,16 @@ class OrderflowStorageIntegrationTests(unittest.TestCase):
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""", (
                 event["event_id"], event["market"], event["pair"], event["timeframe"], event["observation"]["timestamp"],
                 event["method_version"], None, Jsonb(flat)))
+            # 先显式执行冻结的历史基线迁移，再凭隔离测试回执登记接管。
+            # 这验证旧脚本的数据保留；普通 initialize 不得代为修复。
+            from pathlib import Path
+            baseline = Path(__file__).resolve().parents[1] / 'database/migrations/0001_global_baseline.sql'
+            conn.execute(baseline.read_text(), prepare=False)
             conn.commit()
+            store.migrate_schema(adopt=True, backup_evidence={
+                'reference': 'isolated-test/legacy-baseline-fixture',
+                'archive_sha256': 'a' * 64, 'business_validation': 'passed',
+            })
             store.initialize()
             rows = store.read_orderflow_surges(limit=None, include_revisions=True)
             self.assertEqual(len(rows), 1)

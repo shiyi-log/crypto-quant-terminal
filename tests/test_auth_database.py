@@ -26,6 +26,7 @@ class AuthDatabaseIntegrationTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix="quant_http_")
         cls.schema = "http_test_" + uuid.uuid4().hex
         cls.store = DataStore(dsn=os.environ["QUANT_TEST_DATABASE_URL"], schema=cls.schema)
+        cls.store.migrate_schema()
         cls.store.initialize()
         spec = importlib.util.spec_from_file_location(
             "quant_auth_database_test", Path(__file__).resolve().parents[1] / "auth_service.py"

@@ -122,6 +122,7 @@ class DemoSwitchIntegrationTests(unittest.TestCase):
         self.data = DataStore(root=self.root.name, dsn=os.environ["QUANT_TEST_DATABASE_URL"],
                               schema=self.schema)
         self.addCleanup(self.drop_test_schema)
+        self.data.migrate_schema()
         self.data.initialize()
         DemoStore(self.data).ensure_schema()
         self.clock = NOW

@@ -35,6 +35,7 @@ class DemoCredentialsDatabaseTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory()
         cls.schema = "demo_creds_test_" + uuid.uuid4().hex
         cls.data = DataStore(dsn=dsn, schema=cls.schema)
+        cls.data.migrate_schema()
         cls.ledger = DemoStore(cls.data)
         cls.ledger.ensure_schema()
         cls.credentials = DemoCredentialStore(cls.data,

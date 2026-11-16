@@ -255,11 +255,13 @@ class DemoStore:
         return _serializable(row)
 
     def reserve_order(self, intent, *, exclusive_pair=False):
-        """Commit a frozen intent before any network call; duplicates reuse it.
+        """先提交冻结意图；独立调用仍保持旧公共事务行为。"""
+        prepared = self._prepare_order_intent(intent)
+        with self.store._connection() as conn:
+            return self._reserve_order_on_connection(conn, intent, exclusive_pair=exclusive_pair, _prepared=prepared)
 
-        Returns ``(row, created)``. A collision with different immutable intent
-        facts raises rather than silently borrowing an unrelated old order.
-        """
+    def _prepare_order_intent(self, intent):
+        """公共调用必须在打开连接前完成确定性验证。"""
         if intent.get("environment", self.environment) != self.environment or intent.get("endpoint_host", self.endpoint_host) != self.endpoint_host:
             raise ValueError("wrong Demo environment or endpoint")
         if intent.get("virtual_account_key", self.virtual_account_key) != self.virtual_account_key:
@@ -295,53 +297,58 @@ class DemoStore:
         raw = _payload(intent.get("raw_binance", {}), exchange=True)
         intent_payload = _payload(intent.get("intent_payload", intent.get("raw", {})))
         created_ms = _timestamp(intent.get("created_ms", int(time.time() * 1000)))
-        with self.store._connection() as conn:
-            if exclusive_pair:
-                # The committed intent is the durable pair reservation. Never
-                # expire another session's reservation by wall-clock age.
-                conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
-                             ("demo-pair:" + self.environment + ":" + fixed["pair"],))
-                facts = self._shared_account_ownership(conn, pair=fixed["pair"])
-                existing = self._order(conn, client_id)
-                for other in facts["orders"]:
-                    if other["virtual_account_key"] == self.virtual_account_key:
-                        if (existing is None and not fixed["reduce_only"]
-                                and (other["status"] in PENDING_STATUSES
-                                     or _number(other["recorded_fill_quantity"], "filled quantity")
-                                     != _number(other["filled_quantity"], "reported quantity"))):
-                            raise DemoPairOwnershipError("shared_existing_pair_order_or_gap", fixed["pair"])
-                        continue
-                    if (other["status"] in PENDING_STATUSES
-                            or _number(other["recorded_fill_quantity"], "filled quantity")
-                            != _number(other["filled_quantity"], "reported quantity")):
-                        raise DemoPairOwnershipError("shared_pair_busy", fixed["pair"])
-                if any(_number(positions.get(fixed["pair"], 0), "net quantity")
-                       for namespace, positions in facts["net_positions"].items()
-                       if namespace != self.virtual_account_key):
+        return fixed, client_id, names, raw, intent_payload, created_ms
+
+    def _reserve_order_on_connection(self, conn, intent, *, exclusive_pair=False, _prepared=None):
+        """供账户预算事务复用；本方法不自行提交，也不调用网络。"""
+        fixed, client_id, names, raw, intent_payload, created_ms = (
+            self._prepare_order_intent(intent) if _prepared is None else _prepared)
+        if exclusive_pair:
+            # The committed intent is the durable pair reservation. Never
+            # expire another session's reservation by wall-clock age.
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                         ("demo-pair:" + self.environment + ":" + fixed["pair"],))
+            facts = self._shared_account_ownership(conn, pair=fixed["pair"])
+            existing = self._order(conn, client_id)
+            for other in facts["orders"]:
+                if other["virtual_account_key"] == self.virtual_account_key:
+                    if (existing is None and not fixed["reduce_only"]
+                            and (other["status"] in PENDING_STATUSES
+                                 or _number(other["recorded_fill_quantity"], "filled quantity")
+                                 != _number(other["filled_quantity"], "reported quantity"))):
+                        raise DemoPairOwnershipError("shared_existing_pair_order_or_gap", fixed["pair"])
+                    continue
+                if (other["status"] in PENDING_STATUSES
+                        or _number(other["recorded_fill_quantity"], "filled quantity")
+                        != _number(other["filled_quantity"], "reported quantity")):
                     raise DemoPairOwnershipError("shared_pair_busy", fixed["pair"])
-                if (existing is None and not fixed["reduce_only"]
-                        and _number(facts["net_positions"].get(self.virtual_account_key, {}).get(
-                            fixed["pair"], 0), "net quantity")):
-                    raise DemoPairOwnershipError("shared_existing_pair_position", fixed["pair"])
-                collision = conn.execute("SELECT 1 FROM demo_orders WHERE environment=%s "
-                    "AND client_id=%s AND virtual_account_key<>%s LIMIT 1",
-                    (self.environment, client_id, self.virtual_account_key)).fetchone()
-                if collision:
-                    raise DemoPairOwnershipError("shared_client_identity_collision", fixed["pair"])
-            row = conn.execute("INSERT INTO demo_orders (environment,virtual_account_key,client_id,endpoint_host,"
-                               + ",".join(names) + ",created_ms,raw,intent_payload) VALUES ("
-                               + ",".join(["%s"] * (len(names) + 7)) + ") ON CONFLICT DO NOTHING RETURNING *",
-                               (*self._identity(), client_id, self.endpoint_host, *(fixed[name] for name in names),
-                                created_ms, self.store._json(raw), self.store._json(intent_payload))).fetchone()
-            if row is not None:
-                return _serializable(row), True
-            row = conn.execute("SELECT * FROM demo_orders WHERE environment=%s AND virtual_account_key=%s AND "
-                               "(client_id=%s OR (strategy_id=%s AND signal_id=%s AND intent_key=%s)) FOR UPDATE",
-                               (*self._identity(), client_id, fixed["strategy_id"], fixed["signal_id"], fixed["intent_key"])).fetchone()
-            if (row is None or row["client_id"] != client_id or any(row[name] != fixed[name] for name in names)
-                    or row["intent_payload"] != intent_payload):
-                raise ValueError("duplicate client/signal identity has different frozen intent")
-            return _serializable(row), False
+            if any(_number(positions.get(fixed["pair"], 0), "net quantity")
+                   for namespace, positions in facts["net_positions"].items()
+                   if namespace != self.virtual_account_key):
+                raise DemoPairOwnershipError("shared_pair_busy", fixed["pair"])
+            if (existing is None and not fixed["reduce_only"]
+                    and _number(facts["net_positions"].get(self.virtual_account_key, {}).get(
+                        fixed["pair"], 0), "net quantity")):
+                raise DemoPairOwnershipError("shared_existing_pair_position", fixed["pair"])
+            collision = conn.execute("SELECT 1 FROM demo_orders WHERE environment=%s "
+                "AND client_id=%s AND virtual_account_key<>%s LIMIT 1",
+                (self.environment, client_id, self.virtual_account_key)).fetchone()
+            if collision:
+                raise DemoPairOwnershipError("shared_client_identity_collision", fixed["pair"])
+        row = conn.execute("INSERT INTO demo_orders (environment,virtual_account_key,client_id,endpoint_host,"
+                           + ",".join(names) + ",created_ms,raw,intent_payload) VALUES ("
+                           + ",".join(["%s"] * (len(names) + 7)) + ") ON CONFLICT DO NOTHING RETURNING *",
+                           (*self._identity(), client_id, self.endpoint_host, *(fixed[name] for name in names),
+                            created_ms, self.store._json(raw), self.store._json(intent_payload))).fetchone()
+        if row is not None:
+            return _serializable(row), True
+        row = conn.execute("SELECT * FROM demo_orders WHERE environment=%s AND virtual_account_key=%s AND "
+                           "(client_id=%s OR (strategy_id=%s AND signal_id=%s AND intent_key=%s)) FOR UPDATE",
+                           (*self._identity(), client_id, fixed["strategy_id"], fixed["signal_id"], fixed["intent_key"])).fetchone()
+        if (row is None or row["client_id"] != client_id or any(row[name] != fixed[name] for name in names)
+                or row["intent_payload"] != intent_payload):
+            raise ValueError("duplicate client/signal identity has different frozen intent")
+        return _serializable(row), False
 
     def claim_submission(self, client_id, claimed_ms=None):
         """Only the winner may call the exchange; crashed claims require lookup."""
@@ -349,7 +356,8 @@ class DemoStore:
         with self.store._connection() as conn:
             row = conn.execute("UPDATE demo_orders SET status='submitting',submission_attempts=1,submission_claimed_ms=%s,"
                                "updated_at=CURRENT_TIMESTAMP WHERE environment=%s AND virtual_account_key=%s AND client_id=%s "
-                               "AND status='intent' AND submission_attempts=0 AND exchange_order_id IS NULL RETURNING client_id",
+                               "AND status='intent' AND submission_attempts=0 AND exchange_order_id IS NULL "
+                               "AND risk_reservation_decision_id IS NULL RETURNING client_id",
                                (claimed_ms, *self._identity(), _text(client_id, "client_id", 36))).fetchone()
         return row is not None
 

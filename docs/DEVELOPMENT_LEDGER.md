@@ -295,3 +295,4 @@
 - CI/CD 清单：精确 SHA `5672df954f2c155c54e41432b65790ba3d91ff43` 的 CI 失败于 checkout 中尚不存在的后端源码文件，CD 按门禁跳过；前端类型、构建、Vitest、Playwright jobs 成功。待后端三个模块/迁移先进入 Git，再为新 SHA 复跑完整 Actions。此次只是代码接入，`v0.2.1` 标签不移动，也不宣称新版本发布。
 - 保留并行前向研究产物、截图/报告与工具输出；不将 `artifacts/r11_forward_paper_t032_20261025/`、`output/playwright/`、`.playwright-cli/`、`tools/r11_forward_watchdog.py` 纳入本次重构提交。P0–P4 与 30 天自然验收仍未完成，实盘审批门禁保持人工。
 - 恢复锚点修正复测：`uv run --frozen --group dev pytest -q tests/test_database_restore_verification.py` **30 项通过**（95.31 秒），包括隔离 PostgreSQL 结构/约束检查。`0006_research_registry` 只扩展独立研究表，Demo 的 `0005` 物理锚点保持冻结；新增表内容由完整业务指纹验证。
+- P2 研究注册表实现：新增不可变版本、实验族、尝试/产物、一次性留出 claim 和候选结果迁移。实现代理先后报告纯协议/注册表组合 100 项通过；本轮独立重跑受 `quant_test` 连接超时阻断，当前结果需以后续 CI 隔离 PostgreSQL job 复核。保留本轮不确定性，没有因超时停用或绕过数据库测试。

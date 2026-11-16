@@ -40,7 +40,8 @@ def test_explicit_start_resumes_paused_service_without_modifying_gates(tmp_path)
     gates.write_text('{"fixture":"unchanged"}')
     with patch("manage.stop_service", return_value=True), \
             patch("manage.start_service", return_value=True), \
-            patch("manage.ensure_local_postgres"):
+            patch("manage.ensure_local_postgres"), \
+            patch("service_supervision.check_service_schema", return_value=True):
         assert manage.run_lifecycle("stop", [spec], tmp_path) == 0
         assert manage.run_lifecycle("start", [spec], tmp_path) == 0
     with patch("manage.find_processes", return_value=[87]), \
@@ -74,7 +75,8 @@ def test_supervision_continues_after_one_service_start_fails(tmp_path):
             raise RuntimeError("private error text")
         return True
     with patch("manage.start_service", side_effect=start), \
-            patch("manage.find_processes", return_value=[]):
+            patch("manage.find_processes", return_value=[]), \
+            patch("service_supervision.check_service_schema", return_value=True):
         records = manage.supervise_once(selected, tmp_path)
     assert [row["key"] for row in records] == ["sync", "auth"]
     assert records[0]["last_error"] == "service_start_failed"

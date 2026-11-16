@@ -162,6 +162,7 @@ class TrxLifecycleTests(unittest.TestCase):
         for action in ("start", "stop", "restart", "status"):
             with self.subTest(action=action), \
                  patch("manage.load_environment"), patch("manage.ensure_local_postgres"), \
+                 patch("service_supervision.check_service_schema", return_value=True), \
                  patch("manage.start_service", return_value=True) as start, \
                  patch("manage.stop_service", return_value=True) as stop, \
                 patch("manage.status", return_value=0) as status, \

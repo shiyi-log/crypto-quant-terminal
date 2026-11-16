@@ -10,9 +10,57 @@ from pathlib import Path
 from service_state import atomic_json, desired_state, lifecycle_lock, set_desired, timestamp
 
 
+DATABASE_SERVICES = frozenset({
+    "auth", "sync", "market", "market-trx", "market-spot", "market-breadth",
+    "strategy-lab", "spot-basis", "integrity", "market-live",
+})
+# These entry points use their own legacy store or serve without PostgreSQL.
+DATABASE_INDEPENDENT_SERVICES = frozenset({"api", "webserver", "web"})
+
+
+def check_service_schema(root: Path) -> None:
+    """Check installed global migrations without opening a business pool or migrating."""
+    try:
+        from data_store import DataStore
+
+        store = DataStore(root=root)
+        try:
+            result = store.check_schema()
+        finally:
+            store.close()
+        if not isinstance(result, dict) or result.get("status") != "compatible":
+            raise RuntimeError("incompatible schema result")
+    except Exception:
+        # Only a stable public code may reach CLI output, snapshots, or supervisor logs.
+        raise RuntimeError("service_schema_preflight_failed") from None
+
+
+def _requires_database(name: str) -> bool:
+    if name in DATABASE_SERVICES:
+        return True
+    if name in DATABASE_INDEPENDENT_SERVICES:
+        return False
+    # New lifecycle services must be classified, never implicitly exempted.
+    raise RuntimeError("service_dependency_unclassified")
+
+
+def _database_preflight(manager, root: Path) -> None:
+    try:
+        manager.ensure_local_postgres(root)
+        check_service_schema(root)
+    except Exception:
+        raise RuntimeError("service_schema_preflight_failed") from None
+
+
 def run_lifecycle(manager, action: str, selected: list, root: Path) -> int:
     with lifecycle_lock(root):
         names = [spec.name for spec in selected]
+        if action in {"start", "restart"}:
+            dependencies = [_requires_database(name) for name in names]
+            if any(dependencies):
+                # Check the whole selected batch before stopping or launching a child,
+                # and before changing desired state that a supervisor may act upon.
+                _database_preflight(manager, root)
         if action in {"stop", "restart"}:
             # Persist first: a failed stop must never trigger a replacement.
             set_desired(root, names, "stopped")
@@ -20,7 +68,6 @@ def run_lifecycle(manager, action: str, selected: list, root: Path) -> int:
                 return 1
         if action in {"start", "restart"}:
             set_desired(root, names, "running")
-            manager.ensure_local_postgres()
             for spec in selected:
                 manager.start_service(spec, root)
     return 0
@@ -76,8 +123,28 @@ def write_supervisor_log(root: Path, message: str, *, max_bytes: int = 10_485_76
 def supervise_once(manager, selected: list, root: Path) -> list[dict]:
     with lifecycle_lock(root):
         records = service_snapshot(manager, root, selected)
+        database_checked = False
+        database_error = False
         for spec, record in zip(selected, records):
             if record["desired_state"] != "running" or record["running"]:
+                continue
+            try:
+                requires_database = _requires_database(spec.name)
+            except RuntimeError:
+                record["last_error"] = "service_dependency_unclassified"
+                record["health_reason"] = "service_dependency_unclassified"
+                write_supervisor_log(root, f"{spec.name} service_dependency_unclassified")
+                continue
+            if requires_database and not database_checked:
+                database_checked = True
+                try:
+                    _database_preflight(manager, root)
+                except RuntimeError:
+                    database_error = True
+            if requires_database and database_error:
+                record["last_error"] = "service_schema_preflight_failed"
+                record["health_reason"] = "service_schema_preflight_failed"
+                write_supervisor_log(root, f"{spec.name} service_schema_preflight_failed")
                 continue
             try:
                 manager.start_service(spec, root)

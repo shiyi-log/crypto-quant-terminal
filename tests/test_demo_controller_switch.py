@@ -99,6 +99,7 @@ class SwitchTests(unittest.TestCase):
         self.adapter = Mock()
         self.adapter.fetch_positions.return_value = [{"signed_qty": "0", "pair": "BTC/USDT:USDT"}]
         self.adapter.fetch_open_orders.return_value = []
+        self.adapter.fetch_open_conditional_orders.return_value = []
         self.adapter.fetch_position_mode.return_value = {"hedged": False}
         self.adapter_factory = Mock(return_value=self.adapter)
         self.paper = Mock()
@@ -146,6 +147,17 @@ class SwitchTests(unittest.TestCase):
     def release_controller(self):
         self.controller._switch_persistence_unresolved = False
         self.old.net, self.old.pending, self.old.orders, self.old.fills = {}, [], [], []
+        self.old.safe = {"safeToSwitch": True}
+        if isinstance(self.old.account_reconciliation_status, Mock):
+            self.old.account_reconciliation_status.side_effect = None
+            self.old.account_reconciliation_status.return_value = {"safeToSwitch": True}
+        self.provider.return_value = self.credentials
+        self.old.binding.pop("credential_fingerprint", None)
+        for method, value in (("fetch_positions", []), ("fetch_open_orders", []),
+                              ("fetch_open_conditional_orders", []),
+                              ("fetch_position_mode", {"hedged": False})):
+            getattr(self.adapter, method).side_effect = None
+            getattr(self.adapter, method).return_value = value
         self.controller.close_if_flat(join_timeout=0)
 
     def assert_flock_retained(self):
@@ -221,8 +233,14 @@ class SwitchTests(unittest.TestCase):
         self.adapter.fetch_open_orders.return_value = [{"client_id": "external-order"}]
         self.refused("demo_account_open_orders_unresolved")
 
+    def test_fresh_conditional_order_blocks_switch_and_preserves_old_recovery_pointer(self):
+        self.adapter.fetch_open_conditional_orders.return_value = [{"algo_status": "NEW"}]
+        self.refused("demo_account_conditional_orders_unresolved")
+        self.assertEqual(self.data.items[STATE_KEY]["selectedAccountId"], "old")
+        self.ledger_factory.assert_not_called()
+
     def test_each_fresh_exchange_query_failure_is_closed_and_redacted(self):
-        for method in ("fetch_positions", "fetch_open_orders", "fetch_position_mode"):
+        for method in ("fetch_positions", "fetch_open_orders", "fetch_open_conditional_orders", "fetch_position_mode"):
             with self.subTest(method=method):
                 getattr(self.adapter, method).side_effect = RuntimeError(self.credentials.secret)
                 self.refused("demo_switch_exchange_check_failed")
@@ -493,6 +511,10 @@ class RiskGateTests(unittest.TestCase):
                                       "entriesEnabled": False})
         credentials = Mock(return_value=SimpleNamespace(api_key="key", secret="secret"))
         adapter = Mock()
+        adapter.fetch_positions.return_value = []
+        adapter.fetch_open_orders.return_value = []
+        adapter.fetch_open_conditional_orders.return_value = []
+        adapter.fetch_position_mode.return_value = {"hedged": False}
         adapter_factory = Mock(return_value=adapter)
         paper = Mock()
         paper.account.return_value = {"strategy_id": "frozen", "rule_hash": "a" * 64,

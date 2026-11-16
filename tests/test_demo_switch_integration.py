@@ -38,8 +38,12 @@ class AccountExchangeStub(ExchangeStub):
         super().__init__()
         self.external_positions = None
         self.external_orders = []
+        self.external_conditionals = []
 
     def request(self, path, api, method, params, *, config=None):
+        if path == "openAlgoOrders":
+            self.calls.append((path, api, method, copy.deepcopy(params)))
+            return copy.deepcopy(self.external_conditionals)
         if path == "positionRisk" and self.external_positions is not None:
             self.calls.append((path, api, method, copy.deepcopy(params)))
             return copy.deepcopy(self.external_positions)
@@ -92,6 +96,33 @@ class PlaceholderCredentials:
     def status(self):
         return {"configured": True,
                 "fingerprint": hashlib.sha256(self.value.api_key.encode()).hexdigest()[:16]}
+
+
+class OfflineFullAccountHandoffTests(unittest.TestCase):
+    """真实适配器只连接内存客户端，账户边界不依赖数据库。"""
+
+    def setUp(self):
+        self.client = AccountExchangeStub()
+        self.adapter = BinanceDemoAdapter(client=self.client, api_key="offline-key",
+                                           api_secret="offline-secret", allow_trading=True)
+
+    def test_real_adapter_full_account_empty_snapshots_allow_readonly_boundary(self):
+        DemoRunnerController._assert_exchange_flat(self.adapter)
+        self.assertEqual([call[0] for call in self.client.calls],
+                         ["openAlgoOrders", "openOrders", "positionRisk", "positionSide/dual"])
+        self.assertTrue(all(call[2] == "GET" and "symbol" not in call[3] for call in self.client.calls))
+
+    def test_real_adapter_unknown_external_conditionals_prevent_handoff(self):
+        self.client.external_conditionals = [{"symbol": SYMBOL, "algoId": 777,
+            "clientAlgoId": "foreign-conditional", "algoType": "CONDITIONAL",
+            "side": "SELL", "orderType": "STOP_MARKET", "algoStatus": "NEW",
+            "quantity": "0.01", "triggerPrice": "59000", "workingType": "MARK_PRICE",
+            "priceProtect": False, "reduceOnly": True, "positionSide": "BOTH",
+            "createTime": NOW, "updateTime": NOW}]
+        with self.assertRaises(RuntimeError) as error:
+            DemoRunnerController._assert_exchange_flat(self.adapter)
+        self.assertEqual(error.exception.code, "demo_account_conditional_orders_unresolved")
+        self.assertTrue(all(call[2] == "GET" for call in self.client.calls))
 
 
 @unittest.skipUnless(os.getenv("QUANT_TEST_DATABASE_URL"), "independent quant_test required")

@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import fcntl
 import hashlib
+import logging
 from decimal import Decimal
 from pathlib import Path
 import threading
@@ -16,6 +17,7 @@ STATE_KEY = "binance_demo_runner_controller.json"
 SHARED_STATE_KEY = "binance_demo_shared_sessions.json"
 SHARED_POLICY = "one_way_dynamic_pair_exclusive_v1"
 MAX_SHARED_SESSIONS = 6
+LOGGER = logging.getLogger(__name__)
 
 
 class DemoHandoffError(RuntimeError):
@@ -996,10 +998,14 @@ class DemoRunnerController:
     @staticmethod
     def _assert_exchange_flat(adapter):
         try:
-            positions = adapter.fetch_positions()
+            # 先看算法单，再看触发后的普通子单与仓位，避免先读空普通列表
+            # 后算法单恰好触发而两类列表同时表现为空；这仍不是交易所原子快照。
+            conditional_orders = adapter.fetch_open_conditional_orders()
             open_orders = adapter.fetch_open_orders()
+            positions = adapter.fetch_positions()
             mode = adapter.fetch_position_mode()
-            if not isinstance(positions, list) or not isinstance(open_orders, list):
+            if (not isinstance(positions, list) or not isinstance(open_orders, list)
+                    or not isinstance(conditional_orders, list)):
                 raise ValueError("invalid Demo account snapshot")
             if not isinstance(mode, dict) or mode.get("hedged") is not False:
                 raise ValueError("one-way Demo position mode required")
@@ -1017,9 +1023,16 @@ class DemoRunnerController:
             if open_orders:
                 raise DemoHandoffError("demo_account_open_orders_unresolved",
                                        "Demo account still has actual open orders")
-        except DemoHandoffError:
+            if conditional_orders:
+                raise DemoHandoffError("demo_account_conditional_orders_unresolved",
+                                       "Demo account still has actual conditional orders")
+            LOGGER.info("Demo账户交接只读检查通过：仓位行数=%s，普通挂单数=0，条件挂单数=0；不代表交易所原子快照",
+                        len(positions))
+        except DemoHandoffError as error:
+            LOGGER.info("Demo账户交接只读检查拒绝：原因码=%s", error.code)
             raise
         except Exception:
+            LOGGER.info("Demo账户交接只读检查拒绝：原因码=demo_switch_exchange_check_failed")
             raise DemoHandoffError("demo_switch_exchange_check_failed",
                                    "fresh full-account Demo checks failed") from None
 
@@ -1166,6 +1179,11 @@ class DemoRunnerController:
             self._require_not_closing()
             if self._yielded_flat and not self._services():
                 return self.status()
+            # 从未拥有账户的空控制器无需加载凭据，也不能写成已核验平仓。
+            if (self._file_lock is None and not self._services()
+                    and self._thread is None and not self._workers):
+                return self.status()
+            self._lock()
             self._assert_companions_paused_flat()
             if self.service:
                 with self._account_cycle_lock:
@@ -1189,6 +1207,17 @@ class DemoRunnerController:
                     raise DemoHandoffError("demo_worker_busy", "Demo protection worker did not finish")
                 self._assert_owned_flat()
                 self._assert_companions_paused_flat()
+                self._assert_account_reconciled()
+                # 工作线程最后一轮可能留下条件单或触发子单；持锁重新读取全账户，
+                # 凭据身份沿用内部工厂与持久指纹，不接受外部快照或旧循环结果。
+                try:
+                    adapter = self._adapter()
+                except DemoHandoffError:
+                    raise
+                except Exception:
+                    raise DemoHandoffError("demo_switch_exchange_check_failed",
+                                           "fresh full-account Demo checks failed") from None
+                self._assert_exchange_flat(adapter)
                 persisted = self.data_store.get_document(STATE_KEY, {})
                 self._selected_account_id = (self.service.config.strategy_id if self.service else
                                              self._selected_account_id or persisted.get("selectedAccountId"))
@@ -1213,11 +1242,8 @@ class DemoRunnerController:
                 return self.status()
         except Exception:
             with self._mutex:
-                self._closing = False
-                self._halt_worker.clear()
-                if self.service is not None:
-                    self._start_worker()
-                    self._wake.set()
+                self._resume_paused_worker()
+                if self._services():
                     try:
                         self._save()
                     except Exception as exc:

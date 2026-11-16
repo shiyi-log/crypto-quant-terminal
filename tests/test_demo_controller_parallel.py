@@ -129,6 +129,7 @@ class ParallelTests(unittest.TestCase):
         self.adapter = Mock()
         self.adapter.fetch_positions.return_value = []
         self.adapter.fetch_open_orders.return_value = []
+        self.adapter.fetch_open_conditional_orders.return_value = []
         self.adapter.fetch_position_mode.return_value = {"hedged": False}
         self.created = []
         self.start_hook = None
@@ -167,6 +168,10 @@ class ParallelTests(unittest.TestCase):
         return controller
 
     def release(self):
+        self.adapter.fetch_positions.return_value = []
+        self.adapter.fetch_open_orders.return_value = []
+        self.adapter.fetch_open_conditional_orders.return_value = []
+        self.adapter.fetch_position_mode.return_value = {"hedged": False}
         for controller in self.controllers:
             controller._shared_persistence_unresolved = False
             controller._switch_persistence_unresolved = False

@@ -112,3 +112,26 @@ pg_dump 归档可能包含其它 schema，但本次通过只覆盖指定 schema�
 pg_dump 边界使用替身，真实 PostgreSQL 连接证明导出快照导入和并发隔离。
 没有自动执行生产备份、创建实际演练库或停止任何服务。实际演练由总任务在
 检查空间、运行态与备份目标后执行并记录，不能用单元测试替代真实恢复结果。
+
+## 2026-11-17 隔离合成业务演练回执
+
+本次实际运行 pg_dump、createdb、pg_restore 与业务验证，源库和目标库均为
+新建 quant_restore_*。源库只包含合成订单、成交、资金流水、研究事件和冻结
+策略身份；没有备份、迁移或恢复 quant_terminal。测试源和目标均保留，不自动
+删除。它证明当前工具与迁移包可完成隔离恢复，不证明生产业务库已经演练。
+
+- 源库：quant_restore_source_20261116_192413_758603。
+- 恢复库：quant_restore_checked_20261116_192413_758603。
+- 审计目录：/Volumes/yidong/quant-refactor-backups/isolated-drill-20261116_192413_758603。
+- 归档 SHA-256：f4a3a8604eb2bf9579b3169131658d4ad0862fda70f77ae50ffdf49d973d9b65。
+- 业务清单 SHA-256：2a2679f3068af6164e771d941ab34b495531ce03f71c6ff5ba74a02653e65fec。
+- 验证范围：quant schema，47 张表、17 行；业务指纹、catalog、约束与索引、
+  全局/Demo 迁移以及序列状态均匹配；business_validation=passed。
+- 结果：business-verification.json；原始归档、manifest.json、业务清单与
+  restore-receipt.json 同目录保留。命名时间使用 UTC，本地日志为北京时间。
+
+演练首轮发现真实故障：归档头检查使用 BufferedReader 后，即使 seek(0)，
+底层文件描述符可能因预读仍指向后方；pg_restore 继承描述符后读不到文件头。
+独立真实 Python 子进程回归先失败，改为归档头检查使用无缓冲二进制读取后
+通过，再完成上述真实演练。没有采用自动重试或忽略归档校验绕过问题。
+相邻备份/恢复校验定向 43 项通过；该结果与实际演练回执分别记录。

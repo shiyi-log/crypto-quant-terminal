@@ -26,6 +26,14 @@ main 成功事件只自动打包。标签在 main CI 成功之后才创建，因
 只有 CI/CD 结束并确认 Release 存在后才报告发布完成。数据库变更同时需独立
 备份恢复证据；代码回滚保留新的成交、风险和审批事实。
 
-当前 CI 包含隔离 PostgreSQL 17 全后端测试、冻结身份硬门禁、量化/API/认证
-Vitest、TypeScript 类型检查及生产构建。关键端到端浏览器流程尚未纳入 CI；
-本机合成夹具的截图仅用于视觉复核，不能替代真实交易或审批验收。
+当前 CI 包含隔离 PostgreSQL 17 全后端测试、冻结身份硬门禁、全前端
+Vitest、TypeScript 类型检查、生产构建和锁定版本 Chromium 的 Playwright
+流程。浏览器夹具读取真实 dist，拦截全部 API 和外部请求，覆盖四种视口、
+读取失败、未知状态、迟到响应、认证恢复入口及环境栏滚动保持。截图与失败
+证据作为 Actions 产物保存，不能替代真实账户、交易或审批验收。
+
+2026-11-17 已核对提交 `7f36e395b066d6dd6b52cec6d0332d8081f0f9e0` 的
+[CI](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/43940765567)
+和 [main 归档 CD](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/43941792615)
+成功。该提交仍为 0.2.1 之后的开发代码，没有新的版本标签；main 归档不构成
+新的 GitHub Release。后续发布必须重新核对实际交付 SHA。

@@ -123,9 +123,9 @@ onUnmounted(() => {
     <section class="risk-band" aria-labelledby="risk-title">
       <div class="section-heading"><div><p class="eyebrow">ACCOUNT RISK</p><h2 id="risk-title">常驻风险栏</h2></div><Tag :color="protection.color">{{ protection.label }}</Tag></div>
       <dl class="risk-metrics">
-        <div><dt>实测净权益 · USDT</dt><dd>{{ numberText(account?.account.totalMarginBalance) }}</dd><small>共享交易账户快照</small></div>
-        <div><dt>当日净损益 · USDT</dt><dd>{{ facts.dailyPnl }}</dd><small>北京时间自然日 · 完整证据才计算</small></div>
-        <div><dt>峰值回撤 · USDT</dt><dd>{{ facts.drawdown }}</dd><small>阶段上限 {{ numberText(riskPolicy.stage_drawdown_limit_usdt) }}</small></div>
+        <div><dt>实测净权益 · USDT</dt><dd tabindex="0" aria-label="实测净权益完整金额，可横向滚动" :title="numberText(account?.account.totalMarginBalance)">{{ numberText(account?.account.totalMarginBalance) }}</dd><small>共享交易账户快照 · 长金额可横向查看</small></div>
+        <div><dt>当日净损益 · USDT</dt><dd tabindex="0" aria-label="当日净损益完整金额，可横向滚动" :title="facts.dailyPnl">{{ facts.dailyPnl }}</dd><small>北京时间自然日 · 完整证据才计算</small></div>
+        <div><dt>峰值回撤 · USDT</dt><dd tabindex="0" aria-label="峰值回撤完整金额，可横向滚动" :title="facts.drawdown">{{ facts.drawdown }}</dd><small>阶段上限 {{ numberText(riskPolicy.stage_drawdown_limit_usdt) }}</small></div>
         <div><dt>可用计划风险 · USDT</dt><dd>未知</dd><small>尚无事务风险预占汇总</small></div>
       </dl>
       <div class="risk-foot"><span>{{ riskReason }}</span><span>冷却剩余 {{ cooldownRemaining }} · 截止 {{ facts.cooldownUntil }}</span></div>
@@ -203,11 +203,13 @@ h2 { font-size: 16px; font-weight: 600; }
 .identifier { font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace; overflow-wrap: anywhere; }
 .fact-times { font-size: 11px; color: var(--desk-muted); line-height: 1.5; }
 .risk-band { padding: 18px 20px; border: 1px solid var(--desk-border); border-top: 2px solid var(--desk-blue); background: var(--desk-surface); }
-.risk-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; padding: 20px 0; }
+.risk-metrics { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr)); gap: 24px; padding: 20px 0; }
 .risk-metrics > div { min-width: 0; border-left: 1px solid var(--desk-border); padding-left: 16px; }
 .risk-metrics > div:first-child { border-left: none; padding-left: 0; }
 .risk-metrics dt { font-size: 12px; }
-.risk-metrics dd { overflow-wrap: anywhere; margin: 5px 0; font-size: clamp(20px, 2vw, 29px); font-weight: 500; line-height: 1.25; }
+/* 金额不舍入、不拆数字；窄列在自身范围滚动，键盘焦点可查看完整精度。 */
+.risk-metrics dd { max-width: 100%; overflow-x: auto; white-space: nowrap; margin: 5px 0; font-size: clamp(20px, 2vw, 29px); font-weight: 500; line-height: 1.25; scrollbar-width: thin; scrollbar-color: var(--desk-border) transparent; }
+.risk-metrics dd:focus-visible { outline: 2px solid var(--desk-blue); outline-offset: 3px; }
 .risk-metrics small { font-size: 11px; }
 .risk-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px 24px; border-top: 1px solid var(--desk-border); padding-top: 12px; color: var(--desk-muted); font-size: 12px; line-height: 1.5; }
 .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 24px; }

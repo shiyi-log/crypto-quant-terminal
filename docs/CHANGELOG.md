@@ -2,7 +2,7 @@
 
 ## 0.2.2 — 2026-11-17
 
-本版本准备交付后续安全组件、研究证据和全站工作区改造。P1 生产证据链、
+本版本交付后续安全组件、研究证据和全站工作区改造。P1 生产证据链、
 专属 writer、P2 真实研究执行与 P4 自然验收继续实施；代码发布不授予策略、
 增资、异常恢复或真实交易批准。
 
@@ -29,8 +29,14 @@
 - 发布归档排除历史本机虚拟环境目录，保留其工作区文件及 Git 历史；
   不将绝对路径 Python 软链接作为运行时依赖交付。
 
-发布前仍须当前交付提交的 CI、唯一 v0.2.2 标签 CD、Release 和独立下载包
-SHA/build.json 核验。测试计数和精确链接以开发台账中的最终回执为准。
+发布提交 `1788e651d167ab593afbd617db5fe6ec36e34595`，附注标签 `v0.2.2`。
+[精确 CI](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/43953175143)、
+[标签 CD](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/43954290927)
+成功，[Release](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.2)
+已发布。独立下载最终 CD 产物，核对 Release 资产 digest、sidecar 和 build.json
+一致；TAR SHA-256 为
+`14e5773fbc1c4eff0b99d33f90b96447477d8edbef6f42ba065c215929ca0b98`。
+4204 个真实成员无重复、越界、历史环境、软硬链接或特殊成员。
 研究统计/成交模型、来源认证、专属 writer、生产 selector/API 组合根及
 Demo/实盘自然运行尚未完成，不能把这些组件或旧纸面收益当作正式验收。
 

@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import threading
+from unittest.mock import patch
 
 import ccxt
 import pytest
@@ -120,7 +121,8 @@ def test_non_boolean_evidence_mode_is_rejected_before_transport(boundary, method
 
 BAD_ORDINARY = [
     {'orderId': True}, {'orderId': -1}, {'orderId': '1.1'},
-    {'clientOrderId': ''}, {'side': ''}, {'side': 'sell'}, {'type': None}, {'status': ''},
+    {'clientOrderId': ''}, {'side': ''}, {'side': 'sell'}, {'side': []}, {'side': {}},
+    {'type': None}, {'status': ''},
     {'origQty': None}, {'origQty': 0.01}, {'origQty': True}, {'origQty': 'NaN'},
     {'origQty': '-1'}, {'executedQty': 'Infinity'}, {'executedQty': '-1'},
     {'executedQty': '0.011'}, {'price': True}, {'price': '-1'}, {'avgPrice': 1.1},
@@ -128,7 +130,7 @@ BAD_ORDINARY = [
 ]
 BAD_CONDITIONAL = [
     {'algoId': True}, {'algoId': 0}, {'algoId': -1}, {'clientAlgoId': ''},
-    {'side': 'sell'}, {'algoStatus': ''}, {'orderType': ''},
+    {'side': 'sell'}, {'side': []}, {'side': {}}, {'algoStatus': ''}, {'orderType': ''},
     {'quantity': None}, {'quantity': 0.002}, {'quantity': True}, {'quantity': 'NaN'},
     {'quantity': '-1'}, {'triggerPrice': 'Infinity'}, {'triggerPrice': -1},
     {'triggerPrice': True}, {'createTime': True}, {'updateTime': -1},
@@ -178,26 +180,41 @@ def test_snapshots_are_detached_from_client_last_call_and_other_calls(boundary, 
 
 def test_concurrent_order_reads_keep_their_own_path_params_and_transport_digest(boundary):
     adapter, client = boundary
-    submitted = threading.Event()
+    validator_started = threading.Event()
+    second_started = threading.Event()
+    second_transport = threading.Event()
     release = threading.Event()
     request = client.request
     client.responses[('openOrders', 'GET')] = [order()]
     client.responses[('openAlgoOrders', 'GET')] = [algo()]
     def transport(path, *args, **kwargs):
-        if path == 'openOrders':
-            submitted.set()
-            assert release.wait(3)
+        if path == 'openAlgoOrders':
+            second_transport.set()
         value = request(path, *args, **kwargs)
         client._quant_last_response_sha256 = ('a' if path == 'openOrders' else 'b') * 64
         client._quant_last_response_hash_basis = 'raw_http_response_bytes'
         return value
     client.request = transport
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(adapter.fetch_open_orders, BTC, with_evidence=True)
-        assert submitted.wait(3)
-        second = pool.submit(adapter.fetch_open_conditional_orders, with_evidence=True)
-        release.set()
-        ordinary, conditional = first.result(), second.result()
+    from binance_demo_adapter import normalize_order
+    def blocked_validator(*args, **kwargs):
+        # 第一条 HTTP 已写入摘要，但证据尚未冻结；此时另一个请求不能进入传输。
+        validator_started.set()
+        assert release.wait(3)
+        return normalize_order(*args, **kwargs)
+    def second_read():
+        second_started.set()
+        return adapter.fetch_open_conditional_orders(with_evidence=True)
+    with patch('binance_demo_adapter.normalize_order', side_effect=blocked_validator):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(adapter.fetch_open_orders, BTC, with_evidence=True)
+            try:
+                assert validator_started.wait(3)
+                second = pool.submit(second_read)
+                assert second_started.wait(3)
+                assert not second_transport.wait(0.2), '第二条请求越过了尚未冻结的归档读取锁'
+            finally:
+                release.set()
+            ordinary, conditional = first.result(), second.result()
     for result, path, digest, params in (
         (ordinary, 'openOrders', 'a' * 64, {'symbol': 'BTCUSDT'}),
         (conditional, 'openAlgoOrders', 'b' * 64, {}),

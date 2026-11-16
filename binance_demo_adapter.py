@@ -132,7 +132,8 @@ def _open_order_rows(raw, *, pair, conditional, strict):
         for name in (("clientAlgoId", "orderType", "algoStatus") if conditional else
                      ("clientOrderId", "type", "status")):
             _archive_text(row.get(name))
-        if row.get("side") not in {"BUY", "SELL"}:
+        side = row.get("side")
+        if not isinstance(side, str) or side not in {"BUY", "SELL"}:
             raise DemoSafetyError("invalid Demo archived order side")
         required_amounts = (("quantity", "triggerPrice") if conditional else
                             ("origQty", "executedQty", "price"))

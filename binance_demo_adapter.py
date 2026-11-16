@@ -28,6 +28,7 @@ MAKER_LIMIT_POLICY = "ref_capped_by_book_maker_price_v1"
 ALLOWED_PAIRS = ("BTC/USDT:USDT", "ETH/USDT:USDT", "TRX/USDT:USDT")
 PAIR_SYMBOLS = {pair: pair.split("/")[0] + "USDT" for pair in ALLOWED_PAIRS}
 SYMBOL_PAIRS = {symbol: pair for pair, symbol in PAIR_SYMBOLS.items()}
+LOGGER = logging.getLogger(__name__)
 _CLIENT_ID = re.compile(r"qd-[a-f0-9]{32}\Z")
 _PRIVATE_GET = {
     ("fapiPrivate", "order"), ("fapiPrivate", "allOrders"),
@@ -35,6 +36,8 @@ _PRIVATE_GET = {
     ("fapiPrivate", "positionSide/dual"), ("fapiPrivate", "symbolConfig"),
     ("fapiPrivate", "commissionRate"),
     ("fapiPrivate", "leverageBracket"),
+    ("fapiPrivate", "algoOrder"), ("fapiPrivate", "openAlgoOrders"),
+    ("fapiPrivate", "allAlgoOrders"),
     ("fapiPrivateV3", "positionRisk"),
     ("fapiPrivateV3", "account"),
 }
@@ -59,6 +62,11 @@ REQUEST_COSTS = {
     ("fapiPrivate", "POST", "order/test"): {"cost": 1},
     ("fapiPrivate", "POST", "order"): {"cost": 4},
     ("fapiPrivate", "DELETE", "order"): {"cost": 1},
+    ("fapiPrivate", "GET", "algoOrder"): {"cost": 1},
+    ("fapiPrivate", "GET", "openAlgoOrders"): {"cost": 1, "noSymbol": 40},
+    ("fapiPrivate", "GET", "allAlgoOrders"): {"cost": 5},
+    ("fapiPrivate", "POST", "algoOrder"): {"cost": 1},
+    ("fapiPrivate", "DELETE", "algoOrder"): {"cost": 1},
 }
 _SECRET_KEYS = {"apikey", "secret", "signature", "authorization", "headers",
                 "requestheaders", "signedurl", "requesturl", "key", "password",
@@ -215,7 +223,7 @@ def _request_allowed(path: str, api: str, method: str) -> None:
                  or (method == "GET" and (api, path) in _PRIVATE_GET)
                  or (api == "fapiPrivate" and path == "order/test"
                      and method == "POST")
-                 or (api == "fapiPrivate" and path == "order"
+                 or (api == "fapiPrivate" and path in {"order", "algoOrder"}
                      and method in {"POST", "DELETE"}))
     if not permitted:
         raise DemoSafetyError("unsupported Demo endpoint or account mutation")
@@ -363,6 +371,43 @@ def summarize_fill_fees(fills: list[Mapping[str, Any]]) -> dict[str, Any]:
         "commission_usdt": (format(totals["USDT"], "f")
                             if complete and set(totals) == {"USDT"} else None),
         "fee_source": "binance_demo_user_trades",
+    }
+
+
+def normalize_conditional_order(raw: Mapping[str, Any], pair: str,
+                                latency_ms: float = 0, *, allow_external=False) -> dict:
+    """保留算法单事实；触发或结束永远不等于子订单成交、账户空仓。"""
+    if not isinstance(raw, Mapping):
+        raise DemoSafetyError("invalid Demo conditional-order response")
+    expected = pair if allow_external else _symbol(pair)
+    if raw.get("symbol") != expected:
+        raise DemoSafetyError("Demo conditional-order symbol mismatch")
+    algo_id = _identifier(raw.get("algoId"))
+    side = raw.get("side")
+    if int(algo_id) <= 0 or not isinstance(side, str) or side not in {"BUY", "SELL"}:
+        raise DemoSafetyError("invalid Demo conditional-order identity or side")
+    client_id, status = raw.get("clientAlgoId"), raw.get("algoStatus")
+    if (not isinstance(client_id, str) or not client_id
+            or not isinstance(status, str) or not status):
+        raise DemoSafetyError("Demo conditional-order identity or status missing")
+    actual_id = raw.get("actualOrderId")
+    return {
+        "algo_id": algo_id, "client_algo_id": client_id, "algo_status": status,
+        "pair": pair, "symbol": raw["symbol"], "allowed_pair": pair in ALLOWED_PAIRS,
+        "algo_type": raw.get("algoType"),
+        "order_type": raw.get("orderType"), "side": side.lower(),
+        "position_side": raw.get("positionSide"),
+        "quantity": _number(raw.get("quantity")),
+        "trigger_price": _number(raw.get("triggerPrice")),
+        "reduce_only": _optional_bool(raw.get("reduceOnly")),
+        "close_position": _optional_bool(raw.get("closePosition")),
+        "working_type": raw.get("workingType"),
+        "price_protect": _optional_bool(raw.get("priceProtect")),
+        "created_ms": raw.get("createTime"), "updated_ms": raw.get("updateTime"),
+        "trigger_ms": raw.get("triggerTime"),
+        "actual_order_id": None if actual_id in (None, "", "0", 0) else _identifier(actual_id),
+        "execution_complete": False, "request_latency_ms": latency_ms,
+        "raw": sanitize_response(raw),
     }
 
 
@@ -1017,6 +1062,201 @@ class BinanceDemoAdapter:
             raise DemoSafetyError("market orders are only permitted for reduce-only protective exits")
         return self._submit(pair, side, quantity, None, client_order_id,
                             market=True, reduce_only=True)
+
+    def _submit_conditional(self, pair, side, quantity, trigger_price, client_algo_id,
+                            *, order_type, working_type, price_protect, reduce_only):
+        """只发送一次数量明确的原生退出；调用方必须先持久化并 claim 意图。"""
+        self._guard_client()
+        if not self.allow_trading:
+            raise DemoSafetyError("Demo adapter is read-only")
+        if not self._credentials_ready:
+            raise DemoSafetyError("explicit Demo credentials are required")
+        if (not isinstance(pair, str) or pair not in PAIR_SYMBOLS
+                or not isinstance(side, str) or side not in {"buy", "sell"}
+                or reduce_only is not True or not isinstance(working_type, str)
+                or working_type not in {"MARK_PRICE", "CONTRACT_PRICE"}
+                or not isinstance(price_protect, bool)):
+            raise DemoSafetyError("invalid native protection semantics")
+        if any(isinstance(value, bool) or not isinstance(value, (str, int, Decimal))
+               for value in (quantity, trigger_price)):
+            raise DemoSafetyError("native protection requires exact Decimal inputs")
+        _check_client_id(client_algo_id)
+        with self._attempt_lock:
+            if client_algo_id in self._attempts:
+                raise DemoSafetyError("client order ID was already attempted; reconcile without resending")
+        # 保护市价退出不受入口最小名义额限制；数量不能静默取整留下裸露余量。
+        qty, _ = self.validate_order(pair, quantity, market=True)
+        px = _decimal(trigger_price, positive=True)
+        filters = {row["filterType"]: row for row in self._market_rules[_symbol(pair)]["filters"]}
+        price_filter = filters.get("PRICE_FILTER")
+        if price_filter is None:
+            raise DemoSafetyError("Demo trigger-price rules unavailable")
+        tick = _decimal(price_filter["tickSize"], positive=True)
+        if (px < _decimal(price_filter["minPrice"])
+                or px > _decimal(price_filter["maxPrice"]) or px % tick):
+            raise DemoSafetyError("trigger price violates Demo exchange rules")
+        params = {"algoType": "CONDITIONAL", "symbol": _symbol(pair),
+                  "side": side.upper(), "positionSide": "BOTH",
+                  "type": order_type, "quantity": qty,
+                  "triggerPrice": format(px, "f"), "reduceOnly": "true",
+                  "clientAlgoId": client_algo_id, "workingType": working_type,
+                  "priceProtect": "true" if price_protect else "false"}
+        with self._attempt_lock:
+            if client_algo_id in self._attempts:
+                raise DemoSafetyError("client order ID was already attempted; reconcile without resending")
+            self._attempts[client_algo_id] = "unknown"
+            self._owned_client_ids.add(client_algo_id)
+        try:
+            raw = self._call("algoOrder", "fapiPrivate", "POST", params)
+            result = normalize_conditional_order(raw, pair, self.last_call["latency_ms"])
+            if (result["client_algo_id"] != client_algo_id
+                    or result["algo_type"] != "CONDITIONAL"
+                    or result["side"] != side or result["order_type"] != order_type
+                    or result["position_side"] != "BOTH"
+                    or _decimal(result["quantity"]) != _decimal(qty)
+                    or _decimal(result["trigger_price"]) != px
+                    or result["reduce_only"] is not True
+                    or result["close_position"] is not False
+                    or result["working_type"] != working_type
+                    or result["price_protect"] is not price_protect
+                    or result["algo_status"] not in {"NEW", "TRIGGERING", "TRIGGERED", "FINISHED"}):
+                raise DemoSafetyError("Demo native protection acknowledgement mismatch")
+        except Exception as exc:
+            kind = exc.error_kind if isinstance(exc, DemoRequestError) else type(exc).__name__
+            latency = exc.latency_ms if isinstance(exc, DemoRequestError) else 0
+            code = exc.exchange_code if isinstance(exc, DemoRequestError) else None
+            # 重复客户端身份可能指向已存在的保护，不得作为“没有订单”释放。
+            if kind in {"InvalidOrder", "InsufficientFunds", "BadSymbol", "AuthenticationError",
+                        "PermissionDenied", "AccountSuspended", "ArgumentsRequired",
+                        "BadRequest", "OperationRejected"} and code not in {-4111, -4116, -2010}:
+                self._attempts[client_algo_id] = "rejected"
+                LOGGER.warning("原生条件保护提交被明确拒绝 币种=%s 方向=%s 类型=%s 客户端=%s 数量=%s 触发价=%s 错误类型=%s 代码=%s",
+                               _symbol(pair), side, order_type, client_algo_id, qty, format(px, "f"), kind, code)
+                raise DemoExchangeRejected(kind, latency, code) from None
+            LOGGER.warning("原生条件保护提交结果未知，保留身份且只允许查询 币种=%s 方向=%s 类型=%s 客户端=%s 数量=%s 触发价=%s 错误类型=%s 代码=%s",
+                           _symbol(pair), side, order_type, client_algo_id, qty, format(px, "f"), kind, code)
+            raise DemoSubmissionUnknown(kind, latency, code) from None
+        self._attempts[client_algo_id] = "confirmed"
+        LOGGER.info("原生条件保护提交已确认 币种=%s 方向=%s 类型=%s 客户端=%s 算法单=%s 状态=%s 数量=%s 触发价=%s 触发基准=%s 价格保护=%s；尚未证明退出成交",
+                    _symbol(pair), side, order_type, client_algo_id, result["algo_id"],
+                    result["algo_status"], qty, format(px, "f"), working_type, price_protect)
+        return result
+
+    def submit_stop_market_order(self, pair, side, quantity, trigger_price, client_algo_id,
+                                 *, working_type, price_protect, reduce_only=True):
+        return self._submit_conditional(pair, side, quantity, trigger_price, client_algo_id,
+            order_type="STOP_MARKET", working_type=working_type,
+            price_protect=price_protect, reduce_only=reduce_only)
+
+    def submit_take_profit_order(self, pair, side, quantity, trigger_price, client_algo_id,
+                                 *, working_type, price_protect, reduce_only=True):
+        return self._submit_conditional(pair, side, quantity, trigger_price, client_algo_id,
+            order_type="TAKE_PROFIT_MARKET", working_type=working_type,
+            price_protect=price_protect, reduce_only=reduce_only)
+
+    def fetch_conditional_order(self, pair, client_algo_id):
+        _symbol(pair)
+        _check_client_id(client_algo_id)
+        try:
+            raw = self._call("algoOrder", "fapiPrivate", "GET", {"clientAlgoId": client_algo_id})
+        except DemoRequestError as exc:
+            if exc.error_kind == "OrderNotFound":
+                return None
+            raise
+        result = normalize_conditional_order(raw, pair, self.last_call["latency_ms"])
+        if result["client_algo_id"] != client_algo_id:
+            raise DemoSafetyError("Demo conditional-order client identity mismatch")
+        if client_algo_id in self._attempts:
+            self._attempts[client_algo_id] = "confirmed"
+        return result
+
+    def fetch_open_conditional_orders(self, pair=None):
+        params = {} if pair is None else {"symbol": _symbol(pair)}
+        raw = self._call("openAlgoOrders", "fapiPrivate", "GET", params)
+        if not isinstance(raw, list):
+            raise DemoSafetyError("invalid Demo open conditional-orders snapshot")
+        result = []
+        for item in raw:
+            symbol = item.get("symbol") if isinstance(item, dict) else None
+            if not isinstance(symbol, str) or not symbol:
+                raise DemoSafetyError("invalid Demo conditional-order symbol")
+            actual_pair = SYMBOL_PAIRS.get(symbol, symbol)
+            if pair is not None and actual_pair != pair:
+                raise DemoSafetyError("Demo conditional-order snapshot scope mismatch")
+            result.append(normalize_conditional_order(item, actual_pair, self.last_call["latency_ms"],
+                          allow_external=actual_pair not in PAIR_SYMBOLS))
+        return result
+
+    def fetch_conditional_child_order(self, pair, client_algo_id):
+        """由自有算法单的 actualOrderId 查询真实子单，不假设客户端 ID 相同。"""
+        _check_client_id(client_algo_id)
+        if client_algo_id not in self._owned_client_ids:
+            raise DemoSafetyError("child lookup requires an owned durable order ledger identity")
+        parent = self.fetch_conditional_order(pair, client_algo_id)
+        if parent is None or parent["actual_order_id"] is None:
+            return None
+        try:
+            raw = self._call("order", "fapiPrivate", "GET",
+                {"symbol": _symbol(pair), "orderId": parent["actual_order_id"]})
+        except DemoRequestError as exc:
+            if exc.error_kind == "OrderNotFound":
+                return None
+            raise
+        result = normalize_order(raw, pair, self.last_call["latency_ms"])
+        if (result["order_id"] != parent["actual_order_id"]
+                or result["side"] != parent["side"]
+                or _optional_bool(raw.get("reduceOnly")) is not True):
+            raise DemoSafetyError("Demo conditional child-order identity or reduction mismatch")
+        return {**result, "parent_client_algo_id": client_algo_id,
+                "parent_algo_id": parent["algo_id"]}
+
+    def fetch_conditional_orders(self, pair, *, since_ms=None, until_ms=None,
+                                  from_algo_id=None, limit=1000):
+        params = {"symbol": _symbol(pair), "limit": _limit(limit)}
+        if since_ms is not None:
+            params["startTime"] = _timestamp(since_ms)
+        if until_ms is not None:
+            params["endTime"] = _timestamp(until_ms)
+            if since_ms is None or not 0 < until_ms - since_ms < 7 * 86400000:
+                raise DemoSafetyError("Demo conditional history requires a bounded window below seven days")
+        if from_algo_id is not None:
+            params["algoId"] = _identifier(from_algo_id)
+        raw = self._call("allAlgoOrders", "fapiPrivate", "GET", params)
+        if not isinstance(raw, list):
+            raise DemoSafetyError("invalid Demo conditional-order history")
+        return [normalize_conditional_order(item, pair, self.last_call["latency_ms"]) for item in raw]
+
+    def cancel_conditional_order(self, pair, algo_id=None, *, client_algo_id):
+        if not self.allow_trading:
+            raise DemoSafetyError("Demo adapter is read-only")
+        _check_client_id(client_algo_id)
+        if client_algo_id not in self._owned_client_ids:
+            raise DemoSafetyError("cancel requires an owned durable order ledger identity")
+        observed = self.fetch_conditional_order(pair, client_algo_id)
+        if observed is None:
+            return None
+        if algo_id is not None and _identifier(algo_id) != observed["algo_id"]:
+            raise DemoSafetyError("cancel algo ID does not match the owned client ID")
+        if observed["algo_status"] in {"CANCELED", "EXPIRED", "REJECTED", "FINISHED"}:
+            return observed
+        raw = self._call("algoOrder", "fapiPrivate", "DELETE", {"clientAlgoId": client_algo_id})
+        try:
+            valid_code = (isinstance(raw, dict) and
+                          ((type(raw.get("code")) is int and raw["code"] == 200)
+                           or (type(raw.get("code")) is str and raw["code"] == "200")))
+            if (not valid_code or raw.get("clientAlgoId") != client_algo_id
+                    or _identifier(raw.get("algoId")) != observed["algo_id"]):
+                raise DemoSafetyError("Demo conditional-order cancel acknowledgement mismatch")
+        except DemoSafetyError:
+            # DELETE 已经发出，不能返回“本地拒绝且没有写入”的 safety 语义。
+            LOGGER.warning("原生条件单撤销结果未知，保留风险并继续查询 币种=%s 客户端=%s 算法单=%s",
+                           _symbol(pair), client_algo_id, observed["algo_id"])
+            raise DemoRequestError("conditional_cancel_unknown", self.last_call["latency_ms"]) from None
+        # 命令回执未证明撤销完成；协调器必须再查算法单、子单、成交与持仓。
+        LOGGER.info("原生条件单撤销命令已接受，等待事实对账 币种=%s 客户端=%s 算法单=%s 原状态=%s",
+                    _symbol(pair), client_algo_id, observed["algo_id"], observed["algo_status"])
+        return {**observed, "cancel_acknowledged": True, "cancellation_confirmed": False,
+                "cancel_raw": sanitize_response(raw)}
 
     def cancel_order(self, pair: str, order_id: str | None = None, *,
                      client_order_id: str) -> dict | None:

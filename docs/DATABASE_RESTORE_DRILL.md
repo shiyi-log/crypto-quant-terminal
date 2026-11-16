@@ -164,3 +164,42 @@ TRUNCATE 只证明整个语句被拒绝，不声称逐表独立执行了截断�
 关键工件摘要并核对回执链接。该结果是合成业务恢复证据，未备份或恢复生产库，
 不证明真实研究数据来源、收益、全族统计或自然 30 天验收通过；所有来源、
 验收和生产授权标志继续为 false。
+
+## 2026-11-17 非空被动命令链恢复回执
+
+新增 `0007_writer_commands` 后，通过真实 DemoCommandStore 和 DemoEvidenceStore
+接口写入完整绑定、三条命令与归档证据，实际运行共享快照 pg_dump、新库
+pg_restore 和全业务验证。源与目标都是本次新建的隔离库，均保留。
+
+- 源库：quant_restore_command_source_20261116_214722_774354。
+- 恢复库：quant_restore_command_checked_20261116_214722_774354。
+- 审计目录：/Volumes/yidong/quant-refactor-backups/nonempty-command-drill-20261116_214722_774354。
+- 实际完成时间：2026-11-16T21:48:18Z（北京时间 2026-11-17 05:48）。
+- quant schema 共 50 表、25 行；命令三表均非空，绑定/请求/事件分别为
+  1/3/10 行，另有 1 行完整 scope 与五项哈希绑定的真实归档记录。
+- 归档 140793 字节，SHA-256：ce0c65058f7cbbb13619aeb313ae3f0413d4f5892ae730283b9b6bca67f47289。
+- 业务清单 SHA-256：6cbe65c997c82d03f4421798323ea18f4025260553e3509528312997a1bb2279。
+- 命令语义回执 SHA-256：7e211e8f7aabf6d71aae460c6e19264ef69b374ea7956dcb593042bd756a59e0。
+
+完整业务内容、catalog、约束、索引及序列精确匹配；全局和 Demo 迁移均为
+current，0007 的冻结物理摘要为
+50e16cab88edd1146da7af90cdc2ad803509d504d84d8779d2d944c2c74d2846。
+
+三条命令分别恢复为 unknown、applied、rejected；其中未知链完整保留
+accepted→claimed→unknown→observed。重启存储实例后绑定、命令、事件和证据
+逐项重放相等。各命令分别使用原 writer 和不同 writer、远期时间重试，
+六次 claim 全部 action_ticket=False；精确 enqueue、绑定登记和 applied 事件
+重试不追加事实，未知状态继续未知。applied 仅表示这条合成控制观察被记录，
+execution_complete/source_authenticated/acceptance_eligible/production_authorized
+始终为 false，不证明交易所执行。
+
+三表逐一 UPDATE、DELETE、TRUNCATE CASCADE，共九条复制模式事务探针均返回
+SQLSTATE 55000。探针即使意外允许写入也强制回滚；catalog 另外确认三表触发器
+均为 ALWAYS。TRUNCATE CASCADE 涉及外键关联表，证明指定截断语句整体被拒绝，
+不将首个触发器拒绝误称为级联中每个触发器均已独立执行。探针后再次比对
+全业务清单及迁移物理摘要，内容、catalog 和序列均未改变。
+
+原始归档、manifest、restore-receipt、business-verification、命令语义回执、
+file-audit.json、演练脚本及中文完整日志均在上述审计目录以 0600 保留，
+目录为 0700。该证据是隔离合成命令账本恢复验证，不证明生产库已演练、
+独立 writer/HTTP 接线已完成或自然验收通过；未操作生产库、交易所或服务。

@@ -1,6 +1,6 @@
 [project]
 name = "quant-terminal"
-version = "0.2.2"
+version = "0.2.3"
 description = "量化终端后端、数据库与 Python 运维入口"
 requires-python = ">=3.12,<3.13"
 dependencies = [

@@ -39,6 +39,18 @@ spec 必须恰好包含下表全部字段，不接受省略默认值、额外认
 
 每fold的有效验证窗口长度必须整除block_ms，且至少30块，不静默丢尾、补零、跨fold或改变现有purge/embargo。窗口不是整块时需要在看结果前重新冻结适配的协议，不能事后调块长重试。方法 `hac` 明确拒绝，不能替换为 bootstrap。
 
+## 完整族精确引擎v2
+
+原 v1 输出、政策散列、逐draw Python整数路径和资源预算保持不变。需要实际计算超过4个配置的实验族时，必须另冻显式 `validation-block-bootstrap-v2`，选择 `exact-signed54-counts-v1`，不能重标旧证据。v2政策仍固定B=99,999、网格、金额、family完整性及bootstrap假设；新增冻结字段为 engine、batch_size(1..1024)、limb_bits=54、max_limbs=3、max_blocks<=300、max_native_macs<=10,799,892,000、max_reconstruction_cells<=35,999,640、max_heap_cells<=5,000、max_workspace_bytes<=64,000,000。完整真实最小输入M120验收使用2limbs，native MAC3,599,964,000、重建23,999,760、heap4,920。实际操作数超过冻结界限则整族拒绝。v2用这些新预算替换v1的max_weighted_additions与max_distribution_cells，其余公共冻结字段仍须显式提供。
+
+先在原SHA随机流顺序按fold构造共享非负块计数矩阵；每批1024行、全配置共用。每块的有符号整数拆成最多3个54位signed limb，以NumPy int64矩阵乘法计算。因为Σcounts=S<=300，任意中间部分和绝对值<=300*(2^54−1)<2^63，matmul不会溢出；乘积按Python整数重建，bootstrap误差减法也在Python int进行，可大于int64。拒绝float、bool或负计数。NumPy只在进入v2纯计算内核时延迟导入，不影响v1导入。
+
+v2不保存B×M分布；每配置只保留最大的R=floor(alpha*(B+1)/M)个误差最小堆，并独立统计>=观测值的尾部个数。M120时R=41，总堆槽4920。B、M、金额、校正或同域索引算法不变；batch大小不进索引，shared resample digest保持replicate/fold/draw顺序。v2 inference SHA本身不同于v1，RNG domain包括inference SHA，因此v2会生成新的、确定的索引流；不把它声称为跨版本复用旧随机结果。
+
+v2只使用NumPy稳定的int64 ndarray、matmul(out)、min/max和预分配API，建议直接依赖范围 `numpy>=2.2,<3`；本机实际验证版本为2.5.3。版本范围表达API兼容目标，验收证据只覆盖已实测版本。依赖缺失返回固定numpy_unavailable诊断，v1不依赖NumPy导入。
+
+真实最小family M120/B99999已验收：120个结果齐全，认证/登记/验收/生产标志仍False；最新一次相关回归中耗时约14.75秒、峰值RSS约87MB。机器和输入变化会改变运行耗时；该实测不认证任何真实收益，也不是交易资格。workspace预算只包含数值内核矩阵、批次重建及尾堆，不含调用方输入、全族规范化输入和JSON副本；不能将其当成全进程内存上限。输入另受总行数预算限制，大输入仍需调用方安排独立进程内存容量。
+
 保护性硬限制还包括：family规范JSON不超过1MB，inference不超过100KB，dataset跨度不超过3660日、推导fold不超过128。这些检查在调用旧协议重建前执行，避免损坏小输入触发巨大fold循环。
 
 ## 输入序列
@@ -69,7 +81,7 @@ bootstrap仍是近似推断，要求每fold内足够平稳、矩存在、弱依�
 
 domain为ASCII `sha256-counter-rejection-v1` + NUL + familySHA原始32字节 + inferenceSHA原始32字节 + seed原始32字节。每个索引digest为SHA256(domain || uint64be(b) || uint32be(fold) || uint32be(draw) || uint32be(retry))，序号从0起。u为big-endian整数；K为该fold块数，u>=floor(2^256/K)*K则重试，否则索引=u%K。retry最多64次，耗尽报固定诊断。config_id不进入抽样，分片和配置输入顺序不改变索引。共享流按(b,fold,draw)将uint32be(index)写入SHA，输出resample_digest。
 
-预检 `BΣK_f` 索引、`M BΣK_f` 加法、`M B` 分布单元及输入总行数。预算不够整族拒绝，不降低B、不缩M。当前硬CPU预算对最小365日、5fold、每fold30块时最多支持M=4；常见12/24/120配置族会被完整拒绝。这个首版证明可实际复算的小切片，尚不能声称完成最大120族实际研究；扩大能力需要保持整数及共同抽样语义的另行实现和验证。
+预检 `BΣK_f` 索引、`M BΣK_f` 加法、`M B` 分布单元及输入总行数。v1预算不够时整族拒绝，不降低B、不缩M；在v1路径下最小365日、5fold、每fold30块最多实际支持M=4。v2使用独立的limb/MAC/重建/堆/workspace预算，已完成一次M=120、B=99,999实际验收；两种政策均不删除配置或静默改变抽样。
 
 ## 归档和阶段集成
 

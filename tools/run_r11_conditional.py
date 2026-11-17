@@ -303,10 +303,19 @@ def live_entry_gate(now_ms: int, output: Path, *, fetcher: Any = None) -> dict[s
             time.sleep(2 * (attempt + 1))
     else:  # pragma: no cover
         raise RuntimeError("DVOL fetch failed") from last_exc
-    existing_hourly.update(hourly)
+    # Deribit publishes the 00:00 close with a short delay.  At an exact
+    # boundary run the page can succeed while the current day's 00:00 row is
+    # still absent; poll briefly before declaring the decision unknown.
+    for poll in range(9):
+        existing_hourly.update(hourly)
+        daily = {ts: iv for ts, iv in existing_hourly.items() if ts <= now_ms and ts % DAY_MS == 0}
+        current = daily.get(now_ms)
+        if current is not None or now_ms % DAY_MS != 0 or poll == 8:
+            break
+        time.sleep(15)
+        hourly, urls = _fetch_dvol_hourly(start, now_ms, fetcher=fetcher)
     # Only the 00:00 UTC 1h close is an entry-day observation.  This produces
     # spacing exactly DAY_MS and makes the 252-day requirement auditable.
-    daily = {ts: iv for ts, iv in existing_hourly.items() if ts <= now_ms and ts % DAY_MS == 0}
     rows = [{"timestamp": ts, "iv": daily[ts]} for ts in sorted(daily)]
     write_jsonl(history_path, rows)
     current = daily.get(now_ms)

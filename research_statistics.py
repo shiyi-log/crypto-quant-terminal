@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import logging
 import re
@@ -11,6 +12,8 @@ from fractions import Fraction
 from research_protocol import DAY_MS, FrozenResearchEvidence, _family
 
 VERSION = "validation-block-bootstrap-v1"
+FULL_VERSION = "validation-block-bootstrap-v2"
+FULL_ENGINE = "exact-signed54-counts-v1"
 LOGGER = logging.getLogger(__name__)
 REPLICATES = 99999
 MAX_FAMILY_FOLDS = 128
@@ -36,6 +39,13 @@ LIMITS = {"max_input_rows": 2_000_000, "max_index_draws": 30_000_000,
 SPEC_KEYS = set(FIXED) | set(LIMITS) | {
     "initial_capital", "period_ms", "block_ms", "evaluation_as_of_ms",
     "seed", "multiple_testing", "alpha"}
+FULL_LIMITS = {"max_input_rows": 2_000_000, "max_index_draws": 30_000_000,
+               "max_blocks": 300, "max_native_macs": 10_799_892_000,
+               "max_reconstruction_cells": 35_999_640, "max_heap_cells": 5000,
+               "max_workspace_bytes": 64_000_000}
+FULL_FIXED = {"engine": FULL_ENGINE, "limb_bits": 54, "max_limbs": 3}
+FULL_SPEC_KEYS = (SPEC_KEYS - {"max_weighted_additions", "max_distribution_cells"}
+                  | set(FULL_LIMITS) | set(FULL_FIXED) | {"batch_size"})
 META_KEYS = {"protocol_version", "family_sha256", "family_size", "identities",
              "folds", "inference_registration_verified"}
 SERIES_KEYS = {"family_sha256", "inference_sha256", "config_id", "attempt_id",
@@ -129,14 +139,20 @@ def _checked_family(family):
 def freeze_validation_inference(family, spec):
     """冻结全部数值政策；尚无服务端登记证明，固定保留未认证标记。"""
     frozen = _checked_family(family)
-    if not isinstance(spec, dict) or set(spec) != SPEC_KEYS:
+    if not isinstance(spec, dict) or set(spec) not in (SPEC_KEYS, FULL_SPEC_KEYS):
         _fail("policy_fields_invalid")
+    full = set(spec) == FULL_SPEC_KEYS
     if spec["method"] != "time_block_bootstrap":
         _fail("unsupported_method")
     for key, expected in FIXED.items():
         if type(spec[key]) is not type(expected) or spec[key] != expected:
             _fail("policy_value_invalid")
-    for key, maximum in LIMITS.items():
+    for key, expected in (FULL_FIXED.items() if full else ()):
+        if type(spec[key]) is not type(expected) or spec[key] != expected:
+            _fail("policy_value_invalid")
+    if full and (type(spec["batch_size"]) is not int or not 1 <= spec["batch_size"] <= 1024):
+        _fail("policy_value_invalid")
+    for key, maximum in (FULL_LIMITS if full else LIMITS).items():
         if type(spec[key]) is not int or not 0 < spec[key] <= maximum:
             _fail("policy_limit_invalid")
     _sha(spec["seed"])
@@ -170,7 +186,7 @@ def freeze_validation_inference(family, spec):
     if (alpha * (REPLICATES + 1) / size).__floor__() < spec["min_tail_count"]:
         _fail("monte_carlo_resolution_insufficient")
     return _freeze({**spec, "initial_capital": _money_text(_money(spec["initial_capital"])),
-                    "protocol_version": VERSION, "family_sha256": family.sha256,
+                    "protocol_version": FULL_VERSION if full else VERSION, "family_sha256": family.sha256,
                     "family_size": size, "identities": frozen["identities"],
                     "folds": frozen["folds"], "inference_registration_verified": False})
 
@@ -185,9 +201,12 @@ def _checked_inference(family, inference):
                 or hashlib.sha256(inference.canonical_json.encode("utf-8")).hexdigest() != inference.sha256):
             _fail("inference_invalid")
         value = json.loads(inference.canonical_json)
-        if not isinstance(value, dict) or set(value) != SPEC_KEYS | META_KEYS:
+        if not isinstance(value, dict):
             _fail("inference_invalid")
-        expected = freeze_validation_inference(family, {key: value[key] for key in SPEC_KEYS})
+        keys = FULL_SPEC_KEYS if value.get("protocol_version") == FULL_VERSION else SPEC_KEYS
+        if set(value) != keys | META_KEYS:
+            _fail("inference_invalid")
+        expected = freeze_validation_inference(family, {key: value[key] for key in keys})
     except (ValueError, KeyError, TypeError, RecursionError, UnicodeError):
         _fail("inference_invalid")
     if expected != inference:
@@ -213,10 +232,12 @@ def _validated_inputs(family, inference, series):
     block_counts = [(fold["validation_end_ms"] - fold["validation_start_ms"])
                     // policy["block_ms"] for fold in policy["folds"]]
     index_draws = REPLICATES * sum(block_counts)
+    full = policy["protocol_version"] == FULL_VERSION
     if (rows_expected * len(series) > policy["max_input_rows"]
             or index_draws > policy["max_index_draws"]
-            or index_draws * len(series) > policy["max_weighted_additions"]
-            or REPLICATES * len(series) > policy["max_distribution_cells"]):
+            or (full and sum(block_counts) > policy["max_blocks"])
+            or (not full and (index_draws * len(series) > policy["max_weighted_additions"]
+                              or REPLICATES * len(series) > policy["max_distribution_cells"]))):
         _fail("resource_limit_exceeded")
     block_periods = policy["block_ms"] // policy["period_ms"]
     canonical, blocks, attempts = [], [], set()
@@ -262,9 +283,32 @@ def _validated_inputs(family, inference, series):
             fold_blocks.append(sums)
         blocks.append(tuple(fold_blocks))
         canonical.append({**item, "identities": dict(frozen["identities"]), "rows": normalized})
-    return {"frozen": frozen, "policy": policy, "series": canonical, "blocks": blocks,
+    prepared = {"frozen": frozen, "policy": policy, "series": canonical, "blocks": blocks,
             "block_counts": block_counts, "period_count": rows_expected,
             "index_draws": index_draws, "input_sha256": _freeze(canonical).sha256}
+    if full:
+        prepared["compute_resources"] = _full_resources(blocks, block_counts, policy)
+    return prepared
+
+
+def _full_resources(blocks, counts, policy):
+    """NumPy分配之前证明每个int64中间和安全，并冻结各类操作预算。"""
+    size, columns, batch = len(blocks), sum(counts), policy["batch_size"]
+    peak = max(abs(value) for config in blocks for fold in config for value in fold)
+    limbs = max(1, (peak.bit_length() + 53) // 54)
+    if columns * ((1 << 54) - 1) > (1 << 63) - 1 or limbs > policy["max_limbs"]:
+        _fail("integer_overflow_bound")
+    rank = (Fraction(_money(policy["alpha"]), SCALE) * (REPLICATES + 1) / size).__floor__()
+    # 矩阵字节精确；Python批结果/堆按每单元128bytes保守计量，不包含调用方输入。
+    matrix_bytes = 8 * (batch * columns + limbs * columns * size + limbs * batch * size)
+    workspace = matrix_bytes + 128 * (batch * size + size * rank) + 1_048_576
+    usage = {"limbs": limbs, "native_macs": REPLICATES * columns * size * limbs,
+             "reconstruction_cells": REPLICATES * size * limbs, "heap_cells": size * rank,
+             "matrix_bytes": matrix_bytes, "workspace_bytes": workspace}
+    for key in ("native_macs", "reconstruction_cells", "heap_cells", "workspace_bytes"):
+        if usage[key] > policy[f"max_{key}"]:
+            _fail("resource_limit_exceeded")
+    return usage
 
 
 def _resampled_delta(blocks, draws):
@@ -327,6 +371,143 @@ def _bootstrap(blocks, counts, domain):
     return totals, distributions, fingerprint.hexdigest(), rejected
 
 
+def _signed54_digits(blocks, max_limbs):
+    """将有符号块和拆成54位数位；返回 [limb,block,config] 的int64数组。"""
+    try:
+        import numpy as np
+    except ImportError:
+        _fail("numpy_unavailable")
+    config_values = [tuple(value for fold in config for value in fold) for config in blocks]
+    columns = len(config_values[0]) if config_values else 0
+    if any(len(values) != columns for values in config_values):
+        _fail("block_shape_invalid")
+    peak = max((abs(value) for values in config_values for value in values), default=0)
+    limbs = max(1, (peak.bit_length() + 53) // 54)
+    if limbs > max_limbs:
+        _fail("integer_overflow_bound")
+    mask = (1 << 54) - 1
+    result = np.empty((limbs, columns, len(config_values)), dtype=np.int64)
+    for limb in range(limbs):
+        shift = limb * 54
+        for column in range(columns):
+            for config, values in enumerate(config_values):
+                value = values[column]
+                digit = (abs(value) >> shift) & mask
+                result[limb, column, config] = digit if value >= 0 else -digit
+    return result
+
+
+def _signed54_product(counts, digits):
+    """用int64矩阵乘法计算signed54数位；调用者已完成中间界证明。"""
+    try:
+        import numpy as np
+    except ImportError:
+        _fail("numpy_unavailable")
+    if type(counts) is np.ndarray:
+        if counts.dtype != np.dtype(np.int64) or counts.ndim != 2:
+            _fail("block_counts_invalid")
+        matrix = counts
+    else:
+        if (not isinstance(counts, (list, tuple))
+                or any(not isinstance(row, (list, tuple))
+                       or any(type(value) is not int or not 0 <= value <= 300 for value in row)
+                       for row in counts)):
+            _fail("block_counts_invalid")
+        matrix = np.asarray(counts, dtype=np.int64)
+    if type(digits) is not np.ndarray or digits.dtype != np.dtype(np.int64):
+        _fail("block_digits_invalid")
+    layers = digits
+    if matrix.ndim != 2 or layers.ndim != 3 or layers.shape[1] != matrix.shape[1]:
+        _fail("block_shape_invalid")
+    # 先逐元素限制再求行和；不能让 NumPy int64 sum 回绕后参与安全证明。
+    if matrix.size and (int(matrix.min()) < 0 or int(matrix.max()) > 300):
+        _fail("block_counts_invalid")
+    row_sums = [sum(int(value) for value in row) for row in matrix]
+    if layers.size and (layers.min() < -((1 << 54) - 1) or layers.max() > (1 << 54) - 1):
+        _fail("block_digits_invalid")
+    if row_sums and min(row_sums) <= 0:
+        _fail("block_counts_invalid")
+    if row_sums and max(row_sums) * ((1 << 54) - 1) > (1 << 63) - 1:
+        _fail("integer_overflow_bound")
+    if row_sums and max(row_sums) > 300:
+        _fail("block_counts_invalid")
+    result = np.empty((layers.shape[0], matrix.shape[0], layers.shape[2]), dtype=np.int64)
+    for limb in range(layers.shape[0]):
+        np.matmul(matrix, layers[limb], out=result[limb])
+    return result
+
+
+def _stream_tail(values, total, rank, heap):
+    """流式维护最大rank个误差和含并列的尾计数，返回尾计数。"""
+    if type(rank) is not int or rank <= 0:
+        _fail("monte_carlo_resolution_insufficient")
+    tail = 0
+    for value in values:
+        if value >= total:
+            tail += 1
+        if len(heap) < rank:
+            heapq.heappush(heap, value)
+        elif value > heap[0]:
+            heapq.heapreplace(heap, value)
+    return tail
+
+
+def _count_batch(domain, start, stop, counts, fingerprint):
+    """按原索引顺序生成一批共享计数；调用者维护全局摘要顺序。"""
+    try:
+        import numpy as np
+    except ImportError:
+        _fail("numpy_unavailable")
+    if type(start) is not int or type(stop) is not int or not 0 <= start <= stop:
+        _fail("batch_invalid")
+    if not isinstance(counts, list) or not counts or any(type(value) is not int or value <= 0 for value in counts):
+        _fail("block_counts_invalid")
+    columns = sum(counts)
+    matrix = np.zeros((stop - start, columns), dtype=np.int64)
+    rejected = 0
+    for row, replicate in enumerate(range(start, stop)):
+        offset = 0
+        for fold, count in enumerate(counts):
+            for draw in range(count):
+                index, retry = _draw_index(domain, replicate, fold, draw, count)
+                fingerprint.update(struct.pack(">I", index))
+                rejected += retry
+                matrix[row, offset + index] += 1
+            offset += count
+    return matrix, rejected
+
+
+def _bootstrap_counts(blocks, counts, domain, resources, policy):
+    """v2共享计数内核；SHA索引顺序与v1逐索引路径完全相同。"""
+    if resources["workspace_bytes"] > policy["max_workspace_bytes"]:
+        _fail("resource_limit_exceeded")
+    batch = policy["batch_size"]
+    configs = len(blocks)
+    totals = [sum(map(sum, item)) for item in blocks]
+    rank = (Fraction(_money(policy["alpha"]), SCALE) * (REPLICATES + 1) / configs).__floor__()
+    heaps, tails = [[] for _ in blocks], [0] * configs
+    digits = _signed54_digits(blocks, policy["max_limbs"])
+    fingerprint, rejected = hashlib.sha256(), 0
+    for start in range(0, REPLICATES, batch):
+        stop = min(REPLICATES, start + batch)
+        matrix, rejected_batch = _count_batch(domain, start, stop, counts, fingerprint)
+        rejected += rejected_batch
+        products = _signed54_product(matrix, digits)
+        for row in range(stop - start):
+            for config in range(configs):
+                value = sum(int(products[limb, row, config]) << (54 * limb)
+                            for limb in range(products.shape[0])) - totals[config]
+                if value >= totals[config]:
+                    tails[config] += 1
+                heap = heaps[config]
+                if len(heap) < rank:
+                    heapq.heappush(heap, value)
+                elif value > heap[0]:
+                    heapq.heapreplace(heap, value)
+        del matrix, products
+    return totals, heaps, tails, fingerprint.hexdigest(), rejected
+
+
 def _diagnostic(family, inference, code):
     return _freeze({
         "protocol_version": VERSION, "calculation_status": "not_estimable",
@@ -344,15 +525,26 @@ def calculate_validation_family(family, inference, series):
     try:
         prepared = _validated_inputs(family, inference, series)
         spec = prepared["policy"]
+        full = spec["protocol_version"] == FULL_VERSION
         LOGGER.info("研究统计输入校验完成 B=%d M=%d index_draws=%d",
                     REPLICATES, spec["family_size"], prepared["index_draws"])
         domain = (b"sha256-counter-rejection-v1\0" + bytes.fromhex(family.sha256)
                   + bytes.fromhex(inference.sha256) + bytes.fromhex(spec["seed"]))
-        totals, distributions, digest, rejected = _bootstrap(
-            prepared["blocks"], prepared["block_counts"], domain)
         alpha = Fraction(_money(spec["alpha"]), SCALE)
-        summaries = [_tail_summary(total, distribution, alpha / spec["family_size"])
-                     for total, distribution in zip(totals, distributions, strict=True)]
+        if full:
+            totals, heaps, tails, digest, rejected = _bootstrap_counts(
+                prepared["blocks"], prepared["block_counts"], domain,
+                prepared["compute_resources"], spec)
+            rank = (alpha * (REPLICATES + 1) / spec["family_size"]).__floor__()
+            summaries = [{"raw_p": Fraction(count + 1, REPLICATES + 1),
+                          "lower_total": total - heap[0], "tail_count": count,
+                          "tail_rank": REPLICATES - rank + 1}
+                         for total, heap, count in zip(totals, heaps, tails, strict=True)]
+        else:
+            totals, distributions, digest, rejected = _bootstrap(
+                prepared["blocks"], prepared["block_counts"], domain)
+            summaries = [_tail_summary(total, distribution, alpha / spec["family_size"])
+                         for total, distribution in zip(totals, distributions, strict=True)]
         probabilities = {item["config_id"]: summary["raw_p"]
                          for item, summary in zip(prepared["series"], summaries, strict=True)}
         adjusted = _adjust(probabilities, spec["multiple_testing"])
@@ -365,7 +557,7 @@ def calculate_validation_family(family, inference, series):
                             "adjusted_p": _fraction(adjusted[item["config_id"]]),
                             "net_profit_lower_bound": _money_text(summary["lower_total"]),
                             "tail_count": summary["tail_count"], "tail_rank": summary["tail_rank"]})
-        evidence = _freeze({"protocol_version": VERSION, "calculation_status": "computed",
+        evidence = _freeze({"protocol_version": spec["protocol_version"], "calculation_status": "computed",
                         "status": "not_estimable", "reason_codes": ["source_untrusted", "inference_registration_unverified"],
                         "family_sha256": family.sha256, "inference_sha256": inference.sha256,
                         "input_sha256": prepared["input_sha256"], "family_size": spec["family_size"],
@@ -379,6 +571,8 @@ def calculate_validation_family(family, inference, series):
                         "multiple_testing": spec["multiple_testing"], "confidence_bound": spec["confidence_bound"],
                         "alpha": spec["alpha"], "replicates": REPLICATES, "seed": spec["seed"], "rng": spec["rng"],
                         "index_draws": prepared["index_draws"], "rejected_draws": rejected, "resample_digest": digest,
+                        **({"compute_engine": FULL_ENGINE, "compute_resources": prepared["compute_resources"],
+                            "batch_size": spec["batch_size"]} if full else {}),
                         "money_scale": 24, "results": results, "source_authenticated": False,
                         "inference_registration_verified": False, "acceptance_eligible": False,
                         "production_authorized": False})

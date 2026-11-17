@@ -498,3 +498,206 @@ def test_behavioral_string_and_inference_subclasses_are_not_frozen_proof(locatio
     result = module.calculate_validation_family(frozen, candidate, []).to_dict()
     expected = "family_invalid" if location.startswith("family") else "inference_invalid"
     assert result["reason_codes"] == [expected]
+
+
+def full_policy(frozen):
+    spec = policy(frozen)
+    del spec["max_weighted_additions"], spec["max_distribution_cells"]
+    return spec | {
+        "engine": "exact-signed54-counts-v1", "batch_size": 1024,
+        "limb_bits": 54, "max_limbs": 3, "max_blocks": 300,
+        "max_input_rows": 2_000_000, "max_index_draws": 30_000_000,
+        "max_native_macs": 10_799_892_000, "max_reconstruction_cells": 35_999_640,
+        "max_heap_cells": 5000, "max_workspace_bytes": 64_000_000,
+    }
+
+
+def larger_family():
+    frozen = family().to_dict()
+    source = {key: frozen[key] for key in ("family_id", "registered_ms", "dataset",
+              "label_span_ms", "purge_ms", "embargo_ms", "comparison",
+              "identities", "execution_policy", "label_horizons")}
+    source.update(frozen["axes"])
+    source["factor_sets"] = [{"id": f"factor-{n}", "sha256": f"{n:064x}"} for n in range(60)]
+    return freeze_experiment_family(source)
+
+
+def test_new_engine_requires_explicit_versioned_resource_policy_and_preserves_v1():
+    module, frozen = api(), family()
+    old = module.freeze_validation_inference(frozen, policy(frozen))
+    new = module.freeze_validation_inference(frozen, full_policy(frozen))
+    assert old.to_dict()["protocol_version"] == "validation-block-bootstrap-v1"
+    assert "engine" not in old.to_dict()
+    assert new.to_dict()["protocol_version"] == "validation-block-bootstrap-v2"
+    assert new.to_dict()["engine"] == "exact-signed54-counts-v1"
+    assert old.sha256 != new.sha256
+    assert module._checked_inference(frozen, new)["max_native_macs"] == 10_799_892_000
+
+
+@pytest.mark.parametrize(("field", "value"), [("batch_size", True), ("batch_size", 1025),
+    ("limb_bits", 53), ("max_limbs", 4), ("max_blocks", 301),
+    ("max_native_macs", 10_799_892_001), ("max_workspace_bytes", 0)])
+def test_new_engine_resource_fields_are_bounded_before_any_numpy_allocation(field, value):
+    frozen = family()
+    with pytest.raises(ValueError):
+        api().freeze_validation_inference(frozen, full_policy(frozen) | {field: value})
+
+
+def test_signed54_products_match_hand_enumeration_with_negative_high_limbs():
+    module = api()
+    huge = (1 << 140) + (1 << 60) + 3
+    blocks = [((huge, -huge), (7,)), ((-2 * huge, 2 * huge), (-14,))]
+    # 四个等概率draw: (0,0)/(0,1)/(1,0)/(1,1)，第二fold唯一块。
+    counts = [[2, 0, 1], [1, 1, 1], [1, 1, 1], [0, 2, 1]]
+    digits = module._signed54_digits(blocks, 3)
+    products = module._signed54_product(counts, digits)
+    observed = [[sum(int(products[limb, row, config]) << (54 * limb) for limb in range(3))
+                 - sum(map(sum, blocks[config])) for row in range(4)] for config in range(2)]
+    assert observed == [[2 * huge, 0, 0, -2 * huge], [-4 * huge, 0, 0, 4 * huge]]
+
+
+def test_signed54_intermediate_bound_is_proved_at_s300_even_with_cancellation():
+    module = api()
+    peak = (1 << 54) - 1
+    blocks = [((peak,) * 300,), ((-peak,) * 300,), ((peak, -peak) * 150,)]
+    digits = module._signed54_digits(blocks, 1)
+    result = module._signed54_product([[1] * 300], digits)
+    assert [int(value) for value in result[0, 0]] == [300 * peak, -300 * peak, 0]
+    with pytest.raises(ValueError, match="overflow"):
+        module._signed54_product([[1] * 513], module._signed54_digits([((peak,) * 513,)], 1))
+
+
+def test_streaming_rank_heap_matches_complete_sort_with_ties_and_negative_values():
+    module = api()
+    for values, total, rank in [([-9, -9, -5, -1], -5, 1),
+                                ([1, 2, 2, 2, 3], 2, 3), ([0] * 41 + [1] * 41, 1, 41)]:
+        heap = []
+        tail = module._stream_tail(values, total, rank, heap)
+        assert heap[0] == sorted(values)[-rank]
+        assert tail == sum(value >= total for value in values)
+
+
+@pytest.mark.parametrize("budget", ["max_native_macs", "max_reconstruction_cells",
+                                   "max_heap_cells", "max_workspace_bytes", "max_blocks"])
+def test_new_engine_budgets_refuse_whole_family_before_kernel(budget):
+    module, frozen = api(), family()
+    spec = full_policy(frozen) | {budget: 1}
+    inference = module.freeze_validation_inference(frozen, spec)
+    result = module.calculate_validation_family(frozen, inference, inputs(frozen, inference)).to_dict()
+    assert result["calculation_status"] == "not_estimable"
+    assert result["reason_codes"] == ["resource_limit_exceeded"]
+    assert result["results"] == []
+
+
+def test_new_engine_invalid_last_configuration_refuses_before_kernel(monkeypatch):
+    module, frozen = api(), larger_family()
+    inference = module.freeze_validation_inference(frozen, full_policy(frozen))
+    series = inputs(frozen, inference)
+    series[-1]["rows"].pop()
+    def forbidden(*args):
+        pytest.fail("invalid complete family reached new kernel")
+    monkeypatch.setattr(module, "_bootstrap_counts", forbidden)
+    result = module.calculate_validation_family(frozen, inference, series).to_dict()
+    assert result["reason_codes"] == ["series_grid_incomplete"]
+    assert result["results"] == []
+
+
+def test_same_domain_batch_counts_keep_original_index_stream_and_exact_full_m_oracle():
+    module = api()
+    import numpy as np
+    import struct
+    counts, domain = [2, 1], b"same-domain-oracle"
+    block = ((10**42 + 7, -10**42 - 3), (1 << 127,))
+    blocks = [tuple(tuple(value * (config + 1) for value in fold) for fold in block)
+              for config in range(120)]
+    digits = module._signed54_digits(blocks, 3)
+    expected, expected_indexes = [], bytearray()
+    for replicate in range(17):
+        selected = []
+        for fold, count in enumerate(counts):
+            chosen = []
+            for draw in range(count):
+                index = module._draw_index(domain, replicate, fold, draw, count)[0]
+                expected_indexes.extend(struct.pack(">I", index))
+                chosen.append(index)
+            selected.append(chosen)
+        expected.append([sum(sum(values[index] for index in indexes) - sum(values)
+                             for values, indexes in zip(config, selected, strict=True))
+                         for config in blocks])
+    for batch in (1, 3, 17):
+        fingerprint = hashlib.sha256()
+        found = []
+        for start in range(0, 17, batch):
+            matrix, _ = module._count_batch(domain, start, min(17, start + batch), counts, fingerprint)
+            products = module._signed54_product(matrix, digits)
+            for row in range(len(matrix)):
+                found.append([sum(int(products[limb, row, config]) << (54 * limb)
+                                  for limb in range(len(products))) - sum(map(sum, blocks[config]))
+                              for config in range(120)])
+            assert np.all(matrix[:, :2].sum(axis=1) == 2)
+            assert np.all(matrix[:, 2:].sum(axis=1) == 1)
+        assert found == expected
+        assert fingerprint.hexdigest() == hashlib.sha256(expected_indexes).hexdigest()
+
+
+def test_s300_extreme_delta_can_exceed_int64_after_safe_nonnegative_count_product():
+    module = api()
+    peak = (1 << 54) - 1
+    blocks = [tuple((peak,) + (-peak,) * 59 for _ in range(5))]
+    matrix = [[60 if index % 60 == 0 else 0 for index in range(300)]]
+    products = module._signed54_product(matrix, module._signed54_digits(blocks, 1))
+    assert int(products[0, 0, 0]) == 300 * peak
+    delta = int(products[0, 0, 0]) - sum(map(sum, blocks[0]))
+    assert delta == 590 * peak
+    assert delta > (1 << 63) - 1
+
+
+@pytest.mark.parametrize("invalid", [[[1.5, 1]], [[True, 1]], [[-1, 2]]])
+def test_exact_matrix_product_refuses_lossy_or_negative_counts(invalid):
+    module = api()
+    with pytest.raises(ValueError):
+        module._signed54_product(invalid, module._signed54_digits([((1, -1),)], 1))
+
+
+def test_exact_matrix_product_proves_ndarray_counts_before_int64_sum_wrap():
+    import numpy as np
+    module = api()
+    malicious = np.array([[2**62, 2**62, 2**62, 2**62, 1]], dtype=np.int64)
+    with pytest.raises(ValueError, match="block_counts_invalid"):
+        module._signed54_product(malicious, module._signed54_digits([((1, -1, 1, -1, 1),)], 1))
+
+
+def test_actual_full_120_configuration_pipeline_has_bounded_logs_and_false_qualifications(caplog):
+    import resource
+    import time
+    module, frozen = api(), larger_family()
+    inference = module.freeze_validation_inference(frozen, full_policy(frozen))
+    series = inputs(frozen, inference)
+    start = time.perf_counter()
+    with caplog.at_level(logging.INFO, logger="research_statistics"):
+        evidence = module.calculate_validation_family(frozen, inference, series)
+    elapsed = time.perf_counter() - start
+    result = evidence.to_dict()
+    assert result["calculation_status"] == "computed"
+    assert result["protocol_version"] == "validation-block-bootstrap-v2"
+    assert result["compute_engine"] == "exact-signed54-counts-v1"
+    assert result["replicates"] == 99999 and result["family_size"] == 120
+    assert len(result["results"]) == len(result["input_manifest"]) == 120
+    assert {row["config_id"] for row in result["results"]} == {row["config_id"] for row in frozen.to_dict()["configurations"]}
+    assert result["compute_resources"]["heap_cells"] == 4920
+    assert result["compute_resources"]["native_macs"] == 3_599_964_000
+    assert result["compute_resources"]["limbs"] == 2
+    assert all(row["net_profit"] == "300.00000000000000000000015" for row in result["results"])
+    assert len({tuple(row["raw_p"].values()) for row in result["results"]}) == 1
+    assert result["status"] == "not_estimable"
+    for flag in ("source_authenticated", "inference_registration_verified", "acceptance_eligible", "production_authorized"):
+        assert result[flag] is False
+    messages = [record.getMessage() for record in caplog.records if record.name == "research_statistics"]
+    assert len(messages) == 2 and "M=120" in messages[0]
+    for secret in (frozen.sha256, inference.sha256, "9" * 64, "attempt-0", "300.00000000000000000000015"):
+        assert secret not in "\n".join(messages)
+    # 只给临时验证日志输出固定量测；不写运行时产物、不作为统计证据字段。
+    print(json.dumps({"full_family_acceptance": True, "M": 120, "B": 99999,
+                      "elapsed_seconds": elapsed, "max_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+                      "resample_digest": result["resample_digest"], "evidence_sha256": evidence.sha256,
+                      "all_120_results": True, "all_qualification_flags_false": True}, sort_keys=True))

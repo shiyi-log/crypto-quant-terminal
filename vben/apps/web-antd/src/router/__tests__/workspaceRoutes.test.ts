@@ -25,6 +25,7 @@ describe('新版工作区与旧版入口退役', () => {
   );
 
   it.each([
+    'demo-preview',
     'orderflow',
     'price-spikes',
     'research',
@@ -39,6 +40,15 @@ describe('新版工作区与旧版入口退役', () => {
     expect(resolved.matched).toHaveLength(2);
     expect(resolved.fullPath).toBe(address);
     expect(resolved.matched.at(-1)?.redirect).toBeUndefined();
+  });
+
+  it('keeps the local demo preview separate from the account-backed desk', () => {
+    const demo = router.resolve('/quant/demo-preview');
+    const desk = router.resolve('/quant/trade-desk');
+    expect(demo.matched.at(-1)?.components?.default).toBeTypeOf('function');
+    expect(demo.matched.at(-1)?.name).toBe('QuantDemoPreview');
+    expect(desk.matched.at(-1)?.name).toBe('QuantTradeDesk');
+    expect(demo.fullPath).toBe('/quant/demo-preview');
   });
 
   it.each([

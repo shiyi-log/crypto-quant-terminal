@@ -21,6 +21,7 @@ def test_refactor_backend_modules_are_compiled_and_linted_in_ci_and_cd(workflow,
         "research_artifact_verifier.py",
         "research_registry_store.py",
         "research_statistics.py",
+        "research_two_stage.py",
         "tools/database_backup.py",
         "tools/database_restore_verification.py",
     }

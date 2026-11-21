@@ -112,12 +112,12 @@ jobs:
             auth_service.py serve_web.py runtime_config.py manage.py \
             data_store.py data_sync.py market_stream.py market_live.py candle_archive.py \
             demo_account_collector.py demo_collection_run.py demo_safety_runtime.py demo_archive_providers.py demo_evidence_store.py demo_acceptance_service.py research_registry_store.py research_statistics.py demo_command_store.py demo_equity_observation.py research_artifact_verifier.py service_supervision.py database_migrations.py demo_risk_reservation_store.py demo_round_trip_costs.py research_protocol.py demo_native_protection.py demo_conditional_store.py demo_entry_decision.py demo_risk.py demo_acceptance.py demo_account_policy.py demo_account_reconciliation.py \
-            demo_execution_service.py demo_runner_controller.py demo_writer.py demo_store.py binance_demo_adapter.py demo_api.py tools/database_backup.py tools/database_restore_verification.py tests
+            demo_execution_service.py demo_runner_controller.py demo_writer.py research_two_stage.py demo_store.py binance_demo_adapter.py demo_api.py tools/database_backup.py tools/database_restore_verification.py tests
           uv run --frozen --group dev ruff check \
             auth_service.py manage.py runtime_config.py data_store.py data_sync.py \
             market_stream.py market_live.py candle_archive.py demo_account_collector.py demo_collection_run.py demo_safety_runtime.py demo_archive_providers.py demo_evidence_store.py demo_acceptance_service.py research_registry_store.py research_statistics.py demo_command_store.py demo_equity_observation.py research_artifact_verifier.py service_supervision.py database_migrations.py demo_risk_reservation_store.py demo_round_trip_costs.py research_protocol.py demo_native_protection.py demo_conditional_store.py demo_entry_decision.py demo_risk.py demo_acceptance.py \
             demo_account_policy.py demo_account_reconciliation.py demo_execution_service.py \
-            demo_runner_controller.py demo_writer.py demo_store.py binance_demo_adapter.py demo_api.py tools/database_backup.py tools/database_restore_verification.py tools/release_identity.py tests
+            demo_runner_controller.py demo_writer.py research_two_stage.py demo_store.py binance_demo_adapter.py demo_api.py tools/database_backup.py tools/database_restore_verification.py tools/release_identity.py tests
           uv run --frozen --group dev python tools/check_frozen_strategy_identities.py --ci
 
       - name: 安装锁定的前端依赖

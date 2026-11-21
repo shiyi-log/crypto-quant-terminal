@@ -395,4 +395,5 @@
 
 - 版本唯一权威从 `0.2.3` 提升至 `0.2.4`；仅同步项目版本元数据和开发变更记录，不改依赖版本。锁文件随后由固定 uv 版本重新解析并运行 `uv lock --check`。
 - 候选源代码提交 `51f3688d97496c00f370542fa8b0f6c03e165eed` 的精确 CI `44951451041` 两个 job 均成功；同 SHA main CD `44951984696` 成功，步骤“验证发布归档哈希与 build.json 身份”通过。artifact `14726480457` 的 SHA-256 为 `0200a76006c1bfe964ca811111bb152e2a990d4f43ddffffb5665bac158b5bcc`。
-- 版本同步提交必须再次通过其自身精确 SHA 的 push CI 与 CD；之后才能创建唯一附注标签 `v0.2.4`，推送标签，并按 `docs/RELEASE_PROCESS.md` 显式触发标签 CD。当前尚未打标签、未触发版本 CD、未创建 GitHub Release。
+- 版本同步提交 `7618b8fe1b21d5d669b666856c4c09fda4d62d41` 的 CI `44952359877` 成功；附注标签 `v0.2.4` 指向该精确 SHA。按 `docs/RELEASE_PROCESS.md` 显式触发标签 CD `44953347126`，其发布归档 SHA-256 与 `build.json` 身份检查、Release job 均成功；标签 CI `44953168832` 后端/PostgreSQL 与前端/Playwright 两个 job 均成功。
+- GitHub Release `https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.4` 已发布。归档资产 `quant-terminal-v0.2.4.tar.gz` SHA-256 `eb63333cf8b34af51473383547564c50559b6c60e9951c8a3a350a67c44fec8e`，sidecar 亦已上传。main 候选归档 artifact `14726187854` digest `sha256:b78cdd1bf13a35b8d1b213c5939340439360496621a55fe6b80729d30a7d5f89`；标签 CD Actions artifact `14726856166` digest `sha256:8bd83cff21326ff0b63b8207b9d0a1f41ba9f888228e630d40e9cff6ec1768ee`。这些 Actions artifact digest 是传输包摘要，与 Release tar.gz 的资产 SHA-256 分别记录。

@@ -1,13 +1,18 @@
 # 版本记录
 
-## 0.2.4 — 开发候选
+## 0.2.4 — 2026-11-22
 
 本版本收录 2026-11-22 已推送的研究阶段中文日志、Demo 完整成本风险事件
 中文日志与 `0008` 研究事实迁移/恢复校验。候选提交为 `51f3688`，该提交的
 精确 CI `44951451041` 和 main 归档 CD `44951984696` 成功；CD 归档 SHA-256
 为 `0200a76006c1bfe964ca811111bb152e2a990d4f43ddffffb5665bac158b5bcc`，
-`build.json` 身份检查通过。当前版本同步提交、标签、标签 CD 与 GitHub Release
-仍待完成并分别验证。
+`build.json` 身份检查通过。版本提交 `7618b8fe1b21d5d669b666856c4c09fda4d62d41`
+的 CI `44952359877` 成功，附注标签 `v0.2.4` 已推送；标签 CI
+`44953168832`、显式标签 CD `44953347126` 均成功。CD 的归档身份检查与
+Release job 成功；[GitHub Release](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.4)
+已发布，归档 `quant-terminal-v0.2.4.tar.gz` SHA-256 为
+`eb63333cf8b34af51473383547564c50559b6c60e9951c8a3a350a67c44fec8e`，
+sidecar 同步上传。
 
 留出评估、研究来源顺序认证/worker、P1 生产组合根与唯一 writer 接线、
 Demo 30 天自然验收和 100/300/1000 USDT 阶段校准仍未完成；本版本不构成

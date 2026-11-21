@@ -171,6 +171,35 @@ jobs:
           printf 'package_name=%s\n' "$package_name" >> "$GITHUB_OUTPUT"
           printf 'release_tag=%s\n' "$release_tag" >> "$GITHUB_OUTPUT"
 
+      - name: 验证发布归档哈希与 build.json 身份
+        env:
+          COMMIT_SHA: ${{ steps.commit.outputs.commit_sha }}
+          PROJECT_VERSION: ${{ steps.version.outputs.project_version }}
+          PACKAGE_NAME: ${{ steps.package.outputs.package_name }}
+        run: |
+          set -euo pipefail
+          archive="release/$PACKAGE_NAME.tar.gz"
+          sha256sum --check "$archive.sha256"
+          python3 - <<'PY'
+          import json
+          import os
+          import tarfile
+
+          package = os.environ["PACKAGE_NAME"]
+          with tarfile.open(f"release/{package}.tar.gz", "r:gz") as bundle:
+              entries = [member for member in bundle.getmembers()
+                         if member.name == f"{package}/build.json"]
+              if len(entries) != 1 or not entries[0].isfile() or entries[0].size >= 4096:
+                  raise SystemExit("发布归档必须含唯一且大小受限的 build.json。")
+              identity = json.load(bundle.extractfile(entries[0]))
+          expected = {"commit": os.environ["COMMIT_SHA"],
+                      "version": os.environ["PROJECT_VERSION"],
+                      "package": package}
+          if identity != expected:
+              raise SystemExit("build.json 与本次提交、版本或包名不一致。")
+          print("发布归档 SHA-256 与 build.json 身份校验通过。")
+          PY
+
       - name: 上传发布归档
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

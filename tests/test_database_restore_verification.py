@@ -442,7 +442,7 @@ def test_current_command_migration_accepts_only_complete_real_physical_schema(da
     conn, schema, _ = database
     tool = capability()
     bundle = install_real_demo_prefix(conn, schema)
-    assert next(reversed(bundle)) == '0008_research_two_stage'
+    assert next(reversed(bundle)) == '0009_research_holdout_claims'
     result = tool.validate_database_invariants(conn, schema=schema)
     assert result['demo_migrations'] == 'current'
     assert re.fullmatch('[0-9a-f]{64}', result['demo_physical_sha256'])

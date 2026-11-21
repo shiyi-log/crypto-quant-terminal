@@ -369,6 +369,13 @@
 - 协议实现与源码检查清单已独立提交并推送：`2a52ea8697e0900477aa8aebcf3bb4853c46b231`，中文消息“实现研究第二阶段验证协议并纳入CI检查”。该 SHA 的远端 CI 结果尚未取得可核实记录，不能写为通过。
 - 版本仍为 `0.2.3`；本地 PostgreSQL 集中回归曾因 socket 等待中断，不据部分结果声称数据库全量通过。最终数据库 CI 与同 SHA CD 归档身份门禁仍是后续必要步骤。
 
+## 2026-11-22 P2 留出唯一消费存储前置
+
+- 新增 Demo 迁移 `0009_research_holdout_claims.sql`，为研究 v2 留出领取预留不可变事实表，按账户/推断身份设主键，并绑定实验族、选择、候选、数据/策略及冻结计划摘要。触发器阻止 UPDATE、DELETE、TRUNCATE；数据库迁移包自动发现该文件。该迁移只提供存储约束，不提供领取 API、worker、留出计算或任何授权。
+- 独立代码审查发现，当前研究协议仍固定 `registration_order_verified=false`、`calculator_available=false`，且 v2 推断/选择/候选尚无应用层登记入口。为避免永久消耗尚无有效评估路径的留出机会，本小节不接入或签发领取票据；并发/崩溃消费 API 留待来源认证、计算器和完整事实登记合同具备后实施。
+- 在 `quant_test` 中创建随机 schema，仅安装 v2 研究迁移及新 0009 后，读取真实 catalog 摘要：候选表 `0bc678a059f3a051b5b9a3fc6d6a92f14246148a35ae64db9830835f6a82fdc7`、领取表 `dbd8d5b407e8bad10646e154b37d80d0241b1e479f9435386f2a7f09d1d53094`，并据此扩展恢复物理锚点。离线迁移合同 **2 项通过**，Demo 迁移加载器合同 **1 项通过**；Ruff、py_compile、CI/CD YAML 解析和 `git diff --check` 通过。恢复文件连续执行到 **33 项通过**后，在完整 Demo schema 的 psycopg 查询等待处中断；不能把中断结果记为全量恢复测试通过。生产库未执行迁移。
+- 当前只完成迁移文件、静态合同和恢复锚点；版本仍为 `0.2.4`，没有标签或新 Release。经完整定向验证、逐路径暂存、中文独立提交并推送后，才补记精确提交与 Actions 结果。
+
 ## 2026-11-22 P2 研究事实迁移与恢复锚点
 
 - `database/demo_migrations/0008_research_two_stage.sql` 追加四张账户范围事实表，带 JSONB/哈希检查、父级外键及 UPDATE/DELETE/TRUNCATE 阻止触发器；触发器启用 `ALWAYS`。迁移 SHA-256：`ab6eaed15c782cfbc59a0ed01b3601ff35c40181f80284db8df9c4bcf4f09a75`。

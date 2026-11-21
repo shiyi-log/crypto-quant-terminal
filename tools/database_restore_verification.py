@@ -338,6 +338,12 @@ DEMO_PHYSICAL_ANCHORS['0008_research_two_stage'] = {
     'refactor_research_validation_results_v2': '797d71210ee8d4c24d31cdebb886686fc9f3a85869416b9afbe19335fbd9a335',
 }
 
+# 由隔离 quant_test 随机 schema 只安装 0008/0009 后实测；领取仍未接入代码。
+DEMO_PHYSICAL_ANCHORS['0009_research_holdout_claims'] = {
+    **DEMO_PHYSICAL_ANCHORS['0008_research_two_stage'],
+    'refactor_research_candidate_results_v2': '0bc678a059f3a051b5b9a3fc6d6a92f14246148a35ae64db9830835f6a82fdc7',
+    'refactor_research_holdout_claims_v2': 'dbd8d5b407e8bad10646e154b37d80d0241b1e479f9435386f2a7f09d1d53094',
+}
 
 def _demo_physical_shape(conn, schema):
     from database_migrations import catalog_shape

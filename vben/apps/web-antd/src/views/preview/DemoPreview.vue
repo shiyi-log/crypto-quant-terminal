@@ -61,6 +61,9 @@ const activeLabel = computed(
   --text: #e5edf4;
   --muted: #a2b8c9;
   --signal: #69b4e4;
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
   min-width: 0;
   color: var(--text);
   background: var(--ocean);
@@ -88,7 +91,8 @@ h1 { margin: 0; font-size: 24px; font-weight: 600; line-height: 1.3; }
 .preview-navigation button[aria-selected='true'] { border-bottom-color: var(--signal); color: var(--text); }
 .preview-navigation button:focus-visible { outline: 2px solid var(--signal); outline-offset: -3px; }
 .preview-content { min-width: 0; }
-.preview-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 18px; padding: 13px 26px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.preview-content { flex: 1 0 auto; }
+.preview-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 18px; padding: 13px 26px; border-top: 1px solid var(--line); color: var(--muted); background: var(--ocean); font-size: 11px; }
 @media (max-width: 600px) {
   .preview-heading { align-items: flex-start; flex-direction: column; padding: 18px 16px 15px; }
   h1 { font-size: 21px; }

@@ -22,6 +22,13 @@ const fallbackNotFoundRoute: RouteRecordRaw = {
 
 /** 基本路由，这些路由是必须存在的 */
 const coreRoutes: RouteRecordRaw[] = [
+  // 默认展示纯本地固定样本；此路由不依赖认证、账户 provider 或业务 API。
+  {
+    name: 'QuantDemoPreview',
+    path: '/quant/demo-preview',
+    component: () => import('#/views/preview/DemoPreview.vue'),
+    meta: { hideInMenu: true, hideInTab: true, title: '本地演示预览' },
+  },
   // 系统状态入口可独立访问，不依赖尚未加载的业务菜单。
   {
     name: 'SystemForbidden',

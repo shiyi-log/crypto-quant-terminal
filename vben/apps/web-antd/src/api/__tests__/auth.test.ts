@@ -30,11 +30,11 @@ describe('local authentication errors', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it('opens the new trade desk after loading the authenticated user', async () => {
+  it('opens the local demo preview after loading the authenticated user', async () => {
     localStorage.setItem(FT_TOKEN_KEY, 'current-token');
     mocks.fetch.mockResolvedValue(response(200, { username: 'operator' }));
     await expect(getUserInfoApi()).resolves.toMatchObject({
-      homePath: '/quant/trade-desk', username: 'operator',
+      homePath: '/quant/demo-preview', username: 'operator',
     });
   });
 

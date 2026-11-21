@@ -44,4 +44,5 @@ describe('本地演示预览壳', () => {
     await nextTick();
     expect(view.get('[data-testid="preview-content"]').textContent).toContain('验收与上线');
   });
+
 });

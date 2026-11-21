@@ -26,7 +26,8 @@ export async function getUserInfoApi(): Promise<UserInfo> {
   return {
     avatar: '',
     desc: 'Freqtrade 量化交易终端',
-    homePath: '/quant/trade-desk',
+    // 新会话默认进入本地固定样本，避免把账户型交易台当作演示入口。
+    homePath: '/quant/demo-preview',
     realName: 'Freqtrade',
     roles: ['admin'],
     token: '',

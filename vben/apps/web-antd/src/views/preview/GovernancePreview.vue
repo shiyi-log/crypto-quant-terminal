@@ -80,7 +80,7 @@ function resetPreferences() {
 </script>
 
 <template>
-  <main class="governance-preview" :data-density="savedDensity">
+  <section class="governance-preview" :data-density="savedDensity" :aria-label="props.workspace === 'acceptance' ? '验收与上线' : props.workspace === 'data-quality' ? '数据中心' : props.workspace === 'operations' ? '运维与证据' : '设置与系统'">
     <header class="preview-header">
       <div>
         <p class="eyebrow">LOCAL DEMO / GOVERNANCE</p>
@@ -131,7 +131,7 @@ function resetPreferences() {
 
     <div v-if="approvalOpen" class="dialog-backdrop"><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="approval-title"><p class="eyebrow">LOCAL ONLY</p><h2 id="approval-title">记录演示审批？</h2><p>这只是<strong>仅本地演练</strong>，不会改变生产资格，不会发送交易请求。</p><div class="button-row"><button class="secondary-action" data-action="cancel-approval" type="button" @click="approvalOpen = false">取消</button><button class="primary-action" data-action="confirm-approval" type="button" @click="recordApproval">确认记录</button></div></section></div>
     <p v-if="approvalRecorded" class="approval-note">本地回执：已记录演示审批，生产资格仍为未授权。</p>
-  </main>
+  </section>
 </template>
 
 <style scoped>

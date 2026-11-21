@@ -5,11 +5,16 @@ vi.mock('#/locales', () => ({ $t: (key: string) => key }));
 
 import { coreRoutes, fallbackNotFoundRoute } from '../routes/core';
 import quantRoutes from '../routes/modules/quant';
+import { overridesPreferences } from '../../preferences';
 
 describe('新版工作区与旧版入口退役', () => {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [...coreRoutes, ...quantRoutes, fallbackNotFoundRoute],
+  });
+
+  it('uses the local demo preview as the application home page', () => {
+    expect(overridesPreferences.app?.defaultHomePath).toBe('/quant/demo-preview');
   });
 
   it.each(['factors', 'experiments', 'data-quality', 'operations'])(
@@ -25,7 +30,6 @@ describe('新版工作区与旧版入口退役', () => {
   );
 
   it.each([
-    'demo-preview',
     'orderflow',
     'price-spikes',
     'research',
@@ -45,7 +49,9 @@ describe('新版工作区与旧版入口退役', () => {
   it('keeps the local demo preview separate from the account-backed desk', () => {
     const demo = router.resolve('/quant/demo-preview');
     const desk = router.resolve('/quant/trade-desk');
+    expect(demo.matched).toHaveLength(1);
     expect(demo.matched.at(-1)?.components?.default).toBeTypeOf('function');
+    expect(demo.matched.some((record) => record.name === 'Root')).toBe(false);
     expect(demo.matched.at(-1)?.name).toBe('QuantDemoPreview');
     expect(desk.matched.at(-1)?.name).toBe('QuantTradeDesk');
     expect(demo.fullPath).toBe('/quant/demo-preview');

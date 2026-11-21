@@ -24,16 +24,6 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
-        name: 'QuantDemoPreview',
-        path: 'demo-preview',
-        component: () => import('#/views/preview/DemoPreview.vue'),
-        meta: {
-          hideInMenu: true,
-          icon: 'lucide:monitor-play',
-          title: '本地演示预览',
-        },
-      },
-      {
         name: 'QuantAcceptance',
         path: 'acceptance',
         component: () => import('#/views/quant/acceptance/index.vue'),

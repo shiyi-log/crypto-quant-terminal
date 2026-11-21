@@ -31,6 +31,18 @@ afterEach(() => {
 });
 
 describe('治理工作区演示交互', () => {
+  it('嵌入应用主内容区时不创建嵌套 main 地标', () => {
+    const element = document.createElement('div');
+    document.body.append(element);
+    const app = createApp({
+      render: () => h('main', [h(GovernancePreview, { workspace: 'acceptance' })]),
+    });
+    app.mount(element);
+    mounted.push({ app, element });
+
+    expect(element.querySelectorAll('main')).toHaveLength(1);
+  });
+
   it('查看验收项时切换对应证据，审批演练不会改变真实准入', async () => {
     const view = open('acceptance');
     view.get<HTMLButtonElement>('[data-evidence="trades"]').click();

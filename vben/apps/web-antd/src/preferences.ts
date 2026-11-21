@@ -20,7 +20,7 @@ export const overridesPreferences = defineOverridesPreferences({
   // overrides
   app: {
     name: import.meta.env.VITE_APP_TITLE,
-    defaultHomePath: '/quant/trade-desk',
+    defaultHomePath: '/quant/demo-preview',
   },
   copyright: appCopyrightPreferences,
   widget: {

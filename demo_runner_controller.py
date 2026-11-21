@@ -5,6 +5,7 @@ import copy
 import fcntl
 import hashlib
 import logging
+import os
 from decimal import Decimal
 from pathlib import Path
 import threading
@@ -28,12 +29,34 @@ class DemoHandoffError(RuntimeError):
         super().__init__(message)
 
 
+class _ExternalCapability:
+    """进程内前台能力；字符串 owner 不能伪造持锁上下文。"""
+
+    __slots__ = ('controller', 'handle', 'pid', 'device', 'inode', 'owner_id')
+
+    def __init__(self, controller, handle, owner_id):
+        self.controller = controller
+        self.handle = handle
+        self.pid = os.getpid()
+        stat = os.fstat(handle.fileno())
+        self.device, self.inode = stat.st_dev, stat.st_ino
+        self.owner_id = owner_id
+
+    def __setattr__(self, name, value):
+        if hasattr(self, name):
+            raise AttributeError('frozen external writer capability')
+        object.__setattr__(self, name, value)
+
+
 class DemoRunnerController:
     def __init__(self, data_store, demo_store, credential_provider, adapter_factory=None,
                  *, paper_source=None, lock_path=None, clock_ms=None, ledger_factory=None,
                  risk_gate_required=None, risk_account_scope=None, gate_registry=None,
                  acceptance_round_provider=None, acceptance_round_required=False,
-                 safety_runtime_factory=None):
+                 safety_runtime_factory=None, driver_mode='legacy_thread'):
+        if driver_mode not in {'legacy_thread', 'external_paused'}:
+            raise ValueError('invalid Demo controller driver mode')
+        self.driver_mode = driver_mode
         self.data_store, self.demo_store = data_store, demo_store
         self.credential_provider = credential_provider
         if adapter_factory is None:
@@ -54,6 +77,11 @@ class DemoRunnerController:
         self._wake = threading.Event()
         self._mutex = threading.RLock()
         self._file_lock = None
+        self._external_capability = None
+        self._external_owner_id = None
+        self._external_pid = None
+        self._external_lock_identity = None
+        self._external_command_binding_hash = None
         self._error = None
         self._recovery_mode = False
         self._selected_account_id = None
@@ -70,6 +98,7 @@ class DemoRunnerController:
         self._restore_incomplete = False
         self._account_coordinator = None
         self._account_cycle_lock = threading.RLock()
+        self._external_operation_lock = threading.Lock()
         self.gate_registry = gate_registry
         if risk_gate_required is None:
             risk_gate_required = self._gate_enabled("risk.required")
@@ -329,6 +358,258 @@ class DemoRunnerController:
             raise RuntimeError("another Demo controller owns this account") from None
         self._file_lock = handle
 
+    def _external_refuse_legacy(self):
+        if self.driver_mode == 'external_paused':
+            raise DemoHandoffError('demo_external_driver_required',
+                                   'external writer owns the paused controller')
+
+    def _assert_external(self, capability):
+        if (self.driver_mode != 'external_paused' or capability is not self._external_capability
+                or self._external_capability is None or os.getpid() != self._external_pid
+                or self._file_lock is None or self._file_lock.closed
+                or capability.handle is not self._file_lock or capability.pid != os.getpid()):
+            raise DemoHandoffError('demo_external_capability_invalid',
+                                   'external writer capability is invalid')
+        try:
+            stat = os.fstat(self._file_lock.fileno())
+            current = self.lock_path.stat()
+            if ((stat.st_dev, stat.st_ino) != self._external_lock_identity
+                    or (current.st_dev, current.st_ino) != self._external_lock_identity):
+                raise OSError('lock identity changed')
+        except (OSError, ValueError):
+            raise DemoHandoffError('demo_external_capability_invalid',
+                                   'external writer lock identity is invalid') from None
+
+    def assert_external(self, capability):
+        self._assert_external(capability)
+
+    def activate_external(self, target, *, command_store):
+        if not self._external_operation_lock.acquire(blocking=False):
+            raise DemoHandoffError('demo_external_operation_active',
+                                   'external writer operation is already active')
+        try:
+            return self._activate_external_locked(target, command_store=command_store)
+        finally:
+            self._external_operation_lock.release()
+
+    def _activate_external_locked(self, target, *, command_store):
+        from demo_writer import FrozenWriterTarget
+        if self.driver_mode != 'external_paused' or type(target) is not FrozenWriterTarget:
+            raise DemoHandoffError('demo_external_driver_required', 'external writer mode is required')
+        target = FrozenWriterTarget(target.binding, strategy_id=target.strategy_id,
+            rule_hash=target.rule_hash, execution_hash=target.execution_hash,
+            demo_policy_hash=target.demo_policy_hash)
+        if self._external_capability is not None or self.service or self._thread or self._workers:
+            raise DemoHandoffError('demo_external_already_active', 'external writer is already active')
+        try:
+            self._lock()
+        except Exception:
+            raise
+        try:
+            self.data_store.check_schema()
+            self.demo_store.check_schema()
+            if (not hasattr(command_store, 'check_schema') or command_store.check_schema() is False
+                    or getattr(command_store, 'account_id', None) != target.binding.to_dict()['scope']['account_id']
+                    or getattr(command_store, 'environment', None) != 'binance_demo'):
+                raise DemoHandoffError('demo_external_binding_unavailable',
+                                       'external writer binding is unavailable')
+            stored = command_store.get_binding(target.binding.binding_id)
+            expected = target.binding.to_dict()
+            if stored != expected:
+                raise DemoHandoffError('demo_external_binding_mismatch',
+                                       'external writer binding does not match')
+            scope = expected['scope']
+            if self.risk_account_scope != scope['account_id']:
+                raise DemoHandoffError('demo_external_account_mismatch',
+                                       'external writer account scope does not match')
+            if self.data_store.get_document(SHARED_STATE_KEY, {}).get('sessions'):
+                raise DemoHandoffError('demo_external_shared_recovery_unsupported',
+                                       'shared external recovery is not enabled')
+            persisted = self.data_store.get_document(STATE_KEY, {}) or {}
+            if (not isinstance(persisted, dict) or persisted.get('yieldedFlat') is True
+                    or persisted.get('selectedAccountId') != target.strategy_id
+                    or persisted.get('demoPolicyHash') != target.demo_policy_hash
+                    or persisted.get('virtualAccountKey')
+                       != expected['namespace']):
+                raise DemoHandoffError('demo_external_session_mismatch',
+                                       'external writer session identity does not match')
+            if self.demo_store.virtual_account_key != expected['namespace']:
+                raise DemoHandoffError('demo_external_session_mismatch',
+                                       'external writer ledger namespace does not match')
+            ledger_binding = self.demo_store.get_binding()
+            if not isinstance(ledger_binding, dict):
+                raise DemoHandoffError('demo_external_legacy_binding_missing',
+                                       'external writer legacy binding is unavailable')
+            for key, value in (('strategy_id', target.strategy_id), ('rule_hash', target.rule_hash),
+                               ('execution_hash', target.execution_hash), ('demo_policy_hash', target.demo_policy_hash)):
+                if ledger_binding.get(key) != value:
+                    raise DemoHandoffError('demo_external_legacy_binding_mismatch',
+                                           'external writer legacy binding does not match')
+            paper = self.paper.account(target.strategy_id)
+            if (not isinstance(paper, dict) or any(paper.get(key) != value for key, value in
+                    (('strategy_id', target.strategy_id), ('rule_hash', target.rule_hash),
+                     ('execution_hash', target.execution_hash)))):
+                raise DemoHandoffError('demo_external_paper_binding_mismatch',
+                                       'external writer paper identity does not match')
+            self._restore_active_store(persisted)
+            self._external_owner_id = 'writer-' + uuid.uuid4().hex
+            self._external_pid = os.getpid()
+            stat = os.fstat(self._file_lock.fileno())
+            self._external_lock_identity = (stat.st_dev, stat.st_ino)
+            self._external_command_binding_hash = target.binding.sha256
+            self._external_capability = _ExternalCapability(self, self._file_lock, self._external_owner_id)
+            try:
+                self._create(target.strategy_id, entries_enabled=False)
+            except Exception:
+                if self.service is None:
+                    raise
+                self.service.pause_entries_without_cycle()
+                self._error = 'demo_external_initial_cycle_incomplete'
+            return self._external_capability
+        except Exception:
+            if self._file_lock is not None and self.service is None:
+                fcntl.flock(self._file_lock, fcntl.LOCK_UN)
+                self._file_lock.close()
+                self._file_lock = None
+                self._external_capability = None
+                self._external_pid = None
+                self._external_lock_identity = None
+            raise
+
+    def _external_state(self, capability):
+        self._assert_external(capability)
+        if self.service is None:
+            raise DemoHandoffError('demo_external_recovery_incomplete',
+                                   'external writer service is not active')
+        state = self.service.status()
+        if state.get('entries_enabled') is not False:
+            raise DemoHandoffError('demo_external_entries_open',
+                                   'external writer entries must remain paused')
+        return state
+
+    def pause_external(self, capability):
+        self._assert_external(capability)
+        if not self._external_operation_lock.acquire(blocking=False):
+            raise DemoHandoffError('demo_external_operation_active',
+                                   'external writer operation is already active')
+        try:
+            return self._pause_external_locked(capability)
+        finally:
+            self._external_operation_lock.release()
+
+    def _pause_external_locked(self, capability):
+        self._assert_external(capability)
+        if self.service is None:
+            raise DemoHandoffError('demo_external_recovery_incomplete', 'external writer service is unavailable')
+        with self._account_cycle_lock:
+            result = self.service.pause_entries_without_cycle()
+        self._save()
+        return {'entries_paused': result.get('entries_enabled') is False, 'pause_persisted': True}
+
+    def cycle_external(self, capability):
+        self._assert_external(capability)
+        if not self._external_operation_lock.acquire(blocking=False):
+            raise DemoHandoffError('demo_external_operation_active',
+                                   'external writer operation is already active')
+        try:
+            return self._cycle_external_locked(capability)
+        finally:
+            self._external_operation_lock.release()
+
+    def _cycle_external_locked(self, capability):
+        self._assert_external(capability)
+        if self.service is None:
+            raise DemoHandoffError('demo_external_recovery_incomplete', 'external writer service is unavailable')
+        with self._account_cycle_lock:
+            started_now = False
+            if not getattr(self.service, '_started', True):
+                try:
+                    self.service.start(entries_enabled=False)
+                    started_now = True
+                    self._error = None
+                except Exception:
+                    return {'entries_paused': True, 'pause_persisted': False,
+                            'cycle_ok': False, 'reason_code': 'cycle_start_incomplete'}
+            self.service.pause_entries_without_cycle()
+            if not started_now:
+                self.service.cycle()
+            state = self.service.status()
+            self.service.pause_entries_without_cycle()
+            entries_paused = self.service.status().get('entries_enabled') is False
+        persisted = True
+        try:
+            self._save()
+        except Exception:
+            persisted = False
+        return {'entries_paused': entries_paused,
+                'pause_persisted': persisted,
+                'cycle_ok': state.get('status') not in {'reconciliation_error', 'blocked_unknown_exposure'}
+                and not any(state.get(key) for key in ('last_error', 'risk_alert', 'ownership_conflicts',
+                    'submission_unknown', 'safety_runtime_error', 'safety_runtime_reason',
+                    'safety_runtime_cancel_error', 'safety_runtime_protection_error')),
+                'reason_code': 'cycle_observed'}
+
+    def _external_exit_readiness(self):
+        service = self.service
+        if service is None:
+            raise DemoHandoffError('demo_external_exit_unavailable', 'external writer service is unavailable')
+        if (getattr(service, 'safety_runtime_required', True)
+                or getattr(service, 'safety_runtime', None) is not None):
+            # 首版没有原生子单与成交最终性裁定，不把运行时存在当成退出证明。
+            raise DemoHandoffError('demo_external_exit_readiness_unavailable',
+                                   'durable native protection finality is unavailable')
+        # 仅从真实持久存储重放风险；条件历史缺少账户键，首版对任意历史保守拒绝。
+        try:
+            from demo_risk_reservation_store import DemoRiskReservationStore
+            risk = DemoRiskReservationStore(self.data_store, self.risk_account_scope,
+                                            self.demo_store.virtual_account_key)
+            state = risk.exposure()
+            if not isinstance(state, dict) or state.get('reservations') != []:
+                raise ValueError('unresolved durable risk')
+            with self.data_store._connection() as conn:
+                history = conn.execute('SELECT 1 FROM demo_conditional_intents WHERE environment=%s LIMIT 1',
+                                       (self.demo_store.environment,)).fetchone()
+            if history is not None:
+                raise ValueError('conditional finality unavailable')
+        except Exception:
+            raise DemoHandoffError('demo_external_exit_readiness_unavailable',
+                                   'durable risk and conditional readiness is unavailable') from None
+
+    def yield_external_if_flat(self, capability):
+        self._external_state(capability)
+        if not self._external_operation_lock.acquire(blocking=False):
+            raise DemoHandoffError('demo_external_operation_active',
+                                   'external writer operation is already active')
+        try:
+            return self._yield_external_if_flat_locked(capability)
+        finally:
+            self._external_operation_lock.release()
+
+    def _yield_external_if_flat_locked(self, capability):
+        self._external_state(capability)
+        self._external_exit_readiness()
+        with self._account_cycle_lock:
+            self.service.pause_entries_without_cycle()
+        self._assert_companions_paused_flat()
+        self._assert_owned_flat()
+        self._assert_account_reconciled()
+        adapter = self._adapter()
+        self._assert_exchange_flat(adapter)
+        persisted = self.data_store.get_document(STATE_KEY, {}) or {}
+        self.data_store.put_document(STATE_KEY, {**persisted, 'entriesEnabled': False,
+            'yieldedFlat': True, 'status': {'running': False, 'entries_enabled': False,
+            'status': 'yielded_flat'}, 'recoveryPolicy': 'explicit_start_after_flat_account_handoff'})
+        if self._file_lock is not None:
+            fcntl.flock(self._file_lock, fcntl.LOCK_UN)
+            self._file_lock.close()
+        self._file_lock = None
+        self.service = None
+        self._external_capability = None
+        self._external_pid = None
+        self._external_lock_identity = None
+        self._yielded_flat = True
+        return self.status()
+
     def _save(self):
         # Serialize snapshot plus commit with stop/start so a delayed worker
         # save cannot overwrite a newer paused-entry state.
@@ -515,6 +796,8 @@ class DemoRunnerController:
         return service
 
     def _create(self, account_id, *, entries_enabled, research_id=None):
+        if self.driver_mode == 'external_paused' and entries_enabled:
+            raise DemoHandoffError('demo_external_entries_forbidden', 'external writer entries remain closed')
         if entries_enabled:
             self._require_acceptance_round(account_id)
         if self.risk_gate_required and entries_enabled:
@@ -538,6 +821,9 @@ class DemoRunnerController:
             "acceptanceRound": copy.deepcopy(self._acceptance_round),
             "entriesEnabled": False, "recoveryPolicy": "pause_entries_continue_owned_risk_protection"})
         service = self._service(account_id, self.demo_store, adapter)
+        if self.driver_mode == 'external_paused':
+            # 同步首次周期即可能执行既有保护；后续失败仍保留服务引用与 flock。
+            self.service = service
         if self._shared_enabled:
             self._register(service)
             self.service = service
@@ -550,6 +836,8 @@ class DemoRunnerController:
 
     def _start_worker(self):
         """Called under the controller mutex; keep one protection worker."""
+        if self.driver_mode == 'external_paused':
+            return
         if self._thread is None or not self._thread.is_alive():
             self._halt_worker.clear()
             self._wake.clear()
@@ -573,6 +861,7 @@ class DemoRunnerController:
                                    "shared session registry must be reconciled before changing entries")
 
     def start(self, account_id, *, research_id=None):
+        self._external_refuse_legacy()
         """Invoked by the user's frontend start action; never a live start."""
         with self._mutex:
             self._require_not_closing()
@@ -628,6 +917,7 @@ class DemoRunnerController:
             return self.status()
 
     def stop(self, *, flatten=False):
+        self._external_refuse_legacy()
         """Pauses new entries; polling remains active for fills and owned exits."""
         with self._mutex:
             self._require_not_closing()
@@ -639,12 +929,14 @@ class DemoRunnerController:
             return self.status()
 
     def attach(self, account_id, *, research_id=None):
+        self._external_refuse_legacy()
         """Add a new immutable, paused companion; explicit start opens its gate."""
         self._require_acceptance_exclusive()
         self._require_risk_gate(research_id, account_id=account_id)
         return self._attach(account_id, research_id=research_id)
 
     def adopt_existing_session(self, namespace):
+        self._external_refuse_legacy()
         """Resume an existing immutable namespace without changing its boundary."""
         with self._mutex:
             self._require_not_closing()
@@ -660,6 +952,7 @@ class DemoRunnerController:
                                 research_id=self._research_id)
 
     def _attach(self, account_id, *, existing_ledger=None, research_id=None):
+        self._external_refuse_legacy()
         with self._mutex:
             self._require_not_closing()
             self._require_acceptance_exclusive()
@@ -735,6 +1028,7 @@ class DemoRunnerController:
                 raise
 
     def start_session(self, namespace, *, research_id=None):
+        self._external_refuse_legacy()
         with self._mutex:
             self._require_not_closing()
             effective_research_id = self._research_id if research_id is None else research_id
@@ -760,6 +1054,7 @@ class DemoRunnerController:
             return self.status()
 
     def stop_session(self, namespace, *, flatten=False):
+        self._external_refuse_legacy()
         with self._mutex:
             self._require_not_closing()
             service = self._find_session(namespace)
@@ -777,6 +1072,7 @@ class DemoRunnerController:
         raise DemoHandoffError("demo_session_not_found", "Demo session is not registered")
 
     def _restore_shared(self, persisted):
+        self._external_refuse_legacy()
         """Assemble every member before any cycle; restore all entry gates shut."""
         if self._services() and not self._restore_incomplete and not self._session_errors:
             return self.status()
@@ -863,6 +1159,7 @@ class DemoRunnerController:
         return self.status()
 
     def resume_protection(self):
+        self._external_refuse_legacy()
         """On application restart: only reconcile/protect, never resume entries."""
         with self._mutex:
             self._require_not_closing()
@@ -927,7 +1224,9 @@ class DemoRunnerController:
                     "acceptanceRound": copy.deepcopy(self._acceptance_round),
                     "allEntriesEnabled": bool(sessions) and all(member["entriesEnabled"] for member in sessions),
                     "sharedRecoveryIncomplete": self._restore_incomplete,
-                    "sharedRegistryPersistenceUnresolved": self._shared_persistence_unresolved}
+                    "sharedRegistryPersistenceUnresolved": self._shared_persistence_unresolved,
+                    'driverMode': self.driver_mode,
+                    'externalDriverActive': self._external_capability is not None}
 
     def _loop(self):
         try:
@@ -1044,6 +1343,7 @@ class DemoRunnerController:
             self._wake.set()
 
     def switch(self, account_id, *, join_timeout=12, research_id=None):
+        self._external_refuse_legacy()
         """Select a new paused session only after a fully flat account boundary.
 
         Old namespace bindings never change. This operation retains the same
@@ -1170,6 +1470,7 @@ class DemoRunnerController:
             raise
 
     def close_if_flat(self, *, join_timeout=12):
+        self._external_refuse_legacy()
         """Yield the account flock only after paused protection is fully joined.
 
         Failed handoffs keep the service, lock and paused protection. The

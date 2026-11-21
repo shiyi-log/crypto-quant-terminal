@@ -348,6 +348,37 @@ class DemoCommandStore(DemoStore):
             result = [deepcopy(row['payload']) for row in rows if row['command_id'] == command_id]
         return result
 
+    def unresolved_commands(self):
+        """在账户锁内重放全部意图，只列出仍需保守处理的状态。"""
+        with self.store._connection() as conn:
+            self._lock(conn)
+            rows = self._chain(conn)
+            intents = conn.execute(
+                'SELECT command_id FROM demo_command_intents WHERE environment=%s AND account_id=%s '
+                'ORDER BY command_id LIMIT %s',
+                (*self._account(), MAX_EVENTS + 1),
+            ).fetchall()
+            if len(intents) > MAX_EVENTS:
+                raise ValueError('command intent replay limit exceeded')
+            command_ids = []
+            for row in intents:
+                try:
+                    command_ids.append(_id(row['command_id']))
+                except (TypeError, KeyError, ValueError):
+                    raise ValueError('command intent integrity failed') from None
+            intent_ids = set(command_ids)
+            event_ids = {row['command_id'] for row in rows}
+            if event_ids != intent_ids:
+                raise ValueError('command event intent linkage integrity failed')
+            unresolved = []
+            for command_id in command_ids:
+                state = self._state(conn, command_id, rows)
+                if state is None:
+                    raise ValueError('command intent integrity failed')
+                if state['status'] in {'claimed', 'unknown'}:
+                    unresolved.append(state)
+        return deepcopy(unresolved)
+
     def claim(self, command_id, *, owner_id, claimed_ms):
         command_id, owner_id, now = _id(command_id), _owner(owner_id), _stamp(claimed_ms)
         ticket = False

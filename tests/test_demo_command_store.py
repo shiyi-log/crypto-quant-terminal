@@ -1,5 +1,6 @@
 """被动命令账本的拒绝边界与持久恢复；仅独立 quant_test 随机 schema。"""
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 import importlib
 import importlib.util
 import os
@@ -168,6 +169,123 @@ def test_offline_malformed_archive_payload_has_bounded_rejection():
     with patch.object(DemoEvidenceStore, '_chain', return_value=[row]):
         with pytest.raises(ValueError, match='evidence'):
             store._evidence(object(), binding().to_dict(), refs)
+
+
+class AccountCommandSQL:
+    """只替换 SQL 传输；所有写入、摘要、状态与重放均使用真实存储。"""
+    def __new__(cls):
+        from tests.test_demo_writer import CommandSQL, One
+
+        class SQL(CommandSQL):
+            def __init__(self):
+                super().__init__()
+                self.statements = []
+
+            def execute(self, query, params=()):
+                self.statements.append((query, deepcopy(params)))
+                if query.startswith('SELECT command_id FROM demo_command_intents') and 'FOR UPDATE' not in query:
+                    rows = [row for row in self.intents
+                            if (row['environment'], row['account_id']) == params[:2]]
+                    rows.sort(key=lambda row: row['command_id'])
+                    return One([{'command_id': row['command_id']} for row in rows[:params[2]]])
+                return super().execute(query, params)
+
+        return SQL()
+
+
+def offline_account_ledger():
+    data = AccountCommandSQL()
+    store = api().DemoCommandStore(data, 'command-account')
+    store.register_binding(binding())
+    return store, data
+
+
+def enqueue_offline(store, command_id, binding_id='binding-1'):
+    return store.enqueue(binding_id=binding_id, command_id=command_id, kind='pause_entries',
+                         actor='operator-1', reason_code='operator_pause', submitted_ms=1000)
+
+
+def test_offline_unresolved_commands_replay_account_wide_across_bindings_after_restart():
+    store, data = offline_account_ledger()
+    other_binding = api().FrozenCommandBinding('binding-2', {**scope(), 'run_id': 'run-2'},
+                                              hashes(), 'demo_other')
+    store.register_binding(other_binding)
+    enqueue_offline(store, 'z-claimed')
+    enqueue_offline(store, 'a-unknown', 'binding-2')
+    enqueue_offline(store, 'accepted-only')
+    enqueue_offline(store, 'rejected-only')
+    store.claim('z-claimed', owner_id=OWNER, claimed_ms=1001)
+    store.claim('a-unknown', owner_id=OTHER, claimed_ms=1001)
+    store.append_event('a-unknown', event_id='unknown-1', event_type='unknown', owner_id=OTHER,
+                       observed_ms=1002, reason_code='outcome_unknown', evidence_refs=[])
+    store.claim('rejected-only', owner_id=OWNER, claimed_ms=1001)
+    store.append_event('rejected-only', event_id='reject-1', event_type='rejected', owner_id=OWNER,
+                       observed_ms=1002, reason_code='command_refused', evidence_refs=[])
+    foreign = api().DemoCommandStore(data, 'other-account')
+    foreign.register_binding(binding('other-account'))
+    enqueue_offline(foreign, 'foreign-claimed')
+    foreign.claim('foreign-claimed', owner_id=OWNER, claimed_ms=1001)
+    before = deepcopy((data.bindings, data.intents, data.events, data.rows))
+    data.statements.clear()
+
+    restarted = api().DemoCommandStore(data, 'command-account')
+    result = restarted.unresolved_commands()
+
+    assert [(row['command_id'], row['status']) for row in result] == [
+        ('a-unknown', 'unknown'), ('z-claimed', 'claimed')]
+    assert [row['binding']['namespace'] for row in result] == ['demo_other', 'demo_default']
+    assert all(row['submission_attempts'] == 1 and row['execution_complete'] is False
+               and row['source_authenticated'] is False and row['acceptance_eligible'] is False
+               and row['production_authorized'] is False for row in result)
+    assert before == (data.bindings, data.intents, data.events, data.rows)
+    assert all(query.startswith('SELECT ') for query, _ in data.statements)
+    assert data.statements[0][0].startswith('SELECT pg_advisory_xact_lock')
+    result[0]['binding']['namespace'] = 'mutated-copy'
+    assert restarted.unresolved_commands()[0]['binding']['namespace'] == 'demo_other'
+
+
+def test_offline_unresolved_commands_empty_and_accepted_are_not_unresolved():
+    store, _ = offline_account_ledger()
+    assert store.unresolved_commands() == []
+    enqueue_offline(store, 'accepted-only')
+    assert store.unresolved_commands() == []
+
+
+@pytest.mark.parametrize('corruption', ['binding', 'intent', 'event_hash', 'transition',
+                                        'orphan_event', 'missing_accepted'])
+def test_offline_unresolved_commands_refuse_corruption_even_in_other_terminal_command(corruption):
+    store, data = offline_account_ledger()
+    enqueue_offline(store, 'terminal-command')
+    store.claim('terminal-command', owner_id=OWNER, claimed_ms=1001)
+    store.append_event('terminal-command', event_id='reject-1', event_type='rejected', owner_id=OWNER,
+                       observed_ms=1002, reason_code='command_refused', evidence_refs=[])
+    if corruption == 'binding':
+        data.bindings[0]['payload']['namespace'] = 'changed'
+    elif corruption == 'intent':
+        data.intents[0]['payload']['actor'] = 'changed'
+    elif corruption == 'event_hash':
+        data.events[-1]['payload']['reason_code'] = 'changed'
+    elif corruption == 'transition':
+        row = data.events[-1]
+        row['payload']['reason_code'] = 'control_applied'
+        row['payload_sha256'] = api()._hash(row['payload'])
+        row['record_sha256'] = api()._hash({'sequence': row['account_sequence'],
+            'previous_hash': row['previous_hash'], 'payload_sha256': row['payload_sha256']})
+    elif corruption == 'orphan_event':
+        data.intents.clear()
+    else:
+        data.events.clear()
+    with pytest.raises(ValueError, match='integrity'):
+        store.unresolved_commands()
+
+
+def test_offline_unresolved_commands_refuse_account_replay_limit_without_partial_list(monkeypatch):
+    store, _ = offline_account_ledger()
+    for command_id in ('first', 'second', 'third'):
+        enqueue_offline(store, command_id)
+    monkeypatch.setattr(api(), 'MAX_EVENTS', 2)
+    with pytest.raises(ValueError, match='limit'):
+        store.unresolved_commands()
 
 
 @pytest.fixture(scope='module')

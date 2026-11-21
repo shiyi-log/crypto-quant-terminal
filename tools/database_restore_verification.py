@@ -328,6 +328,16 @@ DEMO_PHYSICAL_ANCHORS['0007_writer_commands'] = {
     'demo_command_intents': 'bb451c4c4d966560882eff90fb7fe0aa171e9ee2c910d8f1d9082fac2851f745',
 }
 
+# 在独立 quant_test 随机 schema 安装 0008 后读取 catalog；仅新增四张
+# 只追加研究事实表，表摘要包含约束、索引及 ENABLE ALWAYS 不可变触发器。
+DEMO_PHYSICAL_ANCHORS['0008_research_two_stage'] = {
+    **DEMO_PHYSICAL_ANCHORS['0007_writer_commands'],
+    'refactor_research_candidate_results_v2': 'a99bee5afe2b3ca155b64ec3abe568dc43eaf5972e27cf316b3e67b0a78ce730',
+    'refactor_research_inferences_v2': '1a479a0becfb10843059938a6442e0c648ffb897e5c80ea3f97538b592e5ab90',
+    'refactor_research_selections_v2': '6df60d3190616af1de3725c3c3f980bd0c2b37184a6a9ee1db0ccd8982af7394',
+    'refactor_research_validation_results_v2': '797d71210ee8d4c24d31cdebb886686fc9f3a85869416b9afbe19335fbd9a335',
+}
+
 
 def _demo_physical_shape(conn, schema):
     from database_migrations import catalog_shape

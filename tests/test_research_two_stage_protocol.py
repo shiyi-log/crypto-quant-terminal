@@ -39,15 +39,16 @@ def _attempts(family):
     ]
 
 
-def test_validation_plan_freezes_complete_attempt_grid_without_granting_authority():
+def test_validation_plan_logs_phase_duration_and_non_authorizing_state(caplog):
     family = freeze_experiment_family(family_spec())
-    plan = freeze_validation_plan(
-        family,
-        _evidence(family),
-        attempt_mappings=_attempts(family),
-        selection_policy={"version": "pair-select-v1", "alpha": "0.05"},
-        holdout_policy={"version": "holdout-pair-bootstrap-v1", "replicates": 99999},
-    )
+    with caplog.at_level("INFO", logger="research_two_stage"):
+        plan = freeze_validation_plan(
+            family,
+            _evidence(family),
+            attempt_mappings=_attempts(family),
+            selection_policy={"version": "pair-select-v1", "alpha": "0.05"},
+            holdout_policy={"version": "holdout-pair-bootstrap-v1", "replicates": 99999},
+        )
     value = plan.to_dict()
     assert value["validation"]["configuration_count"] == 12
     assert value["validation"]["registration_order_verified"] is False
@@ -57,6 +58,11 @@ def test_validation_plan_freezes_complete_attempt_grid_without_granting_authorit
     baseline = plan.canonical_json
     value["validation"]["attempts"].clear()
     assert plan.canonical_json == baseline
+    assert "研究验证计划已冻结" in caplog.text
+    assert "阶段=validation" in caplog.text
+    assert "配置数=12" in caplog.text
+    assert "耗时_ms=" in caplog.text
+    assert "执行票据=false" in caplog.text
 
 
 def test_validation_plan_rejects_missing_or_misbound_attempts():
@@ -73,17 +79,27 @@ def test_validation_plan_rejects_missing_or_misbound_attempts():
         )
 
 
-def test_pair_selection_uses_exact_thresholds_and_stable_tie_breaking():
+def test_pair_selection_logs_counts_and_rejection_reason_codes(caplog):
     policy = {"version": "pair-select-v1", "alpha": "0.05"}
     rows = [
         {
             "config_id": "base-b",
             "stress_config_id": "stress-b",
-            "adjusted_p": Fraction(1, 100),
+            "adjusted_p": Fraction(1, 20),
             "lower_bound": Fraction(3, 10),
             "stress_adjusted_p": Fraction(1, 100),
             "stress_lower_bound": Fraction(3, 10),
             "execution_gates_passed": True,
+        },
+        {
+            "config_id": "base-rejected",
+            "stress_config_id": "stress-rejected",
+            "adjusted_p": Fraction(1, 10),
+            "lower_bound": Fraction(1, 10),
+            "stress_adjusted_p": Fraction(1, 100),
+            "stress_lower_bound": Fraction(1, 10),
+            "execution_gates_passed": True,
+            "api_secret": "DO_NOT_LOG_THIS_FIELD",
         },
         {
             "config_id": "base-a",
@@ -95,10 +111,24 @@ def test_pair_selection_uses_exact_thresholds_and_stable_tie_breaking():
             "execution_gates_passed": True,
         },
     ]
-    assert select_validation_pair(rows, policy)["config_id"] == "base-a"
+    with caplog.at_level("INFO", logger="research_two_stage"):
+        assert select_validation_pair(rows, policy)["config_id"] == "base-a"
+        assert select_validation_pair(
+            [dict(rows[0], config_id="base-blocked", execution_gates_passed=False)], policy
+        ) is None
+        assert select_validation_pair(
+            [dict(rows[0], config_id="base-zero-bound", lower_bound=Fraction(0))], policy
+        ) is None
+    assert "研究候选筛选完成" in caplog.text
+    assert "阶段=validation" in caplog.text
+    assert "输入数=3" in caplog.text
+    assert "合格数=2" in caplog.text
+    assert '拒绝原因码统计={"adjusted_probability_exceeds_alpha":1}' in caplog.text
+    assert "耗时_ms=" in caplog.text
+    assert "DO_NOT_LOG_THIS_FIELD" not in caplog.text
 
 
-def test_holdout_claim_never_issues_an_execution_ticket():
+def test_holdout_claim_logs_refusal_duration_and_never_issues_ticket(caplog):
     family = freeze_experiment_family(family_spec())
     plan = freeze_validation_plan(
         family,
@@ -107,8 +137,15 @@ def test_holdout_claim_never_issues_an_execution_ticket():
         selection_policy={"version": "pair-select-v1", "alpha": "0.05"},
         holdout_policy={"version": "holdout-pair-bootstrap-v1", "replicates": 99999},
     )
-    assert claim_holdout_v2(plan, selection={"status": "selected"}) == {
-        "execution_ticket": False,
-        "status": "not_estimable",
-        "reason_codes": ["holdout_calculator_unavailable"],
-    }
+    with caplog.at_level("INFO", logger="research_two_stage"):
+        assert claim_holdout_v2(plan, selection={"status": "selected"}) == {
+            "execution_ticket": False,
+            "status": "not_estimable",
+            "reason_codes": ["holdout_calculator_unavailable"],
+        }
+    assert "研究留出请求已拒绝" in caplog.text
+    assert "阶段=final_holdout" in caplog.text
+    assert "原因码=holdout_calculator_unavailable" in caplog.text
+    assert "耗时_ms=" in caplog.text
+    assert "持久消费=未接线" in caplog.text
+    assert "执行票据=false" in caplog.text

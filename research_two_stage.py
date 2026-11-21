@@ -5,6 +5,8 @@ import hashlib
 import json
 import logging
 import re
+import time
+from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -92,6 +94,7 @@ def freeze_validation_plan(
     holdout_policy: dict,
 ) -> FrozenValidationPlan:
     """冻结完整配置尝试网格；未认证来源、顺序和留出消费均保持关闭。"""
+    started = time.perf_counter()
     if type(family) is not FrozenResearchEvidence:
         raise ValueError("必须提供冻结实验族")
     if hashlib.sha256(family.canonical_json.encode("utf-8")).hexdigest() != family.sha256:
@@ -176,8 +179,12 @@ def freeze_validation_plan(
         "production_authorized": False,
     }
     plan = _freeze(value)
-    LOGGER.info("研究验证计划已冻结 阶段=validation 配置数=%s 顺序认证=false 留出计算器=不可用 验收资格=false 生产授权=false 摘要=%s",
-                len(expected_ids), plan.sha256)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    LOGGER.info(
+        "研究验证计划已冻结 阶段=validation 配置数=%s 尝试数=%s 耗时_ms=%.3f "
+        "顺序认证=false 留出计算器=不可用 执行票据=false 验收资格=false 生产授权=false 摘要=%s",
+        len(expected_ids), len(attempts), elapsed_ms, plan.sha256,
+    )
     return plan
 
 
@@ -202,6 +209,7 @@ def _fraction(value: object, field: str) -> Fraction:
 
 def select_validation_pair(results: list, policy: dict) -> dict | None:
     """按精确门槛筛选基础/压力成本组合，并使用稳定键处理并列。"""
+    started = time.perf_counter()
     alpha = _policy_alpha(_validated_policy(policy, version="pair-select-v1")["alpha"])
     if not isinstance(results, list):
         raise ValueError("验证结果必须为列表")
@@ -210,6 +218,7 @@ def select_validation_pair(results: list, policy: dict) -> dict | None:
         "config_id", "stress_config_id", "adjusted_p", "lower_bound",
         "stress_adjusted_p", "stress_lower_bound", "execution_gates_passed",
     }
+    rejected: Counter[str] = Counter()
     for row in results:
         if not isinstance(row, dict) or not required <= set(row):
             raise ValueError("验证结果字段不完整")
@@ -219,31 +228,56 @@ def select_validation_pair(results: list, policy: dict) -> dict | None:
         base_lower = _fraction(row["lower_bound"], "基础收益下界")
         stress_p = _fraction(row["stress_adjusted_p"], "压力校正概率")
         stress_lower = _fraction(row["stress_lower_bound"], "压力收益下界")
-        if max(base_p, stress_p) > alpha or min(base_lower, stress_lower) <= 0:
-            continue
+        reason_codes = []
+        if max(base_p, stress_p) > alpha:
+            reason_codes.append("adjusted_probability_exceeds_alpha")
+        if min(base_lower, stress_lower) <= 0:
+            reason_codes.append("non_positive_lower_bound")
         if row["execution_gates_passed"] is not True:
+            reason_codes.append("execution_gate_not_passed_or_unknown")
+        if reason_codes:
+            # 仅记录固定原因码计数，不序列化调用方结果或附加字段。
+            rejected.update(reason_codes)
             continue
         eligible.append((
             -min(base_lower, stress_lower), max(base_p, stress_p), base, stress, row,
         ))
     if not eligible:
-        LOGGER.info("研究候选筛选完成 合格数=0 结果=未选中")
+        LOGGER.info(
+            "研究候选筛选完成 阶段=validation 输入数=%s 合格数=0 "
+            "拒绝原因码统计=%s 耗时_ms=%.3f 结果=未选中 执行票据=false",
+            len(results), json.dumps(dict(sorted(rejected.items())), ensure_ascii=False,
+                                     separators=(",", ":")),
+            (time.perf_counter() - started) * 1000,
+        )
         return None
     selected = min(eligible, key=lambda item: item[:4])[4]
-    LOGGER.info("研究候选筛选完成 合格数=%s 结果=已按精确下界和稳定身份排序", len(eligible))
+    LOGGER.info(
+        "研究候选筛选完成 阶段=validation 输入数=%s 合格数=%s "
+        "拒绝原因码统计=%s 耗时_ms=%.3f 结果=已按精确下界和稳定身份排序 执行票据=false",
+        len(results), len(eligible),
+        json.dumps(dict(sorted(rejected.items())), ensure_ascii=False,
+                   separators=(",", ":")),
+        (time.perf_counter() - started) * 1000,
+    )
     # 统计值保留 Fraction 精度，并断开调用方传入对象的可变引用。
     return deepcopy(selected)
 
 
 def claim_holdout_v2(plan: FrozenValidationPlan, *, selection: dict) -> dict:
     """留出计算器及一次性数据库消费未接通前，明确拒绝发放执行票据。"""
+    started = time.perf_counter()
     if type(plan) is not FrozenValidationPlan:
         raise ValueError("必须提供冻结验证计划")
     if hashlib.sha256(plan.canonical_json.encode("utf-8")).hexdigest() != plan.sha256:
         raise ValueError("验证计划哈希不匹配")
     if not isinstance(selection, dict):
         raise ValueError("候选选择事实必须为对象")
-    LOGGER.info("研究留出请求已拒绝 阶段=final_holdout 原因码=holdout_calculator_unavailable 执行票据=false")
+    LOGGER.info(
+        "研究留出请求已拒绝 阶段=final_holdout 原因码=holdout_calculator_unavailable "
+        "耗时_ms=%.3f 计算器=不可用 持久消费=未接线 执行票据=false",
+        (time.perf_counter() - started) * 1000,
+    )
     return {
         "execution_ticket": False,
         "status": "not_estimable",

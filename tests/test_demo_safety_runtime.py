@@ -273,6 +273,24 @@ def test_only_committed_complete_cost_events_enter_risk_policy_once():
     assert len(service.risk_policy.journal) == 1
 
 
+def test_completion_summary_logs_counts_duration_and_no_event_payload(caplog):
+    service = make_service()
+    completion = {'committed': True, 'archive_ref': 'cost/archive/1', 'events': [
+        {'event_id': 'secret-event-id', 'trade_id': 'secret-trade-id', 'timestamp_ms': 1100,
+         'net_pnl_usdt': '-1', 'complete': True, 'funding_complete': True}]}
+    runtime, _, _ = attach_runtime(service, [], completion_provider=lambda **kw: completion)
+    with caplog.at_level('INFO', logger='demo_safety_runtime'):
+        assert runtime.record_completions(service, now_ms=1200) is True
+    assert 'Demo 完整成本事件处理完成' in caplog.text
+    assert '输入数=1' in caplog.text
+    assert '新增数=1' in caplog.text
+    assert '重放数=0' in caplog.text
+    assert '拒绝原因码=none' in caplog.text
+    assert '耗时_ms=' in caplog.text
+    assert 'secret-event-id' not in caplog.text
+    assert 'secret-trade-id' not in caplog.text
+
+
 @pytest.mark.parametrize('provider', ['protection_facts_provider', 'completion_provider'])
 def test_callable_but_uncommitted_internal_facts_cannot_reserve(provider):
     service = make_service()

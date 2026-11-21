@@ -9,6 +9,7 @@ import copy
 from decimal import Decimal, localcontext
 import logging
 import re
+import time
 
 from demo_entry_decision import propose_entry_decision
 from demo_native_protection import NativeProtectionCoordinator
@@ -300,6 +301,10 @@ class SafetyRuntime:
 
     def record_completions(self, service, *, now_ms):
         """只消费内部已提交且完整的成本结算事件；稳定事件 ID 由风险账本去重。"""
+        started = time.perf_counter()
+        input_count = 0
+        new_count = 0
+        replay_count = 0
         with self.lock:
             try:
                 self._bound(service)
@@ -307,6 +312,7 @@ class SafetyRuntime:
                 events = archive.get('events')
                 if not isinstance(events, list):
                     raise ValueError('完整成本事件列表缺失')
+                input_count = len(events)
                 for event in events:
                     if (event.get('complete') is not True or event.get('funding_complete') is not True
                             or not isinstance(event.get('event_id'), str) or not event['event_id']
@@ -319,7 +325,10 @@ class SafetyRuntime:
                 if (refresh or not service._risk_events_loaded) and not service._load_risk_events():
                     raise ValueError('风险事件历史不可用')
                 candidate = copy.deepcopy(service.risk_policy)
-                events = self._ordered_completions(candidate.journal, events)
+                ordered = self._ordered_completions(candidate.journal, events)
+                new_count = len(ordered)
+                replay_count = input_count - new_count
+                events = ordered
                 for event in events:
                     candidate.record_round_trip(timestamp_ms=event['timestamp_ms'],
                         net_pnl_usdt=event['net_pnl_usdt'], trade_id=event['trade_id'], event_id=event['event_id'])
@@ -332,6 +341,8 @@ class SafetyRuntime:
                 if state['hard_failure'] or state['entries_mode'] in {
                         'lock_until_reconciled', 'stop_until_next_day', 'cooldown', 'terminated'}:
                     self._pause(service, 'safety_committed_cost_risk_gate', now_ms)
+                LOGGER.info('Demo 完整成本事件处理完成 阶段=风险账本提交 输入数=%d 新增数=%d 重放数=%d 拒绝原因码=none 耗时_ms=%.3f；不记录交易载荷',
+                            input_count, new_count, replay_count, (time.perf_counter() - started) * 1000)
                 return True
             except Exception as error:
                 self._pause(service, 'safety_complete_costs_unavailable', now_ms)
@@ -339,8 +350,9 @@ class SafetyRuntime:
                     service._reconcile(now_ms, cancel_entries=True)
                 except Exception as cancel_error:
                     service._status['safety_runtime_cancel_error'] = type(cancel_error).__name__
-                LOGGER.warning('Demo 完整成本事件不可用 账户=%s 错误类型=%s；不使用未含资金费的毛收益替代',
-                               self.account_scope, type(error).__name__)
+                LOGGER.warning('Demo 完整成本事件处理失败 阶段=风险账本提交 输入数=%d 新增数=%d 重放数=%d 拒绝原因码=complete_costs_unavailable 异常类型=%s 耗时_ms=%.3f；保留暂停且不使用未含资金费的毛收益',
+                               input_count, new_count, replay_count, type(error).__name__,
+                               (time.perf_counter() - started) * 1000)
                 return False
 
     @staticmethod

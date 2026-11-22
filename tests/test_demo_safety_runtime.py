@@ -291,6 +291,22 @@ def test_completion_summary_logs_counts_duration_and_no_event_payload(caplog):
     assert 'secret-trade-id' not in caplog.text
 
 
+def test_completion_failure_log_counts_rejected_batch_without_logging_error_text(caplog):
+    service = make_service()
+    runtime, _, _ = attach_runtime(service, [], completion_provider=lambda **kw: (_ for _ in ()).throw(
+        ValueError('sensitive completion payload')))
+    with caplog.at_level('WARNING', logger='demo_safety_runtime'):
+        assert runtime.record_completions(service, now_ms=1200) is False
+    assert 'Demo 完整成本事件处理失败' in caplog.text
+    assert '输入数=0' in caplog.text
+    assert '新增数=0' in caplog.text
+    assert '重放数=0' in caplog.text
+    assert '拒绝数=1' in caplog.text
+    assert '拒绝原因码=complete_costs_unavailable' in caplog.text
+    assert '异常类型=ValueError' in caplog.text
+    assert 'sensitive completion payload' not in caplog.text
+
+
 @pytest.mark.parametrize('provider', ['protection_facts_provider', 'completion_provider'])
 def test_callable_but_uncommitted_internal_facts_cannot_reserve(provider):
     service = make_service()

@@ -474,4 +474,13 @@
 - 自动发现会先观察当前绑定下重启遗留的 `claimed`/`unknown` 命令，再处理新的 `accepted` 命令。未知结果只追加恢复观察，不重领单次动作票据；每个 writer 实例只记忆本实例已观察对象，后续周期不重复追加。
 - `accepted_commands()` 默认保留旧语义，仅返回 `accepted`；恢复流程显式启用未决状态读取。发现或读取故障保持中文固定原因码，并继续普通暂停保护。
 - 定向验证：`tests/test_demo_writer.py` **42 项通过**；`tests/test_demo_command_store.py -k offline_` **57 项通过**；Ruff、`compileall` 通过。提交前另运行 `git diff --check`。
+- 本地提交 `68f0150c565779d0ae44faa2f0422b9464bf273f`，中文消息“恢复 Demo writer 的未决命令观察循环”。尚未推送：`git push origin main` 因无法连接 GitHub 443 失败；GitHub 精确提交状态接口也遇到传输错误，因此该 SHA 的 CI/CD 状态未知，不记录为通过。
 - 未把该前台循环接入 HTTP、CLI、launchd 或进程监督器；没有启动 writer、访问 Binance、执行迁移或写生产数据库。真实单一 writer 与 Demo/生产资格仍未接通。
+
+## 2026-11-22 P1 完整成本失败日志拒绝计数
+
+- 完整成本事件处理失败时，中文结构化警告补充 `拒绝数`，并保留输入数、新增数、重放数、固定拒绝原因码和异常类型，便于从运行日志定位失败批次。
+- 日志合同测试验证成本 provider 异常时拒绝数为 1、原因码稳定，并断言异常正文及敏感事件内容不进入日志。
+- 定向验证：`uv run --frozen --group dev python -m pytest -q tests/test_demo_safety_runtime.py -k 'completion_'` **7 项通过，38 项未选中**。
+- 本轮复验 `tests/test_demo_safety_runtime.py` **45 项通过**；Ruff、`compileall`、CI/CD YAML 解析和差异检查通过。writer 相关定向复验为 **42+57 项通过**。全量 `uv run --frozen --group dev python -m pytest tests/ -q` 在约 27% 时因 PostgreSQL 集成 setup 持续报错、并出现至少一个失败，且 teardown 在 `tests/test_demo_contract_integration.py` 的 `DROP SCHEMA` 数据库等待；手动中断取得退出码 130，没有最终 pytest 摘要，因此不将全量回归记为通过。
+- 本节只补充失败日志可观测性，不改变成本事实、风险状态或交易执行；未连接 Binance、未启动 writer，也不授予 Demo/生产资格。本地提交已形成；当前无法连接 GitHub，尚未推送，精确 SHA 的 CI/CD 与发布回执待远端可用后核验。

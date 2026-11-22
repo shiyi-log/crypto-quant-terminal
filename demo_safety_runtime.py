@@ -305,6 +305,7 @@ class SafetyRuntime:
         input_count = 0
         new_count = 0
         replay_count = 0
+        rejected_count = 0
         with self.lock:
             try:
                 self._bound(service)
@@ -345,13 +346,14 @@ class SafetyRuntime:
                             input_count, new_count, replay_count, (time.perf_counter() - started) * 1000)
                 return True
             except Exception as error:
+                rejected_count = 1
                 self._pause(service, 'safety_complete_costs_unavailable', now_ms)
                 try:
                     service._reconcile(now_ms, cancel_entries=True)
                 except Exception as cancel_error:
                     service._status['safety_runtime_cancel_error'] = type(cancel_error).__name__
-                LOGGER.warning('Demo 完整成本事件处理失败 阶段=风险账本提交 输入数=%d 新增数=%d 重放数=%d 拒绝原因码=complete_costs_unavailable 异常类型=%s 耗时_ms=%.3f；保留暂停且不使用未含资金费的毛收益',
-                               input_count, new_count, replay_count, type(error).__name__,
+                LOGGER.warning('Demo 完整成本事件处理失败 阶段=风险账本提交 输入数=%d 新增数=%d 重放数=%d 拒绝数=%d 拒绝原因码=complete_costs_unavailable 异常类型=%s 耗时_ms=%.3f；保留暂停且不使用未含资金费的毛收益',
+                               input_count, new_count, replay_count, rejected_count, type(error).__name__,
                                (time.perf_counter() - started) * 1000)
                 return False
 

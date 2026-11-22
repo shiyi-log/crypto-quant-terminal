@@ -457,10 +457,13 @@
 - 本切片不创建 controller，不改 auth/API 路由，不启动 writer 服务、不执行数据库迁移、不连接 Binance。认证进程仍启动 legacy controller；`external_paused` writer 的单一所有者组合根、API 命令提交与唤醒、数据库故障恢复、SIGTERM 合作停机和原生保护最终性证明仍未接线，Demo/生产资格保持关闭。
 - 两份 CI/CD 已将 `demo_command_store.py`、`demo_writer.py` 纳入编译和 Ruff 清单；该检查清单由先前独立提交推送，本切片暂无新远端 CI/CD 回执。版本仍为 `0.2.4`；源码与本节文档独立中文提交/推送，并通过该精确 SHA CI、同 SHA CD 归档哈希及 `build.json` 身份检查后，才继续版本同步和正式发布。
 
-## 2026-11-22 P3 旧版量化前端退役与 0.2.5 发布准备
+## 2026-11-22 P3 旧版量化前端退役与 0.2.5 发布
 
 - 源码切片提交 `7a0b76a2b3d5070a5d22c1d49643795a7cd22657`，中文提交消息为“退役旧版量化前端并统一本地演示入口”，已推送至 `main`。工作树中的研究产物、writer/研究后端改动、Playwright 输出和既有台账历史修正均未包含在该提交。
 - 精确 SHA 的 push CI `45005585113` 于 2026-11-22 成功：后端与 PostgreSQL 集成测试、前端全量单测、类型检查、生产构建及真实构建页面浏览器检查两个 job 均通过。
 - 同 SHA main 归档 CD `45005862496` 于 2026-11-22 成功；发布归档哈希和 `build.json` 提交/版本/包身份校验步骤通过。Actions artifact `14747872703`（`quant-terminal-release`）未过期，GitHub 传输摘要为 `sha256:1e861eaa389ebf49aec67b9ac072c674f7729ad53b87448d0d11212be42a8ee4`。该摘要是 Actions artifact ZIP 摘要，不是 Release tar.gz 的 SHA-256。main CD 仅生成候选归档，不构成 GitHub Release。
 - 本地 P3 验收另有全量 Vitest 95 文件/709 项、定向 Playwright 六个 spec/67 项、类型检查、生产构建（7453 模块）和 20 个文件格式检查通过；构建产物未包含旧量化页面 chunk。十二个旧量化地址只进入固定本地演示样本，未列入兼容别名的详情路径 404；没有账户、业务 API 或交易写入。
-- 现按已通过的源码 SHA 准备版本同步 `0.2.5`；版本唯一权威为 `pyproject.toml`，并同步 `uv.lock`、本变更记录与版本台账。版本同步提交自身仍须运行精确 SHA push CI/CD；随后只创建指向通过门禁版本提交的附注标签 `v0.2.5` 并显式触发标签 CD/Release。当前尚未创建该标签或 GitHub Release。
+- 版本同步提交 `115ab9857a109c28f916bc3e1279d157d096e5e2`，中文消息“同步项目版本至 0.2.5”，同步 `pyproject.toml`、`uv.lock`、版本记录和本台账。该精确 SHA push CI `45006423440` 与 main 归档 CD `45006817341` 均成功，CD 上传前完成 SHA-256 和 `build.json` 身份核验；main artifact `14747944537` 的 GitHub 传输摘要为 `sha256:8d1de0270cee286840f83bc2cb59e18ce239687367b0887effb66902c306533f`。
+- 附注标签 `v0.2.5` 已推送并指向版本同步提交；标签 CI `45006866019` 成功。按发布流程显式运行标签 CD `45006906038`（输入 `ref=v0.2.5`），构建归档及 Release 两个 job 均成功，上传前哈希与 `build.json` 身份检查通过。
+- [GitHub Release v0.2.5](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.5) 已发布，Release ID `454331251`。资产 `quant-terminal-v0.2.5.tar.gz`（149,427,484 字节）SHA-256 为 `c63c8b7d555ec55b0d4aed58ac584f8e65e4cc0f77c72cbb4d87cd4b6cc82b9b`，与 sidecar 及 GitHub Release digest 一致；独立下载重新计算通过。包内唯一 `build.json` 为 commit `115ab9857a109c28f916bc3e1279d157d096e5e2`、version `0.2.5`、package `quant-terminal-v0.2.5`。标签 CD artifact `14747923012` digest `sha256:fc7d20f7fd198a6d4777439bfe5700cafd4d47471ab9b5077aef86f2cb6a9918`，与 Release tar.gz 摘要分别记录。
+- 版本 `0.2.5` 发布完成；本轮之外的研究产物、writer/研究后端改动、Playwright 输出及未暂存台账历史修正仍保留在工作区，未被版本或源码提交纳入。

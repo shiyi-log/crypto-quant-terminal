@@ -25,6 +25,28 @@ afterEach(() => mounts.splice(0).forEach(({ app, element }) => {
 }));
 
 describe('演示研究工作区交互', () => {
+  it('嵌入应用主内容区时不创建嵌套 main 地标，并关联当前研究标签', () => {
+    const element = document.createElement('div');
+    document.body.append(element);
+    const app = createApp({
+      render: () => h('main', [h(ResearchPreview, { workspace: 'factors' })]),
+    });
+    app.mount(element);
+    mounts.push({ app, element });
+
+    expect(element.querySelectorAll('main')).toHaveLength(1);
+    const activeTab = element.querySelector<HTMLButtonElement>(
+      '[role="tab"][aria-selected="true"]',
+    );
+    expect(activeTab?.id).toBe('research-tab-factors');
+    expect(activeTab?.getAttribute('aria-controls')).toBe(
+      'research-panel-factors',
+    );
+    expect(
+      element.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby'),
+    ).toBe('research-tab-factors');
+  });
+
   it('可在因子、策略、实验和订单流工作区之间切换', async () => {
     const view = open('factors');
     view.get<HTMLButtonElement>('[data-workspace="research"]').click();

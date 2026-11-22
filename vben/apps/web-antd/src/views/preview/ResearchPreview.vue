@@ -59,30 +59,31 @@ function statusLabel(status: Experiment['status']) { return { running: '运行�
 </script>
 
 <template>
-  <main class="research-preview">
-    <header class="research-header"><div><p class="eyebrow">LOCAL RESEARCH PREVIEW</p><h1>研究与证据工作区</h1><p class="lede">固定演示样本 · 不连接交易账户 · 研究结论不会授予 Demo 或实盘资格</p></div><span class="demo-badge">本地演示数据</span></header>
+  <!-- 研究预览嵌入应用主内容时使用区域语义，标签 ID 与对应面板保持一一关联。 -->
+  <section class="research-preview" aria-labelledby="research-preview-title">
+    <header class="research-header"><div><p class="eyebrow">LOCAL RESEARCH PREVIEW</p><h1 id="research-preview-title">研究与证据工作区</h1><p class="lede">固定演示样本 · 不连接交易账户 · 研究结论不会授予 Demo 或实盘资格</p></div><span class="demo-badge">本地演示数据</span></header>
     <nav class="workspace-tabs" aria-label="研究工作区" role="tablist">
-      <button v-for="item in workspaces" :key="item.id" type="button" role="tab" :data-workspace="item.id" :aria-selected="activeWorkspace === item.id" :aria-controls="'research-panel-' + item.id" @click="activeWorkspace = item.id">{{ item.label }}</button>
+      <button v-for="item in workspaces" :key="item.id" :id="'research-tab-' + item.id" type="button" role="tab" :data-workspace="item.id" :aria-selected="activeWorkspace === item.id" :aria-controls="'research-panel-' + item.id" @click="activeWorkspace = item.id">{{ item.label }}</button>
     </nav>
-    <section v-if="activeWorkspace === 'factors'" id="research-panel-factors" class="workspace-panel" role="tabpanel" aria-labelledby="factor-title">
+    <section v-if="activeWorkspace === 'factors'" id="research-panel-factors" class="workspace-panel" role="tabpanel" aria-labelledby="research-tab-factors">
       <div class="panel-heading"><div><p class="eyebrow">FACTOR CATALOG</p><h2 id="factor-title">因子实验室</h2></div><span class="muted">{{ filteredFactors.length }} / {{ factors.length }} 个因子</span></div>
       <div class="control-row"><label class="field-label">搜索因子<input v-model="factorQuery" aria-label="搜索因子" type="search" placeholder="名称、家族或 ID" /></label><span class="scope-note">按已收盘样本展示；缺口不会填零。</span></div>
       <div class="split-layout"><div class="table-wrap"><table><thead><tr><th>因子</th><th>家族</th><th>说明</th></tr></thead><tbody><tr v-for="factor in filteredFactors" :key="factor.id" :class="{ selected: factor.id === selectedFactorId }"><td><button class="row-button" type="button" :data-factor="factor.id" @click="selectedFactorId = factor.id">{{ factor.name }}<small>{{ factor.id }}</small></button></td><td>{{ factor.family }}</td><td>{{ factor.description }}</td></tr></tbody></table></div><article class="detail-pane" data-testid="factor-detail"><p class="eyebrow">SELECTED FACTOR</p><h3>{{ selectedFactor.name }}</h3><code>{{ selectedFactor.id }}</code><p>{{ selectedFactor.detail }}</p><dl><div><dt>输入状态</dt><dd>演示样本完整</dd></div><div><dt>版本</dt><dd>factor-demo-02</dd></div></dl></article></div>
     </section>
-    <section v-else-if="activeWorkspace === 'research'" id="research-panel-research" class="workspace-panel" role="tabpanel" aria-labelledby="strategy-title">
+    <section v-else-if="activeWorkspace === 'research'" id="research-panel-research" class="workspace-panel" role="tabpanel" aria-labelledby="research-tab-research">
       <div class="panel-heading"><div><p class="eyebrow">STRATEGY CANDIDATES</p><h2 id="strategy-title">策略研究</h2></div><span class="muted">冻结前比较</span></div>
       <div class="strategy-grid"><button v-for="strategy in strategies" :key="strategy.id" type="button" class="strategy-option" :class="{ selected: strategy.id === selectedStrategyId }" :data-strategy="strategy.id" @click="selectedStrategyId = strategy.id"><strong>{{ strategy.name }}</strong><span>{{ strategy.description }}</span><small>{{ strategy.id }}</small></button></div>
       <article class="strategy-detail" data-testid="strategy-detail"><div><p class="eyebrow">{{ selectedStrategy.id }} · 演示参数</p><h3>{{ selectedStrategy.name }}</h3><p>{{ selectedStrategy.description }}</p></div><ul><li v-for="parameter in selectedStrategy.parameters" :key="parameter">{{ parameter }}</li></ul><p class="curve-note">{{ selectedStrategy.curve }}</p></article>
     </section>
-    <section v-else-if="activeWorkspace === 'experiments'" id="research-panel-experiments" class="workspace-panel" role="tabpanel" aria-labelledby="experiment-title">
+    <section v-else-if="activeWorkspace === 'experiments'" id="research-panel-experiments" class="workspace-panel" role="tabpanel" aria-labelledby="research-tab-experiments">
       <div class="panel-heading"><div><p class="eyebrow">EXPERIMENT QUEUE</p><h2 id="experiment-title">实验任务</h2></div><label class="compact-field">任务状态<select v-model="experimentFilter" aria-label="任务状态"><option value="all">全部</option><option value="running">运行中</option><option value="failed">失败</option><option value="completed">已完成</option></select></label></div>
       <div class="split-layout"><div class="task-list" data-testid="experiment-list"><button v-for="experiment in filteredExperiments" :key="experiment.id" type="button" class="task-row" :class="{ selected: experiment.id === selectedExperimentId }" :data-experiment="experiment.id" @click="selectedExperimentId = experiment.id"><span><strong>{{ experiment.name }}</strong><small>{{ experiment.id }} · {{ experiment.progress }}</small></span><em :data-status="experiment.status">{{ statusLabel(experiment.status) }}</em></button></div><article class="detail-pane" data-testid="experiment-detail"><p class="eyebrow">TASK DETAIL</p><h3>{{ selectedExperiment.name }}</h3><code>{{ selectedExperiment.id }}</code><p>{{ selectedExperiment.reason }}</p><div class="status-line">{{ statusLabel(selectedExperiment.status) }} · {{ selectedExperiment.progress }}</div></article></div>
     </section>
-    <section v-else-if="activeWorkspace === 'orderflow'" id="research-panel-orderflow" class="workspace-panel" role="tabpanel" aria-labelledby="flow-title">
+    <section v-else-if="activeWorkspace === 'orderflow'" id="research-panel-orderflow" class="workspace-panel" role="tabpanel" aria-labelledby="research-tab-orderflow">
       <div class="panel-heading"><div><p class="eyebrow">ORDER FLOW SNAPSHOT</p><h2 id="flow-title">订单流与价格</h2></div><span class="muted">仅展示演示快照</span></div><div class="symbol-tabs" role="tablist" aria-label="交易对"><button v-for="flow in flows" :key="flow.symbol" :id="'symbol-tab-' + flow.symbol" type="button" role="tab" class="symbol-tab" :class="{ selected: flow.symbol === selectedFlowSymbol }" :data-symbol="flow.symbol" aria-controls="symbol-panel" :aria-selected="flow.symbol === selectedFlowSymbol" @click="selectedFlowSymbol = flow.symbol">{{ flow.symbol }}</button></div><div id="symbol-panel" class="symbol-panel" role="tabpanel" :aria-labelledby="'symbol-tab-' + selectedFlow.symbol"><div class="flow-grid"><article class="flow-quote"><span class="muted">最新价</span><strong data-testid="flow-price">{{ selectedFlow.price }}</strong><span :class="selectedFlow.change.startsWith('-') ? 'loss' : 'profit'">{{ selectedFlow.change }}</span></article><article><span class="muted">买卖价差</span><strong>{{ selectedFlow.spread }}</strong><span class="muted">可见深度 {{ selectedFlow.depth }}</span></article></div><article class="trades-panel" data-testid="flow-trades"><div class="panel-heading small-heading"><h3>逐笔成交</h3><span class="muted">{{ selectedFlow.symbol }} · 本地快照</span></div><ul><li v-for="trade in selectedFlow.trades" :key="trade">{{ trade }}</li></ul></article></div>
     </section>
     <section v-else class="workspace-panel empty-panel"><p class="eyebrow">RESEARCH PREVIEW</p><h2>选择一个研究工作区</h2><p>当前入口没有绑定研究视图。</p></section>
-  </main>
+  </section>
 </template>
 
 <style scoped>

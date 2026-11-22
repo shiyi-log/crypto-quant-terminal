@@ -168,6 +168,44 @@ def test_first_committed_claim_drives_one_paused_cycle_then_real_archive_before_
     assert len(archive.records()) == 1
 
 
+def test_cycle_discovers_one_committed_command_for_its_frozen_binding_per_cycle():
+    writer, controller, commands, _, _ = setup()
+    commands.enqueue(binding_id='binding-1', command_id='command-0', kind='pause_entries',
+                     actor='operator-2', reason_code='operator_pause', submitted_ms=1000)
+    writer.activate()
+
+    first = writer.cycle_once()
+    second = writer.cycle_once()
+
+    assert first['reason_code'] == second['reason_code'] == 'command_applied'
+    assert commands.get('command-0')['status'] == 'applied'
+    assert commands.get('command-1')['status'] == 'applied'
+    assert controller.cycles == 2
+
+
+def test_command_discovery_failure_does_not_skip_protection_cycle():
+    writer, controller, commands, _, _ = setup()
+    writer.activate()
+    commands.accepted_commands = Mock(side_effect=RuntimeError('private-signature-cannot-log'))
+
+    result = writer.cycle_once()
+
+    assert result['reason_code'] == 'command_read_or_claim_unavailable'
+    assert result['cycle_ok'] is True
+    assert controller.cycles == 1
+    assert commands.get('command-1')['status'] == 'accepted'
+
+
+def test_safe_exit_refuses_committed_but_unclaimed_command():
+    writer, controller, commands, _, _ = setup()
+    writer.activate()
+    writer.request_stop()
+
+    assert writer.try_safe_exit() is False
+    assert controller.active and controller.exits == 0
+    assert commands.get('command-1')['status'] == 'accepted'
+
+
 def test_cycle_logs_chinese_stage_timing_without_sensitive_command_or_account_values(caplog):
     writer, _, _, _, _ = setup()
     writer.activate()
@@ -350,6 +388,8 @@ def test_safe_exit_and_command_claim_cannot_overlap_across_driver_threads():
     import threading
     writer, controller, commands, _, _ = setup()
     writer.activate()
+    # 交接前必须先终结启动夹具中的已提交命令。
+    writer.cycle_once('command-1')
     writer.request_stop()
     entered, release = threading.Event(), threading.Event()
     def yield_wait(capability):
@@ -370,8 +410,8 @@ def test_safe_exit_and_command_claim_cannot_overlap_across_driver_threads():
         release.set()
         thread.join(2)
     assert not thread.is_alive() and result == [True]
-    assert commands.get('command-1')['status'] == 'accepted'
-    assert controller.cycles == 0
+    assert commands.get('command-1')['status'] == 'applied'
+    assert controller.cycles == 1
 
 
 @pytest.mark.parametrize('damaged', ['controller_store', 'ledger_store', 'ledger_namespace',

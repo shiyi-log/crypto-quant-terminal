@@ -156,6 +156,24 @@ class DemoWriterDriver:
         self._require_active()
         cycle_started = time.monotonic()
         stage_started = cycle_started
+        discovered = False
+        discovered_count = 0
+        if command_id is None:
+            try:
+                accepted = self.commands.accepted_commands(self.target.binding.binding_id)
+                discovered_count = len(accepted)
+                command_id = accepted[0]['command_id'] if accepted else None
+                discovered = command_id is not None
+            except Exception:
+                LOGGER.warning('Demo 待处理命令发现失败 原因码=command_read_or_claim_unavailable；本轮继续账户保护')
+                command_id = None
+                discovery_failed = True
+            else:
+                discovery_failed = False
+        else:
+            discovery_failed = False
+        LOGGER.info('Demo 待处理命令发现结束 冻结绑定候选数=%d 自动选择=%s 读取耗时毫秒=%d',
+                    discovered_count, discovered, int((time.monotonic() - stage_started) * 1000))
         LOGGER.info('Demo 前台周期开始 命令存在=%s；本轮最多处理一个命令和一次保护周期',
                     command_id is not None)
         try:
@@ -164,7 +182,8 @@ class DemoWriterDriver:
             # 命令时间不可用时不读写票据，仍执行本轮普通暂停保护。
             now = None
         state, dispatch, paused = None, False, False
-        reason = 'protection_observed'
+        reason = ('command_read_or_claim_unavailable' if discovery_failed else
+                  'command_discovered' if discovered else 'protection_observed')
         if now is None:
             reason = 'command_clock_unavailable'
         elif command_id is not None:
@@ -282,10 +301,10 @@ class DemoWriterDriver:
         try:
             # 与命令读取、claim 和周期共用锁，退出核对后不能插入新的处理票据。
             self._require_active()
-            unresolved = self.commands.unresolved_commands()
-            if type(unresolved) is not list or unresolved:
-                LOGGER.warning('Demo 前台安全退出拒绝 原因码=unresolved_commands count=%s 耗时毫秒=%d；继续持锁保护',
-                               len(unresolved) if isinstance(unresolved, list) else 'unknown',
+            pending = self.commands.pending_commands()
+            if type(pending) is not list or pending:
+                LOGGER.warning('Demo 前台安全退出拒绝 原因码=pending_commands count=%s 耗时毫秒=%d；继续持锁保护',
+                               len(pending) if isinstance(pending, list) else 'unknown',
                                int((time.monotonic() - started) * 1000))
                 return False
             result = self.controller.yield_external_if_flat(self._capability)

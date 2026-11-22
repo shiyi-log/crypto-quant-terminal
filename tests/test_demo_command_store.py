@@ -251,6 +251,42 @@ def test_offline_unresolved_commands_empty_and_accepted_are_not_unresolved():
     assert store.unresolved_commands() == []
 
 
+def test_offline_pending_commands_includes_accepted_claimed_and_unknown_only():
+    store, _ = offline_account_ledger()
+    for command_id in ('z-claimed', 'a-unknown', 'accepted-only', 'rejected-only'):
+        enqueue_offline(store, command_id)
+    store.claim('z-claimed', owner_id=OWNER, claimed_ms=1001)
+    store.claim('a-unknown', owner_id=OTHER, claimed_ms=1001)
+    store.append_event('a-unknown', event_id='unknown-1', event_type='unknown', owner_id=OTHER,
+                       observed_ms=1002, reason_code='outcome_unknown', evidence_refs=[])
+    store.claim('rejected-only', owner_id=OWNER, claimed_ms=1001)
+    store.append_event('rejected-only', event_id='reject-1', event_type='rejected', owner_id=OWNER,
+                       observed_ms=1002, reason_code='command_refused', evidence_refs=[])
+
+    pending = store.pending_commands()
+
+    assert [(row['command_id'], row['status']) for row in pending] == [
+        ('a-unknown', 'unknown'), ('accepted-only', 'accepted'), ('z-claimed', 'claimed')]
+    assert all(row['execution_complete'] is False and row['production_authorized'] is False
+               for row in pending)
+
+
+def test_offline_accepted_commands_are_limited_to_exact_frozen_binding():
+    store, _ = offline_account_ledger()
+    other = api().FrozenCommandBinding('binding-2', {**scope(), 'run_id': 'run-2'},
+                                      hashes(), 'demo_other')
+    store.register_binding(other)
+    enqueue_offline(store, 'z-current')
+    enqueue_offline(store, 'a-other', 'binding-2')
+    enqueue_offline(store, 'b-current')
+
+    accepted = store.accepted_commands('binding-1')
+
+    assert [row['command_id'] for row in accepted] == ['b-current', 'z-current']
+    assert all(row['binding']['binding_id'] == 'binding-1' and row['status'] == 'accepted'
+               for row in accepted)
+
+
 @pytest.mark.parametrize('corruption', ['binding', 'intent', 'event_hash', 'transition',
                                         'orphan_event', 'missing_accepted'])
 def test_offline_unresolved_commands_refuse_corruption_even_in_other_terminal_command(corruption):

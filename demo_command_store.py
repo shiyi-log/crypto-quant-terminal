@@ -352,32 +352,56 @@ class DemoCommandStore(DemoStore):
         """在账户锁内重放全部意图，只列出仍需保守处理的状态。"""
         with self.store._connection() as conn:
             self._lock(conn)
-            rows = self._chain(conn)
-            intents = conn.execute(
-                'SELECT command_id FROM demo_command_intents WHERE environment=%s AND account_id=%s '
-                'ORDER BY command_id LIMIT %s',
-                (*self._account(), MAX_EVENTS + 1),
-            ).fetchall()
-            if len(intents) > MAX_EVENTS:
-                raise ValueError('command intent replay limit exceeded')
-            command_ids = []
-            for row in intents:
-                try:
-                    command_ids.append(_id(row['command_id']))
-                except (TypeError, KeyError, ValueError):
-                    raise ValueError('command intent integrity failed') from None
-            intent_ids = set(command_ids)
-            event_ids = {row['command_id'] for row in rows}
-            if event_ids != intent_ids:
-                raise ValueError('command event intent linkage integrity failed')
-            unresolved = []
-            for command_id in command_ids:
-                state = self._state(conn, command_id, rows)
-                if state is None:
-                    raise ValueError('command intent integrity failed')
-                if state['status'] in {'claimed', 'unknown'}:
-                    unresolved.append(state)
+            states = self._replayed_command_states(conn)
+            unresolved = [state for state in states if state['status'] in {'claimed', 'unknown'}]
         return deepcopy(unresolved)
+
+    def _replayed_command_states(self, conn):
+        """先验证账户总链，再按命令分组重放，避免逐命令重复扫描全历史。"""
+        rows = self._chain(conn)
+        intents = conn.execute(
+            'SELECT command_id FROM demo_command_intents WHERE environment=%s AND account_id=%s '
+            'ORDER BY command_id LIMIT %s',
+            (*self._account(), MAX_EVENTS + 1),
+        ).fetchall()
+        if len(intents) > MAX_EVENTS:
+            raise ValueError('command intent replay limit exceeded')
+        command_ids = []
+        for row in intents:
+            try:
+                command_ids.append(_id(row['command_id']))
+            except (TypeError, KeyError, ValueError):
+                raise ValueError('command intent integrity failed') from None
+        events_by_command = {}
+        for row in rows:
+            events_by_command.setdefault(row['command_id'], []).append(row)
+        if set(events_by_command) != set(command_ids):
+            raise ValueError('command event intent linkage integrity failed')
+        states = []
+        for command_id in command_ids:
+            state = self._state(conn, command_id, events_by_command[command_id])
+            if state is None:
+                raise ValueError('command intent integrity failed')
+            states.append(state)
+        return states
+
+    def pending_commands(self):
+        """完整重放账户事实，返回已提交但尚未结束的命令。"""
+        with self.store._connection() as conn:
+            self._lock(conn)
+            states = self._replayed_command_states(conn)
+            pending = [state for state in states if state['status'] in {'accepted', 'claimed', 'unknown'}]
+        return deepcopy(pending)
+
+    def accepted_commands(self, binding_id):
+        """只列出指定冻结绑定下可首次领取的命令，并完整校验账户事件链。"""
+        binding_id = _id(binding_id)
+        with self.store._connection() as conn:
+            self._lock(conn)
+            states = self._replayed_command_states(conn)
+            accepted = [state for state in states if state['status'] == 'accepted'
+                        and state['intent']['binding_id'] == binding_id]
+        return deepcopy(accepted)
 
     def claim(self, command_id, *, owner_id, claimed_ms):
         command_id, owner_id, now = _id(command_id), _owner(owner_id), _stamp(claimed_ms)

@@ -424,3 +424,11 @@
 - 前端默认演示与深链接修复提交 `4fb595e58970f3eb3cc89be0cd94b82e6b9bcd19` 的远端 CI 与同 SHA CD 均通过；CD 归档身份检查成功，artifact digest `sha256:fb6779a0deb51b127ac13a17af82bec91dba603247bb2e2ad7b28e7468b70f52`。Release job 因没有新版本标签而跳过。
 - 0009 迁移/恢复锚点提交 `965c67ebd70e4821718329e2fa5a08e03c4519c9`、CI `44957659614`、CD `44958188493` 均已核实成功；先前台账的“仍待提交/CI”状态由此更新。0009 仍只提供不可变存储约束，API、真实消费、计算器、worker 和授权保持关闭。
 - 项目版本为已发布的 `0.2.4`；本次没有移动既有标签、改版本或创建 Release。后续版本同步须以完成并验证的源码提交为候选，再按发布流程取得精确 SHA 的 CI/CD 归档身份证据。
+
+## 2026-11-22 P1 writer 持久命令自动发现
+
+- `DemoCommandStore` 新增账户范围待处理命令重放，以及指定冻结绑定下 accepted 命令发现。读取在账户事务锁内验证完整追加式事件哈希链、命令意图关联和数量上限；结果按命令 ID 稳定排序，返回副本。状态覆盖 accepted、claimed、unknown；拒绝/已完成终态不列为待处理。
+- `DemoWriterDriver.cycle_once()` 未提供显式命令 ID 时，自动发现当前冻结绑定下第一条 accepted 命令；每周期最多领取并处理一条。账本读取异常记录固定中文原因码，不输出账户、命令、操作者或异常正文；随后仍执行暂停开仓的普通保护周期。安全退出先重放完整待处理命令；任一 accepted/claimed/unknown 命令存在或账本不可用时拒绝交还账户锁。
+- RED/GREEN：新增五项离线合同先在旧实现上失败，覆盖查询缺失、当前冻结身份过滤、自动发现、读取故障仍保护，以及未领取命令阻止安全退出。修正旧并发测试夹具，使交接前先完成已提交命令。命令存储离线合同 **57 项通过**，writer 全组 **40 项通过**；两文件完整组合含隔离 PostgreSQL 路径 **122 项通过**。Ruff、compileall 和 `git diff --check` 通过。
+- 本切片不创建 controller，不改 auth/API 路由，不启动 writer 服务、不执行数据库迁移、不连接 Binance。认证进程仍启动 legacy controller；`external_paused` writer 的单一所有者组合根、API 命令提交与唤醒、数据库故障恢复、SIGTERM 合作停机和原生保护最终性证明仍未接线，Demo/生产资格保持关闭。
+- 两份 CI/CD 已将 `demo_command_store.py`、`demo_writer.py` 纳入编译和 Ruff 清单；该检查清单由先前独立提交推送，本切片暂无新远端 CI/CD 回执。版本仍为 `0.2.4`；源码与本节文档独立中文提交/推送，并通过该精确 SHA CI、同 SHA CD 归档哈希及 `build.json` 身份检查后，才继续版本同步和正式发布。

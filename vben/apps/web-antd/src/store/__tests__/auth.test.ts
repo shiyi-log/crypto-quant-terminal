@@ -13,10 +13,18 @@ const mocks = vi.hoisted(() => ({
     setLoginExpired: vi.fn(),
   },
   currentRoute: {
-    value: { fullPath: '/quant/strategy-lab', path: '/quant/strategy-lab' },
+    value: {} as {
+      fullPath: string;
+      path: string;
+      query?: Record<string, string>;
+    },
   },
+  getAccessCodesApi: vi.fn(),
+  getUserInfoApi: vi.fn(),
+  loginApi: vi.fn(),
   logoutApi: vi.fn(),
   resetAllStores: vi.fn(),
+  routerPush: vi.fn(),
   routerReplace: vi.fn(),
   userStore: { setUserInfo: vi.fn() },
 }));
@@ -24,6 +32,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('vue-router', () => ({
   useRouter: () => ({
     currentRoute: mocks.currentRoute,
+    push: mocks.routerPush,
     replace: mocks.routerReplace,
   }),
 }));
@@ -37,9 +46,9 @@ vi.mock('@vben/preferences', () => ({
 }));
 vi.mock('ant-design-vue', () => ({ notification: { success: vi.fn() } }));
 vi.mock('#/api', () => ({
-  getAccessCodesApi: vi.fn(),
-  getUserInfoApi: vi.fn(),
-  loginApi: vi.fn(),
+  getAccessCodesApi: mocks.getAccessCodesApi,
+  getUserInfoApi: mocks.getUserInfoApi,
+  loginApi: mocks.loginApi,
   logoutApi: mocks.logoutApi,
 }));
 vi.mock('#/locales', () => ({ $t: (key: string) => key }));
@@ -53,6 +62,7 @@ describe('expired session navigation', () => {
     mocks.currentRoute.value = {
       fullPath: '/quant/strategy-lab?strategy=s23',
       path: '/quant/strategy-lab',
+      query: {},
     };
   });
 
@@ -86,5 +96,43 @@ describe('expired session navigation', () => {
       path: LOGIN_PATH,
       query: {},
     });
+  });
+
+  it('returns to the requested internal page after login instead of the demo home', async () => {
+    mocks.currentRoute.value = {
+      fullPath: `${LOGIN_PATH}?redirect=%2Fquant%2Ftrade-desk%3Fsymbol%3DBTCUSDT`,
+      path: LOGIN_PATH,
+      query: { redirect: '%2Fquant%2Ftrade-desk%3Fsymbol%3DBTCUSDT' },
+    };
+    mocks.loginApi.mockResolvedValue({ accessToken: 'synthetic-token' });
+    mocks.getUserInfoApi.mockResolvedValue({
+      homePath: '/quant/demo-preview',
+    });
+    mocks.getAccessCodesApi.mockResolvedValue([]);
+
+    await useAuthStore().authLogin({ username: 'operator', password: 'secret' });
+
+    expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith(
+      '/quant/trade-desk?symbol=BTCUSDT',
+    );
+  });
+
+  it('ignores an external login redirect and uses the local demo home', async () => {
+    mocks.currentRoute.value = {
+      fullPath: `${LOGIN_PATH}?redirect=https%3A%2F%2Fattacker.example`,
+      path: LOGIN_PATH,
+      query: { redirect: 'https://attacker.example' },
+    };
+    mocks.loginApi.mockResolvedValue({ accessToken: 'synthetic-token' });
+    mocks.getUserInfoApi.mockResolvedValue({
+      homePath: '/quant/demo-preview',
+    });
+    mocks.getAccessCodesApi.mockResolvedValue([]);
+
+    await useAuthStore().authLogin({ username: 'operator', password: 'secret' });
+
+    expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith(
+      '/quant/demo-preview',
+    );
   });
 });

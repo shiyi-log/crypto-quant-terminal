@@ -54,10 +54,30 @@ export const useAuthStore = defineStore('auth', () => {
         if (accessStore.loginExpired) {
           accessStore.setLoginExpired(false);
         } else {
+          // 保留受保护深链接的原始目标；非法或外部地址回退到安全默认首页。
+          const redirect = router.currentRoute.value.query?.redirect;
+          let decodedRedirect: string | null = null;
+          if (typeof redirect === 'string') {
+            try {
+              decodedRedirect = decodeURIComponent(redirect);
+            } catch {
+              decodedRedirect = null;
+            }
+          }
+          const safeRedirect =
+            decodedRedirect?.startsWith('/') &&
+            !decodedRedirect.startsWith('//') &&
+            !decodedRedirect.includes('\\') &&
+            !decodedRedirect.startsWith(`${LOGIN_PATH}?`) &&
+            decodedRedirect !== LOGIN_PATH
+              ? decodedRedirect
+              : null;
           onSuccess
             ? await onSuccess?.()
             : await router.push(
-                userInfo.homePath || preferences.app.defaultHomePath,
+                safeRedirect ||
+                  userInfo.homePath ||
+                  preferences.app.defaultHomePath,
               );
         }
 

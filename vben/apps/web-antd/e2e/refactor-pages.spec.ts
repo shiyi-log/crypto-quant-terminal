@@ -92,9 +92,29 @@ for (const viewport of viewports) {
   }
 }
 
-test('默认登录落到交易台，刷新失败保留精确旧权益', async ({ page }) => {
+test('根路径先进入本地演示，交易台刷新失败保留精确旧权益', async ({ page }) => {
   const fixture = await installDemoFixture(page);
   await page.goto('/');
+  await expect(page).toHaveURL(/#\/quant\/demo-preview$/);
+  await expect(page.getByText('本地演示数据', { exact: true })).toBeVisible();
+  expect(fixture.authRequests).toEqual([]);
+  expect(fixture.readRequests).toEqual([]);
+  expect(fixture.mutations).toEqual([]);
+
+  // 隔离本机自动登录，明确验证密码登录后的默认演示首页。
+  await page.evaluate(() => sessionStorage.setItem('ft_manual_logout', '1'));
+  await page.goto('/#/auth/login');
+  const form = page.getByRole('form', { name: '用户名密码登录', exact: true });
+  await form.locator('[autocomplete=username]').fill('synthetic-test-user');
+  await form
+    .locator('[autocomplete=current-password]')
+    .fill('synthetic-password-no-real-account');
+  await form.getByRole('button', { name: '登录', exact: true }).click();
+  await expect(page).toHaveURL(/#\/quant\/demo-preview$/);
+  expect(fixture.authRequests).toEqual(['POST /auth/login', 'GET /auth/me']);
+  expect(fixture.mutations).toEqual([]);
+
+  await page.goto('/#/quant/trade-desk');
   await expect(page).toHaveURL(/#\/quant\/trade-desk$/);
   const content = page.locator('.desk-page');
   await expect(

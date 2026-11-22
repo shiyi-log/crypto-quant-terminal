@@ -19,6 +19,13 @@ const researchViews = new Set([
   'price-spikes',
 ]);
 const environment = computed(() => {
+  if (view.value === 'demo-preview')
+    return {
+      label: '本地样本预览',
+      detail: '固定数据，只读',
+      tone: 'research',
+      note: '此页面使用内置样本，不读取交易账户或发送交易命令。',
+    };
   if (demoViews.has(view.value))
     return {
       label: 'Binance Demo',
@@ -154,6 +161,10 @@ watch(
         <strong>{{ environment.label }}</strong>
         <span>{{ environment.detail }}</span>
       </div>
+      <!-- 固定样本入口始终可达，便于在接入账户页面前查看本地演示数据。 -->
+      <RouterLink class="quant-shell-preview" to="/quant/demo-preview">
+        本地演示
+      </RouterLink>
       <RouterLink class="quant-shell-settings" to="/quant/security"
         >设置与安全</RouterLink
       >
@@ -265,6 +276,25 @@ watch(
   color: #a2b8c9;
   font-size: 12px;
   white-space: nowrap;
+}
+.quant-shell-preview {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid #42637a;
+  color: #b7d9ee;
+  text-decoration: none;
+  font-size: 12px;
+}
+.quant-shell-preview:hover,
+.quant-shell-preview:focus-visible {
+  border-color: #69b4e4;
+  color: #e5edf4;
+}
+.quant-shell-preview:focus-visible {
+  outline: 2px solid #69b4e4;
+  outline-offset: 2px;
 }
 .quant-shell-toggle {
   display: none;

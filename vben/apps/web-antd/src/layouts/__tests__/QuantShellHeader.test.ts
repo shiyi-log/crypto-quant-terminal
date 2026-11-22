@@ -44,6 +44,11 @@ async function open(path: string) {
         path: '/quant/' + item,
         component: { template: '<div />' },
       })),
+      {
+        path: '/quant/demo-preview',
+        name: 'QuantDemoPreview',
+        component: { template: '<div />' },
+      },
       { path: '/profile', component: { template: '<div />' } },
     ],
   });
@@ -155,6 +160,21 @@ describe('quant workspace shell boundaries', () => {
         'aria-expanded',
       ),
     ).toBe('false');
+  });
+
+  it('keeps the fixed local-sample preview reachable from every quant workspace', async () => {
+    const { router, element, get } = await open('/quant/trade-desk');
+    const previewLink = get('a[href="/quant/demo-preview"]');
+    expect(previewLink.textContent).toContain('本地演示');
+    expect(
+      router.resolve(previewLink.getAttribute('href')!).matched.at(-1)?.name,
+    ).toBe('QuantDemoPreview');
+    previewLink.click();
+    await vi.waitFor(() =>
+      expect(router.currentRoute.value.path).toBe('/quant/demo-preview'),
+    );
+    expect(get('[role="status"]').textContent).toContain('本地样本预览');
+    expect(element.textContent).toContain('不读取交易账户');
   });
 
   it('opens and closes workspace navigation without adding a write action', async () => {

@@ -32,6 +32,7 @@ const routes: RouteRecordRaw[] = [
 /** 基本路由列表，这些路由不需要进入权限拦截 */
 const coreRouteNames = traverseTreeValues(coreRoutes, (route) => route.name);
 
-/** 有权限校验的路由列表，包含动态路由和静态路由 */
+/** 有权限校验的路由列表，包含动态路由和静态路由。 */
+// 旧量化路由模块已从源码移除；兼容深链接由 core.ts 的固定演示别名承载。
 const accessRoutes = [...dynamicRoutes, ...staticRoutes];
 export { accessRoutes, coreRouteNames, routes };

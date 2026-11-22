@@ -1,4 +1,4 @@
-import type { RouteRecordRaw } from 'vue-router';
+import type { RouteLocationGeneric, RouteRecordRaw } from 'vue-router';
 
 import { LOGIN_PATH } from '@vben/constants';
 import { preferences } from '@vben/preferences';
@@ -7,6 +7,111 @@ import { $t } from '#/locales';
 
 const BasicLayout = () => import('#/layouts/basic.vue');
 const AuthPageLayout = () => import('#/layouts/auth.vue');
+
+// 前端演示阶段，所有量化深链接先进入固定本地样本。
+// 旧量化业务页面源码已移除；未来若恢复真实页面，必须作为独立工作重新验收。
+// 这些兼容入口不读取账户、业务 API 或生产数据。
+type DemoPreviewWorkspace = 'desk' | 'research' | 'governance';
+
+const demoRedirect =
+  (preview: DemoPreviewWorkspace, workspace: string) =>
+  (to: RouteLocationGeneric) => ({
+    name: 'QuantDemoPreview',
+    query: { ...to.query, preview, workspace },
+  });
+
+const quantDemoAliasDefinitions: {
+  path: string;
+  name: string;
+  preview: DemoPreviewWorkspace;
+  workspace: string;
+}[] = [
+  {
+    path: '/quant/trade-desk',
+    name: 'QuantDemoAliasTradeDesk',
+    preview: 'desk',
+    workspace: 'desk',
+  },
+  {
+    path: '/quant/acceptance',
+    name: 'QuantDemoAliasAcceptance',
+    preview: 'governance',
+    workspace: 'acceptance',
+  },
+  {
+    path: '/quant/factors',
+    name: 'QuantDemoAliasFactors',
+    preview: 'research',
+    workspace: 'factors',
+  },
+  {
+    path: '/quant/experiments',
+    name: 'QuantDemoAliasExperiments',
+    preview: 'research',
+    workspace: 'experiments',
+  },
+  {
+    path: '/quant/data-quality',
+    name: 'QuantDemoAliasDataQuality',
+    preview: 'governance',
+    workspace: 'data-quality',
+  },
+  {
+    path: '/quant/operations',
+    name: 'QuantDemoAliasOperations',
+    preview: 'governance',
+    workspace: 'operations',
+  },
+  {
+    path: '/quant/orderflow',
+    name: 'QuantDemoAliasOrderflow',
+    preview: 'research',
+    workspace: 'orderflow',
+  },
+  {
+    path: '/quant/price-spikes',
+    name: 'QuantDemoAliasPriceSpikes',
+    preview: 'research',
+    workspace: 'orderflow',
+  },
+  {
+    path: '/quant/research',
+    name: 'QuantDemoAliasResearch',
+    preview: 'research',
+    workspace: 'research',
+  },
+  {
+    path: '/quant/strategy-lab',
+    name: 'QuantDemoAliasStrategyLab',
+    preview: 'research',
+    workspace: 'research',
+  },
+  {
+    path: '/quant/binance-demo',
+    name: 'QuantDemoAliasBinanceDemo',
+    preview: 'governance',
+    workspace: 'settings',
+  },
+  {
+    path: '/quant/security',
+    name: 'QuantDemoAliasSecurity',
+    preview: 'governance',
+    workspace: 'settings',
+  },
+];
+
+const quantDemoAliases: RouteRecordRaw[] = quantDemoAliasDefinitions.map(
+  ({ path, name, preview, workspace }) => ({
+    path,
+    name,
+    redirect: demoRedirect(preview, workspace),
+    meta: {
+      hideInMenu: true,
+      hideInTab: true,
+      title: `${path.split('/').at(-1)}演示`,
+    },
+  }),
+);
 /** 全局404页面 */
 const fallbackNotFoundRoute: RouteRecordRaw = {
   component: () => import('#/views/_core/fallback/not-found.vue'),
@@ -27,8 +132,13 @@ const coreRoutes: RouteRecordRaw[] = [
     name: 'QuantDemoPreview',
     path: '/quant/demo-preview',
     component: () => import('#/views/preview/DemoPreview.vue'),
+    props: (route) => ({
+      preview: route.query.preview,
+      workspace: route.query.workspace,
+    }),
     meta: { hideInMenu: true, hideInTab: true, title: '本地演示预览' },
   },
+  ...quantDemoAliases,
   // 系统状态入口可独立访问，不依赖尚未加载的业务菜单。
   {
     name: 'SystemForbidden',

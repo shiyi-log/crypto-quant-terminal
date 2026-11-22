@@ -22,10 +22,29 @@ for (const viewport of viewports) {
     }) => {
       await page.setViewportSize(viewport);
       const fixture = await installDemoFixture(page);
-      await page.goto('/#/quant/trade-desk');
-      await expect(page.locator('.desk-page')).toBeVisible();
+      await page.addInitScript(() =>
+        sessionStorage.setItem('ft_manual_logout', '1'),
+      );
+      await page.goto('/#/auth/login');
+      const loginForm = page.getByRole('form', {
+        name: '用户名密码登录',
+        exact: true,
+      });
+      await loginForm
+        .locator('[autocomplete=username]')
+        .fill('synthetic-test-user');
+      await loginForm
+        .locator('[autocomplete=current-password]')
+        .fill('synthetic-password-no-real-account');
+      await loginForm
+        .getByRole('button', { name: '登录', exact: true })
+        .click();
+      await expect(page).toHaveURL(/#\/quant\/demo-preview$/);
+      await expect(
+        page.getByText('本地演示数据', { exact: true }),
+      ).toBeVisible();
       const authenticationBefore = [...fixture.authRequests];
-      // 保持同一合成会话，仅切换路由；未知页面仍遵循现有访问守卫。
+      // 保持已认证的合成会话，仅切换路由；旧认证入口仍进入应用内404。
       await page.evaluate((retiredRoute) => {
         location.hash = `/auth/${retiredRoute}?redirect=%2Fquant%2Facceptance`;
       }, method);
@@ -39,8 +58,8 @@ for (const viewport of viewports) {
       await expect(page.locator('.unsupported-method')).toHaveCount(0);
       await expect(page).toHaveURL(new RegExp(`#/auth/${method}\?`));
       await expect(
-        content.getByRole('link', { name: '返回交易台', exact: true }),
-      ).toHaveAttribute('href', '#/quant/trade-desk');
+        content.getByRole('link', { name: '返回本地演示', exact: true }),
+      ).toHaveAttribute('href', '#/quant/demo-preview');
       await expect(page.locator('#__app-loading__')).toHaveCount(0);
       const widths = await page.evaluate(() => ({
         document: document.documentElement.scrollWidth,
@@ -48,6 +67,10 @@ for (const viewport of viewports) {
       }));
       expect(widths.document).toBeLessThanOrEqual(widths.viewport);
       expect(fixture.authRequests).toEqual(authenticationBefore);
+      expect(fixture.authRequests).toEqual([
+        'POST /auth/login',
+        'GET /auth/me',
+      ]);
       expect(fixture.mutations).toEqual([]);
       expect(fixture.unexpected).toEqual([]);
       expect(fixture.pageErrors).toEqual([]);
@@ -58,7 +81,7 @@ for (const viewport of viewports) {
     });
   }
 
-  test(`手动登录与本机恢复入口 · ${viewport.width} · 保留原目标`, async ({
+  test(`手动登录与本机恢复入口 · ${viewport.width} · 安全回到演示工作区`, async ({
     page,
   }) => {
     await page.setViewportSize(viewport);
@@ -99,10 +122,14 @@ for (const viewport of viewports) {
       .locator('[autocomplete=current-password]')
       .fill('synthetic-password-no-real-account');
     await form.getByRole('button', { name: '登录', exact: true }).click();
-    await expect(page).toHaveURL(new RegExp('#/quant/acceptance$'));
-    await expect(page.locator('.acceptance-page')).toContainText(
-      'synthetic-session-a',
-    );
+    await expect(page).toHaveURL(/#\/quant\/demo-preview\?/);
+    await expect(
+      page.getByRole('heading', { name: '验收与上线', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText('本地演示数据', { exact: true })).toBeVisible();
+    await expect(
+      page.getByText('不读取账户，不发送命令', { exact: true }),
+    ).toBeVisible();
     expect(
       fixture.authRequests.filter((request) => !request.startsWith('GET ')),
     ).toEqual(['POST /auth/login']);
@@ -137,8 +164,8 @@ test('未知地址展示真实路径并排除查询内容，恢复操作仍在�
   page,
 }) => {
   const fixture = await installDemoFixture(page);
-  await page.goto('/#/quant/trade-desk');
-  await expect(page.locator('.desk-page')).toBeVisible();
+  await page.goto('/#/quant/demo-preview');
+  await expect(page.getByText('本地演示数据', { exact: true })).toBeVisible();
   await page.goto('/#/synthetic-missing-route?reason=synthetic-query-secret');
   const content = page.locator('.system-state');
   await expect(
@@ -149,9 +176,12 @@ test('未知地址展示真实路径并排除查询内容，恢复操作仍在�
   );
   await expect(content).not.toContainText('synthetic-query-secret');
   await expect(content.locator('form,input')).toHaveCount(0);
-  await content.getByRole('link', { name: '返回交易台', exact: true }).focus();
+  await content
+    .getByRole('link', { name: '返回本地演示', exact: true })
+    .focus();
   await page.keyboard.press('Enter');
-  await expect(page.locator('.desk-page')).toBeVisible();
+  await expect(page).toHaveURL(/#\/quant\/demo-preview(?:\?.*)?$/);
+  await expect(page.getByText('本地演示数据', { exact: true })).toBeVisible();
   expect(fixture.mutations).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
   expect(fixture.pageErrors).toEqual([]);

@@ -346,7 +346,11 @@ export interface IterationRun {
   timestamp?: string;
   error_code?: string | null;
   result_source?: string | null;
-  progress?: { percent?: number | null; phase?: string; [key: string]: unknown };
+  progress?: {
+    percent?: number | null;
+    phase?: string;
+    [key: string]: unknown;
+  };
   metrics?: Record<string, unknown>;
   gate?: {
     passed?: boolean;
@@ -977,174 +981,6 @@ export interface FtWsInfo {
  */
 export async function getWsToken(): Promise<FtWsInfo> {
   return unwrap<FtWsInfo>(await ftClient.get('/ws-token'));
-}
-
-export interface ResearchLedgerVersion {
-  id: string;
-  round?: number | null;
-  layer?: string;
-  config?: Record<string, unknown> | string | null;
-  direction?: string;
-  changes?: Array<
-    | string
-    | {
-        t?: string | number | null;
-        event?: string | null;
-        note?: string | null;
-      }
-  >;
-  registry_status?: string;
-  deployment_status: 'not_deployed' | 'unverified' | 'verified';
-  evaluation_status: 'invalidated' | 'unverified' | 'forward_observation';
-  reported_metrics?: {
-    ic?: number | null;
-    t?: number | null;
-    q?: number | null;
-  };
-  effect?: {
-    actual_orders?: number | null;
-    closed_trades?: number | null;
-    realized_profit_abs?: number | null;
-  };
-  evidence?: string[];
-  limitations?: string[];
-}
-
-export interface ResearchOperationAudit {
-  items: Array<{
-    request_id: string;
-    requested_at_utc: string;
-    finished_at_utc: string | null;
-    actor: string | null;
-    source_ip: string | null;
-    method: string;
-    path: string;
-    action: string;
-    target: Record<string, unknown>;
-    payload_state: string;
-    upstream_status: number | null;
-    outcome: 'accepted' | 'not_forwarded' | 'rejected' | 'unknown';
-    error_code: string | null;
-    request_event_id: string;
-    result_event_id: string | null;
-  }>;
-  coverage: string;
-  limitations: string[];
-}
-
-export interface ResearchLedger {
-  generated_at?: string | null;
-  last_synced_at?: string | null;
-  source_id?: string | null;
-  summary: {
-    version_count: number;
-    deployed_ml_count: number;
-    actual_trade_count: number;
-    actual_order_count: number;
-    closed_trade_count: number;
-    realized_profit_abs: number | null;
-    realized_profit_known_abs?: number | null;
-    realized_profit_missing_count?: number;
-    strategy_closed_trade_count?: number;
-    strategy_realized_profit_abs?: number | null;
-    strategy_realized_profit_known_abs?: number | null;
-    strategy_realized_profit_missing_count?: number;
-    external_exit_count?: number;
-    external_realized_profit_abs?: number | null;
-    external_realized_profit_known_abs?: number | null;
-    external_realized_profit_missing_count?: number;
-    unknown_exit_count?: number;
-    unknown_realized_profit_abs?: number | null;
-    unknown_realized_profit_known_abs?: number | null;
-    unknown_realized_profit_missing_count?: number;
-    unknown_trade_state_count?: number;
-    externally_intervened_trade_count?: number;
-    partial_exit_audit_unknown_trade_count?: number;
-    unattributed_trade_count: number;
-  };
-  versions: ResearchLedgerVersion[];
-  comparison?: {
-    baseline_id?: string | null;
-    candidate_id?: string | null;
-    config_changes?: Array<
-      | string
-      | {
-          key: string;
-          before?: unknown;
-          after?: unknown;
-        }
-    >;
-    note?: string;
-  } | null;
-  actual_trades: Array<{
-    trade_id: number | string;
-    pair: string;
-    side: string;
-    leverage?: number | null;
-    stake_amount?: number | null;
-    open_date?: string | null;
-    close_date?: string | null;
-    is_open?: boolean | null;
-    realized_profit_abs: number | null;
-    exit_reason?: string | null;
-    exit_category?:
-      | 'external_intervention'
-      | 'external_exchange_execution'
-      | 'execution_emergency'
-      | 'liquidation'
-      | 'not_closed'
-      | 'strategy_risk'
-      | 'strategy_roi'
-      | 'strategy_signal'
-      | 'strategy_adjustment'
-      | 'unknown';
-    strategy_eligible?: boolean;
-    externally_intervened?: boolean;
-    exit_classification_basis?:
-      | 'filled_external_exit_order'
-      | 'final_trade_exit_reason'
-      | 'trade_not_closed'
-      | 'trade_state_unknown';
-    order_tag_audit_unknown?: boolean;
-    external_exit_order_count?: number;
-    model_id: string | null;
-    attribution_status: string;
-  }>;
-  actual_orders: Array<{
-    order_id: number | string;
-    trade_id?: number | string | null;
-    pair: string;
-    side: string;
-    status: string;
-    amount?: number | null;
-    filled?: number | null;
-    price?: number | null;
-    order_date?: string | null;
-    model_id: string | null;
-  }>;
-  lessons: Array<{
-    id: string;
-    title: string;
-    status: string;
-    reason: string;
-    evidence: string[];
-    do_not_repeat: string | boolean;
-  }>;
-  directions: Array<{
-    id: string;
-    title: string;
-    status: string;
-    hypothesis: string;
-    next_check: string;
-  }>;
-  errors: string[];
-  operation_audit?: ResearchOperationAudit;
-  exit_classification_basis?: string;
-  exit_classification_limitations?: string[];
-}
-
-export async function getResearchLedger(): Promise<ResearchLedger> {
-  return unwrap<ResearchLedger>(await ftClient.get('/locals/research-ledger'));
 }
 
 export interface ForwardPaperRangeFilter {

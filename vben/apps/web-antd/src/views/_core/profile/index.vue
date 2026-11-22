@@ -6,7 +6,7 @@ import { useUserStore } from '@vben/stores';
 import ProfileBase from './base-setting.vue';
 import ProfilePasswordSetting from './password-setting.vue';
 import ProfileSecuritySetting from './security-setting.vue';
-import '../../quant/security/identity.css';
+import './profile.css';
 
 const userStore = useUserStore();
 const username = computed(() => userStore.userInfo?.username ?? '尚未确认');

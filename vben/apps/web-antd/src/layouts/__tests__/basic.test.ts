@@ -3,7 +3,9 @@ import { createApp, defineComponent, h, nextTick } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 
 vi.mock('@vben/common-ui', () => ({
-  AuthenticationLoginExpiredModal: { template: '<div />' },
+  AuthenticationLoginExpiredModal: {
+    template: '<div data-testid="login-expired-modal"><slot /></div>',
+  },
 }));
 vi.mock('@vben/hooks', () => ({
   useWatermark: () => ({ destroyWatermark() {}, updateWatermark() {} }),
@@ -11,11 +13,16 @@ vi.mock('@vben/hooks', () => ({
 vi.mock('@vben/layouts', () => ({
   BasicLayout: defineComponent({
     setup(_, { slots }) {
-      return () => h('main', slots['content-top']?.());
+      return () =>
+        h('main', [
+          slots['user-dropdown']?.(),
+          slots.extra?.(),
+          slots['lock-screen']?.(),
+        ]);
     },
   }),
-  LockScreen: { template: '<div />' },
-  UserDropdown: { template: '<div />' },
+  LockScreen: { template: '<div data-testid="lock-screen" />' },
+  UserDropdown: { template: '<div data-testid="user-dropdown" />' },
 }));
 vi.mock('@vben/preferences', () => ({
   preferences: {
@@ -50,25 +57,7 @@ async function run(
 ) {
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: [
-      'trade-desk',
-      'acceptance',
-      'factors',
-      'operations',
-      'binance-demo',
-    ].map((view) => ({
-      path: '/quant/' + view,
-      name: (
-        {
-          'trade-desk': 'QuantTradeDesk',
-          acceptance: 'QuantAcceptance',
-          factors: 'QuantFactors',
-          operations: 'QuantOperations',
-          'binance-demo': 'QuantBinanceDemo',
-        } as Record<string, string>
-      )[view],
-      component: { template: '<div />' },
-    })),
+    routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }],
   });
   await router.push(path);
   await router.isReady();
@@ -84,30 +73,22 @@ async function run(
   }
 }
 
-describe('application shell external command boundary', () => {
-  it.each(['trade-desk', 'acceptance', 'binance-demo', 'operations'])(
-    '%s never mounts the legacy command poller',
-    async (view) => {
-      await run('/quant/' + view, async (_, element) => {
-        await nextTick();
-        expect(element.textContent).not.toContain('旧引擎写命令');
-        expect(element.textContent).not.toContain('web-login-identity');
-      });
-    },
-  );
-
-  it('切换新版工作区始终没有旧交易控制栏', async () => {
-    await run('/quant/factors', async (router, element) => {
+describe('通用应用布局', () => {
+  it('旧量化深链接不会挂载旧量化页头或工作区主题', async () => {
+    await run('/quant/trade-desk', async (_, element) => {
       await nextTick();
-      expect(element.textContent).toContain('因子实验室');
-      expect(element.querySelector('.quant-shell-legacy')).toBeNull();
-      await router.push('/quant/trade-desk');
-      await nextTick();
-      expect(element.querySelector('.quant-shell-legacy')).toBeNull();
       expect(element.textContent).not.toContain('旧引擎写命令');
-      expect(element.querySelector('[role="status"]')?.textContent).toContain(
-        'Binance Demo',
-      );
+      expect(element.querySelector('.quant-workspace-shell')).toBeNull();
+      expect(element.querySelector('.quant-shell-legacy')).toBeNull();
+      expect(
+        element.querySelector('[data-testid="user-dropdown"]'),
+      ).not.toBeNull();
+      expect(
+        element.querySelector('[data-testid="login-expired-modal"]'),
+      ).not.toBeNull();
+      expect(
+        element.querySelector('[data-testid="lock-screen"]'),
+      ).not.toBeNull();
     });
   });
 });

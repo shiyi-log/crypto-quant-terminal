@@ -20,7 +20,7 @@ const states = {
     code: '404',
     title: '找不到这个页面',
     reason:
-      '当前地址没有对应页面。历史链接可能已调整，请核对地址，或从交易台重新进入。',
+      '当前地址没有对应页面。历史链接可能已调整，请核对地址，或从本地演示入口重新进入。',
     next: '若这是历史运行或交易记录，请保留原始编号，并在对应证据入口查询。',
   },
   '500': {
@@ -41,7 +41,7 @@ const states = {
     title: '此功能尚未开放',
     reason:
       '此入口尚未提供可用功能。当前页面没有提交任务，也没有修改账户或交易配置。',
-    next: '可返回交易台查看已有事实与证据。',
+    next: '可返回本地演示预览查看固定样本。',
   },
 } as const;
 
@@ -65,7 +65,7 @@ function back() {
   ) {
     router.back();
   } else {
-    void router.push('/quant/trade-desk');
+    void router.push('/quant/demo-preview');
   }
 }
 
@@ -102,10 +102,10 @@ function retry() {
           <button v-else type="button" data-action="back" @click="back">
             返回上一页
           </button>
-          <RouterLink to="/quant/trade-desk">返回交易台</RouterLink>
+          <RouterLink to="/quant/demo-preview">返回本地演示</RouterLink>
         </nav>
       </div>
-      <footer>交易状态以账户、订单与风险证据为准</footer>
+      <footer>本地演示仅展示固定样本，不代表真实账户、订单或风险事实</footer>
     </section>
   </main>
 </template>

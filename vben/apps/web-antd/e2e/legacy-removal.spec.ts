@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 
+import { installDemoFixture } from './demo-fixture';
 import { installWorkspaceFixture } from './workspace-fixture';
 
 const retired = [
@@ -19,61 +20,81 @@ const retired = [
   'logs',
 ];
 
+const aliases = [
+  ['trade-desk', 'desk', 'desk'],
+  ['acceptance', 'governance', 'acceptance'],
+  ['factors', 'research', 'factors'],
+  ['experiments', 'research', 'experiments'],
+  ['data-quality', 'governance', 'data-quality'],
+  ['operations', 'governance', 'operations'],
+  ['orderflow', 'research', 'orderflow'],
+  ['price-spikes', 'research', 'orderflow'],
+  ['research', 'research', 'research'],
+  ['strategy-lab', 'research', 'research'],
+  ['binance-demo', 'governance', 'settings'],
+  ['security', 'governance', 'settings'],
+] as const;
+
 for (const viewport of [
   { width: 1440, height: 1000 },
   { width: 390, height: 844 },
 ]) {
-  test(`旧版页面全部退役且新版导航可用 · ${viewport.width}`, async ({
-    page,
-  }) => {
+  test(`旧业务详情路径仍返回 404 · ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
-    const fixture = await installWorkspaceFixture(page);
+    await installWorkspaceFixture(page);
     await page.goto('/#/quant/trade-desk');
-    await expect(page.locator('.desk-page')).toBeVisible();
+    await expect(page.locator('.preview-shell')).toBeVisible();
+
     for (const path of retired) {
-      await page.evaluate((retiredPath) => {
-        location.hash = `/quant/${retiredPath}?run_id=retired-record`;
-      }, path);
+      await page.goto(`/#/quant/${path}?run_id=retired-record`);
       await expect(page.locator('.system-state h1')).toHaveText(
         '找不到这个页面',
       );
       await expect(page.locator('[data-current-location]')).toHaveText(
         `/quant/${path}`,
       );
-      await expect(page.locator('.quant-shell-legacy')).toHaveCount(0);
-      await expect(
-        page.getByRole('button', { name: '启动', exact: true }),
-      ).toHaveCount(0);
+      await expect(page.locator('.preview-shell')).toHaveCount(0);
     }
-    await page.getByRole('link', { name: '返回交易台', exact: true }).click();
-    await expect(page.locator('.quant-shell-environment')).toContainText(
-      'Binance Demo',
+  });
+
+  test(`兼容入口直接显示固定演示且不请求后端 · ${viewport.width}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    const fixture = await installDemoFixture(page);
+    await page.addInitScript(() =>
+      sessionStorage.setItem('ft_manual_logout', '1'),
     );
-    const navigation = page.locator('#quant-workspace-navigation');
-    await expect(navigation.locator('a')).toHaveCount(8);
-    const addresses = await navigation
-      .locator('a')
-      .evaluateAll((links) => links.map((link) => link.getAttribute('href')));
-    expect(addresses).toEqual([
-      '#/quant/trade-desk',
-      '#/quant/factors',
-      '#/quant/orderflow',
-      '#/quant/research',
-      '#/quant/experiments',
-      '#/quant/acceptance',
-      '#/quant/data-quality',
-      '#/quant/operations',
-    ]);
+
+    for (const [path, preview, workspace] of aliases) {
+      await page.goto(`/#/quant/${path}?run_id=compatibility-record`);
+      await expect(page).toHaveURL(
+        new RegExp(
+          `#/quant/demo-preview\?.*preview=${preview}.*workspace=${workspace}`,
+        ),
+      );
+      await expect(
+        page
+          .locator('.preview-scope')
+          .getByText('本地演示数据', { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByText('不读取账户，不发送命令', { exact: true }),
+      ).toBeVisible();
+      await expect(page.locator('[data-layout-region="sidebar"]')).toHaveCount(
+        0,
+      );
+      const dimensions = await page.evaluate(() => ({
+        document: document.documentElement.scrollWidth,
+        viewport: window.innerWidth,
+      }));
+      expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+    }
+
+    expect(fixture.authRequests).toEqual([]);
+    expect(fixture.readRequests).toEqual([]);
     expect(fixture.mutations).toEqual([]);
     expect(fixture.unexpected).toEqual([]);
     expect(fixture.pageErrors).toEqual([]);
-    expect(
-      fixture.readRequests.some(
-        (path) =>
-          path.startsWith('/api/v1/show_config') ||
-          path.startsWith('/api/v1/count') ||
-          path.startsWith('/api/ws-token'),
-      ),
-    ).toBe(false);
   });
 }

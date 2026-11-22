@@ -4,28 +4,52 @@ import { createMemoryHistory, createRouter } from 'vue-router';
 vi.mock('#/locales', () => ({ $t: (key: string) => key }));
 
 import { coreRoutes, fallbackNotFoundRoute } from '../routes/core';
-import quantRoutes from '../routes/modules/quant';
+import { accessRoutes } from '../routes';
 import { overridesPreferences } from '../../preferences';
 
 describe('新版工作区与旧版入口退役', () => {
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: [...coreRoutes, ...quantRoutes, fallbackNotFoundRoute],
+    routes: [...coreRoutes, fallbackNotFoundRoute],
   });
 
   it('uses the local demo preview as the application home page', () => {
-    expect(overridesPreferences.app?.defaultHomePath).toBe('/quant/demo-preview');
+    expect(overridesPreferences.app?.defaultHomePath).toBe(
+      '/quant/demo-preview',
+    );
   });
 
-  it.each(['factors', 'experiments', 'data-quality', 'operations'])(
-    'opens the new %s workspace with a real component',
-    (path) => {
+  it.each([
+    ['trade-desk', 'TradeDesk', 'desk', 'desk'],
+    ['acceptance', 'Acceptance', 'governance', 'acceptance'],
+    ['factors', 'Factors', 'research', 'factors'],
+    ['experiments', 'Experiments', 'research', 'experiments'],
+    ['data-quality', 'DataQuality', 'governance', 'data-quality'],
+    ['operations', 'Operations', 'governance', 'operations'],
+    ['orderflow', 'Orderflow', 'research', 'orderflow'],
+    ['price-spikes', 'PriceSpikes', 'research', 'orderflow'],
+    ['research', 'Research', 'research', 'research'],
+    ['strategy-lab', 'StrategyLab', 'research', 'research'],
+    ['binance-demo', 'BinanceDemo', 'governance', 'settings'],
+    ['security', 'Security', 'governance', 'settings'],
+  ])(
+    'routes %s to the local %s/%s preview',
+    async (path, suffix, preview, workspace) => {
       const resolved = router.resolve('/quant/' + path);
-      expect(resolved.matched).toHaveLength(2);
-      expect(resolved.matched.at(-1)?.components?.default).toBeTypeOf(
-        'function',
-      );
-      expect(resolved.matched.at(-1)?.redirect).toBeUndefined();
+      expect(resolved.matched).toHaveLength(1);
+      expect(resolved.matched.at(-1)?.name).toBe('QuantDemoAlias' + suffix);
+      expect(resolved.matched.at(-1)?.redirect).toBeTypeOf('function');
+      expect(
+        accessRoutes.some((route) => route.path.startsWith('/quant')),
+      ).toBe(false);
+      await router.push(`/quant/${path}?run_id=historic-7&identifier=frozen-3`);
+      expect(router.currentRoute.value.name).toBe('QuantDemoPreview');
+      expect(router.currentRoute.value.query).toEqual({
+        run_id: 'historic-7',
+        identifier: 'frozen-3',
+        preview,
+        workspace,
+      });
     },
   );
 
@@ -41,19 +65,19 @@ describe('新版工作区与旧版入口退役', () => {
   ])('preserves exact historical %s query identity', (path) => {
     const address = '/quant/' + path + '?run_id=historic-7&identifier=frozen-3';
     const resolved = router.resolve(address);
-    expect(resolved.matched).toHaveLength(2);
+    expect(resolved.matched).toHaveLength(1);
     expect(resolved.fullPath).toBe(address);
-    expect(resolved.matched.at(-1)?.redirect).toBeUndefined();
+    expect(resolved.matched.at(-1)?.redirect).toBeDefined();
   });
 
-  it('keeps the local demo preview separate from the account-backed desk', () => {
+  it('keeps the local demo preview and legacy demo alias routes distinct', () => {
     const demo = router.resolve('/quant/demo-preview');
     const desk = router.resolve('/quant/trade-desk');
     expect(demo.matched).toHaveLength(1);
-    expect(demo.matched.at(-1)?.components?.default).toBeTypeOf('function');
+    expect(demo.matched.at(-1)?.components?.default).toBeDefined();
     expect(demo.matched.some((record) => record.name === 'Root')).toBe(false);
     expect(demo.matched.at(-1)?.name).toBe('QuantDemoPreview');
-    expect(desk.matched.at(-1)?.name).toBe('QuantTradeDesk');
+    expect(desk.matched.at(-1)?.name).toBe('QuantDemoAliasTradeDesk');
     expect(demo.fullPath).toBe('/quant/demo-preview');
   });
 

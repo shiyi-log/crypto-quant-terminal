@@ -12,12 +12,7 @@ import { $t } from '#/locales';
 import { useAuthStore } from '#/store';
 import LoginForm from '#/views/_core/authentication/login.vue';
 
-import QuantShellHeader from './components/QuantShellHeader.vue';
-
 const router = useRouter();
-const quantWorkspace = computed(() =>
-  router.currentRoute.value.path.startsWith('/quant/'),
-);
 const userStore = useUserStore();
 const authStore = useAuthStore();
 const accessStore = useAccessStore();
@@ -98,15 +93,11 @@ watch(
 
 <template>
   <BasicLayout
-    :class="{ 'quant-workspace-shell': quantWorkspace }"
     :avatar
     :text="displayName"
     @clear-preferences-and-logout="handleLogout"
     @logout="handleLogout"
   >
-    <template #content-top>
-      <QuantShellHeader />
-    </template>
     <template #user-dropdown>
       <UserDropdown
         :avatar
@@ -129,37 +120,3 @@ watch(
     </template>
   </BasicLayout>
 </template>
-
-<style scoped>
-/* 壳级颜色作用于导航、顶栏与工作面；业务页面的收益语义色由页面自行定义。 */
-.quant-workspace-shell {
-  --background: 210 56% 11%;
-  --background-deep: 210 56% 11%;
-  --foreground: 208 41% 93%;
-  --card: 207 53% 16%;
-  --card-foreground: 208 41% 93%;
-  --popover: 207 53% 16%;
-  --popover-foreground: 208 41% 93%;
-  --border: 205 38% 26%;
-  --input: 205 38% 26%;
-  --muted: 207 53% 16%;
-  --muted-foreground: 206 26% 71%;
-  --sidebar: 210 56% 11%;
-  --sidebar-deep: 210 56% 11%;
-  --header: 210 56% 11%;
-  --menu: 210 56% 11%;
-  --menu-foreground: 208 41% 93%;
-  min-width: 0;
-  color: #e5edf4;
-  font-family:
-    'IBM Plex Sans', 'Source Han Sans SC', 'Noto Sans SC', sans-serif;
-}
-.quant-workspace-shell :deep([data-layout-region='scroll']) {
-  min-width: 0;
-}
-/* 主体须随实际内容增长；固定视口高度会让 sticky 环境栏在正文结束前失去边界。 */
-.quant-workspace-shell :deep(#__vben_main_content) {
-  flex-basis: auto !important;
-  flex-shrink: 0 !important;
-}
-</style>

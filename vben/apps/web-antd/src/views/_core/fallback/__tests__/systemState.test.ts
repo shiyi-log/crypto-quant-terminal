@@ -47,13 +47,13 @@ describe('system page recovery contract', () => {
     [Offline, '暂时无法连接服务'],
     [ComingSoon, '此功能尚未开放'],
   ] as const)(
-    'shows a specific reason and safe trade desk link',
+    'shows a specific reason and safe demo preview link',
     async (page, title) => {
       const { element } = await mountPage(page);
       expect(element.querySelector('h1')?.textContent).toBe(title);
       expect(
-        element.querySelector('a[href="/quant/trade-desk"]')?.textContent,
-      ).toContain('交易台');
+        element.querySelector('a[href="/quant/demo-preview"]')?.textContent,
+      ).toContain('本地演示');
       expect(element.querySelector('form')).toBeNull();
       expect(
         element.querySelector('main')?.getAttribute('aria-labelledby'),
@@ -79,13 +79,13 @@ describe('system page recovery contract', () => {
     },
   );
 
-  it('returns to the trade desk when no same-tab history is known', async () => {
+  it('returns to the demo preview when no same-tab history is known', async () => {
     const { element, router } = await mountPage(NotFound);
     const back = vi.spyOn(router, 'back');
     element.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(back).not.toHaveBeenCalled();
-    expect(router.currentRoute.value.path).toBe('/quant/trade-desk');
+    expect(router.currentRoute.value.path).toBe('/quant/demo-preview');
   });
 
   it('returns through the router only when same-tab history is known', async () => {
@@ -106,7 +106,7 @@ describe('system page recovery contract', () => {
     element.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(back).not.toHaveBeenCalled();
-    expect(router.currentRoute.value.path).toBe('/quant/trade-desk');
+    expect(router.currentRoute.value.path).toBe('/quant/demo-preview');
   });
 
   it('shows path and hash as text without reflecting arbitrary query reasons', async () => {

@@ -467,3 +467,11 @@
 - 附注标签 `v0.2.5` 已推送并指向版本同步提交；标签 CI `45006866019` 成功。按发布流程显式运行标签 CD `45006906038`（输入 `ref=v0.2.5`），构建归档及 Release 两个 job 均成功，上传前哈希与 `build.json` 身份检查通过。
 - [GitHub Release v0.2.5](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.5) 已发布，Release ID `454331251`。资产 `quant-terminal-v0.2.5.tar.gz`（149,427,484 字节）SHA-256 为 `c63c8b7d555ec55b0d4aed58ac584f8e65e4cc0f77c72cbb4d87cd4b6cc82b9b`，与 sidecar 及 GitHub Release digest 一致；独立下载重新计算通过。包内唯一 `build.json` 为 commit `115ab9857a109c28f916bc3e1279d157d096e5e2`、version `0.2.5`、package `quant-terminal-v0.2.5`。标签 CD artifact `14747923012` digest `sha256:fc7d20f7fd198a6d4777439bfe5700cafd4d47471ab9b5077aef86f2cb6a9918`，与 Release tar.gz 摘要分别记录。
 - 版本 `0.2.5` 发布完成；本轮之外的研究产物、writer/研究后端改动、Playwright 输出及未暂存台账历史修正仍保留在工作区，未被版本或源码提交纳入。
+
+## 2026-11-22 P1 writer 前台循环与重启观察
+
+- `run_foreground()` 将启动时显式传入的命令视为有限队列；队列处理完后改为自动发现，不再循环重放同一组启动命令。发现过程按当前冻结绑定过滤，每轮最多选择一个命令；账户保护周期持续运行。
+- 自动发现会先观察当前绑定下重启遗留的 `claimed`/`unknown` 命令，再处理新的 `accepted` 命令。未知结果只追加恢复观察，不重领单次动作票据；每个 writer 实例只记忆本实例已观察对象，后续周期不重复追加。
+- `accepted_commands()` 默认保留旧语义，仅返回 `accepted`；恢复流程显式启用未决状态读取。发现或读取故障保持中文固定原因码，并继续普通暂停保护。
+- 定向验证：`tests/test_demo_writer.py` **42 项通过**；`tests/test_demo_command_store.py -k offline_` **57 项通过**；Ruff、`compileall` 通过。提交前另运行 `git diff --check`。
+- 未把该前台循环接入 HTTP、CLI、launchd 或进程监督器；没有启动 writer、访问 Binance、执行迁移或写生产数据库。真实单一 writer 与 Demo/生产资格仍未接通。

@@ -92,6 +92,7 @@ class DemoWriterDriver:
         self._capability = None
         self._stop_requested = False
         self._cycle_lock = threading.Lock()
+        self._observed_unresolved = set()
 
     def activate(self):
         started = time.monotonic()
@@ -131,8 +132,11 @@ class DemoWriterDriver:
     def _unknown(self, state, now, reason='outcome_unknown'):
         try:
             self._event(state, 'unknown', reason, now)
+            self._observed_unresolved.add(state['command_id'])
+            return True
         except Exception:
             LOGGER.warning('Demo 命令观察未能提交 原因码=command_unknown_commit_unavailable；不得重派动作')
+            return False
 
     def _matches(self, state):
         body = self.target.binding.to_dict()
@@ -160,9 +164,17 @@ class DemoWriterDriver:
         discovered_count = 0
         if command_id is None:
             try:
-                accepted = self.commands.accepted_commands(self.target.binding.binding_id)
-                discovered_count = len(accepted)
-                command_id = accepted[0]['command_id'] if accepted else None
+                candidates = self.commands.accepted_commands(
+                    self.target.binding.binding_id, include_unresolved=True)
+                candidates = [state for state in candidates
+                              if state['command_id'] not in self._observed_unresolved
+                              and self._matches(state)]
+                # 先观察重启遗留命令，再为新的 accepted 命令领取单次处理票据。
+                candidates.sort(key=lambda state: (
+                    0 if state['status'] in {'claimed', 'unknown'} else 1,
+                    state['command_id']))
+                discovered_count = len(candidates)
+                command_id = candidates[0]['command_id'] if candidates else None
                 discovered = command_id is not None
             except Exception:
                 LOGGER.warning('Demo 待处理命令发现失败 原因码=command_read_or_claim_unavailable；本轮继续账户保护')
@@ -208,6 +220,7 @@ class DemoWriterDriver:
                         event_key = 'observed-' + _hash({'intent': state['intent_sha256'], 'owner': self._capability.owner_id})
                         if not any(row['event_id'] == event_key for row in self.commands.events(command_id)):
                             self._event(state, 'observed', 'recovery_observed', now)
+                        self._observed_unresolved.add(command_id)
                         reason = 'command_outcome_unknown'
                     else:
                         reason = 'command_terminal'
@@ -340,11 +353,16 @@ def run_foreground(driver, *, command_ids=(), stop_event=None, poll_interval_ms=
                 len(identities), poll_interval_ms)
     driver.activate()
     index = 0
+    # 启动时显式传入的命令只按有限队列重放；随后恢复自动发现，读取失败的 accepted 命令可在下一轮重试。
     while True:
         if stop_event.is_set():
             driver.request_stop()
-        driver.cycle_once(identities[index % len(identities)] if identities else None)
-        index += 1
+        if index < len(identities):
+            command_id = identities[index]
+            index += 1
+            driver.cycle_once(command_id)
+        else:
+            driver.cycle_once(None)
         cycle_count += 1
         if driver.try_safe_exit(identities):
             LOGGER.info('Demo 前台保护进程安全退出 已完成周期数=%d 总运行毫秒=%d',

@@ -393,13 +393,19 @@ class DemoCommandStore(DemoStore):
             pending = [state for state in states if state['status'] in {'accepted', 'claimed', 'unknown'}]
         return deepcopy(pending)
 
-    def accepted_commands(self, binding_id):
-        """只列出指定冻结绑定下可首次领取的命令，并完整校验账户事件链。"""
+    def accepted_commands(self, binding_id, *, include_unresolved=False):
+        """列出指定冻结绑定下的待处理命令，并完整校验账户事件链。
+
+        默认保持旧接口语义，只返回可首次领取的 ``accepted`` 命令；前台
+        writer 通过 ``include_unresolved`` 在同一次账本重放中观察重启遗留的
+        ``claimed``/``unknown`` 命令，避免为了恢复检查再次扫描整条账本。
+        """
         binding_id = _id(binding_id)
         with self.store._connection() as conn:
             self._lock(conn)
             states = self._replayed_command_states(conn)
-            accepted = [state for state in states if state['status'] == 'accepted'
+            statuses = {'accepted', 'claimed', 'unknown'} if include_unresolved else {'accepted'}
+            accepted = [state for state in states if state['status'] in statuses
                         and state['intent']['binding_id'] == binding_id]
         return deepcopy(accepted)
 

@@ -319,6 +319,70 @@ def test_foreground_stop_request_retries_safe_exit_and_keeps_protection_without_
     assert controller.active is False
 
 
+def test_foreground_consumes_startup_queue_once_then_discovers_new_commands(monkeypatch):
+    writer, controller, commands, _, _ = setup()
+    commands.enqueue(binding_id='binding-1', command_id='command-0', kind='pause_entries',
+                     actor='operator-2', reason_code='operator_pause', submitted_ms=1000)
+    checks = 0
+
+    class StopAfterTwo:
+        def is_set(self):
+            nonlocal checks
+            checks += 1
+            return checks >= 2
+
+    waits = []
+
+    def bounded_wait(seconds):
+        waits.append(seconds)
+        if len(waits) > 1:
+            raise AssertionError('前台循环未发现启动队列之外的命令')
+
+    monkeypatch.setattr(api(), '_wait_interval', bounded_wait)
+    try:
+        api().run_foreground(writer, command_ids=('command-1',), stop_event=StopAfterTwo(),
+                             poll_interval_ms=100)
+    except AssertionError as exc:
+        if str(exc) != '前台循环未发现启动队列之外的命令':
+            raise
+
+    assert commands.get('command-1')['status'] == 'applied'
+    assert commands.get('command-0')['status'] == 'applied'
+    assert controller.cycles == 2
+    assert waits == [0.1]
+
+
+def test_foreground_observes_restart_commands_without_redispatching(monkeypatch):
+    writer, controller, commands, _, _ = setup()
+    commands.claim('command-1', owner_id='writer-' + '2' * 32, claimed_ms=1001)
+    commands.enqueue(binding_id='binding-1', command_id='command-0', kind='pause_entries',
+                     actor='operator-2', reason_code='operator_pause', submitted_ms=1000)
+
+    class AlwaysStop:
+        def is_set(self):
+            return True
+
+    cycles = 0
+
+    def wait_and_stop(_seconds):
+        nonlocal cycles
+        cycles += 1
+        if cycles >= 2:
+            raise AssertionError('停止前应完成一次恢复观察和一次新命令发现')
+
+    monkeypatch.setattr(api(), '_wait_interval', wait_and_stop)
+
+    with pytest.raises(AssertionError, match='停止前'):
+        api().run_foreground(writer, command_ids=('command-1',), stop_event=AlwaysStop(),
+                             poll_interval_ms=100)
+
+    state = commands.get('command-1')
+    assert state['status'] == 'unknown'
+    assert state['submission_attempts'] == 1
+    assert commands.get('command-0')['status'] == 'applied'
+    assert controller.cycles == 2
+
+
 @pytest.mark.parametrize('field,value', [('strategy_id', 123), ('rule_hash', None),
     ('execution_hash', 'F' * 64), ('demo_policy_hash', 'short')])
 def test_invalid_legacy_target_never_becomes_driver_authority(field, value):

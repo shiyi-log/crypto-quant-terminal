@@ -79,6 +79,30 @@ def test_validation_plan_rejects_missing_or_misbound_attempts():
         )
 
 
+def test_pair_selection_uses_exact_thresholds_and_stable_tie_breaking():
+    policy = {"version": "pair-select-v1", "alpha": "0.05"}
+    equal_to_threshold = {
+        "config_id": "base-equal",
+        "stress_config_id": "stress-equal",
+        "adjusted_p": Fraction(1, 20),
+        "lower_bound": Fraction(1, 10),
+        "stress_adjusted_p": Fraction(1, 20),
+        "stress_lower_bound": Fraction(1, 10),
+        "execution_gates_passed": True,
+    }
+    above_threshold = dict(
+        equal_to_threshold, config_id="base-over", adjusted_p=Fraction(501, 10000)
+    )
+    assert select_validation_pair([equal_to_threshold], policy) == equal_to_threshold
+    assert select_validation_pair([above_threshold], policy) is None
+
+    tied = [
+        dict(equal_to_threshold, config_id="base-b", stress_config_id="stress-b"),
+        dict(equal_to_threshold, config_id="base-a", stress_config_id="stress-a"),
+    ]
+    assert select_validation_pair(tied, policy)["config_id"] == "base-a"
+
+
 def test_pair_selection_logs_counts_and_rejection_reason_codes(caplog):
     policy = {"version": "pair-select-v1", "alpha": "0.05"}
     rows = [

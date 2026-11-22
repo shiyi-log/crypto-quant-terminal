@@ -416,3 +416,11 @@
 - 候选源代码提交 `51f3688d97496c00f370542fa8b0f6c03e165eed` 的精确 CI `44951451041` 两个 job 均成功；同 SHA main CD `44951984696` 成功，步骤“验证发布归档哈希与 build.json 身份”通过。artifact `14726480457` 的 SHA-256 为 `0200a76006c1bfe964ca811111bb152e2a990d4f43ddffffb5665bac158b5bcc`。
 - 版本同步提交 `7618b8fe1b21d5d669b666856c4c09fda4d62d41` 的 CI `44952359877` 成功；附注标签 `v0.2.4` 指向该精确 SHA。按 `docs/RELEASE_PROCESS.md` 显式触发标签 CD `44953347126`，其发布归档 SHA-256 与 `build.json` 身份检查、Release job 均成功；标签 CI `44953168832` 后端/PostgreSQL 与前端/Playwright 两个 job 均成功。
 - GitHub Release `https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.4` 已发布。归档资产 `quant-terminal-v0.2.4.tar.gz` SHA-256 `eb63333cf8b34af51473383547564c50559b6c60e9951c8a3a350a67c44fec8e`，sidecar 亦已上传。main 候选归档 artifact `14726187854` digest `sha256:b78cdd1bf13a35b8d1b213c5939340439360496621a55fe6b80729d30a7d5f89`；标签 CD Actions artifact `14726856166` digest `sha256:8bd83cff21326ff0b63b8207b9d0a1f41ba9f888228e630d40e9cff6ec1768ee`。这些 Actions artifact digest 是传输包摘要，与 Release tar.gz 的资产 SHA-256 分别记录。
+
+## 2026-11-22 P2 候选筛选边界回归恢复
+
+- 只读审查发现，研究阶段日志提交以日志合同替换了原有精确阈值/稳定排序回归；日志字段断言仍在，但没有独立锁定边界行为。恢复单独合同：校正概率恰等于 `alpha=0.05` 时允许通过，`0.0501` 时拒绝；并列结果按配置身份稳定排序。
+- RED/GREEN：原日志用例中的 `alpha=0.05` 与更低概率候选同时参加排序，未能单独证明边界。补回明确断言后运行 `uv run --frozen --group dev python -m pytest tests/test_research_two_stage_protocol.py -q`，结果 **5 项通过**。本节只恢复测试合同，不改变候选算法、留出消费或执行资格。
+- 前端默认演示与深链接修复提交 `4fb595e58970f3eb3cc89be0cd94b82e6b9bcd19` 的远端 CI 与同 SHA CD 均通过；CD 归档身份检查成功，artifact digest `sha256:fb6779a0deb51b127ac13a17af82bec91dba603247bb2e2ad7b28e7468b70f52`。Release job 因没有新版本标签而跳过。
+- 0009 迁移/恢复锚点提交 `965c67ebd70e4821718329e2fa5a08e03c4519c9`、CI `44957659614`、CD `44958188493` 均已核实成功；先前台账的“仍待提交/CI”状态由此更新。0009 仍只提供不可变存储约束，API、真实消费、计算器、worker 和授权保持关闭。
+- 项目版本为已发布的 `0.2.4`；本次没有移动既有标签、改版本或创建 Release。后续版本同步须以完成并验证的源码提交为候选，再按发布流程取得精确 SHA 的 CI/CD 归档身份证据。

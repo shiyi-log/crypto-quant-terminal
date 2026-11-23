@@ -106,6 +106,29 @@ for (const viewport of viewports) {
     await expect(
       page.getByRole('heading', { name: '验收与上线', exact: true }),
     ).toBeVisible();
+    await page.getByRole('button', { name: '数据中心', exact: true }).click();
+    await expect(
+      page.getByRole('heading', { name: '数据中心', exact: true }),
+    ).toBeVisible();
+    await page.getByRole('combobox', { name: '交易对筛选' }).selectOption('TRXUSDT');
+    await page.getByRole('combobox', { name: '周期筛选' }).selectOption('1h');
+    await expect(page.getByTestId('coverage-empty')).toContainText(
+      '当前筛选下没有固定演示样本',
+    );
+    await expect(page.getByTestId('coverage-table')).toHaveCount(0);
+    const dataCenterDimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+    }));
+    expect(dataCenterDimensions.document).toBeLessThanOrEqual(
+      dataCenterDimensions.viewport,
+    );
+    await page.getByRole('button', { name: '重置筛选' }).click();
+    await expect(page.getByTestId('coverage-table')).toContainText('BTCUSDT');
+    await expect(page.getByTestId('coverage-empty')).toHaveCount(0);
+    await expect(page.getByTestId('coverage-scope')).toContainText(
+      '交易对级摘要',
+    );
     await page.getByRole('button', { name: '运维与证据' }).click();
     await expect(
       page.getByRole('heading', { name: '运维与证据', exact: true }),

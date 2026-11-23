@@ -71,6 +71,65 @@ describe('治理工作区演示交互', () => {
     expect(view.get('[role="status"]').textContent).toContain('仅本地演练');
   });
 
+  it('数据中心筛选无固定样本时显示空态，重置后恢复', async () => {
+    const view = open('data-quality');
+    const symbol = view.get<HTMLSelectElement>(
+      'select[aria-label="交易对筛选"]',
+    );
+    const timeframe = view.get<HTMLSelectElement>(
+      'select[aria-label="周期筛选"]',
+    );
+    symbol.value = 'TRXUSDT';
+    symbol.dispatchEvent(new Event('change', { bubbles: true }));
+    timeframe.value = '1h';
+    timeframe.dispatchEvent(new Event('change', { bubbles: true }));
+    await nextTick();
+
+    expect(view.get('[data-testid="coverage-empty"]').textContent).toContain(
+      '当前筛选下没有固定演示样本',
+    );
+    expect(view.element.querySelector('[data-testid="coverage-table"]')).toBeNull();
+
+    view.get<HTMLButtonElement>('[data-action="reset-coverage-filters"]').click();
+    await nextTick();
+    expect(view.get('[data-testid="coverage-table"] tbody').textContent).toContain(
+      'BTCUSDT',
+    );
+    expect(view.element.querySelector('[data-testid="coverage-empty"]')).toBeNull();
+  });
+
+  it('周期筛选保留交易对级固定摘要，不派生周期覆盖率', async () => {
+    const view = open('data-quality');
+    const table = view.get('[data-testid="coverage-table"]');
+
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(3);
+    expect(table.textContent).toContain('BTCUSDT');
+    expect(table.textContent).toContain('ETHUSDT');
+    expect(table.textContent).toContain('TRXUSDT');
+    expect(table.textContent).toContain('96%');
+    expect(table.textContent).toContain('88%');
+    expect(table.textContent).toContain('71%');
+    expect(table.textContent).toContain('12 分钟前');
+    expect(table.textContent).toContain('18 分钟前');
+    expect(table.textContent).toContain('42 分钟前');
+    expect(table.textContent).toContain('5m / 15m / 1h');
+    expect(table.textContent).toContain('摘要覆盖率');
+
+    const timeframe = view.get<HTMLSelectElement>(
+      'select[aria-label="周期筛选"]',
+    );
+    timeframe.value = '1h';
+    timeframe.dispatchEvent(new Event('change', { bubbles: true }));
+    await nextTick();
+
+    expect(view.get('[data-testid="coverage-table"]').textContent).toContain(
+      '96%',
+    );
+    expect(view.get('[data-testid="coverage-scope"]').textContent).toContain(
+      '交易对级摘要',
+    );
+  });
+
   it('重复加入同一交易对时不重复写入已排队事件', async () => {
     const view = open('data-quality');
     const queue = view.get<HTMLButtonElement>('[data-action="queue-collection"]');

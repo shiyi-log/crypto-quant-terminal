@@ -12,6 +12,7 @@ const evidenceKey = ref<EvidenceKey>('calendar');
 const approvalOpen = ref(false);
 const approvalRecorded = ref(false);
 const symbolFilter = ref('all');
+const timeframeFilter = ref('all');
 const collectionQueue = ref<string[]>([]);
 const logLevel = ref<LogLevel>('all');
 const selectedLog = ref('evt-1041');
@@ -33,13 +34,22 @@ const selectedEvidence = computed(() => evidence.find((item) => item.key === evi
 });
 
 const coverageRows = [
-  { symbol: 'BTCUSDT', timeframe: '5m / 15m / 1h', coverage: '96%', freshness: '12 分钟前', quality: '可观察' },
-  { symbol: 'ETHUSDT', timeframe: '5m / 15m / 1h', coverage: '88%', freshness: '18 分钟前', quality: '有缺口' },
-  { symbol: 'TRXUSDT', timeframe: '5m / 15m', coverage: '71%', freshness: '42 分钟前', quality: '有缺口' },
+  { symbol: 'BTCUSDT', timeframes: ['5m', '15m', '1h'], timeframeLabel: '5m / 15m / 1h', coverage: '96%', freshness: '12 分钟前', quality: '可观察' },
+  { symbol: 'ETHUSDT', timeframes: ['5m', '15m', '1h'], timeframeLabel: '5m / 15m / 1h', coverage: '88%', freshness: '18 分钟前', quality: '有缺口' },
+  { symbol: 'TRXUSDT', timeframes: ['5m', '15m'], timeframeLabel: '5m / 15m', coverage: '71%', freshness: '42 分钟前', quality: '有缺口' },
 ];
+// 覆盖率是交易对级固定摘要；周期只用于筛选支持范围，不派生周期指标。
 const filteredCoverage = computed(() =>
-  symbolFilter.value === 'all' ? coverageRows : coverageRows.filter((row) => row.symbol === symbolFilter.value),
+  coverageRows.filter(
+    (row) =>
+      (symbolFilter.value === 'all' || row.symbol === symbolFilter.value) &&
+      (timeframeFilter.value === 'all' || row.timeframes.includes(timeframeFilter.value)),
+  ),
 );
+function resetCoverageFilters() {
+  symbolFilter.value = 'all';
+  timeframeFilter.value = 'all';
+}
 
 const logs = ref<DemoLog[]>([
   { id: 'evt-1041', level: 'info', time: '22:12:04', stage: '风险快照', result: '演示样本已记录', reason: 'demo_snapshot_recorded', duration: '4 毫秒', title: '本地风险快照已封存', detail: '固定演示权益与风险摘要已记录；等待下一份演示样本。' },
@@ -159,8 +169,17 @@ function resetPreferences() {
     </section>
 
     <section v-else-if="props.workspace === 'data-quality'" class="workspace-stack">
-      <div class="section-heading"><div><p class="eyebrow">DATA COVERAGE</p><h2>覆盖与新鲜度</h2></div><label class="control-label">交易对筛选<select v-model="symbolFilter" aria-label="交易对筛选"><option value="all">全部交易对</option><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="TRXUSDT">TRXUSDT</option></select></label></div>
-      <div class="table-scroll"><table data-testid="coverage-table"><thead><tr><th>交易对</th><th>周期</th><th>覆盖率</th><th>最近观测</th><th>质量</th></tr></thead><tbody><tr v-for="row in filteredCoverage" :key="row.symbol"><td><strong>{{ row.symbol }}</strong></td><td>{{ row.timeframe }}</td><td>{{ row.coverage }}</td><td>{{ row.freshness }}</td><td><span class="quality" :data-state="row.quality === '可观察' ? 'good' : 'warn'">{{ row.quality }}</span></td></tr></tbody></table></div>
+      <div class="section-heading coverage-controls">
+        <div><p class="eyebrow">DATA COVERAGE</p><h2>覆盖与新鲜度</h2></div>
+        <div class="coverage-filters">
+          <label class="control-label">交易对筛选<select v-model="symbolFilter" aria-label="交易对筛选"><option value="all">全部交易对</option><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="TRXUSDT">TRXUSDT</option></select></label>
+          <label class="control-label">周期筛选<select v-model="timeframeFilter" aria-label="周期筛选"><option value="all">全部周期</option><option value="5m">5m</option><option value="15m">15m</option><option value="1h">1h</option></select></label>
+          <button class="secondary-action" data-action="reset-coverage-filters" type="button" @click="resetCoverageFilters">重置筛选</button>
+        </div>
+      </div>
+      <p class="coverage-scope" data-testid="coverage-scope">覆盖率、最近观测与质量均为交易对级摘要；周期筛选只匹配固定样本声明的支持范围。</p>
+      <div v-if="filteredCoverage.length" class="table-scroll"><table data-testid="coverage-table"><thead><tr><th>交易对</th><th>支持周期</th><th>摘要覆盖率</th><th>最近观测</th><th>质量</th></tr></thead><tbody><tr v-for="row in filteredCoverage" :key="row.symbol"><td><strong>{{ row.symbol }}</strong></td><td>{{ row.timeframeLabel }}</td><td>{{ row.coverage }}</td><td>{{ row.freshness }}</td><td><span class="quality" :data-state="row.quality === '可观察' ? 'good' : 'warn'">{{ row.quality }}</span></td></tr></tbody></table></div>
+      <div v-else class="coverage-empty" data-testid="coverage-empty" role="status">当前筛选下没有固定演示样本</div>
       <div class="collection-bar"><div><p class="eyebrow">LOCAL COLLECTION QUEUE</p><strong data-testid="collection-queue">{{ collectionQueue.length ? collectionQueue.join(' · ') : '队列为空' }}</strong></div><button class="secondary-action" data-action="queue-collection" type="button" @click="queueCollection">加入本地补采演练</button></div>
     </section>
 
@@ -199,10 +218,12 @@ h1,h2,h3,p,dl,dd { margin:0; } h1{font-size:29px;font-weight:600;letter-spacing:
 .primary-action,.secondary-action { min-height:38px; padding:8px 14px; border:1px solid var(--blue); font:inherit; font-size:12px; cursor:pointer; } .primary-action{color:var(--bg);background:var(--blue);} .secondary-action{color:var(--text);background:var(--surface);} .primary-action:hover{filter:brightness(1.08);} .secondary-action:hover{border-color:var(--blue);color:var(--blue);} button:focus-visible,select:focus-visible{outline:2px solid var(--blue);outline-offset:3px;}
 .scope-note{line-height:1.65;} .history-locator{display:inline-block;margin-top:15px;color:var(--blue);font-size:12px;text-decoration:underline;text-underline-offset:3px;} .history-state{padding:16px;border-left:2px solid var(--warn);color:var(--muted);background:var(--surface);font-size:12px;line-height:1.65;overflow-wrap:anywhere;}
 .control-label{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;} select{min-width:130px;padding:8px 28px 8px 9px;border:1px solid var(--line);color:var(--text);background:var(--surface);font:inherit;font-size:12px;}
+.coverage-scope{margin:-2px 0 12px;color:var(--muted);font-size:11px;}
+.coverage-filters{display:flex;align-items:flex-end;gap:12px;} .coverage-empty{display:grid;min-height:170px;place-items:center;border:1px solid var(--line);padding:20px;color:var(--muted);background:rgba(19,43,62,.45);text-align:center;}
 .table-scroll{overflow-x:auto;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} table{width:100%;min-width:650px;border-collapse:collapse;font-size:12px;} th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;} th{color:var(--muted);font-weight:500;background:var(--surface);} tbody tr:last-child td{border-bottom:0;} .quality{color:var(--warn);} .quality[data-state='good']{color:var(--green);} .collection-bar{padding:16px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} .collection-bar strong{display:block;margin-top:5px;font-size:14px;font-weight:500;}
 .log-scope{margin:12px 0;color:var(--muted);font-size:11px;} .log-row{display:grid;grid-template-columns:78px 54px minmax(0,1fr) 118px 142px;align-items:center;gap:10px;padding:13px 12px;font-size:12px;} .log-time,.log-id{color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:11px;} .log-level{color:var(--green);}.log-level[data-level='warning']{color:var(--warn);} .log-row strong{font-weight:500;} .log-stage,.log-result{grid-column:3;color:var(--muted);font-size:10px;} .log-id{grid-column:5;grid-row:1 / span 2;text-align:right;} .log-fields{display:grid;gap:0;margin-top:18px;border-top:1px solid var(--line);font-size:11px;} .log-fields div{display:grid;grid-template-columns:78px minmax(0,1fr);gap:9px;padding:9px 0;border-bottom:1px solid var(--line);} .log-fields dt{color:var(--muted);} .log-fields dd{min-width:0;margin:0;text-align:right;overflow-wrap:anywhere;} .log-fields code{color:var(--blue);font-family:'IBM Plex Mono',monospace;font-size:10px;}
 .operations .detail-panel{margin-top:0;} .settings-panel{padding:24px;}.preference-row{align-items:flex-end;padding:22px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} .preference-summary{display:grid;gap:6px;min-width:170px;} .preference-summary strong{font-size:22px;font-weight:500;}
 .dialog-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:20px;background:rgba(5,13,22,.76);} .dialog{width:min(430px,100%);padding:25px;border:1px solid var(--blue);background:var(--surface);box-shadow:0 18px 50px rgba(0,0,0,.35);} .dialog h2{margin:7px 0 10px;} .dialog p{color:var(--muted);font-size:13px;} .dialog p strong{color:var(--warn);font-weight:500;} .dialog .button-row{justify-content:flex-end;margin-top:24px;} .approval-note{margin-top:15px;color:var(--green);font-size:12px;}
-@media (max-width:800px){.governance-preview{padding:22px 16px 42px}.preview-header{align-items:flex-start;flex-direction:column;gap:12px}.workspace-grid{grid-template-columns:1fr;gap:24px}.side-column{border-left:0;border-top:1px solid var(--line);padding:22px 0 0}.section-heading{align-items:flex-start;flex-direction:column;gap:12px}.collection-bar,.preference-row{align-items:flex-start;flex-direction:column;gap:16px}.collection-bar .secondary-action{width:100%}.control-label{width:100%;justify-content:space-between}.control-label select{flex:1;max-width:190px}.log-row{grid-template-columns:68px 48px minmax(0,1fr);grid-template-rows:auto auto auto;}.log-row strong{grid-column:3;grid-row:1}.log-stage{grid-column:1 / span 2;grid-row:2}.log-result{grid-column:3;grid-row:2}.log-id{grid-column:3;grid-row:3;text-align:right}.settings-panel{padding:18px 16px}}
+@media (max-width:800px){.governance-preview{padding:22px 16px 42px}.preview-header{align-items:flex-start;flex-direction:column;gap:12px}.workspace-grid{grid-template-columns:1fr;gap:24px}.side-column{border-left:0;border-top:1px solid var(--line);padding:22px 0 0}.section-heading{align-items:flex-start;flex-direction:column;gap:12px}.coverage-filters{width:100%;align-items:stretch;flex-direction:column}.coverage-filters .secondary-action{width:100%}.collection-bar,.preference-row{align-items:flex-start;flex-direction:column;gap:16px}.collection-bar .secondary-action{width:100%}.control-label{width:100%;justify-content:space-between}.control-label select{flex:1;max-width:190px}.log-row{grid-template-columns:68px 48px minmax(0,1fr);grid-template-rows:auto auto auto;}.log-row strong{grid-column:3;grid-row:1}.log-stage{grid-column:1 / span 2;grid-row:2}.log-result{grid-column:3;grid-row:2}.log-id{grid-column:3;grid-row:3;text-align:right}.settings-panel{padding:18px 16px}}
 @media (max-width:430px){h1{font-size:25px}.evidence-row{grid-template-columns:1fr auto;gap:5px 10px}.evidence-row strong{grid-column:1}.chevron{grid-column:2;grid-row:1 / span 2}.detail-value{font-size:27px}.button-row{align-items:stretch;flex-direction:column}.button-row button{width:100%}.dialog .button-row{flex-direction:column-reverse}}
 </style>

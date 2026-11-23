@@ -145,6 +145,33 @@ describe('固定演示验收证据视图', () => {
     ).toContain('未授权');
   });
 
+  it('证据过期时保留最后快照与原因码，验收和生产资格仍保持未知', async () => {
+    const view = open();
+
+    view.get<HTMLButtonElement>('[data-scenario="expired"]').click();
+    await nextTick();
+
+    const verdict = view.get('[data-testid="acceptance-verdict"]');
+    const snapshot = view.get('[data-testid="expired-evidence"]');
+    expect(verdict.textContent).toContain('证据已过期，验收未知');
+    expect(verdict.textContent).toContain('demo_equity_snapshot_expired');
+    expect(snapshot.textContent).toContain('1,097.00 USDT');
+    expect(snapshot.textContent).toContain('2026-11-11 14:32 北京时间');
+    expect(snapshot.textContent).toContain('demo_equity_snapshot_expired');
+    expect(view.get('[data-testid="production-eligibility"]').textContent).toContain(
+      '未授权',
+    );
+    expect(view.get('[data-testid="acceptance-gates"]').textContent).toContain(
+      '未知',
+    );
+    expect(view.get('[data-testid="acceptance-run-log"]').textContent).toContain(
+      'demo_equity_snapshot_expired',
+    );
+    expect(view.get('[data-testid="acceptance-run-log"]').textContent).toContain(
+      '生产资格保持未授权',
+    );
+  });
+
   it('审批按钮只触发本地演练回调并始终保留未授权状态', async () => {
     const onAction = vi.fn();
     const onApprove = vi.fn();

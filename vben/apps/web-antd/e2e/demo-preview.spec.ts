@@ -147,6 +147,26 @@ for (const viewport of viewports) {
     await expect(
       page.getByRole('heading', { name: '验收与上线', exact: true }),
     ).toBeVisible();
+    await page.getByRole('button', { name: '证据过期', exact: true }).click();
+    await expect(page.getByTestId('acceptance-verdict')).toContainText(
+      '证据已过期，验收未知',
+    );
+    await expect(page.getByTestId('expired-evidence')).toContainText(
+      '1,097.00 USDT',
+    );
+    await expect(page.getByTestId('expired-evidence')).toContainText(
+      '2026-11-11 14:32 北京时间',
+    );
+    await expect(page.getByTestId('production-eligibility')).toContainText(
+      '未授权',
+    );
+    const acceptanceDimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+    }));
+    expect(acceptanceDimensions.document).toBeLessThanOrEqual(
+      acceptanceDimensions.viewport,
+    );
     await page.getByRole('button', { name: '数据中心', exact: true }).click();
     await expect(
       page.getByRole('heading', { name: '数据中心', exact: true }),

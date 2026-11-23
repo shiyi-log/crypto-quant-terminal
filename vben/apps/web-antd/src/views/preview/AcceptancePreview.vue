@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { computed, nextTick, ref, watch } from 'vue';
 
-type Scenario = 'ongoing' | 'missing' | 'hard-failure';
+type Scenario = 'ongoing' | 'missing' | 'expired' | 'hard-failure';
 type DayEvidence = {
   day: number;
   date: string;
@@ -168,6 +168,12 @@ const verdict = computed(() => {
       reason: 'acceptance_evidence_incomplete',
       detail: '缺失事实保持未知；不得按零值、停机日或未来日期补算。',
     };
+  if (scenario.value === 'expired')
+    return {
+      title: '证据已过期，验收未知',
+      reason: 'demo_equity_snapshot_expired',
+      detail: '最后一次固定样本仍可查阅，但已超出有效期，不能据此判断当前权益或准入。',
+    };
   return {
     title: '验收进行中',
     reason: 'acceptance_window_in_progress',
@@ -223,6 +229,7 @@ function changeScenario(value: Scenario) {
   const labels: Record<Scenario, string> = {
     ongoing: '切换到进行中场景',
     missing: '切换到证据缺失场景',
+    expired: '切换到证据过期场景',
     'hard-failure': '切换到硬失败场景',
   };
   notice.value = labels[value] + '；只更新当前页面演示状态。';
@@ -335,6 +342,14 @@ function recordApproval() {
         证据缺失</button
       ><button
         type="button"
+        data-scenario="expired"
+        :aria-pressed="scenario === 'expired'"
+        @click="changeScenario('expired')"
+      >
+        证据过期
+      </button
+      ><button
+        type="button"
         data-scenario="hard-failure"
         :aria-pressed="scenario === 'hard-failure'"
         @click="changeScenario('hard-failure')"
@@ -342,6 +357,23 @@ function recordApproval() {
         硬失败
       </button>
     </div>
+    <section
+      v-if="scenario === 'expired'"
+      class="expired-evidence"
+      data-testid="expired-evidence"
+      aria-label="过期的固定演示证据"
+    >
+      <div>
+        <span class="verdict-label">最后可查阅的样本快照 · 已过期</span>
+        <strong>1,097.00 USDT</strong>
+      </div>
+      <div>
+        <span>采样时间</span>
+        <time datetime="2026-11-11T06:32:00Z">2026-11-11 14:32 北京时间</time>
+      </div>
+      <code>demo_equity_snapshot_expired</code>
+      <p>固定演示数据保留最后快照供回看，不推算当前账户权益。</p>
+    </section>
     <section class="window-panel" aria-labelledby="window-title">
       <div class="panel-head">
         <div>
@@ -731,6 +763,9 @@ p {
 .verdict[data-scenario='missing'] {
   border-left-color: var(--amber);
 }
+.verdict[data-scenario='expired'] {
+  border-left-color: var(--amber);
+}
 .verdict-label {
   font-size: 11px;
   color: var(--muted);
@@ -743,6 +778,9 @@ p {
   color: #ef958a;
 }
 .verdict[data-scenario='missing'] h2 {
+  color: var(--amber);
+}
+.verdict[data-scenario='expired'] h2 {
   color: var(--amber);
 }
 .verdict p {
@@ -778,6 +816,36 @@ code {
   border-color: var(--blue);
   color: var(--blue);
   background: #69b4e416;
+}
+.expired-evidence {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(210px, 1fr) minmax(0, auto);
+  align-items: center;
+  gap: 10px 18px;
+  margin: -8px 0 18px;
+  padding: 14px 16px;
+  border: 1px solid #c79a4a66;
+  background: #c79a4a0a;
+}
+.expired-evidence > div {
+  display: grid;
+  gap: 5px;
+}
+.expired-evidence span,
+.expired-evidence p {
+  color: var(--muted);
+  font-size: 11px;
+}
+.expired-evidence strong {
+  color: var(--text);
+  font-size: 15px;
+}
+.expired-evidence time {
+  font-size: 12px;
+}
+.expired-evidence p {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 .window-panel,
 .day-panel,
@@ -1042,6 +1110,12 @@ button:focus-visible {
     align-items: flex-start;
     flex-direction: column;
     padding: 16px;
+  }
+  .expired-evidence {
+    grid-template-columns: 1fr;
+  }
+  .expired-evidence p {
+    grid-column: auto;
   }
   .evidence-layout {
     grid-template-columns: 1fr;

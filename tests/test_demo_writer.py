@@ -265,6 +265,87 @@ def test_preflight_rejects_paper_strategy_identity_mismatch_before_activation():
     assert controller.activate_calls == 0
 
 
+def test_composition_builds_paused_demo_writer_without_io_or_credentials(tmp_path):
+    from data_store import DataStore
+
+    module = importlib.import_module('demo_writer_composition')
+    binding = FrozenCommandBinding('binding-1', SCOPE, HASHES, 'demo_default')
+    target = api().FrozenWriterTarget(binding, strategy_id='paper-1', rule_hash='1' * 64,
+        execution_hash='2' * 64, demo_policy_hash='3' * 64)
+    credentials_read = []
+    store = DataStore(root=tmp_path, dsn='')
+    lock_path = tmp_path / 'writer.lock'
+
+    driver = module.create_demo_writer_driver(
+        store, target, credential_provider=lambda: credentials_read.append(True),
+        risk_account_scope=SCOPE['account_id'], lock_path=lock_path,
+    )
+
+    assert type(driver) is api().DemoWriterDriver
+    assert driver.controller.driver_mode == 'external_paused'
+    assert driver.controller.risk_account_scope == SCOPE['account_id']
+    assert driver.commands.account_id == SCOPE['account_id']
+    assert driver.commands.environment == 'binance_demo'
+    assert driver.archive.stage_id == SCOPE['stage_id']
+    assert driver.controller.demo_store.virtual_account_key == 'demo_default'
+    assert driver.controller._file_lock is None
+    assert driver._composition_only is True
+    assert lock_path.exists() is False
+    assert store._pool is None
+    assert credentials_read == []
+    with pytest.raises(RuntimeError, match='writer_composition_not_authorized'):
+        driver.activate()
+    assert credentials_read == []
+
+
+def test_composition_rejects_missing_frozen_target_before_construction(tmp_path):
+    from data_store import DataStore
+
+    module = importlib.import_module('demo_writer_composition')
+    store = DataStore(root=tmp_path, dsn='')
+    with pytest.raises(ValueError, match='explicit frozen writer target'):
+        module.create_demo_writer_driver(store, None, credential_provider=lambda: None,
+                                         risk_account_scope=SCOPE['account_id'])
+    assert store._pool is None
+
+
+def test_composition_requires_explicit_matching_risk_account_scope(tmp_path):
+    from data_store import DataStore
+
+    module = importlib.import_module('demo_writer_composition')
+    binding = FrozenCommandBinding('binding-1', SCOPE, HASHES, 'demo_default')
+    target = api().FrozenWriterTarget(binding, strategy_id='paper-1', rule_hash='1' * 64,
+        execution_hash='2' * 64, demo_policy_hash='3' * 64)
+    store = DataStore(root=tmp_path, dsn='')
+    with pytest.raises(ValueError, match='explicit Demo risk account scope required'):
+        module.create_demo_writer_driver(store, target, credential_provider=lambda: None)
+    with pytest.raises(ValueError, match='Demo risk account scope mismatch'):
+        module.create_demo_writer_driver(store, target, credential_provider=lambda: None,
+                                         risk_account_scope='another-account')
+    assert store._pool is None
+
+
+def test_composition_only_foreground_refuses_before_database_preflight(tmp_path):
+    from data_store import DataStore
+
+    module = importlib.import_module('demo_writer_composition')
+    binding = FrozenCommandBinding('binding-1', SCOPE, HASHES, 'demo_default')
+    target = api().FrozenWriterTarget(binding, strategy_id='paper-1', rule_hash='1' * 64,
+        execution_hash='2' * 64, demo_policy_hash='3' * 64)
+    store = DataStore(root=tmp_path, dsn='')
+    driver = module.create_demo_writer_driver(
+        store, target, credential_provider=lambda: pytest.fail('凭据 provider 不得被调用'),
+        risk_account_scope=SCOPE['account_id'],
+    )
+    store.check_schema = Mock(side_effect=AssertionError('封口后不得进入数据库预检'))
+
+    with pytest.raises(RuntimeError, match='writer_composition_not_authorized'):
+        api().run_foreground(driver, poll_interval_ms=100)
+
+    store.check_schema.assert_not_called()
+    assert driver.controller._file_lock is None
+
+
 def test_preflight_allows_existing_idle_lock_file(tmp_path):
     writer, controller, _, _, _ = setup()
     controller.lock_path = tmp_path / 'writer.lock'

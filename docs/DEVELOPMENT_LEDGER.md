@@ -504,4 +504,12 @@
 - 回归合同发现原只读预检仅比较命令冻结 binding 与依赖 namespace，可能在持久 Demo 会话 namespace 或旧账本 binding 已偏离时仍报告 ready，而随后 `activate_external()` 会拒绝。新增 RED 测试覆盖持久 namespace、旧账本策略哈希、非空 shared sessions 和 paper 策略规则哈希错配，证明旧预检会误报 ready。
 - 预检现在要求全局 `DataStore.check_schema()` 返回 `{status: compatible}`，Demo 和命令 schema 明确兼容；随后拒绝非空 shared sessions，读取并比对持久 selected account、Demo policy、虚拟账本 namespace 和 yielded 状态，再比对 legacy binding 的策略/规则/执行/策略哈希及 paper account 规则/执行哈希。所有读取均在获得 writer 能力前完成；中文拒绝日志包含检查阶段、固定原因码、异常类型和单调耗时，不记录账户值或异常正文。激活边界仍会再次核验身份并原子取得 flock。
 - `tests/test_demo_writer.py` **51 项通过**；期间完整测试首次失败是内存 DataStore fixture 缺少 `get_document()`，补齐替身接口后复跑通过。Ruff、compileall、`git diff --check` 均通过。未改数据库、未启动 writer、未访问 Binance 或读取凭据，Demo/生产资格继续关闭。
-- 独立中文提交和推送后，必须按该补强的精确 SHA 核对 CI 及 CD 归档；版本仍为 `0.2.5`。P1 启动预检提交 `d38eef824e35bdbe3054b33a86dffb8b1895c4ba` 的 CI run `45088428628` 第二次运行通过，但对应 CD 尚无成功回执。
+- P1 启动预检提交 `d38eef824e35bdbe3054b33a86dffb8b1895c4ba` 的 CI run `45088428628` 第二次运行通过；后续精确源码提交 `f97d5e6f68d8aeb1cc24ff33e1c203b6108d18d0` 包含其全部代码，CI `45090529895` 与 main 归档 CD `45090865350` 通过，artifact `14780893815` 的 digest 为 `sha256:d396fa6e20f8584446f7a00a6f275aa15fa0ca88f3368262760dda98c969a4e1`，归档身份步骤成功、Release 因无新标签而跳过。
+
+## 2026-11-23 P1 默认暂停 Demo writer 组合构造
+
+- 新增 `demo_writer_composition.create_demo_writer_driver()`，只接受现成 `DataStore`、显式完整 `FrozenWriterTarget`、显式且必须与冻结 scope 相等的风险账户范围和显式 Demo 凭据 provider；从冻结 scope 构造 `DemoStore`、`DemoCommandStore`、`DemoEvidenceStore` 及强制 `external_paused`、风险门禁、验收轮次门禁的 controller。凭据 provider 只被保存为延迟回调，构造过程不调用。
+- 组合阶段不连数据库、不检查或安装 schema、不注册 command binding、不创建锁文件、不创建 adapter、不启动 service/thread，也不提供目标身份自动推导。仅测构造与拒绝缺失冻结身份的合同；不存在生产运行期调用方，也未接入 HTTP、`manage.py`、进程监督器或 launchd。
+- 组合工厂产出的 driver 带不可变“仅构造”封口；直接 `activate()` 和 `run_foreground()` 都在数据库预检、锁和凭据之前以 `writer_composition_not_authorized` 拒绝，并写中文阶段日志。只有未来单独实现受信任审批与目标生产者后，才能设计解除封口的合同。
+- `tests/test_demo_writer.py` writer 全组 **55 项通过**；Ruff、compileall、CI/CD YAML 解析及 `git diff --check` 通过。新组合模块已加入 CI/CD 编译与 Ruff 清单。版本仍为 `0.2.5`；待本小节独立中文提交推送后，按精确 SHA 核对 CI、main 归档哈希与 `build.json`。
+- 本节测试使用合成冻结目标与测试凭据回调；当前没有生产身份来源或账户批准证明。因此该构造入口不授予策略来源认证、Demo 执行、验收或生产资格，继续保持关闭。

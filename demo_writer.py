@@ -65,11 +65,12 @@ def _command_ids(values):
 class DemoWriterDriver:
     """持内部能力同步运行；处理票据与普通保护分别记录，不重复派发未知动作。"""
     def __setattr__(self, name, value):
-        if name in {'controller', 'commands', 'archive', 'target', 'clock_ms'} and hasattr(self, name):
+        if name in {'controller', 'commands', 'archive', 'target', 'clock_ms', '_composition_only'} and hasattr(self, name):
             raise AttributeError('frozen writer dependencies')
         object.__setattr__(self, name, value)
 
-    def __init__(self, controller, command_store, archive, target, *, clock_ms=None):
+    def __init__(self, controller, command_store, archive, target, *, clock_ms=None,
+                 composition_only=False):
         if (not isinstance(controller, DemoRunnerController)
                 or not isinstance(command_store, DemoCommandStore)
                 or not isinstance(archive, DemoEvidenceStore)
@@ -95,6 +96,7 @@ class DemoWriterDriver:
         self._stop_requested = False
         self._cycle_lock = threading.Lock()
         self._observed_unresolved = set()
+        self._composition_only = composition_only is True
 
     def preflight(self):
         """只读核验启动身份、迁移与进程锁；不激活服务、不读取凭据。"""
@@ -220,6 +222,10 @@ class DemoWriterDriver:
             LOGGER.warning('Demo 前台 writer 激活拒绝 原因码=writer_operation_active')
             raise ValueError('writer operation already active')
         try:
+            if self._composition_only:
+                LOGGER.error('Demo 前台 writer 激活拒绝 阶段=组合授权 原因码=writer_composition_not_authorized 耗时毫秒=%d；资格保持关闭',
+                             int((time.monotonic() - started) * 1000))
+                raise RuntimeError('writer_composition_not_authorized')
             if self._capability is not None:
                 self.controller.assert_external(self._capability)
                 LOGGER.info('Demo 前台 writer 激活复用现有能力 耗时毫秒=%d',
@@ -461,6 +467,9 @@ def run_foreground(driver, *, command_ids=(), stop_event=None, poll_interval_ms=
     """真正的同步前台循环；停止请求须经过安全退出，不在 finally 中释放锁。"""
     if type(driver) is not DemoWriterDriver:
         raise ValueError('internal foreground writer required')
+    if driver._composition_only:
+        LOGGER.error('Demo 前台保护进程启动拒绝 阶段=组合授权 原因码=writer_composition_not_authorized 耗时毫秒=0；未执行预检或读取凭据')
+        raise RuntimeError('writer_composition_not_authorized')
     identities = _command_ids(command_ids)
     if type(poll_interval_ms) is not int or not 100 <= poll_interval_ms <= 60_000:
         raise ValueError('bounded writer polling interval required')

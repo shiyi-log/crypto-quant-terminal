@@ -2,6 +2,8 @@
 
 本小节提供内部显式组合的同步前台保护循环。导入、构造和冻结目标不会加载环境、读取凭据、创建适配器、初始化数据库或启动线程。HTTP、manage、launchd 和旧 CLI 没有接入；当前生产保护继续沿用既有路径。
 
+`demo_writer_composition.create_demo_writer_driver()` 从调用方显式提供的完整冻结目标构造 Demo 专属 controller、账本、命令账本与证据归档。它固定 `external_paused` 并强制要求风险 scope 与正式验收轮次；凭据 provider 作为延迟回调保存，不在构造时调用。构造不会检查/安装 schema、创建 command binding、获取账户锁或启动前台循环。当前没有可信的生产冻结目标 provider，也没有运行期调用者，因此该工厂目前只定义默认关闭的构造合同。
+
 ## 冻结目标
 
 FrozenWriterTarget 接收精确 FrozenCommandBinding，要求完整 environment/account_id/stage_id/strategy_version_id/run_id、五项 hash、namespace，以及单独的既有 strategy_id、rule_hash、execution_hash、demo_policy_hash。完整运行身份由服务端明确提供，不从旧策略、凭据指纹或三项旧 hash 推导。目标与依赖在构造后冻结，公开导出为副本；结构、摘要和一致性不认证来源或批准。

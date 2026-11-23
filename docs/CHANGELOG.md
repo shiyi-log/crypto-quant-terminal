@@ -5,6 +5,7 @@
 - P1 Demo writer 增加只读启动预检：激活前核验 `external_paused` 模式、进程锁状态、账户/环境/账本 namespace 与冻结绑定一致性，以及全局、Demo、命令账本 schema；重验冻结绑定后才允许进入激活边界。预检不读取凭据、不创建锁、不启动 writer，所有执行、验收和生产资格字段继续为 `false`。
 - `run_foreground()` 接入预检失败即停，中文日志记录阶段、固定原因码、异常类型和耗时，不记录账户、命令、操作者或异常正文。`tests/test_demo_writer.py` 全组 **47 项通过**，覆盖控制器已有锁、磁盘空闲锁文件和另一文件描述符持锁；Ruff、compileall、`git diff --check` 通过。此切片未接 HTTP/CLI/launchd/监督器、未连接 Binance、未执行迁移或生产写入，待独立源码提交及精确 SHA CI/CD 回执后再更新版本发布记录。
 - P1 writer 预检身份闭环：发现旧预检没有检查持久 Demo 会话、旧 ledger binding 和 paper 策略身份；新增合同先失败后修复。现在要求全局 schema 返回 compatible，并只读重验 shared session、策略/namespace、旧账本 binding 与 paper 哈希；writer 专项 **51 项通过**，Ruff、compileall、差异检查通过。本切片未注册绑定、读取凭据或激活服务。
+- P1 默认暂停 writer 组合构造：新增显式冻结目标及匹配风险范围组合入口，强制 `external_paused`、风险门禁与验收轮次门禁。构造只实例化依赖；工厂产出的 driver 封口，直接 activation/前台启动均在数据库预检和凭据访问前拒绝。writer 专项 **55 项通过**，新模块已纳入 CI/CD 的编译及 Ruff 清单。尚无生产调用方，尚未接入 `manage.py`/launchd，也不代表 Demo/实盘资格开启。
 
 - P2 留出请求消费前身份与状态拒绝：`claim_holdout_v2` 要求候选状态明确为 `selected`；调用方提供身份摘要时，必须完整提供实验族、推断、冻结计划、筛选策略和留出策略五项摘要并匹配冻结计划。错绑和不完整事实在持久消费前拒绝。身份通过后仍返回 `not_estimable`、`execution_ticket=false`，不接数据库领取、计算器、worker 或授权。协议、0009 领取迁移及未跟踪用户合同组合 **19 项通过**；恢复验证组合因 psycopg 清理等待中断，未记为通过。
 

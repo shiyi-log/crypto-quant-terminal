@@ -369,14 +369,15 @@ function confirmPause() {
 
 <style scoped>
 .desk-preview {
-  --desk-bg: #0c1b2a;
-  --desk-surface: #132b3e;
-  --desk-line: #29485c;
-  --desk-text: #e5edf4;
-  --desk-muted: #a2b8c9;
-  --desk-blue: #69b4e4;
-  --desk-green: #65c998;
-  --desk-red: #ef7d7d;
+  /* Shell 内继承统一视觉 token，独立组件测试沿用同一色板回退。 */
+  --desk-bg: var(--qt-ocean, #0c1b2a);
+  --desk-surface: var(--qt-workspace, #132b3e);
+  --desk-line: var(--qt-divider, #29485c);
+  --desk-text: var(--qt-foreground, #e5edf4);
+  --desk-muted: var(--qt-muted, #a2b8c9);
+  --desk-blue: var(--qt-interactive, #69b4e4);
+  --desk-green: var(--qt-profit, #49c7a5);
+  --desk-red: var(--qt-loss, #f27f78);
   min-width: 0;
   padding: 0 26px 24px;
   color: var(--desk-text);

@@ -200,7 +200,7 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
             ><i aria-hidden="true"></i>Binance Demo</span
           ><span class="topbar-divider"></span
           ><span class="market-clock"
-            ><span>市场时间</span><strong>14:32:18 UTC+8</strong></span
+            ><span>界面时间</span><strong>14:32:18 UTC+8</strong></span
           ><button
             class="icon-button"
             type="button"
@@ -216,6 +216,9 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
       <div class="preview-scope" role="status" aria-live="polite">
         <span class="scope-mark" aria-hidden="true">i</span
         ><strong>本地演示数据</strong><span>不读取账户，不发送命令</span
+        ><span class="scope-sample-time" data-testid="preview-sample-time"
+          >样本时间 · 2026-11-23 14:32:18 北京时间</span
+        >
         ><span class="scope-version">预览样本 · {{ quantVersion }}</span>
       </div>
       <section
@@ -229,18 +232,25 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
         </div>
         <div class="risk-strip-item">
           <span>账户状态</span
-          ><strong class="state-demo" data-testid="risk-account">{{ riskStrip.account }}</strong>
+          ><strong class="state-demo" data-testid="risk-account">{{
+            riskStrip.account
+          }}</strong>
         </div>
         <div class="risk-strip-item">
           <span>日净损益</span
-          ><strong class="negative-value" data-testid="risk-pnl">{{ riskStrip.pnl }}</strong>
+          ><strong class="negative-value" data-testid="risk-pnl">{{
+            riskStrip.pnl
+          }}</strong>
         </div>
         <div class="risk-strip-item">
-          <span>剩余风险预算</span><strong data-testid="risk-budget">{{ riskStrip.budget }}</strong>
+          <span>剩余风险预算</span
+          ><strong data-testid="risk-budget">{{ riskStrip.budget }}</strong>
         </div>
         <div class="risk-strip-item protection-state">
           <span>保护单状态</span
-          ><strong data-testid="risk-protection"><i aria-hidden="true"></i>{{ riskStrip.protection }}</strong>
+          ><strong data-testid="risk-protection"
+            ><i aria-hidden="true"></i>{{ riskStrip.protection }}</strong
+          >
         </div>
         <span class="risk-strip-clock" data-testid="risk-strip-reason"
           >{{ riskStrip.reason }} · 14:32:18</span
@@ -279,20 +289,34 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
 
 <style scoped>
 .preview-shell {
-  --ocean: #0c1b2a;
-  --surface: #132b3e;
-  --raised: #18364b;
-  --line: #29485c;
-  --text: #e5edf4;
-  --muted: #9bb1c3;
-  --blue: #69b4e4;
-  --green: #65c998;
+  /* 全站演示页面从 Shell 继承业务色 token，避免各页配色漂移。 */
+  --qt-ocean: #0c1b2a;
+  --qt-workspace: #132b3e;
+  --qt-raised: #18364b;
+  --qt-divider: #29485c;
+  --qt-foreground: #e5edf4;
+  --qt-muted: #a2b8c9;
+  --qt-interactive: #69b4e4;
+  --qt-profit: #49c7a5;
+  --qt-loss: #f27f78;
+  --qt-attention: #e8b65c;
+  --qt-ui-font:
+    'IBM Plex Sans', 'Source Han Sans SC', 'Noto Sans SC', sans-serif;
+  --qt-data-font: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  --qt-monospace-font: 'IBM Plex Mono', monospace;
+  --ocean: var(--qt-ocean);
+  --surface: var(--qt-workspace);
+  --raised: var(--qt-raised);
+  --line: var(--qt-divider);
+  --text: var(--qt-foreground);
+  --muted: var(--qt-muted);
+  --blue: var(--qt-interactive);
+  --green: var(--qt-profit);
 
   display: grid;
   grid-template-columns: 226px minmax(0, 1fr);
   min-height: 100vh;
-  font-family:
-    'IBM Plex Sans', 'Noto Sans SC', 'Source Han Sans SC', sans-serif;
+  font-family: var(--qt-ui-font);
   color: var(--text);
   background: var(--ocean);
 }
@@ -301,6 +325,13 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
 .preview-shell *::before,
 .preview-shell *::after {
   box-sizing: border-box;
+}
+
+.scope-sample-time {
+  color: var(--qt-foreground);
+  font-family: var(--qt-monospace-font);
+  font-size: 9px;
+  white-space: nowrap;
 }
 
 .terminal-sidebar {
@@ -592,7 +623,7 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
 }
 
 .market-clock strong {
-  font-family: 'IBM Plex Mono', monospace;
+  font-family: var(--qt-monospace-font);
   font-size: 10px;
   font-weight: 400;
 }
@@ -657,7 +688,7 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
 
 .scope-version {
   margin-left: auto;
-  font-family: 'IBM Plex Mono', monospace;
+  font-family: var(--qt-monospace-font);
   font-size: 9px;
   color: #819c91;
 }
@@ -704,14 +735,14 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
 }
 
 .risk-strip-item > strong {
-  font-family: 'IBM Plex Mono', monospace;
+  font-family: var(--qt-monospace-font);
   font-size: 11px;
   font-weight: 400;
   white-space: nowrap;
 }
 
 .risk-strip-item .state-demo {
-  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-family: var(--qt-data-font);
   color: #edcb83;
 }
 
@@ -727,7 +758,7 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
   display: flex;
   gap: 6px;
   align-items: center;
-  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-family: var(--qt-data-font);
   font-size: 10px;
   color: #e3c77f;
 }
@@ -741,7 +772,7 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
 
 .risk-strip-clock {
   margin-left: auto;
-  font-family: 'IBM Plex Mono', monospace;
+  font-family: var(--qt-monospace-font);
   font-size: 9px;
   color: #7991a3;
   white-space: nowrap;
@@ -788,7 +819,7 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
 }
 
 .footer-build {
-  font-family: 'IBM Plex Mono', monospace;
+  font-family: var(--qt-monospace-font);
   color: #6d8598;
 }
 
@@ -924,6 +955,16 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
 
   .scope-version {
     display: none;
+  }
+
+  .preview-scope {
+    flex-wrap: wrap;
+    padding-block: 7px;
+  }
+
+  .scope-sample-time {
+    margin-left: 22px;
+    font-size: 8px;
   }
 
   .terminal-risk-strip {

@@ -22,6 +22,33 @@ for (const viewport of viewports) {
       page.getByText('不读取账户，不发送命令', { exact: true }),
     ).toBeVisible();
     await expect(page.getByText('演示交易台', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('preview-sample-time')).toBeVisible();
+    await expect(page.getByTestId('terminal-risk-strip')).toBeVisible();
+    const shellTokens = await page
+      .locator('.preview-shell')
+      .evaluate((shell) => {
+        const styles = getComputedStyle(shell);
+        return {
+          ocean: styles.getPropertyValue('--qt-ocean').trim(),
+          workspace: styles.getPropertyValue('--qt-workspace').trim(),
+          divider: styles.getPropertyValue('--qt-divider').trim(),
+          interactive: styles.getPropertyValue('--qt-interactive').trim(),
+        };
+      });
+    expect(shellTokens).toEqual({
+      ocean: '#0c1b2a',
+      workspace: '#132b3e',
+      divider: '#29485c',
+      interactive: '#69b4e4',
+    });
+    await expect(page.getByTestId('preview-sample-time')).toHaveText(
+      '样本时间 · 2026-11-23 14:32:18 北京时间',
+    );
+    const riskPosition = await page
+      .getByTestId('terminal-risk-strip')
+      .boundingBox();
+    expect(riskPosition).not.toBeNull();
+    expect(riskPosition!.y).toBeGreaterThan(0);
     await expect(page.locator('[data-layout-region="sidebar"]')).toHaveCount(0);
     const homeLayout = await page.evaluate(() => {
       const shell = document.querySelector('.preview-shell');

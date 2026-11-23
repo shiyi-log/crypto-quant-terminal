@@ -477,21 +477,27 @@ function statusLabel(status: Experiment['status']) {
 
 <style scoped>
 .research-preview {
-  --bg: #0c1b2a;
-  --surface: #132b3e;
-  --line: #29485c;
-  --text: #e5edf4;
-  --muted: #a2b8c9;
-  --accent: #69b4e4;
-  --profit: #79c9a2;
-  --loss: #ed8f84;
+  /* 研究页采用和交易台一致的共享色标，独立预览仍有确定回退值。 */
+  --bg: var(--qt-ocean, #0c1b2a);
+  --surface: var(--qt-workspace, #132b3e);
+  --line: var(--qt-divider, #29485c);
+  --text: var(--qt-foreground, #e5edf4);
+  --muted: var(--qt-muted, #a2b8c9);
+  --accent: var(--qt-interactive, #69b4e4);
+  --profit: var(--qt-profit, #49c7a5);
+  --loss: var(--qt-loss, #f27f78);
   min-width: 0;
   min-height: 100%;
   padding: 24px;
   color: var(--text);
   background: var(--bg);
-  font-family:
-    'IBM Plex Sans', 'Source Han Sans SC', 'Noto Sans SC', sans-serif;
+  font-family: var(
+    --qt-ui-font,
+    'IBM Plex Sans',
+    'Source Han Sans SC',
+    'Noto Sans SC',
+    sans-serif
+  );
 }
 .research-preview *,
 .research-preview *::before,

@@ -155,7 +155,7 @@ function resetPreferences() {
 </template>
 
 <style scoped>
-.governance-preview { --bg:#0c1b2a; --surface:#132b3e; --surface-2:#18364b; --line:#29485c; --text:#e5edf4; --muted:#a2b8c9; --blue:#69b4e4; --green:#76c7a1; --warn:#f0c17b; min-height:100%; padding:28px clamp(18px,4vw,56px) 56px; color:var(--text); background:var(--bg); font-family:'IBM Plex Sans','Source Han Sans SC','Noto Sans SC',sans-serif; font-variant-numeric:tabular-nums; }
+.governance-preview { /* 运维证据页继承全站色标，并保留单页测试的固定回退值。 */ --bg:var(--qt-ocean,#0c1b2a); --surface:var(--qt-workspace,#132b3e); --surface-2:var(--qt-raised,#18364b); --line:var(--qt-divider,#29485c); --text:var(--qt-foreground,#e5edf4); --muted:var(--qt-muted,#a2b8c9); --blue:var(--qt-interactive,#69b4e4); --green:var(--qt-profit,#49c7a5); --warn:var(--qt-attention,#e8b65c); min-height:100%; padding:28px clamp(18px,4vw,56px) 56px; color:var(--text); background:var(--bg); font-family:var(--qt-ui-font,'IBM Plex Sans','Source Han Sans SC','Noto Sans SC',sans-serif); font-variant-numeric:tabular-nums; }
 .governance-preview *, .governance-preview *::before, .governance-preview *::after { box-sizing:border-box; }
 h1,h2,h3,p,dl,dd { margin:0; } h1{font-size:29px;font-weight:600;letter-spacing:.01em;} h2{font-size:18px;font-weight:600;} h3{font-size:15px;font-weight:600;margin:9px 0;} p{line-height:1.65;}
 .preview-header,.section-heading,.collection-bar,.preference-row,.button-row,.detail-topline { display:flex; align-items:center; justify-content:space-between; gap:18px; }

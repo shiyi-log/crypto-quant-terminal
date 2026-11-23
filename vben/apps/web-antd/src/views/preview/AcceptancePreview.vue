@@ -631,20 +631,26 @@ function recordApproval() {
 </template>
 <style scoped>
 .acceptance-preview {
-  --bg: #0c1b2a;
-  --surface: #132b3e;
-  --line: #29485c;
-  --text: #e5edf4;
-  --muted: #a2b8c9;
-  --blue: #69b4e4;
-  --green: #76c7a1;
-  --amber: #f0c17b;
+  /* 验收读数继承全站色标，缺少外层 Shell 时使用文档定义色值。 */
+  --bg: var(--qt-ocean, #0c1b2a);
+  --surface: var(--qt-workspace, #132b3e);
+  --line: var(--qt-divider, #29485c);
+  --text: var(--qt-foreground, #e5edf4);
+  --muted: var(--qt-muted, #a2b8c9);
+  --blue: var(--qt-interactive, #69b4e4);
+  --green: var(--qt-profit, #49c7a5);
+  --amber: var(--qt-attention, #e8b65c);
   min-height: 100%;
   padding: 30px clamp(18px, 4vw, 56px) 60px;
   background: var(--bg);
   color: var(--text);
-  font-family:
-    'IBM Plex Sans', 'Source Han Sans SC', 'Noto Sans SC', sans-serif;
+  font-family: var(
+    --qt-ui-font,
+    'IBM Plex Sans',
+    'Source Han Sans SC',
+    'Noto Sans SC',
+    sans-serif
+  );
   font-variant-numeric: tabular-nums;
 }
 .acceptance-preview * {

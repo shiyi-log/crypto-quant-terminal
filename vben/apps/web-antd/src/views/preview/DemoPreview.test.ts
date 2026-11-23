@@ -101,6 +101,27 @@ describe('本地演示预览壳', () => {
     );
   });
 
+  it('交易台风险横栏随冷却与硬失败演示状态同步变化', async () => {
+    const view = open();
+    view.get('[data-scenario="cooldown"]').click();
+    await nextTick();
+    expect(
+      view.get('[data-testid="terminal-risk-strip"]').textContent,
+    ).toContain('冷却中 · 43 分钟');
+    expect(
+      view.get('[data-testid="terminal-risk-strip"]').textContent,
+    ).toContain('保护状态未知');
+
+    view.get('[data-scenario="hard-failure"]').click();
+    await nextTick();
+    expect(
+      view.get('[data-testid="terminal-risk-strip"]').textContent,
+    ).toContain('本轮硬失败');
+    expect(
+      view.get('[data-testid="terminal-risk-strip"]').textContent,
+    ).toContain('daily_net_loss_hard_limit_exceeded');
+  });
+
   it('按研究 query 直接打开实验任务工作区', () => {
     const view = open({ preview: 'research', workspace: 'experiments' });
 

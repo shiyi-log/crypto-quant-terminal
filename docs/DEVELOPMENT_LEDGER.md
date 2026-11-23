@@ -632,8 +632,16 @@
 ## 2026-11-23 版本同步至 0.2.10
 
 - `pyproject.toml` 权威项目版本与 `uv.lock` 已同步为 `0.2.10`，变更记录收录 P3 演示实验任务筛选和数据中心固定摘要周期筛选切片。版本身份契约测试 **14 项通过**，`uv lock --check` 与版本一致性检查通过。
-- 数据中心源码提交 `ecb85942eac7d06ddfb0fcaf8cd8d51c2bc1d5bf` 精确 main CI `45151128116` 与归档 CD `45151996985` 成功；回执提交 `2a934ec5db2780c0b4c9b8c8751a059e478e0056` 精确 CI `45152692402` 已成功。版本提交及 `v0.2.10` 标签 CI/CD 回执待完成。
+- 数据中心源码提交 `ecb85942eac7d06ddfb0fcaf8cd8d51c2bc1d5bf` 精确 main CI `45151128116` 与归档 CD `45151996985` 成功；回执提交 `2a934ec5db2780c0b4c9b8c8751a059e478e0056` 精确 CI `45152692402` 成功。版本提交 `d1f8de4fcc26435039da3f99115b919970a38065` 的精确 main CI `45153571329`、自动归档 CD `45154268408`、唯一标签 `v0.2.10` 的 CI `45154843662` 和显式标签发布 CD `45155673291` 均成功；CD 的同 SHA CI 门禁、构建、归档哈希与 `build.json` 身份验证、artifact 上传和 Release 创建通过。
+- [GitHub Release v0.2.10](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.10)（Release ID `455268839`）于 `2026-11-23T10:28:00Z` 发布。`quant-terminal-v0.2.10.tar.gz` 为 `149501065` 字节，GitHub asset SHA-256 `686858253485001a2a278ee8b98305c8840a0478cde6adb7b6a5149bbf97ab7f`；sidecar 为 `104` 字节，asset SHA-256 `d5a05867cb714a032145796a32731dae8d6537110cce09cde9cffed26fc0fd51`。独立下载归档 SHA-256 与 GitHub asset digest 一致；包内 `build.json` 精确绑定提交 `d1f8de4fcc26435039da3f99115b919970a38065`、版本 `0.2.10` 与包名 `quant-terminal-v0.2.10`。标签 CD Actions artifact `14808177710` 为 `147445692` 字节，digest `sha256:bd531b3bda76b5fa555c697708be6012245decff440b1f65abb4f9655d03eeef`，有效期至 2026-12-23。
 - 本版本不表示 P0—P4 阶段验收、Demo 准入、生产交易或资金升级批准完成；前端仍只使用本地固定演示数据。
+
+## 2026-11-23 P3 固定演示策略候选证据
+
+- 策略研究详情将三个固定候选的身份、演示数据窗口、手续费/保守滑点假设、留出集状态与准入状态绑定到当前选择，并继续显示策略参数和成本说明。所有候选明确为“未冻结 · 不进入 Demo 预检”；留出集标记“未评估”，不展示资格通过结论。
+- TDD RED：先加入候选身份、数据窗口、成本、留出状态和未冻结准入断言；初次命令缺少测试环境而在渲染前失败，改用 Happy DOM 后确认旧界面因缺少“候选身份”字段失败。实现后 `ResearchPreview.test.ts` **8 项通过**。
+- TypeScript 类型检查、生产构建（7819 模块）和真实 dist Playwright 四视口 **4/4 通过**（1920、1440、768、390）。浏览器检查了策略切换后候选身份及留出/准入状态同步，并复用只读夹具确认没有账户/API/认证读取或写操作、页面异常及横向溢出。
+- 本切片只展示本地固定策略声明，不计算回测或留出结果，不冻结策略、不进入 Demo 预检，不连接账户、业务 API、存储或交易命令；P3 新旧读数对照与 P0/P1/P2/P4 阶段验收仍未完成。源码提交 `ed16a6344462cda38ff92b379d920bc8b9b5d5db` 已推送至 `main`；精确 CI [`45157960056`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45157960056) 成功，后端/PostgreSQL 集成、全前端单测、类型检查、生产构建和真实 dist 浏览器流程均通过。自动 main 归档 CD [`45158650580`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45158650580) 成功，同 SHA CI 门禁、前端构建、归档 SHA-256、`build.json` 身份校验与 artifact 上传通过；artifact `14810181534` 大小 `147456408` 字节，digest `sha256:d9c75f449f082ca501c4e331248692afeb8a05150763450ebfbab1672f998189`，有效至 2026-12-23。无版本标签，Release job 按规则跳过。
 
 ## 2026-11-23 版本同步至 0.2.9
 

@@ -82,6 +82,25 @@ describe('演示研究工作区交互', () => {
     );
   });
 
+  it('因子详情按固定演示样本展示完整、过期和未知输入质量及原因', async () => {
+    const view = open('factors');
+    const detail = () => view.get('[data-testid="factor-detail"]').textContent;
+
+    expect(detail()).toContain('演示样本完整');
+    expect(detail()).toContain('20 根已收盘 K 线基线齐全');
+
+    view.get<HTMLButtonElement>('[data-factor="momentum_continuation"]').click();
+    await nextTick();
+    expect(detail()).toContain('演示样本过期');
+    expect(detail()).toContain('最后一段样本超过演示有效窗口');
+
+    view.get<HTMLButtonElement>('[data-factor="book_imbalance"]').click();
+    await nextTick();
+    expect(detail()).toContain('演示样本未知');
+    expect(detail()).toContain('盘口序列含断档，不能判定输入完整性');
+    expect(detail()).not.toContain('已通过');
+  });
+
   it('因子搜索后的详情跟随可见结果，无匹配时显示空状态', async () => {
     const view = open('factors');
     view

@@ -7,6 +7,9 @@ type Factor = {
   family: string;
   description: string;
   detail: string;
+  inputQuality: 'complete' | 'stale' | 'unknown';
+  inputQualityLabel: string;
+  inputQualityReason: string;
 };
 type Strategy = {
   id: string;
@@ -64,12 +67,16 @@ watch(
   },
 );
 const factors: Factor[] = [
+  // 输入质量只描述下面的固定演示样本，不代表真实行情完整性或策略准入，也不写入事件日志。
   {
     id: 'volume_breakout',
     name: '成交量突破',
     family: '成交量',
     description: '比较当前成交量与历史基线，识别异常放量。',
     detail: '以近 20 根 K 线的中位成交量建立基线，当前收盘确认后计算放量倍数。',
+    inputQuality: 'complete',
+    inputQualityLabel: '演示样本完整',
+    inputQualityReason: '20 根已收盘 K 线基线齐全',
   },
   {
     id: 'momentum_continuation',
@@ -77,6 +84,9 @@ const factors: Factor[] = [
     family: '价格',
     description: '观察多周期收益是否保持同向。',
     detail: '由 5m、15m 和 1h 的已收盘收益组成，缺口会使该因子不可评估。',
+    inputQuality: 'stale',
+    inputQualityLabel: '演示样本过期',
+    inputQualityReason: '最后一段样本超过演示有效窗口',
   },
   {
     id: 'book_imbalance',
@@ -84,6 +94,9 @@ const factors: Factor[] = [
     family: '盘口',
     description: '记录可见档位的买卖深度差异。',
     detail: '只使用连续可见盘口快照；断档或序列不连续时保留为未知。',
+    inputQuality: 'unknown',
+    inputQualityLabel: '演示样本未知',
+    inputQualityReason: '盘口序列含断档，不能判定输入完整性',
   },
 ];
 // 候选与成本字段都是演示声明；前端展示不产生冻结、准入或运行事件。
@@ -368,9 +381,15 @@ function statusLabel(status: Experiment['status']) {
           <code>{{ selectedFactor.id }}</code>
           <p>{{ selectedFactor.detail }}</p>
           <dl>
-            <div>
+            <div
+              class="factor-quality"
+              data-testid="factor-input-quality"
+              :data-quality="selectedFactor.inputQuality"
+            >
               <dt>输入状态</dt>
-              <dd>演示样本完整</dd>
+              <dd>{{ selectedFactor.inputQualityLabel }}</dd>
+              <dt>样本原因</dt>
+              <dd>{{ selectedFactor.inputQualityReason }}</dd>
             </div>
             <div>
               <dt>版本</dt>
@@ -908,6 +927,26 @@ dl div {
 }
 dd {
   color: var(--text);
+}
+.factor-quality {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
+  gap: 6px 12px;
+  align-items: start;
+}
+.factor-quality dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.factor-quality[data-quality='complete'] dd:first-of-type {
+  color: var(--profit);
+}
+.factor-quality[data-quality='stale'] dd:first-of-type {
+  color: #f0c17b;
+}
+.factor-quality[data-quality='unknown'] dd:first-of-type {
+  color: var(--loss);
 }
 .strategy-grid {
   display: grid;

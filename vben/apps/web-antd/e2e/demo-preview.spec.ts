@@ -78,6 +78,29 @@ for (const viewport of viewports) {
     await expect(page.getByTestId('factor-detail')).toContainText(
       'book_imbalance',
     );
+    await expect(page.getByTestId('factor-input-quality')).toHaveAttribute(
+      'data-quality',
+      'unknown',
+    );
+    await expect(page.getByTestId('factor-input-quality')).toContainText(
+      '盘口序列含断档，不能判定输入完整性',
+    );
+    await factorSearch.fill('动量');
+    await expect(page.getByTestId('factor-input-quality')).toHaveAttribute(
+      'data-quality',
+      'stale',
+    );
+    await expect(page.getByTestId('factor-input-quality')).toContainText(
+      '最后一段样本超过演示有效窗口',
+    );
+    await factorSearch.fill('成交量');
+    await expect(page.getByTestId('factor-input-quality')).toHaveAttribute(
+      'data-quality',
+      'complete',
+    );
+    await expect(page.getByTestId('factor-input-quality')).toContainText(
+      '20 根已收盘 K 线基线齐全',
+    );
     await factorSearch.fill('没有匹配项');
     await expect(page.getByTestId('factor-empty')).toContainText(
       '没有符合条件的因子',

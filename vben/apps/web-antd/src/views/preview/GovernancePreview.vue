@@ -77,7 +77,6 @@ function queueCollection() {
   const alreadyQueued = collectionQueue.value.includes(symbol);
   if (alreadyQueued) {
     statusMessage.value = `${symbol} 已在本地队列；仅本地演练。`;
-    appendDemoLog({ level: 'info', stage: '数据补采演练', result: '队列未重复修改', reason: 'demo_collection_already_queued', title: '本地补采项目已存在', detail: symbol + ' 已在当前页面队列；本次未重复添加，也未启动采集器或请求行情服务。' });
     return;
   }
 

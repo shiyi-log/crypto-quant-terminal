@@ -82,8 +82,6 @@ describe('治理工作区演示交互', () => {
 
     expect(view.get('[data-testid="collection-queue"]').textContent).toBe('BTCUSDT');
     expect(view.get('[role="status"]').textContent).toContain('已在本地队列');
-    expect(view.get('[data-testid="log-detail"]').textContent).toContain('demo_collection_already_queued');
-    expect(view.get('[data-testid="log-detail"]').textContent).toContain('队列未重复修改');
   });
 
   it('运维日志级别筛选与详情保留选中事件身份', async () => {

@@ -658,3 +658,18 @@
 - 版本提交 `5b074dabd7dadd72fdf23b7bc1b789e28c903f00` 的精确 main CI [`45160644085`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45160644085) 成功；唯一附注标签 `v0.2.11` 指向该提交，标签 CI [`45161378666`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45161378666)、main 自动归档 CD `45161287605`、显式标签发布 CD [`45162321254`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45162321254) 均成功。标签 CD 的同 SHA CI 门禁、源码与前端构建、归档 SHA-256/`build.json` 身份校验、artifact 上传和 Release 创建通过；artifact `14812651284` 为 `147449793` 字节，digest `sha256:68e9b3059743d853de168ba76f4126d1f87485511535d4744df6ad5214f4a238`，有效至 2026-12-23。
 - [GitHub Release v0.2.11](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.11)（Release ID `455312279`）于 `2026-11-23T11:10:54Z` 发布。归档资产大小 `149503707` 字节，GitHub asset SHA-256 `5677de64c48187fd2067aa8fccd2434054392ee54f61713a34affe89481e259a`；104 字节 sidecar asset SHA-256 `1824431c668dac18d249cf0f223fd484aaa988709278c137b4d9dfe01ea0f655`。独立下载未能在本次运行完成，因此归档 SHA-256 与包内 `build.json` 独立核验未记为已完成；CD 工作流内部的身份与哈希验证成功。
 - 本版本不代表 P0—P4 阶段验收、数据库恢复演练、部署配置核对、Demo 准入或实盘批准完成；前端仍只使用本地固定演示数据。
+
+## 2026-11-23 P3 订单流固定演示证据状态
+
+- 订单流页新增三条固定样本的成交额/笔数、主动买卖汇总、事件成熟度、成交率、逆向选择和观测时间。BTC 样本标为可用演示；ETH 样本明确过期并保留观测时间；TRX 样本将所有证据指标标为未知，不以零值代替缺失事实。
+- TDD RED：先增加证据字段与 BTC→ETH→TRX 切换回归；旧页面因缺少 `flow-evidence` 面板而失败。修复后 `ResearchPreview.test.ts` **8 项通过**。TypeScript 类型检查、生产构建（7819 模块）通过，真实 dist 四视口 Playwright **4/4 通过**（1920、1440、768、390），浏览器确认筛选/状态同步、无横向溢出及只读请求边界。手机截图已检查，未知值与观测时间可读。
+- 本切片只展示固定演示快照，不连接实时行情、账户、API、存储或交易命令；过期或未知样本不能用于资格判断。P3 新旧读数对照与 P0/P1/P2/P4 阶段验收仍未完成。
+- 中文源码提交 `b1c3623c523fdf861f36a56f74d81c5c01b43cc6` 的精确 main CI [`45164779373`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45164779373) 于 `2026-11-23T11:28:13Z` 成功：后端/PostgreSQL 集成、全前端 Vitest、类型检查、生产构建及真实 dist 浏览器流程均通过。浏览器截图与报告 artifact `14814067433` 大小 `7209609` 字节，digest `sha256:6a5acad4dac664e21fa8373c19024e4f2c25d21e9fa02a6f226b76ec22eec740`。自动 main 归档 CD [`45165498053`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45165498053) 成功，同 SHA CI 门禁、前后端构建、归档 SHA-256/`build.json` 身份检查和上传均通过；artifact `14813588853` 大小 `147464306` 字节，digest `sha256:0e1bdd202d6953e1e905d7a4ae2fb4923fa888fd77f8dc6f429541d30189cf84`，有效至 2026-12-23；无版本标签，Release 按规则跳过。
+
+## 2026-11-23 P3 系统状态固定演示页
+
+- 设置与系统页新增组件状态表，列出前端工作区可查看、本地 API/数据库未连接、研究 worker 未知、交易所保护未核验，并明确这些是静态说明、不探测真实运行状态。展示信息不启动探针、不读取账户或数据库、不连接交易所，也不产生运行事件。新增简体中文注释说明固定快照边界。
+- TDD RED：先增加系统状态表与静态范围断言，旧页面因缺少状态表而失败；实现后 `GovernancePreview.test.ts` **14 项通过**。TypeScript 类型检查、生产构建（7819 模块）、`git diff --check` 均通过。真实 dist Playwright 首轮发现 768/390 宽度的系统状态表把页面撑宽至 842/646px；添加 Grid 子项与横滚容器 `min-width: 0` 后，完整浏览器套件 **67/67 通过**，覆盖系统页四视口、兼容入口手机视口、零账户/API/认证请求、零写操作与页面错误。
+- 本小节仅交付系统页的固定演示状态，不表示服务真实健康、数据库迁移/恢复、Demo 验收或交易授权已完成；前端仍不连接真实账户或下单。P3 旧读数对照及 P0/P1/P2/P4 阶段验收仍未完成。
+- 中文源码提交 `6b918cdf09f32b393245623e8f36ffa6847d9f6f` 的精确 main CI [`45167165177`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45167165177) 于 `2026-11-23T11:44:06Z` 成功；后端/PostgreSQL 集成、全前端 Vitest、类型检查、生产构建与真实 dist 浏览器流程通过。浏览器证据 artifact `14815456479` 大小 `7210488` 字节，digest `sha256:c78ec30eb93b44f25fad49bca0cdc0b06b4f36c1cf40715c19e4ab9b2dbc1595`，有效至 2026-12-07。
+- 同 SHA 自动归档 CD [`45167833415`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45167833415) 于 `2026-11-23T11:46:51Z` 成功；CI 身份门禁、前后端构建、归档 SHA-256/`build.json` 身份核验和上传均通过。artifact `14814064622` 大小 `147463655` 字节，digest `sha256:28e22dd973633d1d93ac33f9827c298288b218ef6136c6aa4c8c6e9a96caa1f4`，有效至 2026-12-23；无版本标签，Release 按规则跳过。

@@ -1,7 +1,9 @@
 """前台 writer 使用真实命令/证据存储逻辑，SQL 仅替换为事务内存边界。"""
 from contextlib import contextmanager
 from copy import deepcopy
+import fcntl
 import importlib
+import os
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -73,6 +75,11 @@ class Controller(DemoRunnerController):
         self.driver_mode = 'external_paused'
         self.data_store = store
         self.demo_store = SimpleNamespace(store=store, environment='binance_demo', virtual_account_key='demo_default')
+        self._file_lock = None
+        self._external_capability = None
+        self.service = None
+        self._thread = None
+        self._workers = ()
         self.risk_account_scope = SCOPE['account_id']
         self.cap = SimpleNamespace(owner_id='writer-' + '1' * 32)
         self.active = False
@@ -116,17 +123,104 @@ class Controller(DemoRunnerController):
 
 def setup(kind='pause_entries'):
     sql = CommandSQL()
+    sql.check_schema = lambda: True
     commands = DemoCommandStore(sql, SCOPE['account_id'])
+    commands.check_schema = lambda: True
     binding = FrozenCommandBinding('binding-1', SCOPE, HASHES, 'demo_default')
     commands.register_binding(binding)
     commands.enqueue(binding_id='binding-1', command_id='command-1', kind=kind, actor='operator-1',
                      reason_code='operator_pause' if kind == 'pause_entries' else 'operator_reconcile', submitted_ms=1000)
     archive = DemoEvidenceStore(sql, SCOPE['account_id'], SCOPE['stage_id'])
     controller = Controller(sql)
+    controller.demo_store.check_schema = lambda: True
     target = api().FrozenWriterTarget(binding, strategy_id='paper-1', rule_hash='1' * 64,
         execution_hash='2' * 64, demo_policy_hash='3' * 64)
     writer = api().DemoWriterDriver(controller, commands, archive, target, clock_ms=lambda: 1001)
     return writer, controller, commands, archive, sql
+
+
+def test_preflight_checks_frozen_identity_schema_and_writer_lock_without_activation(caplog):
+    writer, controller, commands, _, _ = setup()
+    controller.data_store.check_schema = Mock(return_value=True)
+    controller.demo_store.check_schema = Mock(return_value=True)
+    commands.check_schema = Mock(return_value=True)
+
+    with caplog.at_level('INFO'):
+        result = writer.preflight()
+
+    assert result == {
+        'ready': True,
+        'reason_code': 'writer_preflight_passed',
+        'execution_complete': False,
+        'source_authenticated': False,
+        'acceptance_eligible': False,
+        'production_authorized': False,
+    }
+    controller.data_store.check_schema.assert_called_once_with()
+    controller.demo_store.check_schema.assert_called_once_with()
+    commands.check_schema.assert_called_once_with()
+    assert controller.activate_calls == 0
+    assert 'writer 只读启动预检开始' in caplog.text
+    assert 'writer 只读启动预检通过' in caplog.text
+    assert 'writer-account' not in caplog.text
+
+
+def test_preflight_rejects_schema_failure_without_lock_or_activation():
+    writer, controller, commands, _, _ = setup()
+    controller.data_store.check_schema = Mock(side_effect=RuntimeError('private-signature-cannot-log'))
+    controller.demo_store.check_schema = Mock(return_value=True)
+    commands.check_schema = Mock(return_value=True)
+
+    result = writer.preflight()
+
+    assert result['ready'] is False
+    assert result['reason_code'] == 'writer_schema_preflight_failed'
+    assert controller.activate_calls == 0
+    assert getattr(controller, '_file_lock', None) is None
+
+
+def test_preflight_rejects_existing_writer_lock_without_schema_reads():
+    writer, controller, commands, _, _ = setup()
+    controller._file_lock = object()
+    controller.data_store.check_schema = Mock(return_value=True)
+    controller.demo_store.check_schema = Mock(return_value=True)
+    commands.check_schema = Mock(return_value=True)
+
+    result = writer.preflight()
+
+    assert result['ready'] is False
+    assert result['reason_code'] == 'writer_lock_owned'
+    controller.data_store.check_schema.assert_not_called()
+    controller.demo_store.check_schema.assert_not_called()
+    commands.check_schema.assert_not_called()
+    assert controller.activate_calls == 0
+
+
+def test_preflight_allows_existing_idle_lock_file(tmp_path):
+    writer, controller, _, _, _ = setup()
+    controller.lock_path = tmp_path / 'writer.lock'
+    controller.lock_path.touch()
+
+    result = writer.preflight()
+
+    assert result['ready'] is True
+    assert controller.activate_calls == 0
+
+
+def test_preflight_rejects_lock_file_held_by_another_descriptor(tmp_path):
+    writer, controller, _, _, _ = setup()
+    controller.lock_path = tmp_path / 'writer.lock'
+    held_fd = os.open(controller.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(held_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        result = writer.preflight()
+    finally:
+        fcntl.flock(held_fd, fcntl.LOCK_UN)
+        os.close(held_fd)
+
+    assert result['ready'] is False
+    assert result['reason_code'] == 'writer_lock_owned'
+    assert controller.activate_calls == 0
 
 
 def test_target_frozen_full_binding_cannot_be_fabricated_from_legacy_hashes():

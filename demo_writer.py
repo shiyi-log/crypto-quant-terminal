@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fcntl
 import logging
+import os
 import threading
 import time
 
@@ -93,6 +95,74 @@ class DemoWriterDriver:
         self._stop_requested = False
         self._cycle_lock = threading.Lock()
         self._observed_unresolved = set()
+
+    def preflight(self):
+        """只读核验启动身份、迁移与进程锁；不激活服务、不读取凭据。"""
+        started = time.monotonic()
+        LOGGER.info('Demo writer 只读启动预检开始；不读取凭据、不激活服务、新增开仓保持关闭')
+        reason = 'writer_preflight_passed'
+        failure_type = None
+        try:
+            if self.controller.driver_mode != 'external_paused':
+                reason = 'writer_driver_mode_mismatch'
+            elif (getattr(self.controller, '_file_lock', None) is not None
+                  or getattr(self.controller, '_external_capability', None) is not None
+                  or getattr(self.controller, 'service', None) is not None
+                  or getattr(self.controller, '_thread', None) is not None
+                  or getattr(self.controller, '_workers', ())):
+                reason = 'writer_lock_owned'
+            else:
+                lock_path = getattr(self.controller, 'lock_path', None)
+                if lock_path is not None and os.path.exists(lock_path):
+                    lock_fd = None
+                    try:
+                        lock_fd = os.open(lock_path, os.O_RDONLY)
+                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except (OSError, BlockingIOError):
+                        reason = 'writer_lock_state_unavailable' if lock_fd is None else 'writer_lock_owned'
+                    finally:
+                        if lock_fd is not None:
+                            try:
+                                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                            finally:
+                                os.close(lock_fd)
+                # 激活阶段会原子创建并持有缺失的锁文件；预检不创建文件，
+                # 但仍由激活边界再次拒绝并发接管。
+                if reason == 'writer_preflight_passed':
+                    scope = self.target.binding.to_dict()['scope']
+                    identity_matches = (self.commands.account_id == scope['account_id']
+                        and self.commands.environment == scope['environment']
+                        and self.archive.account_id == scope['account_id']
+                        and self.archive.stage_id == scope['stage_id']
+                        and self.archive.environment == scope['environment']
+                        and self.archive.store is self.commands.store
+                        and self.controller.data_store is self.commands.store
+                        and self.controller.demo_store.store is self.commands.store
+                        and self.controller.demo_store.environment == scope['environment']
+                        and self.controller.demo_store.virtual_account_key == self.target.binding.namespace
+                        and self.controller.risk_account_scope == scope['account_id'])
+                    if not identity_matches:
+                        reason = 'writer_identity_mismatch'
+                    else:
+                        self.controller.data_store.check_schema()
+                        self.controller.demo_store.check_schema()
+                        if self.commands.check_schema() is not True:
+                            raise RuntimeError('command_schema_incompatible')
+                        binding = self.commands.get_binding(self.target.binding.binding_id)
+                        if binding != self.target.binding.to_dict():
+                            reason = 'writer_binding_mismatch'
+        except Exception as exc:
+            reason = 'writer_schema_preflight_failed'
+            failure_type = type(exc).__name__
+        ready = reason == 'writer_preflight_passed'
+        duration = int((time.monotonic() - started) * 1000)
+        if ready:
+            LOGGER.info('Demo writer 只读启动预检通过 schema=兼容 冻结绑定=一致 writer锁=空闲 耗时毫秒=%d；不构成验收或生产批准',
+                        duration)
+        else:
+            LOGGER.warning('Demo writer 只读启动预检拒绝 原因码=%s 异常类型=%s 耗时毫秒=%d；服务未激活，资格保持关闭',
+                           reason, failure_type or 'none', duration)
+        return {'ready': ready, 'reason_code': reason, **FALSE_FLAGS}
 
     def activate(self):
         started = time.monotonic()
@@ -351,6 +421,10 @@ def run_foreground(driver, *, command_ids=(), stop_event=None, poll_interval_ms=
     cycle_count = 0
     LOGGER.info('Demo 前台保护进程进入同步循环 命令数=%d 轮询间隔毫秒=%d',
                 len(identities), poll_interval_ms)
+    preflight = driver.preflight()
+    if preflight['ready'] is not True:
+        LOGGER.error('Demo 前台保护进程启动拒绝 原因码=%s；未激活 writer', preflight['reason_code'])
+        raise RuntimeError(preflight['reason_code'])
     driver.activate()
     index = 0
     # 启动时显式传入的命令只按有限队列重放；随后恢复自动发现，读取失败的 accepted 命令可在下一轮重试。

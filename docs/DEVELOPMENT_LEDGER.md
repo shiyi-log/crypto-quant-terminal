@@ -484,3 +484,10 @@
 - 定向验证：`uv run --frozen --group dev python -m pytest -q tests/test_demo_safety_runtime.py -k 'completion_'` **7 项通过，38 项未选中**。
 - 本轮复验 `tests/test_demo_safety_runtime.py` **45 项通过**；Ruff、`compileall`、CI/CD YAML 解析和差异检查通过。writer 相关定向复验为 **42+57 项通过**。全量 `uv run --frozen --group dev python -m pytest tests/ -q` 在约 27% 时因 PostgreSQL 集成 setup 持续报错、并出现至少一个失败，且 teardown 在 `tests/test_demo_contract_integration.py` 的 `DROP SCHEMA` 数据库等待；手动中断取得退出码 130，没有最终 pytest 摘要，因此不将全量回归记为通过。
 - 本节只补充失败日志可观测性，不改变成本事实、风险状态或交易执行；未连接 Binance、未启动 writer，也不授予 Demo/生产资格。本地提交已形成；当前无法连接 GitHub，尚未推送，精确 SHA 的 CI/CD 与发布回执待远端可用后核验。
+
+## 2026-11-23 P1 Demo writer 只读启动预检
+
+- `DemoWriterDriver.preflight()` 新增启动前只读门禁：检查 `external_paused` 控制器模式、当前进程是否已有 writer 能力/锁、组合根的账户/环境/账本 namespace/风险范围是否与冻结绑定一致，以及全局、Demo、命令账本三份 schema 是否兼容；最后重验已登记的冻结绑定摘要。预检不读取凭据、不创建锁文件、不激活控制器，不授予执行、验收或生产资格。
+- `run_foreground()` 在调用 `activate()` 前必须通过该预检；失败只返回固定原因码（例如 `writer_schema_preflight_failed`、`writer_lock_owned`），日志只记录异常类型和阶段耗时，不记录异常正文、账户、命令或操作者标识。预检通过也不等于已取得进程锁，真正激活仍由控制器的独占锁边界再次校验。
+- TDD 先验证缺少 `preflight()` 时三项合同失败，再补入实现。`tests/test_demo_writer.py` 全组 **47 项通过**（含预检成功、schema 失败、控制器锁、磁盘空闲锁、跨描述符持锁拒绝和既有前台循环）；Ruff、compileall、`git diff --check` 均通过。
+- 本节只增加本地启动门禁与中文可观测日志，未接入 HTTP、CLI、launchd 或监督器；没有启动 writer、连接 Binance、执行数据库迁移或写生产库，Demo/生产资格继续关闭。源码和文档待主代理按独立中文提交、推送并核验精确 SHA 的 CI/CD 后再更新版本记录。

@@ -1,11 +1,12 @@
 <script lang="ts" setup>
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 const props = defineProps<{ workspace: string }>();
 
 type EvidenceKey = 'calendar' | 'trades' | 'costs';
 type Density = 'compact' | 'comfortable';
 type LogLevel = 'all' | 'warning' | 'info';
+type DemoLog = { id: string; level: Exclude<LogLevel, 'all'>; time: string; stage: string; result: string; reason: string; duration: string; title: string; detail: string };
 
 const evidenceKey = ref<EvidenceKey>('calendar');
 const approvalOpen = ref(false);
@@ -40,42 +41,61 @@ const filteredCoverage = computed(() =>
   symbolFilter.value === 'all' ? coverageRows : coverageRows.filter((row) => row.symbol === symbolFilter.value),
 );
 
-const logs = [
-  { id: 'evt-1041', level: 'info' as const, time: '22:12:04', title: '账户快照已封存', detail: '保留最后成功快照，等待下一次完整观测。' },
-  { id: 'evt-1042', level: 'warning' as const, time: '22:10:31', title: '资金费观测延迟', detail: '保留最后成功快照，资金费未完成对账。' },
-  { id: 'evt-1043', level: 'warning' as const, time: '21:58:11', title: '盘口序列存在缺口', detail: '本地演示继续展示缺口，不填零或伪造连续性。' },
-];
-const filteredLogs = computed(() => logLevel.value === 'all' ? logs : logs.filter((log) => log.level === logLevel.value));
-const currentLog = computed(() => logs.find((log) => log.id === selectedLog.value) ?? {
-  id: 'evt-1041',
-  level: 'info' as const,
-  time: '22:12:04',
-  title: '账户快照已封存',
-  detail: '保留最后成功快照，等待下一次完整观测。',
-});
+const logs = ref<DemoLog[]>([
+  { id: 'evt-1041', level: 'info', time: '22:12:04', stage: '风险快照', result: '演示样本已记录', reason: 'demo_snapshot_recorded', duration: '4 毫秒', title: '本地风险快照已封存', detail: '固定演示权益与风险摘要已记录；等待下一份演示样本。' },
+  { id: 'evt-1042', level: 'warning', time: '22:10:31', stage: '资金费对账', result: '保持未完成', reason: 'funding_fee_observation_delayed', duration: '0 毫秒', title: '资金费观测延迟', detail: '保留最后成功样本，资金费未完成对账；不补零、不推断缺失现金流。' },
+  { id: 'evt-1043', level: 'warning', time: '21:58:11', stage: '行情完整性', result: '拒绝合并', reason: 'market_sequence_gap', duration: '2 毫秒', title: '盘口序列存在缺口', detail: '标记固定样本中的数据缺口；不伪造连续序号或交易信号。' },
+]);
+const filteredLogs = computed(() => logLevel.value === 'all' ? logs.value : logs.value.filter((log) => log.level === logLevel.value));
+
+// 筛选切换后，详情必须始终对应列表中仍可见的事件。
+watch(filteredLogs, (visibleLogs) => {
+  if (!visibleLogs.some((log) => log.id === selectedLog.value)) {
+    selectedLog.value = visibleLogs[0]?.id ?? '';
+  }
+}, { immediate: true });
+const currentLog = computed(() => logs.value.find((log) => log.id === selectedLog.value) ?? logs.value[0]!);
 const densityLabel = computed(() => savedDensity.value === 'comfortable' ? '舒适' : '紧凑');
+
+// 演示事件只追加在当前页面内存，不代表服务端审计或真实持久化。
+let nextLogSequence = 1044;
+function appendDemoLog(entry: Omit<DemoLog, 'id' | 'time' | 'duration'>) {
+  const id = 'evt-' + String(nextLogSequence++);
+  logs.value.unshift({ ...entry, id, time: '22:12:05', duration: '1 毫秒' });
+  selectedLog.value = id;
+}
 
 function recordApproval() {
   approvalOpen.value = false;
   approvalRecorded.value = true;
   statusMessage.value = '已记录演示审批；仅本地演练，生产资格仍未授权。';
+  appendDemoLog({ level: 'info', stage: '人工审批演练', result: '本地状态已更新', reason: 'demo_approval_preview_only', title: '演示审批记录已新增', detail: '审批内容只保存在当前页面，生产资格仍未授权，未发送账户或交易请求。' });
 }
 
 function queueCollection() {
   const symbol = symbolFilter.value === 'all' ? 'BTCUSDT' : symbolFilter.value;
-  if (!collectionQueue.value.includes(symbol)) collectionQueue.value.push(symbol);
+  const alreadyQueued = collectionQueue.value.includes(symbol);
+  if (alreadyQueued) {
+    statusMessage.value = `${symbol} 已在本地队列；仅本地演练。`;
+    return;
+  }
+
+  collectionQueue.value.push(symbol);
   statusMessage.value = `已将 ${symbol} 加入本地采集演练队列；仅本地演练。`;
+  appendDemoLog({ level: 'info', stage: '数据补采演练', result: '已加入本地队列', reason: 'demo_collection_queued', title: '本地补采演练已排队', detail: symbol + ' 仅加入当前页面队列；未启动采集器或请求行情服务。' });
 }
 
 function savePreferences() {
   savedDensity.value = density.value;
   statusMessage.value = '已保存本地演示偏好；不会写入账户或服务配置。';
+  appendDemoLog({ level: 'info', stage: '界面偏好', result: '页面状态已更新', reason: 'demo_preference_updated', title: '演示显示偏好已修改', detail: '偏好只影响当前页面状态，未写入账户或服务配置。' });
 }
 
 function resetPreferences() {
   density.value = 'compact';
   savedDensity.value = 'compact';
   statusMessage.value = '已重置本地演示偏好。';
+  appendDemoLog({ level: 'info', stage: '界面偏好', result: '恢复默认页面状态', reason: 'demo_preference_reset', title: '演示显示偏好已重置', detail: '仅恢复当前页面显示密度，不修改账户或服务配置。' });
 }
 </script>
 
@@ -119,8 +139,8 @@ function resetPreferences() {
     </section>
 
     <section v-else-if="props.workspace === 'operations'" class="workspace-grid operations">
-      <div class="main-column"><div class="section-heading"><div><p class="eyebrow">OPERATIONS LOG</p><h2>运行事件</h2></div><label class="control-label">日志级别<select v-model="logLevel" aria-label="日志级别"><option value="all">全部</option><option value="warning">警告</option><option value="info">信息</option></select></label></div><div class="log-list" data-testid="log-list"><button v-for="log in filteredLogs" :key="log.id" :data-log="log.id" type="button" class="log-row" :class="{ active: selectedLog === log.id }" @click="selectedLog = log.id"><span class="log-time">{{ log.time }}</span><span class="log-level" :data-level="log.level">{{ log.level === 'warning' ? '警告' : '信息' }}</span><strong>{{ log.title }}</strong><span class="log-id">{{ log.id }}</span></button></div></div>
-      <aside class="side-column"><p class="eyebrow">EVENT INSPECTOR</p><h2>事件详情</h2><article class="detail-panel" data-testid="log-detail"><span class="log-id">{{ currentLog.id }}</span><h3>{{ currentLog.title }}</h3><p>{{ currentLog.detail }}</p></article><p class="scope-note">日志是本地合成证据，时间按北京时间显示；不会替代服务端审计记录。</p></aside>
+      <div class="main-column"><div class="section-heading"><div><p class="eyebrow">OPERATIONS LOG</p><h2>运行事件</h2></div><label class="control-label">日志级别<select v-model="logLevel" aria-label="日志级别"><option value="all">全部</option><option value="warning">警告</option><option value="info">信息</option></select></label></div><p class="log-scope" role="note">固定演示日志 · 北京时间 · 操作只追加到当前页面内存，不代表真实服务运行记录</p><div class="log-list" data-testid="log-list"><button v-for="log in filteredLogs" :key="log.id" :data-log="log.id" type="button" class="log-row" :class="{ active: selectedLog === log.id }" @click="selectedLog = log.id"><span class="log-time">{{ log.time }}</span><span class="log-level" :data-level="log.level">{{ log.level === 'warning' ? '警告' : '信息' }}</span><strong>{{ log.title }}</strong><span class="log-stage">阶段 · {{ log.stage }}</span><span class="log-result">结果 · {{ log.result }}</span><span class="log-id">{{ log.id }}</span></button></div></div>
+      <aside class="side-column"><p class="eyebrow">EVENT INSPECTOR</p><h2>事件详情</h2><article class="detail-panel log-inspector" data-testid="log-detail"><span class="log-id">{{ currentLog.id }} · {{ currentLog.time }}</span><h3>{{ currentLog.title }}</h3><p>{{ currentLog.detail }}</p><dl class="log-fields"><div><dt>处理阶段</dt><dd>{{ currentLog.stage }}</dd></div><div><dt>处理结果</dt><dd>{{ currentLog.result }}</dd></div><div><dt>固定原因码</dt><dd><code>{{ currentLog.reason }}</code></dd></div><div><dt>样本耗时</dt><dd>{{ currentLog.duration }}</dd></div></dl></article><p class="scope-note">日志是本地合成证据，时间按北京时间显示；不会替代服务端审计记录。</p></aside>
     </section>
 
     <section v-else class="settings-panel">
@@ -154,9 +174,9 @@ h1,h2,h3,p,dl,dd { margin:0; } h1{font-size:29px;font-weight:600;letter-spacing:
 .scope-note{line-height:1.65;}
 .control-label{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;} select{min-width:130px;padding:8px 28px 8px 9px;border:1px solid var(--line);color:var(--text);background:var(--surface);font:inherit;font-size:12px;}
 .table-scroll{overflow-x:auto;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} table{width:100%;min-width:650px;border-collapse:collapse;font-size:12px;} th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;} th{color:var(--muted);font-weight:500;background:var(--surface);} tbody tr:last-child td{border-bottom:0;} .quality{color:var(--warn);} .quality[data-state='good']{color:var(--green);} .collection-bar{padding:16px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} .collection-bar strong{display:block;margin-top:5px;font-size:14px;font-weight:500;}
-.log-row{display:grid;grid-template-columns:78px 54px minmax(0,1fr) 80px;align-items:center;gap:12px;padding:15px 12px;font-size:12px;} .log-time,.log-id{color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:11px;} .log-level{color:var(--green);}.log-level[data-level='warning']{color:var(--warn);} .log-row strong{font-weight:500;}
+.log-scope{margin:12px 0;color:var(--muted);font-size:11px;} .log-row{display:grid;grid-template-columns:78px 54px minmax(0,1fr) 118px 142px;align-items:center;gap:10px;padding:13px 12px;font-size:12px;} .log-time,.log-id{color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:11px;} .log-level{color:var(--green);}.log-level[data-level='warning']{color:var(--warn);} .log-row strong{font-weight:500;} .log-stage,.log-result{grid-column:3;color:var(--muted);font-size:10px;} .log-id{grid-column:5;grid-row:1 / span 2;text-align:right;} .log-fields{display:grid;gap:0;margin-top:18px;border-top:1px solid var(--line);font-size:11px;} .log-fields div{display:grid;grid-template-columns:78px minmax(0,1fr);gap:9px;padding:9px 0;border-bottom:1px solid var(--line);} .log-fields dt{color:var(--muted);} .log-fields dd{min-width:0;margin:0;text-align:right;overflow-wrap:anywhere;} .log-fields code{color:var(--blue);font-family:'IBM Plex Mono',monospace;font-size:10px;}
 .operations .detail-panel{margin-top:0;} .settings-panel{padding:24px;}.preference-row{align-items:flex-end;padding:22px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} .preference-summary{display:grid;gap:6px;min-width:170px;} .preference-summary strong{font-size:22px;font-weight:500;}
 .dialog-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:20px;background:rgba(5,13,22,.76);} .dialog{width:min(430px,100%);padding:25px;border:1px solid var(--blue);background:var(--surface);box-shadow:0 18px 50px rgba(0,0,0,.35);} .dialog h2{margin:7px 0 10px;} .dialog p{color:var(--muted);font-size:13px;} .dialog p strong{color:var(--warn);font-weight:500;} .dialog .button-row{justify-content:flex-end;margin-top:24px;} .approval-note{margin-top:15px;color:var(--green);font-size:12px;}
-@media (max-width:800px){.governance-preview{padding:22px 16px 42px}.preview-header{align-items:flex-start;flex-direction:column;gap:12px}.workspace-grid{grid-template-columns:1fr;gap:24px}.side-column{border-left:0;border-top:1px solid var(--line);padding:22px 0 0}.section-heading{align-items:flex-start;flex-direction:column;gap:12px}.collection-bar,.preference-row{align-items:flex-start;flex-direction:column;gap:16px}.collection-bar .secondary-action{width:100%}.control-label{width:100%;justify-content:space-between}.control-label select{flex:1;max-width:190px}.log-row{grid-template-columns:68px 48px minmax(0,1fr);}.log-id{grid-column:3;}.settings-panel{padding:18px 16px}}
+@media (max-width:800px){.governance-preview{padding:22px 16px 42px}.preview-header{align-items:flex-start;flex-direction:column;gap:12px}.workspace-grid{grid-template-columns:1fr;gap:24px}.side-column{border-left:0;border-top:1px solid var(--line);padding:22px 0 0}.section-heading{align-items:flex-start;flex-direction:column;gap:12px}.collection-bar,.preference-row{align-items:flex-start;flex-direction:column;gap:16px}.collection-bar .secondary-action{width:100%}.control-label{width:100%;justify-content:space-between}.control-label select{flex:1;max-width:190px}.log-row{grid-template-columns:68px 48px minmax(0,1fr);grid-template-rows:auto auto auto;}.log-row strong{grid-column:3;grid-row:1}.log-stage{grid-column:1 / span 2;grid-row:2}.log-result{grid-column:3;grid-row:2}.log-id{grid-column:3;grid-row:3;text-align:right}.settings-panel{padding:18px 16px}}
 @media (max-width:430px){h1{font-size:25px}.evidence-row{grid-template-columns:1fr auto;gap:5px 10px}.evidence-row strong{grid-column:1}.chevron{grid-column:2;grid-row:1 / span 2}.detail-value{font-size:27px}.button-row{align-items:stretch;flex-direction:column}.button-row button{width:100%}.dialog .button-row{flex-direction:column-reverse}}
 </style>

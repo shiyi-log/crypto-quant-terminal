@@ -71,8 +71,22 @@ describe('治理工作区演示交互', () => {
     expect(view.get('[role="status"]').textContent).toContain('仅本地演练');
   });
 
+  it('重复加入同一交易对时不重复写入已排队事件', async () => {
+    const view = open('data-quality');
+    const queue = view.get<HTMLButtonElement>('[data-action="queue-collection"]');
+
+    queue.click();
+    await nextTick();
+    queue.click();
+    await nextTick();
+
+    expect(view.get('[data-testid="collection-queue"]').textContent).toBe('BTCUSDT');
+    expect(view.get('[role="status"]').textContent).toContain('已在本地队列');
+  });
+
   it('运维日志级别筛选与详情保留选中事件身份', async () => {
     const view = open('operations');
+    expect(view.get('[data-testid="log-list"]').textContent).toContain('结果 · 演示样本已记录');
     const filter = view.get<HTMLSelectElement>('select[aria-label="日志级别"]');
     filter.value = 'warning';
     filter.dispatchEvent(new Event('change', { bubbles: true }));
@@ -83,7 +97,22 @@ describe('治理工作区演示交互', () => {
     view.get<HTMLButtonElement>('[data-log="evt-1042"]').click();
     await nextTick();
     expect(view.get('[data-testid="log-detail"]').textContent).toContain('evt-1042');
-    expect(view.get('[data-testid="log-detail"]').textContent).toContain('保留最后成功快照');
+    expect(view.get('[data-testid="log-detail"]').textContent).toContain('保留最后成功样本');
+    expect(view.get('[data-testid="log-detail"]').textContent).toContain('固定原因码');
+    expect(view.get('[data-testid="log-detail"]').textContent).toContain('funding_fee_observation_delayed');
+    expect(view.get('[data-testid="log-detail"]').textContent).toContain('0 毫秒');
+  });
+
+  it('筛选隐藏当前事件时将详情切换到首个可见事件', async () => {
+    const view = open('operations');
+    const filter = view.get<HTMLSelectElement>('select[aria-label="日志级别"]');
+
+    filter.value = 'warning';
+    filter.dispatchEvent(new Event('change', { bubbles: true }));
+    await nextTick();
+
+    expect(view.get('[data-testid="log-detail"]').textContent).toContain('evt-1042');
+    expect(view.get('[data-log="evt-1042"]').classList.contains('active')).toBe(true);
   });
 
   it('设置保存只更新本地偏好回执，可重置为初始值', async () => {

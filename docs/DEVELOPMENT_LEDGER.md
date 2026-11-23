@@ -543,7 +543,12 @@
 - 本切片只调整本地演示状态、日志语义和中文可观察信息，不读取真实账户、不发业务 API 或交易请求，不授予 Demo 验收或生产准入。测试进程曾在 Happy DOM 收尾输出 AbortError 警告，但全量 Vitest 退出码为 0；不得将该提示描述成测试失败。精确 SHA 的 CI/CD、版本同步和 Release 回执须待独立中文提交推送后补记。
 - 修正后的演示日志合并提交 `322eff49c7223e21b8003a9a55e2640afe07b4bf` 精确 main push CI `45106028323` 成功，包含 PostgreSQL 后端集成、前端全量单测、类型检查、生产构建及真实 dist 浏览器检查。自动 main 归档 CD `45106450950` 成功；归档中的 `build.json` 精确绑定提交 `322eff49c7223e21b8003a9a55e2640afe07b4bf`、项目版本 `0.2.6` 和包名 `quant-terminal-main-322eff49c722`，SHA-256 检查成功。Actions artifact `14788265316` 为 `147406349` 字节，上传 digest `sha256:fb17279a0c318d392922818d5db1f90fb948277ceaf6d4c9a8a6e45bc5b8f386`；main 归档没有标签，Release job 按条件跳过。
 
+## 2026-11-23 P3 演示运行日志交互闭环
+
 ## 2026-11-23 版本同步至 0.2.7
 
 - 将 `pyproject.toml` 与 `uv.lock` 的项目版本从 `0.2.6` 同步为 `0.2.7`，在 `docs/CHANGELOG.md` 记录本次 P3 演示日志切片及精确 main CI/CD 回执。前端继续使用固定演示数据，不读取账户、不请求业务 API、不发送交易命令；本次不改变 Demo/实盘准入状态。
-- 版本同步前验证 `uv lock --offline` 与 `uv lock --check --offline` 成功，确认锁定项目版本为 `0.2.7` 且 `git diff --check` 通过。版本提交的中文提交消息、精确 SHA CI、标签与 Release 回执待按发布流程补记。
+- 版本同步前验证 `uv lock --offline` 与 `uv lock --check --offline` 成功，确认锁定项目版本为 `0.2.7` 且 `git diff --check` 通过。版本提交中文消息、精确 SHA CI、标签、CD 和 Release 的完整回执见本节下方各条。
+- 首轮演示日志 CI `45104421422` 报告前端 1 项失败、710 项通过：测试试图在数据中心工作区读取只在运维工作区渲染的日志详情，属于测试定位错误。回归随后改为验证数据中心实际呈现的队列和状态提示，同时删除重复补采时与队列状态不符的成功日志。完整浏览器套件先通过 65 项，之后在 1440 与 390 视口发现工作区 E2E 仍断言旧的“账户快照已封存”标题；断言已改为稳定的“事件详情”面板，并核验原因码 `demo_snapshot_recorded`。修正版本完整 Vitest 95 文件/711 项及四视口浏览器检查通过；最终精确 SHA CI 覆盖后续修正。
+- 版本同步提交 `a1175437e4be9e01f27e8cee470a1e50a796b378`（`同步项目版本至 0.2.7`）已推送到 `main`，唯一附注标签 `v0.2.7` 指向同一提交。该 SHA main CI `45107170825`、自动归档 CD `45107616113`、标签 CI `45107678178` 和显式标签 CD `45107902896` 均成功；标签 CD 的归档身份/哈希验证及 Release job 成功。标签 CD Actions artifact `14788311854` 大小 `147391652` 字节，digest 为 `sha256:d97a466681734ac6b0864ea3fb1b729008088c9dcc92db52255569f851ff2056`。
+- GitHub Release [v0.2.7](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.7)（Release ID `454965028`）于 `2026-11-23T03:49:27Z` 发布。资产 `quant-terminal-v0.2.7.tar.gz` 为 `149454744` 字节，SHA-256 `41461d99acc2ad157f06d5e088c9bbeebb000bc67aae42a0ec0dc191959ca6b9`；sidecar `quant-terminal-v0.2.7.tar.gz.sha256` 为 `103` 字节，GitHub 上传资产 SHA-256 为 `189ae92d933a698bf002c40bc48feb5b60e2daf3a1951ccee096be62dd73367a`。Release 对应 `0.2.7`；不会因此授予 Demo 验收或生产交易资格。

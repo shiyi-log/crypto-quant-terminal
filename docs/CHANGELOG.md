@@ -1,11 +1,13 @@
 # 版本记录
 
-## 开发中 — 0.2.7（2026-11-23）
+## 0.2.7 — 2026-11-23
 
 - 收录 P3 本地演示交易台设计首切片与演示运行日志交互闭环：前端保持固定演示数据，完善结构化中文日志、级别筛选后的详情跟随与重复补采幂等语义。页面不读取真实账户、不连接业务 API、不发送交易命令，也不代表服务端审计或真实交易事实。合并提交 `322eff49c7223e21b8003a9a55e2640afe07b4bf` 的精确 main CI `45106028323` 成功；自动 main 归档 CD `45106450950` 成功，artifact `14788265316` 大小 `147406349` 字节，digest 为 `sha256:fb17279a0c318d392922818d5db1f90fb948277ceaf6d4c9a8a6e45bc5b8f386`，归档 SHA-256 与 `build.json` 身份校验通过；无标签时 Release job 按条件跳过。
 - 完整前端 Vitest **95 个文件、711 项通过**，类型检查与生产构建通过；真实 dist 四视口 Playwright **4/4 通过**。该交付不代表 P1 生产运行期接线、P2 持久留出消费闭环或 P4 30 天自然 Demo 完成，亦不授予 Demo/实盘准入。
+- 版本同步提交 `a1175437e4be9e01f27e8cee470a1e50a796b378` 的 main CI `45107170825`、自动 main 归档 CD `45107616113`、标签 CI `45107678178`、显式标签 CD `45107902896` 均成功。唯一附注标签 `v0.2.7` 指向该提交；CD artifact `14788311854` digest 为 `sha256:d97a466681734ac6b0864ea3fb1b729008088c9dcc92db52255569f851ff2056`，归档哈希及 `build.json` 身份核验通过。
+- [GitHub Release v0.2.7](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.7)（ID `454965028`）于 `2026-11-23T03:49:27Z` 发布。tar.gz 大小 `149454744` 字节，SHA-256 为 `41461d99acc2ad157f06d5e088c9bbeebb000bc67aae42a0ec0dc191959ca6b9`；103 字节 sidecar 的上传资产 SHA-256 为 `189ae92d933a698bf002c40bc48feb5b60e2daf3a1951ccee096be62dd73367a`。
 
-## 开发中 — 0.2.6 之后（2026-11-23）
+## 开发中 — 0.2.7 之后（2026-11-23）
 
 - P1 Demo writer 增加只读启动预检：激活前核验 `external_paused` 模式、进程锁状态、账户/环境/账本 namespace 与冻结绑定一致性，以及全局、Demo、命令账本 schema；重验冻结绑定后才允许进入激活边界。预检不读取凭据、不创建锁、不启动 writer，所有执行、验收和生产资格字段继续为 `false`。
 - `run_foreground()` 接入预检失败即停，中文日志记录阶段、固定原因码、异常类型和耗时，不记录账户、命令、操作者或异常正文。`tests/test_demo_writer.py` 全组 **47 项通过**，覆盖控制器已有锁、磁盘空闲锁文件和另一文件描述符持锁；Ruff、compileall、`git diff --check` 通过。此切片未接 HTTP/CLI/launchd/监督器、未连接 Binance、未执行迁移或生产写入；精确 SHA CI/CD 回执见 `0.2.6` 版本记录。

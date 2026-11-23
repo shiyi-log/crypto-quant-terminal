@@ -623,6 +623,12 @@
 - TDD RED：先补搜索联动与无匹配回归；旧页面缺少搜索控件而失败。随后补状态与搜索组合用例，验证“完成 + 订单流”仅显示并展开 `EXP-021`。`ResearchPreview.test.ts` 定向 **8 项通过**；`vue-tsc --noEmit --skipLibCheck`、生产构建 **11/11** 与隔离输出路径下真实 dist 四视口 Playwright **4/4** 通过。浏览器 fixture 无账户/API 读取、认证请求、写操作、意外请求、页面异常或整页横向溢出。
 - 全量 `pnpm --dir vben run test:unit` 本机结果 **94 个文件、726/727 项通过**，两个既有基础设施失败仍为 form-ui 对 `element-plus@2.14.5` `.pnpm` 路径的导入解析失败（0 tests）和 popup-ui 抽屉 overlay dismiss 超时；同类问题已在此前台账记录。本次定向用例通过。
 - 本切片只筛选页面内固定研究样本，不连接研究 API、账户或存储，不提交任务或交易命令；P3 新旧读数对照与 P0/P1/P2/P4 阶段验收仍未完成。精确 main CI `45146731924` 成功；自动归档 CD `45147640755` 曾因其启动时同 SHA CI 尚未完成而跳过，随后手动 `ref=main` 归档 CD `45148134607` 成功，artifact `14805885273` digest 为 `sha256:8ec8402a17d0a123b64593194c20fbdcb2e364f4ca8722abe86ada4b8731c41d`。两次无版本标签，Release 按规则跳过。
+## 2026-11-23 P3 数据中心固定样本空状态
+
+- 数据中心保留原有 BTC、ETH、TRX 三条交易对级固定摘要，覆盖率仍为 96%/88%/71%，观测时间仍为 12/18/42 分钟前；周期筛选只匹配固定样本声明的支持范围，不能派生周期级覆盖率或新鲜度。组合筛选、空状态与重置恢复均为页面内交互，并明确标注表格指标属于交易对级摘要。新增简体中文注释说明周期筛选边界。
+- TDD RED：先为三条原始摘要、原始时间、周期筛选不改变指标范围编写回归；旧的八条逐周期细分行按预期使三行断言失败。修正后 `GovernancePreview.test.ts` **13 项通过**，类型检查通过，生产构建 **11/11** 成功，真实 dist 四视口 Playwright **4/4 通过**。浏览器单独检查数据中心筛选后无横向溢出，并检查组合无样本、重置、零账户/API/认证请求、零写操作及无页面异常；隔离输出为 `/tmp/quant-pw-p3-data-center-summary`。
+- 本切片只筛选本地固定演示样本，不连接真实数据、账户或业务接口，不触发采集器或交易命令。旧版页面已退役，无法提供可运行的新旧读数对照；该限制及 P0/P1/P2/P4 阶段未完成状态保持不变。源码提交 `ecb85942eac7d06ddfb0fcaf8cd8d51c2bc1d5bf` 已推送。精确 main CI [`45151128116`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45151128116) 与自动 main 归档 CD [`45151996985`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45151996985) 均成功；CD 的同 SHA CI 门禁、源码/前端构建、归档 SHA-256、`build.json` 身份校验与 artifact 上传均通过。artifact `14806961993` 大小 `147455118` 字节，digest `sha256:91c5f036427e4271a27f6ace3d4f7f0cc168590b7d7307cf7e2862a4f4be9e1d`，有效至 2026-12-23；无版本标签，Release 按条件跳过。
+
 ## 2026-11-23 版本同步至 0.2.9
 
 - 项目版本源 `pyproject.toml` 与 `uv.lock` 同步为 `0.2.9`，更新变更记录；依赖锁、版本一致性和发布身份测试在版本提交前通过。

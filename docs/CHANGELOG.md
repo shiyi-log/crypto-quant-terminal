@@ -7,6 +7,7 @@
 - 源码提交 `0d0252fcfe30a8b88b8b6c534778350c3d67f11d` 的精确 push CI `45117502500`、`45117403340` 和 main 归档 CD `45118002061` 成功；归档 SHA-256 与 `build.json` 身份检查通过，artifact `14791799406` digest 为 `sha256:d3d87ec76203a1f5ff0447958e90b4746ef7299762ddbcaa3acea4cacec0452a`。该提交无版本标签，Release job 按条件跳过。
 - 版本提交 `6cd035ec1e5faa636c7f3b15d589c94b02d92a97`（`同步项目版本至 0.2.8`）的 main CI `45119187571`、分支 CI `45119192211`、标签 CI `45119915383`、main 归档 CD `45119668825` 与显式标签 CD `45120221988` 均成功。唯一附注标签 `v0.2.8` 指向版本提交；标签 CD 的归档 SHA-256、`build.json` 身份检查和 Release job 均成功。artifact `14793437420` digest 为 `sha256:b5edabc7f41331255a1559d85dd78d29d5dca1991b6e1b0ed1d32f633fca2ee2`。
 - [GitHub Release v0.2.8](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.8)（ID `455037419`）于 `2026-11-23T05:53:31Z` 发布。tar.gz 大小 `149475029` 字节，SHA-256 为 `bcc6c3843c49a57111bfac08b618fcee1c350ce0ea0249c5b5d400038b1d7229`；103 字节 sidecar 资产 SHA-256 为 `f02a3ee39e4278e1a3011f763f97ccc772f27bbcfecd4401f54ca8ebb2cf17cf`。这只是当前 P3 验收演示页切片的版本发布，不代表整份重构计划完成或取得 Demo/实盘资格。
+- 发布回执文档提交 `39ed3d79730c303a9d72d165b57eae6912b7fe77` 的 main CI `45120802192`、分支 CI `45120806715` 均成功；main 归档 CD `45121199363` 成功，同 SHA CI 门槛、构建、归档 SHA-256 与 `build.json` 身份核验和上传均通过。artifact `14793872055` 大小 `147423311` 字节，digest 为 `sha256:bd0311642a6ef1a459d5337f4120e653ab808b73904747e1da43db6aa1001530`。无新版本标签，Release job 按条件跳过。
 
 ## 0.2.7 — 2026-11-23
 

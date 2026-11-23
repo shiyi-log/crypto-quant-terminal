@@ -83,6 +83,25 @@ for (const viewport of viewports) {
       '没有符合条件的因子',
     );
     await expect(page.getByTestId('factor-detail')).toHaveCount(0);
+    await page.getByRole('button', { name: '实验任务', exact: true }).click();
+    await expect(
+      page.getByRole('heading', { name: '实验任务', exact: true }),
+    ).toBeVisible();
+    const experimentSearch = page.getByRole('searchbox', {
+      name: '搜索实验任务',
+    });
+    await experimentSearch.fill('动量');
+    await expect(page.getByTestId('experiment-detail')).toContainText(
+      'EXP-023',
+    );
+    await expect(page.getByTestId('experiment-detail')).toContainText(
+      '动量参数搜索',
+    );
+    await experimentSearch.fill('没有匹配项');
+    await expect(page.getByTestId('experiment-empty')).toContainText(
+      '没有符合条件的实验任务',
+    );
+    await expect(page.getByTestId('experiment-detail')).toHaveCount(0);
     await page.getByRole('button', { name: '验收与运维' }).click();
     await expect(
       page.getByRole('heading', { name: '验收与上线', exact: true }),

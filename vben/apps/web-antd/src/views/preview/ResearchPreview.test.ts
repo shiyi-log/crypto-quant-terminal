@@ -155,6 +155,51 @@ describe('演示研究工作区交互', () => {
     );
   });
 
+  it('实验任务搜索跟随可见结果并为空结果清除详情', async () => {
+    const view = open('experiments');
+    const search = view.get<HTMLInputElement>(
+      'input[aria-label="搜索实验任务"]',
+    );
+    search.value = '动量';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+
+    expect(view.get('[data-testid="experiment-list"]').textContent).toContain(
+      'EXP-023',
+    );
+    expect(view.get('[data-testid="experiment-detail"]').textContent).toContain(
+      '动量参数搜索',
+    );
+
+    const status = view.get<HTMLSelectElement>(
+      'select[aria-label="任务状态"]',
+    );
+    status.value = 'completed';
+    status.dispatchEvent(new Event('change', { bubbles: true }));
+    search.value = '订单流';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+    expect(view.get('[data-testid="experiment-list"]').textContent).toContain(
+      'EXP-021',
+    );
+    expect(view.get('[data-testid="experiment-list"]').textContent).not.toContain(
+      'EXP-023',
+    );
+    expect(view.get('[data-testid="experiment-detail"]').textContent).toContain(
+      '订单流覆盖盘点',
+    );
+
+    search.value = '没有匹配项';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+    expect(view.get('[data-testid="experiment-empty"]').textContent).toContain(
+      '没有符合条件的实验任务',
+    );
+    expect(
+      view.element.querySelector('[data-testid="experiment-detail"]'),
+    ).toBeNull();
+  });
+
   it('订单流交易对切换更新盘口与逐笔成交', async () => {
     const view = open('orderflow');
     view.get<HTMLButtonElement>('[data-symbol="ETHUSDT"]').click();

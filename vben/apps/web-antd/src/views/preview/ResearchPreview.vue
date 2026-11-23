@@ -151,6 +151,7 @@ const flows: Flow[] = [
 ];
 
 const factorQuery = ref('');
+const experimentQuery = ref('');
 const selectedFactorId = ref(factors[0]!.id);
 const selectedStrategyId = ref(strategies[0]!.id);
 const experimentFilter = ref<'all' | Experiment['status']>('all');
@@ -179,15 +180,29 @@ const selectedStrategy = computed<Strategy>(
   () =>
     strategies.find((s) => s.id === selectedStrategyId.value) ?? strategies[0]!,
 );
-const filteredExperiments = computed(() =>
-  experimentFilter.value === 'all'
-    ? experiments
-    : experiments.filter((e) => e.status === experimentFilter.value),
-);
-const selectedExperiment = computed<Experiment>(
+// 演示任务仅在本页按固定样本筛选，不发起网络请求或写入实验记录。
+const filteredExperiments = computed(() => {
+  const q = experimentQuery.value.trim().toLowerCase();
+  return experiments.filter((experiment) => {
+    const matchesStatus =
+      experimentFilter.value === 'all' ||
+      experiment.status === experimentFilter.value;
+    const matchesQuery =
+      !q ||
+      [experiment.id, experiment.name, experiment.progress, experiment.reason]
+        .join(' ')
+        .toLowerCase()
+        .includes(q);
+    return matchesStatus && matchesQuery;
+  });
+});
+const selectedExperiment = computed<Experiment | null>(
   () =>
-    experiments.find((e) => e.id === selectedExperimentId.value) ??
-    experiments[0]!,
+    filteredExperiments.value.find(
+      (experiment) => experiment.id === selectedExperimentId.value,
+    ) ??
+    filteredExperiments.value[0] ??
+    null,
 );
 const selectedFlow = computed<Flow>(
   () => flows.find((f) => f.symbol === selectedFlowSymbol.value) ?? flows[0]!,
@@ -199,13 +214,8 @@ watch(filteredFactors, (visible) => {
   }
 });
 watch(filteredExperiments, (visible) => {
-  if (
-    !visible.some(
-      (experiment) => experiment.id === selectedExperimentId.value,
-    ) &&
-    visible[0]
-  ) {
-    selectedExperimentId.value = visible[0].id;
+  if (!visible.some((experiment) => experiment.id === selectedExperimentId.value)) {
+    selectedExperimentId.value = visible[0]?.id ?? '';
   }
 });
 function statusLabel(status: Experiment['status']) {
@@ -384,17 +394,28 @@ function statusLabel(status: Experiment['status']) {
           <p class="eyebrow">EXPERIMENT QUEUE</p>
           <h2 id="experiment-title">实验任务</h2>
         </div>
-        <label class="compact-field"
-          >任务状态<select v-model="experimentFilter" aria-label="任务状态">
-            <option value="all">全部</option>
-            <option value="running">运行中</option>
-            <option value="failed">失败</option>
-            <option value="completed">已完成</option>
-          </select></label
-        >
+        <div class="experiment-controls">
+          <label class="search-field">
+            <span>搜索实验任务</span>
+            <input
+              v-model="experimentQuery"
+              type="search"
+              aria-label="搜索实验任务"
+              placeholder="名称、编号、进度或原因"
+            />
+          </label>
+          <label class="compact-field">
+            任务状态<select v-model="experimentFilter" aria-label="任务状态">
+              <option value="all">全部</option>
+              <option value="running">运行中</option>
+              <option value="failed">失败</option>
+              <option value="completed">已完成</option>
+            </select>
+          </label>
+        </div>
       </div>
       <div class="split-layout">
-        <div class="task-list" data-testid="experiment-list">
+        <div v-if="filteredExperiments.length" class="task-list" data-testid="experiment-list">
           <button
             v-for="experiment in filteredExperiments"
             :key="experiment.id"
@@ -414,7 +435,10 @@ function statusLabel(status: Experiment['status']) {
             }}</em>
           </button>
         </div>
-        <article class="detail-pane" data-testid="experiment-detail">
+        <div v-else class="experiment-empty-state" data-testid="experiment-empty" role="status">
+          没有符合条件的实验任务
+        </div>
+        <article v-if="selectedExperiment" class="detail-pane" data-testid="experiment-detail">
           <p class="eyebrow">TASK DETAIL</p>
           <h3>{{ selectedExperiment.name }}</h3>
           <code>{{ selectedExperiment.id }}</code>
@@ -827,6 +851,54 @@ dd {
 }
 .compact-field select {
   min-width: 150px;
+}
+
+.experiment-controls {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+}
+
+.search-field {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.search-field input {
+  min-width: 180px;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 10px;
+  color: var(--text);
+  background: #0a1723;
+  font: inherit;
+}
+
+.experiment-empty-state {
+  display: grid;
+  grid-column: 1 / -1;
+  border: 1px solid var(--line);
+  min-height: 120px;
+  place-items: center;
+  padding: 20px;
+  color: var(--muted);
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .experiment-controls {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .search-field input {
+    width: 100%;
+    min-width: 0;
+  }
 }
 .symbol-tabs {
   display: flex;

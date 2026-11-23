@@ -497,7 +497,7 @@
 - `claim_holdout_v2` 增加消费前合同：候选状态必须为 `selected`；若调用方提供身份摘要，则必须一次性提供实验族、推断、冻结计划、筛选策略和留出策略五项摘要，并与冻结验证计划完全一致。未选中或实验族哈希错绑会在任何持久化动作前抛出固定中文错误。
 - 身份合同通过后仍返回 `status=not_estimable`、`execution_ticket=false` 和固定 `holdout_calculator_unavailable` 原因码；本节未接数据库领取事务、研究 worker、留出计算器或验收/生产授权，避免在计算路径尚未具备时永久消费留出机会。
 - TDD 先运行新增两个 RED 合同，旧实现分别未拒绝 `pending` 候选和错绑实验族；补入校验后，`tests/test_research_two_stage_protocol.py` **7 项通过**。研究二阶段协议、0009 迁移合同和未跟踪用户研究合同组合 **19 项通过**；Ruff、compileall、`git diff --check` 通过。
-- 同轮恢复验证组合在完整 Demo schema 清理阶段因 psycopg `another command is already in progress` 挂起并由操作者中断，不能将恢复全套记为通过；生产数据库未执行迁移。版本仍为 `0.2.5`；本节待独立中文提交、推送及精确 SHA CI/CD 核验。未跟踪的用户合同文件保持原样且不纳入提交。
+- 原同轮恢复验证组合曾在完整 Demo schema 清理阶段因 psycopg `another command is already in progress` 挂起并由操作者中断；之后独立复跑 47 项通过，具体命令和边界见本台账“P2 研究协议迁移与恢复验证复跑”小节。生产数据库未执行迁移；未跟踪的用户合同文件未修改且未纳入提交。
 
 ## 2026-11-23 P1 writer 预检身份边界补强
 
@@ -511,11 +511,17 @@
 - 新增 `demo_writer_composition.create_demo_writer_driver()`，只接受现成 `DataStore`、显式完整 `FrozenWriterTarget`、显式且必须与冻结 scope 相等的风险账户范围和显式 Demo 凭据 provider；从冻结 scope 构造 `DemoStore`、`DemoCommandStore`、`DemoEvidenceStore` 及强制 `external_paused`、风险门禁、验收轮次门禁的 controller。凭据 provider 只被保存为延迟回调，构造过程不调用。
 - 组合阶段不连数据库、不检查或安装 schema、不注册 command binding、不创建锁文件、不创建 adapter、不启动 service/thread，也不提供目标身份自动推导。仅测构造与拒绝缺失冻结身份的合同；不存在生产运行期调用方，也未接入 HTTP、`manage.py`、进程监督器或 launchd。
 - 组合工厂产出的 driver 带不可变“仅构造”封口；直接 `activate()` 和 `run_foreground()` 都在数据库预检、锁和凭据之前以 `writer_composition_not_authorized` 拒绝，并写中文阶段日志。只有未来单独实现受信任审批与目标生产者后，才能设计解除封口的合同。
-- `tests/test_demo_writer.py` writer 全组 **55 项通过**；Ruff、compileall、CI/CD YAML 解析及 `git diff --check` 通过。新组合模块已加入 CI/CD 编译与 Ruff 清单。版本仍为 `0.2.5`；待本小节独立中文提交推送后，按精确 SHA 核对 CI、main 归档哈希与 `build.json`。
+- `tests/test_demo_writer.py` writer 全组 **55 项通过**；Ruff、compileall、CI/CD YAML 解析及 `git diff --check` 通过。新组合模块已加入 CI/CD 编译与 Ruff 清单；精确提交 `500bed9e25afde10a4a50d81652c58cc16d12e11` 的 CI `45092586673` 及 main 归档 CD `45093032404` 均成功，artifact `14782341116` digest 为 `sha256:f1415916eff2b1b9ee61cc93a014285e720a2628c02cdd8b108458bec3e162fe`，归档 SHA-256 与 `build.json` 身份校验通过，Release job 因无新标签跳过。版本同步与标签发布回执见 `0.2.6` 版本记录。
 - 本节测试使用合成冻结目标与测试凭据回调；当前没有生产身份来源或账户批准证明。因此该构造入口不授予策略来源认证、Demo 执行、验收或生产资格，继续保持关闭。
 
 ## 2026-11-23 P2 研究协议迁移与恢复验证复跑
 
 - 对 `tests/test_research_two_stage_protocol.py`、`tests/test_research_two_stage_migration.py` 与 `tests/test_database_restore_verification.py` 执行独立复跑，**47 项通过，149.79 秒**；恢复验证合同不再沿用此前被中断的运行结果。
 - 本次仅复核隔离测试合同，不在生产数据库执行迁移，不证明来源顺序认证、研究 worker、留出计算、持久化留出消费或执行票据已经接通；相关 P2 能力与 Demo/实盘资格继续关闭。未跟踪的用户合同 `tests/test_research_two_stage.py` 未修改、未纳入本次命令或暂存。
-- 版本仍为 `0.2.5`；本台账回执需独立中文提交推送，并核验该精确 SHA 的 CI 与 main 归档 CD。
+- 精确文档提交 `9c5230141d1cb1233be88db7bf74090f9eb6b82f` 已推送；其 CI 为 `45093938415`，版本同步与标签发布回执见 `0.2.6` 版本记录。
+
+## 2026-11-23 版本同步至 0.2.6
+
+- 纳入已推送并完成 CI/CD 的默认暂停 Demo writer 组合构造，以及 P2 恢复验证回执。源代码提交 `500bed9e25afde10a4a50d81652c58cc16d12e11` 的 CI `45092586673` 与 main 归档 CD `45093032404` 成功，artifact `14782341116` digest 为 `sha256:f1415916eff2b1b9ee61cc93a014285e720a2628c02cdd8b108458bec3e162fe`；归档 SHA-256 和 `build.json` 身份校验通过。
+- P2 验证台账提交 `9c5230141d1cb1233be88db7bf74090f9eb6b82f` 的 CI `45093938415` 与 main 归档 CD `45094253313` 成功，artifact `14783045271` digest 为 `sha256:d50b86af48af86e52071ed5bf7e5359d21984f8c52187a0c2c2fee4f17bb684f`；归档身份校验通过、无标签 Release job 按条件跳过。
+- 本次项目版本从 `0.2.5` 同步至 `0.2.6`，同时更新 `pyproject.toml`、`uv.lock`、变更记录与本台账；版本同步提交、附注标签和正式 Release 的精确回执待完成后补记。该版本不授予 Demo/生产交易资格。

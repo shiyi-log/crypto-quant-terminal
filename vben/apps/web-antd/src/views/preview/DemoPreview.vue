@@ -3,11 +3,13 @@ import { computed, ref, watch } from 'vue';
 
 import { Bell, CircleAlert, Grid, Search } from '@vben/icons';
 
+import AcceptancePreview from './AcceptancePreview.vue';
 import DeskPreview from './DeskPreview.vue';
 import GovernancePreview from './GovernancePreview.vue';
 import ResearchPreview from './ResearchPreview.vue';
 
 const props = defineProps<{ preview?: unknown; workspace?: unknown }>();
+const quantVersion = import.meta.env.VITE_QUANT_VERSION;
 const previewKeys = ['desk', 'research', 'governance'] as const;
 type PreviewKey = (typeof previewKeys)[number];
 type WorkspaceItem = { key: string; label: string };
@@ -168,14 +170,17 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
             "
             @click="selectWorkspace(section.key, child.key)"
           >
-            <span class="nav-child-line" aria-hidden="true"></span>{{ child.label }}
+            <span class="nav-child-line" aria-hidden="true"></span
+            >{{ child.label }}
           </button>
         </section>
       </nav>
       <div class="sidebar-bottom">
         <div class="sidebar-divider"></div>
         <div class="account-stamp">
-          <span class="account-avatar">D</span><span><strong>演示账户</strong><small>固定本地样本</small></span><span class="account-dot" aria-hidden="true"></span>
+          <span class="account-avatar">D</span
+          ><span><strong>演示账户</strong><small>固定本地样本</small></span
+          ><span class="account-dot" aria-hidden="true"></span>
         </div>
         <p>账户数据与交易命令<br />均未连接</p>
       </div>
@@ -183,21 +188,31 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
     <div class="terminal-main">
       <header class="terminal-topbar" data-testid="terminal-topbar">
         <div class="breadcrumb">
-          <span>工作区</span><b aria-hidden="true">/</b><strong>{{ activeWorkspaceLabel }}</strong>
+          <span>工作区</span><b aria-hidden="true">/</b
+          ><strong>{{ activeWorkspaceLabel }}</strong>
         </div>
         <div class="topbar-controls">
-          <span class="environment-chip"><i aria-hidden="true"></i>Binance Demo</span><span class="topbar-divider"></span><span class="market-clock"><span>市场时间</span><strong>14:32:18 UTC+8</strong></span><button
+          <span class="environment-chip"
+            ><i aria-hidden="true"></i>Binance Demo</span
+          ><span class="topbar-divider"></span
+          ><span class="market-clock"
+            ><span>市场时间</span><strong>14:32:18 UTC+8</strong></span
+          ><button
             class="icon-button"
             type="button"
             aria-label="通知"
             title="通知"
           >
-            <Bell :size="16" aria-hidden="true" /><i class="notification-dot"></i>
+            <Bell :size="16" aria-hidden="true" /><i
+              class="notification-dot"
+            ></i>
           </button>
         </div>
       </header>
       <div class="preview-scope" role="status" aria-live="polite">
-        <span class="scope-mark" aria-hidden="true">i</span><strong>本地演示数据</strong><span>不读取账户，不发送命令</span><span class="scope-version">预览样本 · 0.2.6</span>
+        <span class="scope-mark" aria-hidden="true">i</span
+        ><strong>本地演示数据</strong><span>不读取账户，不发送命令</span
+        ><span class="scope-version">预览样本 · {{ quantVersion }}</span>
       </div>
       <section
         class="terminal-risk-strip"
@@ -205,19 +220,22 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
         aria-label="风险状态摘要"
       >
         <div class="risk-strip-title">
-          <span class="risk-shield" aria-hidden="true">!</span><strong>风险监控</strong>
+          <span class="risk-shield" aria-hidden="true">!</span
+          ><strong>风险监控</strong>
         </div>
         <div class="risk-strip-item">
           <span>账户状态</span><strong class="state-demo">仅演示</strong>
         </div>
         <div class="risk-strip-item">
-          <span>日净损益</span><strong class="negative-value">−2.35 USDT</strong>
+          <span>日净损益</span
+          ><strong class="negative-value">−2.35 USDT</strong>
         </div>
         <div class="risk-strip-item">
           <span>剩余风险预算</span><strong>15.65 USDT</strong>
         </div>
         <div class="risk-strip-item protection-state">
-          <span>保护单状态</span><strong><i aria-hidden="true"></i>待确认样本</strong>
+          <span>保护单状态</span
+          ><strong><i aria-hidden="true"></i>待确认样本</strong>
         </div>
         <span class="risk-strip-clock">更新于 14:32:18</span>
       </section>
@@ -235,10 +253,14 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
           v-else-if="active === 'research'"
           :workspace="researchWorkspace"
         />
+        <AcceptancePreview v-else-if="governanceWorkspace === 'acceptance'" />
         <GovernancePreview v-else :workspace="governanceWorkspace" />
       </section>
       <footer class="preview-footer">
-        <span><i aria-hidden="true"></i>本地固定样本</span><span>交互仅更新当前页面状态</span><span>不构成 Demo 验收或实盘资格</span><span class="footer-build">QT · 0.2.6</span>
+        <span><i aria-hidden="true"></i>本地固定样本</span
+        ><span>交互仅更新当前页面状态</span
+        ><span>不构成 Demo 验收或实盘资格</span
+        ><span class="footer-build">QT · {{ quantVersion }}</span>
       </footer>
     </div>
   </main>

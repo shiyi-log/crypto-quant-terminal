@@ -2,7 +2,7 @@ import type { App } from 'vue';
 
 import { createApp, h, nextTick } from 'vue';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import DemoPreview from './DemoPreview.vue';
 
@@ -24,14 +24,23 @@ function open(props: { preview?: unknown; workspace?: unknown } = {}) {
   };
 }
 
-afterEach(() =>
+afterEach(() => {
   mounted.splice(0).forEach(({ app, element }) => {
     app.unmount();
     element.remove();
-  }),
-);
+  });
+  vi.unstubAllEnvs();
+});
 
 describe('本地演示预览壳', () => {
+  it('在样本提示与页脚同步显示构建注入的项目版本', () => {
+    vi.stubEnv('VITE_QUANT_VERSION', '9.8.7');
+    const view = open();
+
+    expect(view.get('.scope-version').textContent).toBe('预览样本 · 9.8.7');
+    expect(view.get('.footer-build').textContent).toBe('QT · 9.8.7');
+  });
+
   it('按量化深链接选择指定的固定演示子工作区', async () => {
     const view = open({ preview: 'research', workspace: 'experiments' });
     await nextTick();
@@ -86,6 +95,9 @@ describe('本地演示预览壳', () => {
     await nextTick();
     expect(view.get('[data-testid="preview-content"]').textContent).toContain(
       '验收与上线',
+    );
+    expect(view.get('[data-testid="acceptance-window"]').textContent).toContain(
+      '北京时间',
     );
   });
 

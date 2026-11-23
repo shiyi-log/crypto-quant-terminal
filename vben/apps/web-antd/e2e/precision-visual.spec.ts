@@ -65,10 +65,34 @@ for (const viewport of viewports) {
     await expect(
       page.getByText('Demo 验收证据', { exact: true }),
     ).toBeVisible();
-    await expect(page.getByText('未授权', { exact: true })).toBeVisible();
-    await expect(
-      page.getByText('演示数据 · 不连接交易账户', { exact: true }),
-    ).toBeVisible();
+    await expect(page.getByTestId('calendar-day')).toHaveCount(30);
+    await expect(page.getByTestId('acceptance-segment')).toHaveCount(3);
+    await page.getByRole('button', { name: '硬失败' }).click();
+    await expect(page.getByTestId('acceptance-verdict')).toContainText(
+      '硬失败场景演示',
+    );
+    await expect(page.getByTestId('production-eligibility')).toHaveText(
+      '未授权',
+    );
+    const scenarioLog = page.getByTestId('acceptance-run-log');
+    await expect(scenarioLog).toContainText('验收场景演练');
+    await expect(scenarioLog).toContainText(
+      'daily_net_loss_hard_limit_exceeded',
+    );
+    await expect(scenarioLog).toContainText('页面内处理耗时');
+
+    const approvalTrigger = page.getByRole('button', { name: '演练审批记录' });
+    await approvalTrigger.focus();
+    await approvalTrigger.click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole('button', { name: '取消' })).toBeFocused();
+    await dialog.press('Escape');
+    await expect(dialog).toBeHidden();
+    await expect(approvalTrigger).toBeFocused();
+    await expect(page.getByTestId('production-eligibility')).toBeVisible();
+    await expect(page.getByText('本地演示数据')).toBeVisible();
+    await expect(page.getByText('不读取账户，不发送命令')).toBeVisible();
 
     const dimensions = await page.evaluate(() => ({
       document: document.documentElement.scrollWidth,

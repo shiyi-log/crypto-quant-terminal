@@ -15,7 +15,8 @@
 
 - 收录 Demo writer 只读启动预检、持久身份边界补强和默认暂停组合构造；writer 构造不会读取凭据、连接数据库、创建锁或启动服务。该版本没有生产运行期调用方，不开放 Demo/实盘资格。
 - 收录 P2 留出请求消费前身份与候选状态拒绝，以及研究协议、迁移和恢复合同复跑的 47 项通过结果；P2 研究 worker、有效留出计算和持久化消费仍未接通。
-- 版本同步提交的精确 SHA、CI/CD、归档身份与 Release 资产校验结果待发布流程结束后补记。
+- 版本提交 `8e5df7a0da6dc0899c1a3ba61da633f2d5cd9d87` 的标签 CI `45095549787` 成功；显式标签 CD `45095707885` 的归档构建、SHA-256/`build.json` 身份校验和 Release job 均成功。标签 CD Actions artifact `14783276706` digest 为 `sha256:cbdf07d8ce3283251b07360bf35b095186e7d5be62597ebd3dce01bc0ce44811`。
+- [GitHub Release](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.6)（Release ID `454896417`）已于 `2026-11-23T01:41:27Z` 发布。资产 `quant-terminal-v0.2.6.tar.gz` 大小 `149445784` 字节，GitHub SHA-256 为 `0decc2efd660fcde99a5c4fc537d9b6f31ac8a7a5ec86e5cee3dfb5bd794e8a2`；sidecar `quant-terminal-v0.2.6.tar.gz.sha256` 大小 `103` 字节，GitHub 资产 SHA-256 为 `6adde92f4ea116aa4472ec5efde4c42b501e5bcbc184c880c8bb1b5b85e05931`。标签及 Release 对应项目版本 `0.2.6`，不授予 Demo/生产交易资格。
 
 ## 0.2.5 — 2026-11-22
 

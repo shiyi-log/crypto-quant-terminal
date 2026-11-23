@@ -687,3 +687,10 @@
 - 同 SHA main 自动归档 CD [`45169076974`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45169076974) 成功，构建、精确 CI 门禁、归档 SHA-256/`build.json` 身份验证和 artifact 上传均通过；main artifact `14815408474` 为 `147457202` 字节，digest `sha256:adbf988c9c50a92b9e948a1932432d8390c0613f95edec34ba77f3f1d03880c4`。显式标签 CD [`45170393282`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45170393282) 的归档与 Release 两个 job 均成功；标签归档 artifact `14817480078` 为 `147450833` 字节，digest `sha256:de32b7e2381e7bbd91d1c8a85cedef69eab9d1384c344829981e70643e487f76`。
 - [GitHub Release v0.2.12](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.12)（Release ID `455367192`）包含 `quant-terminal-v0.2.12.tar.gz`（`149510556` 字节，asset SHA-256 `d845fcfcab9a50655cfbfe13e63cddf717b724a21fd56b4784639300aec7ea01`）及 `.sha256` sidecar（`104` 字节，asset SHA-256 `69912061e783d54f8f4bec9fbae510d7de1c35688fda0cd5c7f8565266a7559a`）。独立下载计算的归档 SHA-256 与 sidecar 及 GitHub asset digest 一致；归档 `build.json` 与提交 `88049c9c44e3b7b9ac974fcd6f3f89ad111b946b`、版本 `0.2.12`、包名 `quant-terminal-v0.2.12` 完全匹配。
 - 本版本包含订单流固定快照证据与系统状态固定说明；策略、行情、账户和系统信息仍为本地固定演示声明，不连接真实账户、交易所或下单接口。P0—P4 阶段验收、P3 可运行旧页面读数对照、P1 唯一 writer 与完整交易执行接线、P2 来源认证/worker/有效留出计算及持久消费、P4 连续 30 天 Demo 与分阶段人工校准均未完成；发布不授予 Demo 或实盘资格。
+
+## 2026-11-23 P3 验收页冷却与部分成交状态
+
+- 验收与上线页增加本地固定冷却及部分成交保护待确认演示。冷却场景显示原因、剩余时间、禁止新增风险和仅接受新鲜信号的恢复规则；部分成交场景展示已成交/委托/剩余量、保护覆盖未知、保留唯一有效保护、撤销剩余入口、停止加仓及减仓对账处置。
+- TDD RED：先加两个状态契约测试，旧组件因缺少两个场景按钮而按预期失败；实现后组件测试 **10/10 通过**。`web-antd` 全量 Vitest **14 个文件/154 项通过**，TypeScript 类型检查、生产构建（7458 模块）及真实 dist 四视口 Playwright **4/4 通过**（1920、1440、768、390）。网络 fixture 检查无账户/认证读取、无业务写请求、无未预期请求和页面异常；`git diff --check` 通过。
+- 新增中文代码注释说明固定样本仅用于检查风险状态文案和版式；切换事件仅写入组件内存运行日志。冷却和部分成交数字均为合成证据，验收结果保持未知、生产资格保持未授权，不接真实账户、API、存储或下单命令。
+- 本切片只补 P3 验收页状态矩阵的一部分；可信旧版读数基线、其他页面状态和 P0/P1/P2/P4 阶段验收仍未完成。源码、版本、CI/CD 和正式发布的精确回执在推送及发布后续记。

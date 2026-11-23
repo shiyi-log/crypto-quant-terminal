@@ -172,6 +172,59 @@ describe('固定演示验收证据视图', () => {
     );
   });
 
+  it('冷却演示显示剩余时间、禁止新增风险且不形成验收或生产资格', async () => {
+    const view = open();
+
+    view.get<HTMLButtonElement>('[data-scenario="cooldown"]').click();
+    await nextTick();
+
+    const evidence = view.get('[data-testid="cooldown-evidence"]');
+    expect(view.get('[data-testid="acceptance-verdict"]').textContent).toContain(
+      '冷却中，验收未知',
+    );
+    expect(evidence.textContent).toContain('00:47:30');
+    expect(evidence.textContent).toContain('连续三笔完整往返净亏');
+    expect(evidence.textContent).toContain('禁止新增风险');
+    expect(evidence.textContent).toContain('冷却结束后只接受新鲜信号');
+    expect(view.get('[data-testid="production-eligibility"]').textContent).toContain(
+      '未授权',
+    );
+    expect(view.get('[data-testid="acceptance-run-log"]').textContent).toContain(
+      '本地固定演示冷却',
+    );
+    expect(view.get('[data-testid="acceptance-run-log"]').textContent).toContain(
+      'cooldown_active',
+    );
+  });
+
+  it('部分成交保护待确认时保留旧保护、停止入口风险且验收保持未知', async () => {
+    const view = open();
+
+    view
+      .get<HTMLButtonElement>('[data-scenario="partial-fill-protection"]')
+      .click();
+    await nextTick();
+
+    const evidence = view.get('[data-testid="partial-fill-evidence"]');
+    expect(view.get('[data-testid="acceptance-verdict"]').textContent).toContain(
+      '部分成交保护待确认，验收未知',
+    );
+    expect(evidence.textContent).toContain('0.012 / 0.020 ETH');
+    expect(evidence.textContent).toContain('剩余未成交 0.008 ETH');
+    expect(evidence.textContent).toContain('保护覆盖量未知');
+    expect(evidence.textContent).toContain('保留唯一有效保护');
+    expect(evidence.textContent).toContain('撤销剩余入口');
+    expect(evidence.textContent).toContain('停止加仓');
+    expect(evidence.textContent).toContain('减仓与对账');
+    expect(evidence.textContent).toContain('禁止新增风险');
+    expect(view.get('[data-testid="production-eligibility"]').textContent).toContain(
+      '未授权',
+    );
+    expect(view.get('[data-testid="acceptance-run-log"]').textContent).toContain(
+      'partial_fill_protection_unconfirmed',
+    );
+  });
+
   it('审批按钮只触发本地演练回调并始终保留未授权状态', async () => {
     const onAction = vi.fn();
     const onApprove = vi.fn();

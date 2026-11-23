@@ -1,7 +1,13 @@
 <script lang="ts" setup>
 import { computed, nextTick, ref, watch } from 'vue';
 
-type Scenario = 'ongoing' | 'missing' | 'expired' | 'hard-failure';
+type Scenario =
+  | 'ongoing'
+  | 'missing'
+  | 'expired'
+  | 'cooldown'
+  | 'partial-fill-protection'
+  | 'hard-failure';
 type DayEvidence = {
   day: number;
   date: string;
@@ -168,6 +174,19 @@ const verdict = computed(() => {
       reason: 'acceptance_evidence_incomplete',
       detail: '缺失事实保持未知；不得按零值、停机日或未来日期补算。',
     };
+  if (scenario.value === 'cooldown')
+    return {
+      title: '冷却中，验收未知',
+      reason: 'cooldown_active',
+      detail: '固定演示冷却尚未结束，禁止新增风险；该场景不形成 Demo 验收结论。',
+    };
+  if (scenario.value === 'partial-fill-protection')
+    return {
+      title: '部分成交保护待确认，验收未知',
+      reason: 'partial_fill_protection_unconfirmed',
+      detail: '保护覆盖量仍未知，停止加仓并进入减仓与对账；生产资格保持未授权。',
+    };
+  // 冷却与部分成交证据固定写在模板中，仅用于检查风险状态文案与版式。
   // 过期快照只用于回看，不能作为当前验收或准入依据。
   if (scenario.value === 'expired')
     return {
@@ -231,15 +250,19 @@ function changeScenario(value: Scenario) {
     ongoing: '切换到进行中场景',
     missing: '切换到证据缺失场景',
     expired: '切换到证据过期场景',
+    cooldown: '切换到冷却场景',
+    'partial-fill-protection': '切换到部分成交保护待确认场景',
     'hard-failure': '切换到硬失败场景',
   };
   notice.value = labels[value] + '；只更新当前页面演示状态。';
   appendRunLog(
-    value === 'hard-failure' ? '警告' : '信息',
+    value === 'hard-failure' || value === 'partial-fill-protection'
+      ? '警告'
+      : '信息',
     '验收场景演练',
     '本地演练完成',
     verdict.value.reason,
-    `${labels[value]}；窗口为 2026-10-25 至 2026-11-23（北京时间），不连接交易账户，生产资格保持未授权。`,
+    `${labels[value]}；窗口为 2026-10-25 至 2026-11-23（北京时间），只使用本地合成样本，不连接交易账户；生产资格保持未授权。${value === 'cooldown' ? ' 本地固定演示冷却期间禁止新增风险，结束后只接受新鲜信号。' : ''}${value === 'partial-fill-protection' ? ' 保留唯一有效保护，撤销剩余入口、停止加仓并进入减仓与对账。' : ''}`,
     startedAt,
   );
   props.onAction?.(labels[value], 'acceptance-scenario');
@@ -351,6 +374,22 @@ function recordApproval() {
       </button
       ><button
         type="button"
+        data-scenario="cooldown"
+        :aria-pressed="scenario === 'cooldown'"
+        @click="changeScenario('cooldown')"
+      >
+        冷却
+      </button
+      ><button
+        type="button"
+        data-scenario="partial-fill-protection"
+        :aria-pressed="scenario === 'partial-fill-protection'"
+        @click="changeScenario('partial-fill-protection')"
+      >
+        部分成交保护待确认
+      </button
+      ><button
+        type="button"
         data-scenario="hard-failure"
         :aria-pressed="scenario === 'hard-failure'"
         @click="changeScenario('hard-failure')"
@@ -374,6 +413,41 @@ function recordApproval() {
       </div>
       <code>demo_equity_snapshot_expired</code>
       <p>固定演示数据保留最后快照供回看，不推算当前账户权益。</p>
+    </section>
+    <section
+      v-if="scenario === 'cooldown'"
+      class="scenario-evidence"
+      data-testid="cooldown-evidence"
+      aria-label="固定演示冷却证据"
+    >
+      <div class="scenario-evidence-head">
+        <span>本地固定演示冷却 · 禁止新增风险</span>
+        <strong>剩余 00:47:30</strong>
+      </div>
+      <dl>
+        <div><dt>触发原因</dt><dd>连续三笔完整往返净亏</dd></div>
+        <div><dt>演示状态</dt><dd>冷却尚未结束</dd></div>
+        <div><dt>恢复规则</dt><dd>冷却结束后只接受新鲜信号，不补发旧信号</dd></div>
+      </dl>
+      <p>固定合成样本仅用于展示风险状态，不代表真实账户或实际冷却计时。</p>
+    </section>
+    <section
+      v-if="scenario === 'partial-fill-protection'"
+      class="scenario-evidence"
+      data-testid="partial-fill-evidence"
+      aria-label="固定演示部分成交与保护证据"
+    >
+      <div class="scenario-evidence-head">
+        <span>本地固定演示 · 保护覆盖尚未确认</span>
+        <strong>禁止新增风险</strong>
+      </div>
+      <dl>
+        <div><dt>成交量 / 委托量</dt><dd>0.012 / 0.020 ETH</dd></div>
+        <div><dt>剩余未成交</dt><dd>剩余未成交 0.008 ETH · 撤销剩余入口</dd></div>
+        <div><dt>保护覆盖量</dt><dd>未知 · 保留唯一有效保护</dd></div>
+        <div><dt>后续处置</dt><dd>停止加仓，进入减仓与对账</dd></div>
+      </dl>
+      <p>保护拒绝或提交状态未知时，不得撤销唯一有效保护；合成样本不代表实际成交或保护单。</p>
     </section>
     <section class="window-panel" aria-labelledby="window-title">
       <div class="panel-head">
@@ -767,6 +841,10 @@ p {
 .verdict[data-scenario='expired'] {
   border-left-color: var(--amber);
 }
+.verdict[data-scenario='cooldown'],
+.verdict[data-scenario='partial-fill-protection'] {
+  border-left-color: var(--amber);
+}
 .verdict-label {
   font-size: 11px;
   color: var(--muted);
@@ -784,6 +862,10 @@ p {
 .verdict[data-scenario='expired'] h2 {
   color: var(--amber);
 }
+.verdict[data-scenario='cooldown'] h2,
+.verdict[data-scenario='partial-fill-protection'] h2 {
+  color: var(--amber);
+}
 .verdict p {
   font-size: 12px;
   color: var(--muted);
@@ -797,6 +879,7 @@ code {
 }
 .scenario-switch {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 14px 0 22px;
 }
@@ -846,6 +929,48 @@ code {
 }
 .expired-evidence p {
   grid-column: 1 / -1;
+  margin: 0;
+}
+.scenario-evidence {
+  margin: -8px 0 18px;
+  padding: 14px 16px;
+  border: 1px solid #c79a4a66;
+  background: #c79a4a0a;
+}
+.scenario-evidence-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--amber);
+  font-size: 12px;
+}
+.scenario-evidence-head strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.scenario-evidence dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 18px;
+  margin: 14px 0 10px;
+}
+.scenario-evidence dl > div {
+  display: grid;
+  gap: 5px;
+}
+.scenario-evidence dt,
+.scenario-evidence p {
+  color: var(--muted);
+  font-size: 11px;
+}
+.scenario-evidence dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.scenario-evidence p {
   margin: 0;
 }
 .window-panel,
@@ -1117,6 +1242,13 @@ button:focus-visible {
   }
   .expired-evidence p {
     grid-column: auto;
+  }
+  .scenario-evidence-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .scenario-evidence dl {
+    grid-template-columns: 1fr;
   }
   .evidence-layout {
     grid-template-columns: 1fr;

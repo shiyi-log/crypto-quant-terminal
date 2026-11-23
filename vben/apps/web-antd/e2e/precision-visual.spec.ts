@@ -132,6 +132,38 @@ for (const viewport of viewports) {
     );
     await expect(scenarioLog).toContainText('页面内处理耗时');
 
+    await page.getByRole('button', { name: '冷却', exact: true }).click();
+    await expect(page.getByTestId('acceptance-verdict')).toContainText(
+      '冷却中，验收未知',
+    );
+    await expect(page.getByTestId('cooldown-evidence')).toContainText(
+      '剩余 00:47:30',
+    );
+    await expect(page.getByTestId('cooldown-evidence')).toContainText(
+      '冷却结束后只接受新鲜信号',
+    );
+    await expect(page.getByTestId('production-eligibility')).toHaveText(
+      '未授权',
+    );
+    await page
+      .getByRole('button', { name: '部分成交保护待确认', exact: true })
+      .click();
+    await expect(page.getByTestId('acceptance-verdict')).toContainText(
+      '部分成交保护待确认，验收未知',
+    );
+    await expect(page.getByTestId('partial-fill-evidence')).toContainText(
+      '0.012 / 0.020 ETH',
+    );
+    await expect(page.getByTestId('partial-fill-evidence')).toContainText(
+      '保留唯一有效保护',
+    );
+    await expect(page.getByTestId('partial-fill-evidence')).toContainText(
+      '进入减仓与对账',
+    );
+    await expect(page.getByTestId('production-eligibility')).toHaveText(
+      '未授权',
+    );
+
     const approvalTrigger = page.getByRole('button', { name: '演练审批记录' });
     await approvalTrigger.focus();
     await approvalTrigger.click();

@@ -700,4 +700,21 @@
 
 - 因子目录详情按当前选择展示固定演示输入质量：成交量突破为完整并说明 20 根已收盘 K 线基线齐全；动量延续为过期并说明最后一段样本超过演示有效窗口；盘口失衡为未知并说明盘口序列含断档。筛选无匹配时仍清除详情。状态不表示真实数据质量或策略准入，也不写入事件日志。
 - TDD RED：新状态矩阵测试先因完整样本缺少质量原因而失败；实现后 `ResearchPreview.test.ts` **9/9 通过**。全量 Vitest **96 个文件/740 项通过**（仓库既有 happy-dom AbortError teardown 输出与 sortable mock hoist 警告，命令退出码为 0）；业务前端 TypeScript 类型检查通过，生产构建转换 7458 个模块通过；真实 `dist` Playwright **67/67 通过**，覆盖四视口、三种输入状态、无匹配清空、无横向溢出、无账户/认证请求和无业务写请求。`git diff --check` 通过。
-- 中文源码提交 `9f97a5d` 已推送到 `main`。本条源码 commit 的精确 CI/CD 回执在对应 SHA 的 Actions 完成后补录；当前项目版本仍为 `0.2.12`，本切片不改版本。
+- 中文源码提交 `9f97a5d15727fdc77a77d79e839f5b42054ecabb` 已推送到 `main`。其直接 CI [`45187263871`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45187263871) 因随后推送独立台账提交而取消；包含该源码树的台账提交 `ebe86a47afa554c50d7b74f8f6772b8487b8c7ba` 精确 CI [`45187770338`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45187770338) 成功，CD [`45187829332`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45187829332) 按 workflow 条件跳过且无归档 artifact。当前项目版本仍为 `0.2.12`，本切片不改版本。
+
+## 2026-11-23 P3 实验任务未知状态与 worker 未验证
+
+- 实验队列新增固定未知状态样本及筛选。详情分别显示任务状态未知、进度未知和 worker 未验证原因；明确无法判定任务是否停止或仍在运行，不推断为暂停、成功或完成。搜索与状态筛选仍组合生效，无匹配时清空旧详情。代码注释说明该状态仅来自本地固定样本，不探测 worker。
+- TDD RED：未知筛选原先返回空列表，状态矩阵测试按预期失败；增加演示样本后组件测试 **10/10 通过**。全量 Vitest **96 个文件/741 项通过**（happy-dom AbortError teardown 输出及 sortable mock hoist 警告为仓库既有现象，退出码 0）；业务前端类型检查通过，生产构建转换 **7458 个模块**通过；真实 `dist` Playwright **4/4 通过**（1920、1440、768、390），验证未知状态原因、进度未知、不显示 0%、筛选无匹配详情清除、视口无横向溢出及浏览器只读网络夹具。`git diff --check` 通过。
+- 本小节仅补 P3 固定演示状态矩阵，不代表 worker 或真实任务状态可用，不改变版本 `0.2.12`。源码与本条台账分开提交；精确 CI/CD 回执待推送后核验。
+- 中文源码提交 `d2ab74ac3bbd0e865b8089d3d34bfe0df6476e08` 已推送到 `main`。精确 CI [`45189008275`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45189008275) 失败：后端与 PostgreSQL 集成测试 job 成功；前端单测、类型检查、构建成功，但真实浏览器 job 的 **65/67** 失败在实验工作区继续断言已更换的“压力成本复核”标题。CI artifact `14825920748`，17,076,013 字节，digest `sha256:78bd413b14627729f622d2e8c59ccd24722754a28a6beefd376d328c29426ce9`。精确 CD `45189933919` 因上游 CI 失败而跳过，两个 job 均 skipped，无 CD artifact；本源码修正切片将更新浏览器断言并重新提交验证。
+
+## 2026-11-23 P3 验收读取失败固定演示状态
+
+- 验收与上线页新增本地静态读取故障状态：当前权益/验收标为未知，最近合成快照只供回看，明确不具备 Demo 准入资格，生产资格仍未授权。中文代码注释约束该场景不得重试或读取账户/服务；场景运行记录只追加到组件内存。
+- TDD RED：在项目 `--dom` 测试环境下，新增测试先因缺少读取失败场景按钮按预期失败；实现后 `AcceptancePreview.test.ts` **11/11** 通过。全量 Vitest **96 个文件/742 项通过**（命令退出码 0；happy-dom AbortError teardown 输出及 sortable mock hoist 警告仍为既有现象）；业务前端类型检查、生产构建（7458 模块）通过。
+- 真实 `dist` Playwright 全套 **67/67** 通过，含读取故障场景及 1920/1440/768/390 四视口的读取失败文案、最近快照、未知权益、未授权状态、无横向溢出、无账户/API 读取与无写请求；12 项相关工作区与首页用例先行复核亦通过。`git diff --check` 通过。
+- 同时修正真实 CI 暴露的实验工作区浏览器断言：任务详情实际为文章区域且默认选择“波动窗口复核”，改为断言真实详情的未知进度和 worker 未验证事实。此修正同时处理精确 CI `45189008275` 中的两项浏览器失败；本切片不改项目版本 `0.2.12`，不连接账户、服务或交易命令。
+- 源码与本台账回执分开提交；本源码 SHA 的 CI/CD 精确回执待推送后核验。
+- 中文源码提交 `47f82722d1bdb1e6e1eda59ad45aa44ce93c9efa` 已推送到 `main`。精确 CI [`45191722676`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45191722676) 成功：后端/PostgreSQL 集成测试与前端单测、类型检查、生产构建、真实 dist 浏览器流程均通过。浏览器证据 artifact `14826432206` 大小 `7666108` 字节，digest `sha256:fd0fb00cc1df48c1a0f131e0e8e7b62f030443f904a2dfb590418151c3191665`，有效至 2026-12-07。
+- 同 SHA main 归档 CD [`45192475688`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45192475688) 成功：CI 身份门禁、前后端构建、归档 SHA-256/`build.json` 身份核验与上传均通过。发布 artifact `14825943131` 大小 `147476136` 字节，digest `sha256:e01399c1fbd3577f8058391beba86adb05b3fbf774c39fb8a0e574bdfe6d88de`，有效至 2026-12-23；无版本标签，Release job 按条件跳过。本切片不改项目版本 `0.2.12`。

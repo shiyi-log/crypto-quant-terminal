@@ -29,7 +29,7 @@ const workspaces = [
     preview: 'governance',
     workspace: 'operations',
     heading: '运维与证据',
-    marker: '账户快照已封存',
+    marker: '事件详情',
   },
 ] as const;
 
@@ -84,6 +84,9 @@ for (const viewport of [
           'BTCUSDT',
         );
       } else if (item.route === 'operations') {
+        await expect(page.getByTestId('log-detail')).toContainText(
+          'demo_snapshot_recorded',
+        );
         await page
           .getByRole('combobox', { name: '日志级别' })
           .selectOption('warning');

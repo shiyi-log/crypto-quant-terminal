@@ -4,6 +4,8 @@
 
 - 增加订单流固定快照证据字段与未知/过期状态，并补充系统页固定服务状态说明。前端仍不连接真实账户、行情、API、数据库或交易所，也不执行下单。
 - 订单流源码提交 `b1c3623c523fdf861f36a56f74d81c5c01b43cc6` 的精确 CI `45164779373`、main 归档 CD `45165498053` 成功；系统状态页源码提交 `6b918cdf09f32b393245623e8f36ffa6847d9f6f` 的精确 CI `45167165177` 与 main 归档 CD `45167833415` 成功。其浏览器证据 artifact `14815456479` digest `sha256:c78ec30eb93b44f25fad49bca0cdc0b06b4f36c1cf40715c19e4ab9b2dbc1595`；源码归档 artifact `14814064622` digest `sha256:28e22dd973633d1d93ac33f9827c298288b218ef6136c6aa4c8c6e9a96caa1f4`。
+- 项目版本与锁文件同步为 `0.2.12`。版本提交 `88049c9c44e3b7b9ac974fcd6f3f89ad111b946b` 的精确 main CI `45168419466`、标签 `v0.2.12` CI `45169621457` 均成功；main 归档 CD `45169076974` 与显式标签发布 CD `45170393282` 成功。发布 artifact `14817480078` digest `sha256:de32b7e2381e7bbd91d1c8a85cedef69eab9d1384c344829981e70643e487f76`。
+- [GitHub Release v0.2.12](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.12)（Release ID `455367192`）已发布；TAR 资产 SHA-256 `d845fcfcab9a50655cfbfe13e63cddf717b724a21fd56b4784639300aec7ea01`，sidecar 资产 SHA-256 `69912061e783d54f8f4bec9fbae510d7de1c35688fda0cd5c7f8565266a7559a`。独立下载的 TAR 校验和与 sidecar/资产摘要相同；包内 `build.json` 精确绑定提交 `88049c9c44e3b7b9ac974fcd6f3f89ad111b946b`、版本 `0.2.12` 与包名 `quant-terminal-v0.2.12`。
 - P0—P4 阶段验收、P3 旧读数对照、P1 唯一 writer/交易执行接线、P2 来源认证和留出消费、P4 30 天自然 Demo 与分阶段人工校准仍未完成；该版本不授予 Demo 或实盘资格。
 
 ## 0.2.11 — 2026-11-23

@@ -197,6 +197,16 @@ for (const viewport of viewports) {
     await expect(page.getByTestId('preview-content')).toContainText(
       '固定原因码',
     );
+    const logSearch = page.getByRole('searchbox', { name: '日志搜索' });
+    await logSearch.fill('没有对应事件');
+    await expect(page.getByTestId('log-empty')).toContainText(
+      '没有符合搜索条件的固定演示日志',
+    );
+    await expect(page.getByTestId('log-detail')).toHaveCount(0);
+    await logSearch.clear();
+    await expect(page.locator('[data-log="evt-1041"]')).toBeVisible();
+    await expect(page.getByTestId('log-detail')).toContainText('evt-1041');
+    await expect(page.getByTestId('log-empty')).toHaveCount(0);
     await page.locator('[data-log="evt-1042"]').click();
     await expect(page.getByTestId('preview-content')).toContainText(
       'funding_fee_observation_delayed',

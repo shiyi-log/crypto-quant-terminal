@@ -174,6 +174,29 @@ describe('治理工作区演示交互', () => {
     expect(view.get('[data-log="evt-1042"]').classList.contains('active')).toBe(true);
   });
 
+  it('日志搜索无匹配时清除旧详情并在清空后恢复固定事件', async () => {
+    const view = open('operations');
+    const search = view.get<HTMLInputElement>('input[aria-label="日志搜索"]');
+
+    search.value = '没有对应事件';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+
+    expect(view.get('[data-testid="log-empty"]').textContent).toContain(
+      '没有符合搜索条件的固定演示日志',
+    );
+    expect(view.get('[data-testid="log-list"]').querySelectorAll('[data-log]')).toHaveLength(0);
+    expect(view.element.querySelector('[data-testid="log-detail"]')).toBeNull();
+
+    search.value = '';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+
+    expect(view.get('[data-testid="log-list"]').textContent).toContain('evt-1041');
+    expect(view.get('[data-testid="log-detail"]').textContent).toContain('evt-1041');
+    expect(view.element.querySelector('[data-testid="log-empty"]')).toBeNull();
+  });
+
   it('通过固定演示事件 ID 定位历史日志并生成可复制的深链接', () => {
     const view = open('operations', 'evt-1042');
 

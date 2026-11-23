@@ -304,5 +304,20 @@ describe('治理工作区演示交互', () => {
     expect(view.get('[data-testid="system-status-scope"]').textContent).toContain(
       '不探测真实运行状态',
     );
+    expect(view.get('[data-testid="system-status-table"]').textContent).toContain(
+      '过期 · 仅供回看',
+    );
+    expect(view.get('[data-testid="system-status-table"]').textContent).toContain(
+      '演示读取失败',
+    );
+    expect(view.get('[data-testid="system-status-table"]').textContent).toContain(
+      '固定预置故障场景',
+    );
+    expect(
+      view.get('[data-state="演示读取失败"]').textContent,
+    ).toContain('演示读取失败');
+    expect(view.get('[data-testid="system-status-scope"]').textContent).toContain(
+      '不代表实时健康结论',
+    );
   });
 });

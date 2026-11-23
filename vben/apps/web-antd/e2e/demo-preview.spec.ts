@@ -350,6 +350,21 @@ for (const viewport of viewports) {
     await expect(page.getByTestId('system-status-scope')).toContainText(
       '不探测真实运行状态',
     );
+    await expect(page.getByTestId('system-status-table')).toContainText(
+      '过期 · 仅供回看',
+    );
+    await expect(page.getByTestId('system-status-table')).toContainText(
+      '演示读取失败',
+    );
+    await expect(page.getByTestId('system-status-table')).toContainText(
+      '固定预置故障场景',
+    );
+    await expect(
+      page.locator('[data-state="演示读取失败"]'),
+    ).toBeVisible();
+    await expect(page.getByTestId('system-status-scope')).toContainText(
+      '不代表实时健康结论',
+    );
     const settingsDimensions = await page.evaluate(() => ({
       document: document.documentElement.scrollWidth,
       viewport: window.innerWidth,

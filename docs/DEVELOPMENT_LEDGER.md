@@ -616,3 +616,11 @@
 - TDD RED：先增加“盘口”搜索和无匹配状态回归，原实现因继续展示动量因子旧详情而失败；修复后研究页交互定向测试 **7 项通过**。TypeScript 类型检查、生产构建 **11/11**、变更文件格式检查和真实 dist 四视口 Playwright **4/4 通过**；浏览器 fixture 核实账户/API 读取、认证请求和写操作均为空。
 - 本小节只调整固定样本的展示选择，不读取账户、不连接研究 API、不写浏览器存储、不发送交易命令；P3 其他页面、旧读数对照和 P0/P1/P2/P4 阶段验收仍未完成。
 - 中文源码提交 `0f83c36e5c659d4c17a0e3ab647f9859f34b1de0` 已推送至 `main`。本机定向组件测试 7 项、类型检查、生产构建 11/11、格式与差异检查、真实构建页面四视口 Playwright 4/4 均通过。精确 push CI [`45140421329`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45140421329) 成功；完整后端/PostgreSQL 集成、全前端 Vitest、类型检查、生产构建和真实构建页面只读浏览器流程均通过。自动主线归档 CD [`45140981557`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45140981557) 成功，同 SHA CI 门禁、生产构建、归档 SHA-256/`build.json` 身份核验与上传均通过；artifact `14801463523` 大小 `147449443` 字节，digest `sha256:614f1aa21755f5fcbf31442ffd6b98fb716c62a393d9e15800b8202f2ee7ffd9`，尚未过期。无版本标签，Release job 按条件跳过。
+
+## 2026-11-23 版本同步至 0.2.9
+
+- 项目版本源 `pyproject.toml` 与 `uv.lock` 同步为 `0.2.9`，更新变更记录；依赖锁、版本一致性和发布身份测试在版本提交前通过。
+- 版本提交 `5345805cbc7e2eaf46a214e6a045c992e1c86e85` 的精确 main push CI [`45142438927`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45142438927) 成功；main 自动归档 CD [`45142971044`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45142971044) 成功，产物 `14803655259` digest `sha256:05fe19d8ae65dc75ef78800c45da034fe43712fc83aa55feb4c65915950caf2f`。Release job 在 main 自动归档中按设计跳过。
+- 唯一附注标签 `v0.2.9` 指向版本提交；标签 push CI [`45143511269`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45143511269) 成功，显式 `ref=v0.2.9` 发布 CD [`45144269116`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45144269116) 的归档身份、哈希验证和 Release 创建任务成功。
+- [GitHub Release v0.2.9](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.9) 已发布。独立下载归档的 SHA-256 为 `b8a751b5c1605d8466b0d25073e3a2a4e62c93ac4420958031bd9ea3bcbb088c`，与资产 digest 相同；`build.json` 精确包含提交 `5345805cbc7e2eaf46a214e6a045c992e1c86e85`、版本 `0.2.9` 和包 `quant-terminal-v0.2.9`；归档计 3919 个成员。
+- 本节只核验版本代码和归档身份，不表示数据库恢复演练、部署配置核对、P0—P4 阶段验收或 Demo/实盘批准已完成。

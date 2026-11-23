@@ -498,3 +498,10 @@
 - 身份合同通过后仍返回 `status=not_estimable`、`execution_ticket=false` 和固定 `holdout_calculator_unavailable` 原因码；本节未接数据库领取事务、研究 worker、留出计算器或验收/生产授权，避免在计算路径尚未具备时永久消费留出机会。
 - TDD 先运行新增两个 RED 合同，旧实现分别未拒绝 `pending` 候选和错绑实验族；补入校验后，`tests/test_research_two_stage_protocol.py` **7 项通过**。研究二阶段协议、0009 迁移合同和未跟踪用户研究合同组合 **19 项通过**；Ruff、compileall、`git diff --check` 通过。
 - 同轮恢复验证组合在完整 Demo schema 清理阶段因 psycopg `another command is already in progress` 挂起并由操作者中断，不能将恢复全套记为通过；生产数据库未执行迁移。版本仍为 `0.2.5`；本节待独立中文提交、推送及精确 SHA CI/CD 核验。未跟踪的用户合同文件保持原样且不纳入提交。
+
+## 2026-11-23 P1 writer 预检身份边界补强
+
+- 回归合同发现原只读预检仅比较命令冻结 binding 与依赖 namespace，可能在持久 Demo 会话 namespace 或旧账本 binding 已偏离时仍报告 ready，而随后 `activate_external()` 会拒绝。新增 RED 测试覆盖持久 namespace、旧账本策略哈希、非空 shared sessions 和 paper 策略规则哈希错配，证明旧预检会误报 ready。
+- 预检现在要求全局 `DataStore.check_schema()` 返回 `{status: compatible}`，Demo 和命令 schema 明确兼容；随后拒绝非空 shared sessions，读取并比对持久 selected account、Demo policy、虚拟账本 namespace 和 yielded 状态，再比对 legacy binding 的策略/规则/执行/策略哈希及 paper account 规则/执行哈希。所有读取均在获得 writer 能力前完成；中文拒绝日志包含检查阶段、固定原因码、异常类型和单调耗时，不记录账户值或异常正文。激活边界仍会再次核验身份并原子取得 flock。
+- `tests/test_demo_writer.py` **51 项通过**；期间完整测试首次失败是内存 DataStore fixture 缺少 `get_document()`，补齐替身接口后复跑通过。Ruff、compileall、`git diff --check` 均通过。未改数据库、未启动 writer、未访问 Binance 或读取凭据，Demo/生产资格继续关闭。
+- 独立中文提交和推送后，必须按该补强的精确 SHA 核对 CI 及 CD 归档；版本仍为 `0.2.5`。P1 启动预检提交 `d38eef824e35bdbe3054b33a86dffb8b1895c4ba` 的 CI run `45088428628` 第二次运行通过，但对应 CD 尚无成功回执。

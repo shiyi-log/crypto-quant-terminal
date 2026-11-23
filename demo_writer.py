@@ -102,6 +102,7 @@ class DemoWriterDriver:
         LOGGER.info('Demo writer 只读启动预检开始；不读取凭据、不激活服务、新增开仓保持关闭')
         reason = 'writer_preflight_passed'
         failure_type = None
+        phase = '控制器模式与进程锁'
         try:
             if self.controller.driver_mode != 'external_paused':
                 reason = 'writer_driver_mode_mismatch'
@@ -129,6 +130,7 @@ class DemoWriterDriver:
                 # 激活阶段会原子创建并持有缺失的锁文件；预检不创建文件，
                 # 但仍由激活边界再次拒绝并发接管。
                 if reason == 'writer_preflight_passed':
+                    phase = '组合根运行身份'
                     scope = self.target.binding.to_dict()['scope']
                     identity_matches = (self.commands.account_id == scope['account_id']
                         and self.commands.environment == scope['environment']
@@ -144,13 +146,59 @@ class DemoWriterDriver:
                     if not identity_matches:
                         reason = 'writer_identity_mismatch'
                     else:
-                        self.controller.data_store.check_schema()
-                        self.controller.demo_store.check_schema()
+                        from demo_runner_controller import SHARED_STATE_KEY, STATE_KEY
+
+                        phase = '全局数据库结构'
+                        data_schema = self.controller.data_store.check_schema()
+                        if (not isinstance(data_schema, dict)
+                                or data_schema.get('status') != 'compatible'):
+                            raise RuntimeError('global_schema_incompatible')
+                        phase = 'Demo账本迁移结构'
+                        if self.controller.demo_store.check_schema() is not True:
+                            raise RuntimeError('demo_schema_incompatible')
+                        phase = '命令账本结构'
                         if self.commands.check_schema() is not True:
                             raise RuntimeError('command_schema_incompatible')
+                        phase = '冻结命令绑定'
                         binding = self.commands.get_binding(self.target.binding.binding_id)
                         if binding != self.target.binding.to_dict():
                             reason = 'writer_binding_mismatch'
+                        else:
+                            phase = '共享会话恢复边界'
+                            shared = self.controller.data_store.get_document(SHARED_STATE_KEY, {}) or {}
+                            if not isinstance(shared, dict) or shared.get('sessions'):
+                                reason = 'writer_shared_session_unsupported'
+                            else:
+                                phase = '持久Demo会话身份'
+                                persisted = self.controller.data_store.get_document(STATE_KEY, {}) or {}
+                                session_matches = (isinstance(persisted, dict)
+                                    and persisted.get('yieldedFlat') is not True
+                                    and persisted.get('selectedAccountId') == self.target.strategy_id
+                                    and persisted.get('demoPolicyHash') == self.target.demo_policy_hash
+                                    and persisted.get('virtualAccountKey') == self.target.binding.namespace)
+                                if not session_matches:
+                                    reason = 'writer_session_identity_mismatch'
+                                elif self.controller.demo_store.virtual_account_key != self.target.binding.namespace:
+                                    reason = 'writer_session_identity_mismatch'
+                                else:
+                                    phase = '旧版Demo账本策略绑定'
+                                    legacy = self.controller.demo_store.get_binding()
+                                    legacy_matches = (isinstance(legacy, dict)
+                                        and legacy.get('strategy_id') == self.target.strategy_id
+                                        and legacy.get('rule_hash') == self.target.rule_hash
+                                        and legacy.get('execution_hash') == self.target.execution_hash
+                                        and legacy.get('demo_policy_hash') == self.target.demo_policy_hash)
+                                    if not legacy_matches:
+                                        reason = 'writer_legacy_binding_mismatch'
+                                    else:
+                                        phase = 'paper策略冻结身份'
+                                        paper = self.controller.paper.account(self.target.strategy_id)
+                                        paper_matches = (isinstance(paper, dict)
+                                            and paper.get('strategy_id') == self.target.strategy_id
+                                            and paper.get('rule_hash') == self.target.rule_hash
+                                            and paper.get('execution_hash') == self.target.execution_hash)
+                                        if not paper_matches:
+                                            reason = 'writer_paper_binding_mismatch'
         except Exception as exc:
             reason = 'writer_schema_preflight_failed'
             failure_type = type(exc).__name__
@@ -160,8 +208,8 @@ class DemoWriterDriver:
             LOGGER.info('Demo writer 只读启动预检通过 schema=兼容 冻结绑定=一致 writer锁=空闲 耗时毫秒=%d；不构成验收或生产批准',
                         duration)
         else:
-            LOGGER.warning('Demo writer 只读启动预检拒绝 原因码=%s 异常类型=%s 耗时毫秒=%d；服务未激活，资格保持关闭',
-                           reason, failure_type or 'none', duration)
+            LOGGER.warning('Demo writer 只读启动预检拒绝 检查阶段=%s 原因码=%s 异常类型=%s 耗时毫秒=%d；服务未激活，资格保持关闭',
+                           phase, reason, failure_type or 'none', duration)
         return {'ready': ready, 'reason_code': reason, **FALSE_FLAGS}
 
     def activate(self):

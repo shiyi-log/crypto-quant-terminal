@@ -11,7 +11,7 @@ import pytest
 
 from demo_command_store import DemoCommandStore, FrozenCommandBinding
 from demo_evidence_store import DemoEvidenceStore
-from demo_runner_controller import DemoRunnerController
+from demo_runner_controller import DemoRunnerController, SHARED_STATE_KEY, STATE_KEY
 from tests.test_demo_archive_providers import MemorySQL, Result
 
 SCOPE = {'environment': 'binance_demo', 'account_id': 'writer-account', 'stage_id': 'stage-1000',
@@ -74,7 +74,19 @@ class Controller(DemoRunnerController):
     def __init__(self, store):
         self.driver_mode = 'external_paused'
         self.data_store = store
-        self.demo_store = SimpleNamespace(store=store, environment='binance_demo', virtual_account_key='demo_default')
+        self.session_state = {
+            'selectedAccountId': 'paper-1', 'demoPolicyHash': '3' * 64,
+            'virtualAccountKey': 'demo_default', 'yieldedFlat': False,
+        }
+        self.shared_state = {}
+        self.demo_store = SimpleNamespace(
+            store=store, environment='binance_demo', virtual_account_key='demo_default',
+            get_binding=lambda: {'strategy_id': 'paper-1', 'rule_hash': '1' * 64,
+                'execution_hash': '2' * 64, 'demo_policy_hash': '3' * 64},
+        )
+        self.paper = SimpleNamespace(account=lambda _strategy: {
+            'strategy_id': 'paper-1', 'rule_hash': '1' * 64, 'execution_hash': '2' * 64,
+        })
         self._file_lock = None
         self._external_capability = None
         self.service = None
@@ -89,6 +101,13 @@ class Controller(DemoRunnerController):
         self.exits = 0
         self.exit_refused = False
         self.activate_calls = 0
+
+    def get_document(self, key, default=None):
+        if key == STATE_KEY:
+            return deepcopy(self.session_state)
+        if key == SHARED_STATE_KEY:
+            return deepcopy(self.shared_state)
+        return deepcopy(default)
 
     def activate_external(self, target, *, command_store):
         self.activate_calls += 1
@@ -123,7 +142,7 @@ class Controller(DemoRunnerController):
 
 def setup(kind='pause_entries'):
     sql = CommandSQL()
-    sql.check_schema = lambda: True
+    sql.check_schema = lambda: {'status': 'compatible'}
     commands = DemoCommandStore(sql, SCOPE['account_id'])
     commands.check_schema = lambda: True
     binding = FrozenCommandBinding('binding-1', SCOPE, HASHES, 'demo_default')
@@ -132,6 +151,7 @@ def setup(kind='pause_entries'):
                      reason_code='operator_pause' if kind == 'pause_entries' else 'operator_reconcile', submitted_ms=1000)
     archive = DemoEvidenceStore(sql, SCOPE['account_id'], SCOPE['stage_id'])
     controller = Controller(sql)
+    sql.get_document = controller.get_document
     controller.demo_store.check_schema = lambda: True
     target = api().FrozenWriterTarget(binding, strategy_id='paper-1', rule_hash='1' * 64,
         execution_hash='2' * 64, demo_policy_hash='3' * 64)
@@ -141,7 +161,7 @@ def setup(kind='pause_entries'):
 
 def test_preflight_checks_frozen_identity_schema_and_writer_lock_without_activation(caplog):
     writer, controller, commands, _, _ = setup()
-    controller.data_store.check_schema = Mock(return_value=True)
+    controller.data_store.check_schema = Mock(return_value={'status': 'compatible'})
     controller.demo_store.check_schema = Mock(return_value=True)
     commands.check_schema = Mock(return_value=True)
 
@@ -182,7 +202,7 @@ def test_preflight_rejects_schema_failure_without_lock_or_activation():
 def test_preflight_rejects_existing_writer_lock_without_schema_reads():
     writer, controller, commands, _, _ = setup()
     controller._file_lock = object()
-    controller.data_store.check_schema = Mock(return_value=True)
+    controller.data_store.check_schema = Mock(return_value={'status': 'compatible'})
     controller.demo_store.check_schema = Mock(return_value=True)
     commands.check_schema = Mock(return_value=True)
 
@@ -193,6 +213,55 @@ def test_preflight_rejects_existing_writer_lock_without_schema_reads():
     controller.data_store.check_schema.assert_not_called()
     controller.demo_store.check_schema.assert_not_called()
     commands.check_schema.assert_not_called()
+    assert controller.activate_calls == 0
+
+
+def test_preflight_rejects_persisted_session_identity_mismatch_before_activation():
+    writer, controller, _, _, _ = setup()
+    controller.session_state['virtualAccountKey'] = 'different_namespace'
+
+    result = writer.preflight()
+
+    assert result['ready'] is False
+    assert result['reason_code'] == 'writer_session_identity_mismatch'
+    assert controller.activate_calls == 0
+
+
+def test_preflight_rejects_legacy_ledger_binding_mismatch_before_activation():
+    writer, controller, _, _, _ = setup()
+    controller.demo_store.get_binding = lambda: {
+        'strategy_id': 'paper-1', 'rule_hash': 'f' * 64,
+        'execution_hash': '2' * 64, 'demo_policy_hash': '3' * 64,
+    }
+
+    result = writer.preflight()
+
+    assert result['ready'] is False
+    assert result['reason_code'] == 'writer_legacy_binding_mismatch'
+    assert controller.activate_calls == 0
+
+
+def test_preflight_rejects_shared_session_recovery_before_activation():
+    writer, controller, _, _, _ = setup()
+    controller.shared_state = {'sessions': [{'namespace': 'demo_default'}]}
+
+    result = writer.preflight()
+
+    assert result['ready'] is False
+    assert result['reason_code'] == 'writer_shared_session_unsupported'
+    assert controller.activate_calls == 0
+
+
+def test_preflight_rejects_paper_strategy_identity_mismatch_before_activation():
+    writer, controller, _, _, _ = setup()
+    controller.paper.account = lambda _strategy: {
+        'strategy_id': 'paper-1', 'rule_hash': 'f' * 64, 'execution_hash': '2' * 64,
+    }
+
+    result = writer.preflight()
+
+    assert result['ready'] is False
+    assert result['reason_code'] == 'writer_paper_binding_mismatch'
     assert controller.activate_calls == 0
 
 

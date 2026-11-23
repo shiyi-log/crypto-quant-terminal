@@ -561,3 +561,9 @@
 - 验收视图覆盖 30 日期、日 7 停机、日 13 资金费缺证、日 24–30 未记录、三段和六项门槛。对账/未知状态、三种裁定、审批和日志均有组件断言；真实 dist Playwright 用固定夹具核对 1920/1440/768/390、日历数量、场景/审批焦点、日志及无读请求/认证请求/变更请求。
 - 浏览器输出置于 `/tmp/quant-pw-p3-acceptance`，不提交截图或产物。验收组件 7 项通过，应用演示页相关 14 文件/134 项通过，完整 Vitest 96 文件/719 项通过；`vue-tsc --noEmit --skipLibCheck` 通过，生产前端构建 11/11 成功。全量 Vitest 使用临时 worktree 配置放宽文件访问并将缺失 workspace alias 指向本地源码；Happy DOM 结束时仍有 AbortError 提示，Vben 共享表单用例有既有 `vi.mock` 提示，但退出码为 0。四视口真实 dist 浏览器 4/4 通过，报告与截图均留在 `/tmp/quant-pw-p3-acceptance`。
 - 本小节为 P3 的验收页设计/演示切片；未完成其他全站页面、后端验收服务、P1 writer 生产接线、P2 worker/持久消费或 P4 自然经过 30 天 Demo，不改变 Demo/实盘资格。本节代码提交、版本同步、推送 SHA 的 CI/CD 及正式发布回执依次追加于下方。
+
+## 2026-11-23 版本同步至 0.2.8
+
+- 将项目权威版本 `pyproject.toml` 与 `uv.lock` 中 `quant-terminal` 虚拟项目条目从 `0.2.7` 同步到 `0.2.8`；Vben 工作区依赖版本保持各自锁定值。演示终端版本仍由 Vite 从 `pyproject.toml` 注入。
+- 版本纳入的 P3 验收与上线固定演示页已由源码提交 `0d0252fcfe30a8b88b8b6c534778350c3d67f11d` 推送至 `main`。该精确 SHA 两次 push CI `45117502500`、`45117403340` 均成功；main 归档 CD `45118002061` 成功，源码/前端构建、同 SHA CI 检查、归档 SHA-256 与 `build.json` 身份验证及上传均通过。Actions artifact `14791799406` 大小 `147426788` 字节，digest 为 `sha256:d3d87ec76203a1f5ff0447958e90b4746ef7299762ddbcaa3acea4cacec0452a`，尚未过期。该 main CD 的 Release job 因无新标签跳过。
+- 当前提交仅启动 `0.2.8` 项目版本同步；版本提交的精确 SHA CI/CD、唯一附注标签 `v0.2.8`、标签 CD 与 GitHub Release 仍待执行并按实测回执补记。该版本不完成 P3 其他页面，也不代表 P1、P2、P4 完成或授予 Demo/实盘资格。

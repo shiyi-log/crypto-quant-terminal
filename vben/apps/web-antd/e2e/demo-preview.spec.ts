@@ -265,6 +265,42 @@ for (const viewport of viewports) {
     await expect(page.getByTestId('coverage-scope')).toContainText(
       '交易对级摘要',
     );
+    await expect(page.getByTestId('coverage-table').locator('[data-symbol="BTCUSDT"] [data-freshness="fresh"]')).toContainText('新鲜');
+    await expect(page.getByTestId('coverage-table').locator('[data-symbol="BTCUSDT"]')).toContainText('固定样本观测时间在演示有效窗口内');
+    await page.getByRole('combobox', { name: '新鲜度筛选' }).selectOption('stale');
+    await expect(page.getByTestId('coverage-table').locator('tbody tr')).toHaveCount(1);
+    await expect(page.getByTestId('coverage-table')).toContainText('ETHUSDT');
+    await expect(page.getByTestId('coverage-table')).toContainText('过期 · 仅供回看');
+    await page.getByRole('combobox', { name: '新鲜度筛选' }).selectOption('unknown');
+    await expect(page.getByTestId('coverage-table')).toContainText('TRXUSDT');
+    await expect(page.getByTestId('coverage-table')).toContainText('不能判断新鲜度');
+    await expect(page.getByTestId('coverage-table').locator('[data-symbol="TRXUSDT"]')).toContainText('未提供');
+    await expect(page.getByTestId('coverage-table').locator('[data-symbol="TRXUSDT"]')).not.toContainText('分钟前');
+    await page.getByRole('combobox', { name: '交易对筛选' }).selectOption('ETHUSDT');
+    await page.getByRole('combobox', { name: '新鲜度筛选' }).selectOption('fresh');
+    await expect(page.getByTestId('coverage-empty')).toContainText(
+      '当前筛选下没有固定演示样本',
+    );
+    await expect(page.getByTestId('coverage-table')).toHaveCount(0);
+    const freshnessDimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+    }));
+    expect(freshnessDimensions.document).toBeLessThanOrEqual(
+      freshnessDimensions.viewport,
+    );
+    await page.getByRole('button', { name: '重置筛选' }).click();
+    await expect(page.getByTestId('coverage-table')).toContainText('BTCUSDT');
+    const tableScroll = await page.getByTestId('coverage-table').evaluate((table) => ({
+      client: table.parentElement?.clientWidth ?? 0,
+      scroll: table.parentElement?.scrollWidth ?? 0,
+    }));
+    // 只在窄视口把宽表限制在表格容器内滚动；桌面视口应可完整容纳。
+    if (viewport.width <= 800) {
+      expect(tableScroll.scroll).toBeGreaterThan(tableScroll.client);
+    } else {
+      expect(tableScroll.scroll).toBeLessThanOrEqual(tableScroll.client);
+    }
     await page.getByRole('button', { name: '运维与证据' }).click();
     await expect(
       page.getByRole('heading', { name: '运维与证据', exact: true }),

@@ -111,7 +111,7 @@ describe('治理工作区演示交互', () => {
     expect(table.textContent).toContain('71%');
     expect(table.textContent).toContain('12 分钟前');
     expect(table.textContent).toContain('18 分钟前');
-    expect(table.textContent).toContain('42 分钟前');
+    expect(table.textContent).toContain('未提供');
     expect(table.textContent).toContain('5m / 15m / 1h');
     expect(table.textContent).toContain('摘要覆盖率');
 
@@ -141,6 +141,50 @@ describe('治理工作区演示交互', () => {
 
     expect(view.get('[data-testid="collection-queue"]').textContent).toBe('BTCUSDT');
     expect(view.get('[role="status"]').textContent).toContain('已在本地队列');
+  });
+
+  it('数据中心明确区分固定样本新鲜、过期和未知原因', () => {
+    const view = open('data-quality');
+    const table = view.get('[data-testid="coverage-table"]');
+
+    expect(table.querySelector('[data-symbol="BTCUSDT"] [data-freshness="fresh"]')?.textContent).toContain('新鲜');
+    expect(table.querySelector('[data-symbol="BTCUSDT"]')?.textContent).toContain('观测时间在演示有效窗口内');
+    expect(table.querySelector('[data-symbol="ETHUSDT"] [data-freshness="stale"]')?.textContent).toContain('过期');
+    expect(table.querySelector('[data-symbol="ETHUSDT"]')?.textContent).toContain('仅供回看');
+    expect(table.querySelector('[data-symbol="TRXUSDT"] [data-freshness="unknown"]')?.textContent).toContain('未知');
+    expect(table.querySelector('[data-symbol="TRXUSDT"]')?.textContent).toContain('不能判断新鲜度');
+    expect(table.querySelector('[data-symbol="TRXUSDT"]')?.textContent).toContain('未提供');
+    expect(table.querySelector('[data-symbol="TRXUSDT"]')?.textContent).not.toContain('分钟前');
+  });
+
+  it('数据中心新鲜度筛选与交易对和周期组合，无匹配时不保留旧详情', async () => {
+    const view = open('data-quality');
+    const symbol = view.get<HTMLSelectElement>('select[aria-label="交易对筛选"]');
+    const timeframe = view.get<HTMLSelectElement>('select[aria-label="周期筛选"]');
+    const freshness = view.get<HTMLSelectElement>('select[aria-label="新鲜度筛选"]');
+
+    symbol.value = 'ETHUSDT';
+    symbol.dispatchEvent(new Event('change', { bubbles: true }));
+    timeframe.value = '1h';
+    timeframe.dispatchEvent(new Event('change', { bubbles: true }));
+    freshness.value = 'stale';
+    freshness.dispatchEvent(new Event('change', { bubbles: true }));
+    await nextTick();
+
+    expect(view.get('[data-testid="coverage-table"] tbody').querySelectorAll('tr')).toHaveLength(1);
+    expect(view.get('[data-testid="coverage-table"]').textContent).toContain('ETHUSDT');
+    expect(view.get('[data-testid="coverage-table"]').textContent).toContain('仅供回看');
+
+    freshness.value = 'fresh';
+    freshness.dispatchEvent(new Event('change', { bubbles: true }));
+    await nextTick();
+
+    expect(view.get('[data-testid="coverage-empty"]').textContent).toContain('当前筛选下没有固定演示样本');
+    expect(view.element.querySelector('[data-testid="coverage-table"]')).toBeNull();
+
+    view.get<HTMLButtonElement>('[data-action="reset-coverage-filters"]').click();
+    await nextTick();
+    expect(view.get('[data-testid="coverage-table"] tbody').querySelectorAll('tr')).toHaveLength(3);
   });
 
   it('运维日志级别筛选与详情保留选中事件身份', async () => {

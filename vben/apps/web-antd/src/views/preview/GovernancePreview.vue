@@ -6,6 +6,7 @@ const props = defineProps<{ workspace: string; eventId?: unknown }>();
 type EvidenceKey = 'calendar' | 'trades' | 'costs';
 type Density = 'compact' | 'comfortable';
 type LogLevel = 'all' | 'warning' | 'info';
+type FreshnessFilter = 'all' | 'fresh' | 'stale' | 'unknown';
 type DemoLog = { id: string; level: Exclude<LogLevel, 'all'>; time: string; stage: string; result: string; reason: string; duration: string; title: string; detail: string };
 
 const evidenceKey = ref<EvidenceKey>('calendar');
@@ -13,6 +14,7 @@ const approvalOpen = ref(false);
 const approvalRecorded = ref(false);
 const symbolFilter = ref('all');
 const timeframeFilter = ref('all');
+const freshnessFilter = ref<FreshnessFilter>('all');
 const collectionQueue = ref<string[]>([]);
 const logLevel = ref<LogLevel>('all');
 const logSearch = ref('');
@@ -34,10 +36,11 @@ const selectedEvidence = computed(() => evidence.find((item) => item.key === evi
   note: '当前演示窗口保留停机日，未授予验收资格。',
 });
 
+// 新鲜度仅描述固定样本；未知不补造时间，过期样本只允许只读回看。
 const coverageRows = [
-  { symbol: 'BTCUSDT', timeframes: ['5m', '15m', '1h'], timeframeLabel: '5m / 15m / 1h', coverage: '96%', freshness: '12 分钟前', quality: '可观察' },
-  { symbol: 'ETHUSDT', timeframes: ['5m', '15m', '1h'], timeframeLabel: '5m / 15m / 1h', coverage: '88%', freshness: '18 分钟前', quality: '有缺口' },
-  { symbol: 'TRXUSDT', timeframes: ['5m', '15m'], timeframeLabel: '5m / 15m', coverage: '71%', freshness: '42 分钟前', quality: '有缺口' },
+  { symbol: 'BTCUSDT', timeframes: ['5m', '15m', '1h'], timeframeLabel: '5m / 15m / 1h', coverage: '96%', freshness: '12 分钟前', freshnessState: 'fresh', freshnessReason: '固定样本观测时间在演示有效窗口内。', quality: '可观察' },
+  { symbol: 'ETHUSDT', timeframes: ['5m', '15m', '1h'], timeframeLabel: '5m / 15m / 1h', coverage: '88%', freshness: '18 分钟前', freshnessState: 'stale', freshnessReason: '固定样本序列未满足演示新鲜度条件；仅供回看。', quality: '有缺口' },
+  { symbol: 'TRXUSDT', timeframes: ['5m', '15m'], timeframeLabel: '5m / 15m', coverage: '71%', freshness: '未提供', freshnessState: 'unknown', freshnessReason: '固定样本没有可信观测时间，不能判断新鲜度。', quality: '有缺口' },
 ];
 // 系统状态是冻结的演示快照，不执行健康探测、账户读取或交易所连接。
 const systemStatusRows = [
@@ -52,12 +55,14 @@ const filteredCoverage = computed(() =>
   coverageRows.filter(
     (row) =>
       (symbolFilter.value === 'all' || row.symbol === symbolFilter.value) &&
-      (timeframeFilter.value === 'all' || row.timeframes.includes(timeframeFilter.value)),
+      (timeframeFilter.value === 'all' || row.timeframes.includes(timeframeFilter.value)) &&
+      (freshnessFilter.value === 'all' || row.freshnessState === freshnessFilter.value),
   ),
 );
 function resetCoverageFilters() {
   symbolFilter.value = 'all';
   timeframeFilter.value = 'all';
+  freshnessFilter.value = 'all';
 }
 
 const logs = ref<DemoLog[]>([
@@ -195,11 +200,12 @@ function resetPreferences() {
         <div class="coverage-filters">
           <label class="control-label">交易对筛选<select v-model="symbolFilter" aria-label="交易对筛选"><option value="all">全部交易对</option><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="TRXUSDT">TRXUSDT</option></select></label>
           <label class="control-label">周期筛选<select v-model="timeframeFilter" aria-label="周期筛选"><option value="all">全部周期</option><option value="5m">5m</option><option value="15m">15m</option><option value="1h">1h</option></select></label>
+          <label class="control-label">新鲜度筛选<select v-model="freshnessFilter" aria-label="新鲜度筛选"><option value="all">全部状态</option><option value="fresh">新鲜</option><option value="stale">过期</option><option value="unknown">未知</option></select></label>
           <button class="secondary-action" data-action="reset-coverage-filters" type="button" @click="resetCoverageFilters">重置筛选</button>
         </div>
       </div>
-      <p class="coverage-scope" data-testid="coverage-scope">覆盖率、最近观测与质量均为交易对级摘要；周期筛选只匹配固定样本声明的支持范围。</p>
-      <div v-if="filteredCoverage.length" class="table-scroll"><table data-testid="coverage-table"><thead><tr><th>交易对</th><th>支持周期</th><th>摘要覆盖率</th><th>最近观测</th><th>质量</th></tr></thead><tbody><tr v-for="row in filteredCoverage" :key="row.symbol"><td><strong>{{ row.symbol }}</strong></td><td>{{ row.timeframeLabel }}</td><td>{{ row.coverage }}</td><td>{{ row.freshness }}</td><td><span class="quality" :data-state="row.quality === '可观察' ? 'good' : 'warn'">{{ row.quality }}</span></td></tr></tbody></table></div>
+      <p class="coverage-scope" data-testid="coverage-scope">覆盖率与质量为交易对级摘要固定值；周期只筛支持范围。过期样本仅供回看，未知时间不推断，三种状态均不构成验收或交易资格。</p>
+      <div v-if="filteredCoverage.length" class="table-scroll"><table data-testid="coverage-table"><thead><tr><th>交易对</th><th>支持周期</th><th>摘要覆盖率</th><th>最近观测</th><th>质量</th><th>新鲜度</th><th>状态原因</th></tr></thead><tbody><tr v-for="row in filteredCoverage" :key="row.symbol" :data-symbol="row.symbol"><td><strong>{{ row.symbol }}</strong></td><td>{{ row.timeframeLabel }}</td><td>{{ row.coverage }}</td><td>{{ row.freshness }}</td><td><span class="quality" :data-state="row.quality === '可观察' ? 'good' : 'warn'">{{ row.quality }}</span></td><td><span class="freshness" :data-freshness="row.freshnessState">{{ row.freshnessState === 'fresh' ? '新鲜' : row.freshnessState === 'stale' ? '过期 · 仅供回看' : '未知' }}</span></td><td>{{ row.freshnessReason }}</td></tr></tbody></table></div>
       <div v-else class="coverage-empty" data-testid="coverage-empty" role="status">当前筛选下没有固定演示样本</div>
       <div class="collection-bar"><div><p class="eyebrow">LOCAL COLLECTION QUEUE</p><strong data-testid="collection-queue">{{ collectionQueue.length ? collectionQueue.join(' · ') : '队列为空' }}</strong></div><button class="secondary-action" data-action="queue-collection" type="button" @click="queueCollection">加入本地补采演练</button></div>
     </section>
@@ -256,7 +262,7 @@ h1,h2,h3,p,dl,dd { margin:0; } h1{font-size:29px;font-weight:600;letter-spacing:
 .control-label{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;} select,.log-search input{min-width:130px;padding:8px 28px 8px 9px;border:1px solid var(--line);color:var(--text);background:var(--surface);font:inherit;font-size:12px;}
 .coverage-scope{margin:-2px 0 12px;color:var(--muted);font-size:11px;}
 .coverage-filters{display:flex;align-items:flex-end;gap:12px;} .coverage-empty{display:grid;min-height:170px;place-items:center;border:1px solid var(--line);padding:20px;color:var(--muted);background:rgba(19,43,62,.45);text-align:center;}
-.table-scroll{overflow-x:auto;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} table{width:100%;min-width:650px;border-collapse:collapse;font-size:12px;} th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;} th{color:var(--muted);font-weight:500;background:var(--surface);} tbody tr:last-child td{border-bottom:0;} .quality{color:var(--warn);} .quality[data-state='good']{color:var(--green);} .collection-bar{padding:16px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} .collection-bar strong{display:block;margin-top:5px;font-size:14px;font-weight:500;}
+.table-scroll{overflow-x:auto;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} table{width:100%;min-width:920px;border-collapse:collapse;font-size:12px;} th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;} th{color:var(--muted);font-weight:500;background:var(--surface);} tbody tr:last-child td{border-bottom:0;} .quality{color:var(--warn);} .quality[data-state='good'],.freshness[data-freshness='fresh']{color:var(--green);} .freshness[data-freshness='stale']{color:var(--warn);} .freshness[data-freshness='unknown']{color:var(--muted);} .collection-bar{padding:16px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} .collection-bar strong{display:block;margin-top:5px;font-size:14px;font-weight:500;}
 .log-scope{margin:12px 0;color:var(--muted);font-size:11px;} .log-row{display:grid;grid-template-columns:78px 54px minmax(0,1fr) 118px 142px;align-items:center;gap:10px;padding:13px 12px;font-size:12px;} .log-time,.log-id{color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:11px;} .log-level{color:var(--green);}.log-level[data-level='warning']{color:var(--warn);} .log-row strong{font-weight:500;} .log-stage,.log-result{grid-column:3;color:var(--muted);font-size:10px;} .log-id{grid-column:5;grid-row:1 / span 2;text-align:right;} .log-fields{display:grid;gap:0;margin-top:18px;border-top:1px solid var(--line);font-size:11px;} .log-fields div{display:grid;grid-template-columns:78px minmax(0,1fr);gap:9px;padding:9px 0;border-bottom:1px solid var(--line);} .log-fields dt{color:var(--muted);} .log-fields dd{min-width:0;margin:0;text-align:right;overflow-wrap:anywhere;} .log-fields code{color:var(--blue);font-family:'IBM Plex Mono',monospace;font-size:10px;}
 .log-search{margin-top:16px;align-items:stretch;flex-direction:column;max-width:440px;} .log-search input{width:100%;min-width:0;padding:9px 10px;} .log-empty{padding:22px 12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);color:var(--muted);font-size:12px;}
 .operations .detail-panel{margin-top:0;} .settings-panel,.system-status{min-width:0;padding:24px;border:1px solid var(--line);background:var(--surface);} .system-status-scope{margin:12px 0;color:var(--muted);font-size:12px;} .system-status-scroll{min-width:0;overflow-x:auto;border-top:1px solid var(--line);} .system-status table{width:100%;min-width:580px;border-collapse:collapse;font-size:12px;} .system-status th,.system-status td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;} .system-status thead th,.system-status tbody th{color:var(--muted);font-weight:500;} .system-state{color:var(--warn);}.system-state[data-state='可查看']{color:var(--green);}.system-state[data-state='未知']{color:var(--muted);} .preference-row{align-items:flex-end;padding:22px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} .preference-summary{display:grid;gap:6px;min-width:170px;} .preference-summary strong{font-size:22px;font-weight:500;}

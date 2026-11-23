@@ -168,6 +168,7 @@ const verdict = computed(() => {
       reason: 'acceptance_evidence_incomplete',
       detail: '缺失事实保持未知；不得按零值、停机日或未来日期补算。',
     };
+  // 过期快照只用于回看，不能作为当前验收或准入依据。
   if (scenario.value === 'expired')
     return {
       title: '证据已过期，验收未知',

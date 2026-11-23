@@ -33,17 +33,34 @@ for (const viewport of viewports) {
       };
     });
     expect(homeLayout.shellHeight).toBeGreaterThanOrEqual(homeLayout.viewport);
-    expect(homeLayout.footerBottom).toBeGreaterThanOrEqual(homeLayout.viewport - 1);
+    expect(homeLayout.footerBottom).toBeGreaterThanOrEqual(
+      homeLayout.viewport - 1,
+    );
     await page.screenshot({
       path: test.info().outputPath(`demo-preview-home-${viewport.width}.png`),
       fullPage: true,
     });
 
-    await page.getByRole('tab', { name: '研究工作区' }).click();
+    await page.getByRole('button', { name: '研究工作区' }).click();
     // 页面导航和工作区标题都会出现“因子实验室”，这里锁定实际内容标题避免严格模式歧义。
-    await expect(page.getByRole('heading', { name: '因子实验室', exact: true })).toBeVisible();
-    await page.getByRole('tab', { name: '验收与运维' }).click();
-    await expect(page.getByRole('heading', { name: '验收与上线', exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: '因子实验室', exact: true }),
+    ).toBeVisible();
+    await page.getByRole('button', { name: '验收与运维' }).click();
+    await expect(
+      page.getByRole('heading', { name: '验收与上线', exact: true }),
+    ).toBeVisible();
+    await page.getByRole('button', { name: '运维与证据' }).click();
+    await expect(
+      page.getByRole('heading', { name: '运维与证据', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByTestId('preview-content')).toContainText(
+      '固定原因码',
+    );
+    await page.locator('[data-log="evt-1042"]').click();
+    await expect(page.getByTestId('preview-content')).toContainText(
+      'funding_fee_observation_delayed',
+    );
 
     const dimensions = await page.evaluate(() => ({
       document: document.documentElement.scrollWidth,

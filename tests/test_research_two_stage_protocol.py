@@ -173,3 +173,35 @@ def test_holdout_claim_logs_refusal_duration_and_never_issues_ticket(caplog):
     assert "耗时_ms=" in caplog.text
     assert "持久消费=未接线" in caplog.text
     assert "执行票据=false" in caplog.text
+
+
+def test_holdout_claim_rejects_unselected_fact_before_consumption():
+    family = freeze_experiment_family(family_spec())
+    plan = freeze_validation_plan(
+        family,
+        _evidence(family),
+        attempt_mappings=_attempts(family),
+        selection_policy={"version": "pair-select-v1", "alpha": "0.05"},
+        holdout_policy={"version": "holdout-pair-bootstrap-v1", "replicates": 99999},
+    )
+    with pytest.raises(ValueError, match="候选必须已选中"):
+        claim_holdout_v2(plan, selection={"status": "pending"})
+
+
+def test_holdout_claim_rejects_misbound_identity_before_consumption():
+    family = freeze_experiment_family(family_spec())
+    plan = freeze_validation_plan(
+        family,
+        _evidence(family),
+        attempt_mappings=_attempts(family),
+        selection_policy={"version": "pair-select-v1", "alpha": "0.05"},
+        holdout_policy={"version": "holdout-pair-bootstrap-v1", "replicates": 99999},
+    )
+    with pytest.raises(ValueError, match="候选实验族哈希不匹配"):
+        claim_holdout_v2(
+            plan,
+            selection={
+                "status": "selected",
+                "family_sha256": "f" * 64,
+            },
+        )

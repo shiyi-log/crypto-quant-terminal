@@ -163,6 +163,12 @@ def freeze_validation_plan(
         "protocol_version": "research-two-stage-v2",
         "family_sha256": family_hash,
         "inference_sha256": inference_hash,
+        "selection_policy_sha256": _sha(
+            inference["selection_policy_sha256"], "筛选策略哈希"
+        ),
+        "holdout_policy_sha256": _sha(
+            inference["holdout_policy_sha256"], "留出策略哈希"
+        ),
         "identities": normalized_identities,
         "validation": {
             "configuration_count": len(expected_ids),
@@ -273,6 +279,35 @@ def claim_holdout_v2(plan: FrozenValidationPlan, *, selection: dict) -> dict:
         raise ValueError("验证计划哈希不匹配")
     if not isinstance(selection, dict):
         raise ValueError("候选选择事实必须为对象")
+    if selection.get("status") != "selected":
+        raise ValueError("候选必须已选中才能请求最终留出")
+
+    # 兼容纯离线拒绝合同；若调用方提供身份，则必须一次性绑定全部摘要。
+    identity_keys = {
+        "family_sha256", "inference_sha256", "validation_plan_sha256",
+        "selection_policy_sha256", "holdout_policy_sha256",
+    }
+    supplied_identities = set(selection) - {"status"}
+    if "family_sha256" in supplied_identities:
+        expected_family = plan.to_dict()["family_sha256"]
+        actual_family = _sha(selection["family_sha256"], "候选实验族哈希")
+        if actual_family != expected_family:
+            raise ValueError("候选实验族哈希不匹配")
+    if supplied_identities and supplied_identities != identity_keys:
+        raise ValueError("候选身份摘要必须完整提供")
+    if supplied_identities:
+        value = plan.to_dict()
+        expected = {
+            "family_sha256": value["family_sha256"],
+            "inference_sha256": value["inference_sha256"],
+            "validation_plan_sha256": plan.sha256,
+            "selection_policy_sha256": value["selection_policy_sha256"],
+            "holdout_policy_sha256": value["holdout_policy_sha256"],
+        }
+        for field, digest in expected.items():
+            actual = _sha(selection[field], f"候选{field}")
+            if actual != digest:
+                raise ValueError(f"候选{field.replace('_sha256', '')}哈希不匹配")
     LOGGER.info(
         "研究留出请求已拒绝 阶段=final_holdout 原因码=holdout_calculator_unavailable "
         "耗时_ms=%.3f 计算器=不可用 持久消费=未接线 执行票据=false",

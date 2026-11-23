@@ -491,3 +491,10 @@
 - `run_foreground()` 在调用 `activate()` 前必须通过该预检；失败只返回固定原因码（例如 `writer_schema_preflight_failed`、`writer_lock_owned`），日志只记录异常类型和阶段耗时，不记录异常正文、账户、命令或操作者标识。预检通过也不等于已取得进程锁，真正激活仍由控制器的独占锁边界再次校验。
 - TDD 先验证缺少 `preflight()` 时三项合同失败，再补入实现。`tests/test_demo_writer.py` 全组 **47 项通过**（含预检成功、schema 失败、控制器锁、磁盘空闲锁、跨描述符持锁拒绝和既有前台循环）；Ruff、compileall、`git diff --check` 均通过。
 - 本节只增加本地启动门禁与中文可观测日志，未接入 HTTP、CLI、launchd 或监督器；没有启动 writer、连接 Binance、执行数据库迁移或写生产库，Demo/生产资格继续关闭。源码和文档待主代理按独立中文提交、推送并核验精确 SHA 的 CI/CD 后再更新版本记录。
+
+## 2026-11-23 P2 留出请求消费前身份与状态拒绝
+
+- `claim_holdout_v2` 增加消费前合同：候选状态必须为 `selected`；若调用方提供身份摘要，则必须一次性提供实验族、推断、冻结计划、筛选策略和留出策略五项摘要，并与冻结验证计划完全一致。未选中或实验族哈希错绑会在任何持久化动作前抛出固定中文错误。
+- 身份合同通过后仍返回 `status=not_estimable`、`execution_ticket=false` 和固定 `holdout_calculator_unavailable` 原因码；本节未接数据库领取事务、研究 worker、留出计算器或验收/生产授权，避免在计算路径尚未具备时永久消费留出机会。
+- TDD 先运行新增两个 RED 合同，旧实现分别未拒绝 `pending` 候选和错绑实验族；补入校验后，`tests/test_research_two_stage_protocol.py` **7 项通过**。研究二阶段协议、0009 迁移合同和未跟踪用户研究合同组合 **19 项通过**；Ruff、compileall、`git diff --check` 通过。
+- 同轮恢复验证组合在完整 Demo schema 清理阶段因 psycopg `another command is already in progress` 挂起并由操作者中断，不能将恢复全套记为通过；生产数据库未执行迁移。版本仍为 `0.2.5`；本节待独立中文提交、推送及精确 SHA CI/CD 核验。未跟踪的用户合同文件保持原样且不纳入提交。

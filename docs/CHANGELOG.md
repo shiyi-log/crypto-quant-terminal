@@ -7,6 +7,8 @@
 - P1 writer 预检身份闭环：发现旧预检没有检查持久 Demo 会话、旧 ledger binding 和 paper 策略身份；新增合同先失败后修复。现在要求全局 schema 返回 compatible，并只读重验 shared session、策略/namespace、旧账本 binding 与 paper 哈希；writer 专项 **51 项通过**，Ruff、compileall、差异检查通过。本切片未注册绑定、读取凭据或激活服务。
 - P1 默认暂停 writer 组合构造：新增显式冻结目标及匹配风险范围组合入口，强制 `external_paused`、风险门禁与验收轮次门禁。构造只实例化依赖；工厂产出的 driver 封口，直接 activation/前台启动均在数据库预检和凭据访问前拒绝。writer 专项 **55 项通过**，新模块已纳入 CI/CD 的编译及 Ruff 清单。尚无生产调用方，尚未接入 `manage.py`/launchd，也不代表 Demo/实盘资格开启。
 
+- P2 研究协议、迁移与恢复合同复跑：三个定向测试文件 **47 项通过**（149.79 秒）。本次复核未执行生产迁移；来源顺序认证、worker、留出计算、持久消费和执行票据仍未接通，不能据此启用 Demo 或实盘资格。
+
 - P2 留出请求消费前身份与状态拒绝：`claim_holdout_v2` 要求候选状态明确为 `selected`；调用方提供身份摘要时，必须完整提供实验族、推断、冻结计划、筛选策略和留出策略五项摘要并匹配冻结计划。错绑和不完整事实在持久消费前拒绝。身份通过后仍返回 `not_estimable`、`execution_ticket=false`，不接数据库领取、计算器、worker 或授权。协议、0009 领取迁移及未跟踪用户合同组合 **19 项通过**；恢复验证组合因 psycopg 清理等待中断，未记为通过。
 
 ## 0.2.5 — 2026-11-22

@@ -513,3 +513,9 @@
 - 组合工厂产出的 driver 带不可变“仅构造”封口；直接 `activate()` 和 `run_foreground()` 都在数据库预检、锁和凭据之前以 `writer_composition_not_authorized` 拒绝，并写中文阶段日志。只有未来单独实现受信任审批与目标生产者后，才能设计解除封口的合同。
 - `tests/test_demo_writer.py` writer 全组 **55 项通过**；Ruff、compileall、CI/CD YAML 解析及 `git diff --check` 通过。新组合模块已加入 CI/CD 编译与 Ruff 清单。版本仍为 `0.2.5`；待本小节独立中文提交推送后，按精确 SHA 核对 CI、main 归档哈希与 `build.json`。
 - 本节测试使用合成冻结目标与测试凭据回调；当前没有生产身份来源或账户批准证明。因此该构造入口不授予策略来源认证、Demo 执行、验收或生产资格，继续保持关闭。
+
+## 2026-11-23 P2 研究协议迁移与恢复验证复跑
+
+- 对 `tests/test_research_two_stage_protocol.py`、`tests/test_research_two_stage_migration.py` 与 `tests/test_database_restore_verification.py` 执行独立复跑，**47 项通过，149.79 秒**；恢复验证合同不再沿用此前被中断的运行结果。
+- 本次仅复核隔离测试合同，不在生产数据库执行迁移，不证明来源顺序认证、研究 worker、留出计算、持久化留出消费或执行票据已经接通；相关 P2 能力与 Demo/实盘资格继续关闭。未跟踪的用户合同 `tests/test_research_two_stage.py` 未修改、未纳入本次命令或暂存。
+- 版本仍为 `0.2.5`；本台账回执需独立中文提交推送，并核验该精确 SHA 的 CI 与 main 归档 CD。

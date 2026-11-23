@@ -73,6 +73,16 @@ for (const viewport of viewports) {
     await expect(
       page.getByRole('heading', { name: '因子实验室', exact: true }),
     ).toBeVisible();
+    const factorSearch = page.getByRole('searchbox', { name: '搜索因子' });
+    await factorSearch.fill('盘口');
+    await expect(page.getByTestId('factor-detail')).toContainText(
+      'book_imbalance',
+    );
+    await factorSearch.fill('没有匹配项');
+    await expect(page.getByTestId('factor-empty')).toContainText(
+      '没有符合条件的因子',
+    );
+    await expect(page.getByTestId('factor-detail')).toHaveCount(0);
     await page.getByRole('button', { name: '验收与运维' }).click();
     await expect(
       page.getByRole('heading', { name: '验收与上线', exact: true }),
@@ -88,7 +98,9 @@ for (const viewport of viewports) {
     await expect(page.getByTestId('preview-content')).toContainText(
       'funding_fee_observation_delayed',
     );
-    const historyUrl = await page.getByTestId('history-locator').getAttribute('href');
+    const historyUrl = await page
+      .getByTestId('history-locator')
+      .getAttribute('href');
     expect(historyUrl).toBe('/#/quant/operations?event=evt-1042');
     await page.goto(historyUrl!);
     await expect(page.getByTestId('log-detail')).toContainText('evt-1042');

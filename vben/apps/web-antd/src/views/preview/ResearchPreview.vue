@@ -167,8 +167,13 @@ const filteredFactors = computed(() => {
       )
     : factors;
 });
-const selectedFactor = computed<Factor>(
-  () => factors.find((f) => f.id === selectedFactorId.value) ?? factors[0]!,
+const selectedFactor = computed<Factor | null>(
+  () =>
+    filteredFactors.value.find(
+      (factor) => factor.id === selectedFactorId.value,
+    ) ??
+    filteredFactors.value[0] ??
+    null,
 );
 const selectedStrategy = computed<Strategy>(
   () =>
@@ -187,6 +192,12 @@ const selectedExperiment = computed<Experiment>(
 const selectedFlow = computed<Flow>(
   () => flows.find((f) => f.symbol === selectedFlowSymbol.value) ?? flows[0]!,
 );
+// 搜索只展示当前可见的固定样本，详情始终跟随首个匹配项；无匹配时清空选择。
+watch(filteredFactors, (visible) => {
+  if (!visible.some((factor) => factor.id === selectedFactorId.value)) {
+    selectedFactorId.value = visible[0]?.id ?? '';
+  }
+});
 watch(filteredExperiments, (visible) => {
   if (
     !visible.some(
@@ -269,7 +280,7 @@ function statusLabel(status: Experiment['status']) {
               <tr
                 v-for="factor in filteredFactors"
                 :key="factor.id"
-                :class="{ selected: factor.id === selectedFactorId }"
+                :class="{ selected: factor.id === selectedFactor?.id }"
               >
                 <td>
                   <button
@@ -287,7 +298,11 @@ function statusLabel(status: Experiment['status']) {
             </tbody>
           </table>
         </div>
-        <article class="detail-pane" data-testid="factor-detail">
+        <article
+          v-if="selectedFactor"
+          class="detail-pane"
+          data-testid="factor-detail"
+        >
           <p class="eyebrow">SELECTED FACTOR</p>
           <h3>{{ selectedFactor.name }}</h3>
           <code>{{ selectedFactor.id }}</code>
@@ -302,6 +317,15 @@ function statusLabel(status: Experiment['status']) {
               <dd>factor-demo-02</dd>
             </div>
           </dl>
+        </article>
+        <article
+          v-else
+          class="detail-pane empty-state"
+          data-testid="factor-empty"
+          role="status"
+        >
+          <h3>没有符合条件的因子</h3>
+          <p>调整搜索词后查看本地演示样本。</p>
         </article>
       </div>
     </section>

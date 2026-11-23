@@ -4,7 +4,7 @@
 
 - 增加固定演示策略候选证据：候选身份、数据窗口、成本假设、留出状态与未冻结准入状态随所选策略同步展示。候选只作本地演示声明，不产生研究结论、Demo 预检或交易资格。
 - 策略候选证据源码提交 `ed16a6344462cda38ff92b379d920bc8b9b5d5db` 精确 CI `45157960056` 与自动归档 CD `45158650580` 成功，artifact `14810181534` digest `sha256:d9c75f449f082ca501c4e331248692afeb8a05150763450ebfbab1672f998189`；开发台账回执提交 `e83d606aa2153d9f652b019fbe4cfc51cca1e031` 精确 CI `45159425501` 与自动归档 CD `45160029940` 成功，artifact `14810756697` digest `sha256:596081bf8720933a0ec8ee28ee74a9e30fd7ebc209f653ba2015cbcd38f413e0`。
-- 项目权威版本和锁文件同步至 `0.2.11`；版本提交的精确 CI/CD、唯一标签和 GitHub Release 回执将在成功发布后补录。此版本不代表 P0—P4 阶段验收完成，也不授予 Demo 或实盘资格。
+- 项目权威版本和锁文件同步至 `0.2.11`。版本提交 `5b074dabd7dadd72fdf23b7bc1b789e28c903f00` 的精确 main CI `45160644085`、标签 `v0.2.11` CI `45161378666`、main 自动归档 CD `45161287605` 和显式发布 CD `45162321254` 均成功。[GitHub Release v0.2.11](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.11)（Release ID `455312279`）已发布；归档 asset digest `sha256:5677de64c48187fd2067aa8fccd2434054392ee54f61713a34affe89481e259a`，sidecar digest `sha256:1824431c668dac18d249cf0f223fd484aaa988709278c137b4d9dfe01ea0f655`。CD 内部归档哈希与 `build.json` 身份验证成功；独立下载核验未完成。此版本不代表 P0—P4 阶段验收完成，也不授予 Demo 或实盘资格。
 
 ## 0.2.10 — 2026-11-23
 

@@ -650,3 +650,11 @@
 - 唯一附注标签 `v0.2.9` 指向版本提交；标签 push CI [`45143511269`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45143511269) 成功，显式 `ref=v0.2.9` 发布 CD [`45144269116`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45144269116) 的归档身份、哈希验证和 Release 创建任务成功。
 - [GitHub Release v0.2.9](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.9) 已发布。独立下载归档的 SHA-256 为 `b8a751b5c1605d8466b0d25073e3a2a4e62c93ac4420958031bd9ea3bcbb088c`，与资产 digest 相同；`build.json` 精确包含提交 `5345805cbc7e2eaf46a214e6a045c992e1c86e85`、版本 `0.2.9` 和包 `quant-terminal-v0.2.9`；归档计 3919 个成员。
 - 本节只核验版本代码和归档身份，不表示数据库恢复演练、部署配置核对、P0—P4 阶段验收或 Demo/实盘批准已完成。
+
+## 2026-11-23 版本同步至 0.2.11
+
+- 项目权威版本 `pyproject.toml` 与 `uv.lock` 已同步为 `0.2.11`；版本契约测试 **9 项通过**，`uv lock --check` 与版本一致性检查通过。
+- 该版本收录 P3 固定演示策略候选证据。源码提交 `ed16a6344462cda38ff92b379d920bc8b9b5d5db` 精确 CI [`45157960056`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45157960056) 与 main 归档 CD [`45158650580`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45158650580) 成功；回执提交 `e83d606aa2153d9f652b019fbe4cfc51cca1e031` 精确 CI `45159425501` 和 CD `45160029940` 成功。
+- 版本提交 `5b074dabd7dadd72fdf23b7bc1b789e28c903f00` 的精确 main CI [`45160644085`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45160644085) 成功；唯一附注标签 `v0.2.11` 指向该提交，标签 CI [`45161378666`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45161378666)、main 自动归档 CD `45161287605`、显式标签发布 CD [`45162321254`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45162321254) 均成功。标签 CD 的同 SHA CI 门禁、源码与前端构建、归档 SHA-256/`build.json` 身份校验、artifact 上传和 Release 创建通过；artifact `14812651284` 为 `147449793` 字节，digest `sha256:68e9b3059743d853de168ba76f4126d1f87485511535d4744df6ad5214f4a238`，有效至 2026-12-23。
+- [GitHub Release v0.2.11](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.11)（Release ID `455312279`）于 `2026-11-23T11:10:54Z` 发布。归档资产大小 `149503707` 字节，GitHub asset SHA-256 `5677de64c48187fd2067aa8fccd2434054392ee54f61713a34affe89481e259a`；104 字节 sidecar asset SHA-256 `1824431c668dac18d249cf0f223fd484aaa988709278c137b4d9dfe01ea0f655`。独立下载未能在本次运行完成，因此归档 SHA-256 与包内 `build.json` 独立核验未记为已完成；CD 工作流内部的身份与哈希验证成功。
+- 本版本不代表 P0—P4 阶段验收、数据库恢复演练、部署配置核对、Demo 准入或实盘批准完成；前端仍只使用本地固定演示数据。

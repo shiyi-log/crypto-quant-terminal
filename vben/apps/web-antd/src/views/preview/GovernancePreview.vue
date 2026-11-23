@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { computed, ref, watch } from 'vue';
 
-const props = defineProps<{ workspace: string }>();
+const props = defineProps<{ workspace: string; eventId?: unknown }>();
 
 type EvidenceKey = 'calendar' | 'trades' | 'costs';
 type Density = 'compact' | 'comfortable';
@@ -47,14 +47,40 @@ const logs = ref<DemoLog[]>([
   { id: 'evt-1043', level: 'warning', time: '21:58:11', stage: '行情完整性', result: '拒绝合并', reason: 'market_sequence_gap', duration: '2 毫秒', title: '盘口序列存在缺口', detail: '标记固定样本中的数据缺口；不伪造连续序号或交易信号。' },
 ]);
 const filteredLogs = computed(() => logLevel.value === 'all' ? logs.value : logs.value.filter((log) => log.level === logLevel.value));
+const eventIdIsInvalid = computed(
+  () =>
+    props.eventId !== undefined &&
+    (typeof props.eventId !== 'string' || !/^evt-\d{4,6}$/.test(props.eventId)),
+);
+const requestedLog = computed(() =>
+  props.eventId && !eventIdIsInvalid.value
+    ? logs.value.find((log) => log.id === props.eventId)
+    : undefined,
+);
+const eventIdIsMissing = computed(
+  () => props.eventId !== undefined && !eventIdIsInvalid.value && !requestedLog.value,
+);
 
 // 筛选切换后，详情必须始终对应列表中仍可见的事件。
-watch(filteredLogs, (visibleLogs) => {
-  if (!visibleLogs.some((log) => log.id === selectedLog.value)) {
+watch([filteredLogs, () => props.eventId], ([visibleLogs, eventId]) => {
+  if (eventId) {
+    selectedLog.value =
+      typeof eventId === 'string' &&
+      logs.value.some((log) => log.id === eventId)
+        ? eventId
+        : '';
+  } else if (!visibleLogs.some((log) => log.id === selectedLog.value)) {
     selectedLog.value = visibleLogs[0]?.id ?? '';
   }
 }, { immediate: true });
-const currentLog = computed(() => logs.value.find((log) => log.id === selectedLog.value) ?? logs.value[0]!);
+const currentLog = computed(() =>
+  logs.value.find((log) => log.id === selectedLog.value),
+);
+const currentLogUrl = computed(() =>
+  currentLog.value
+    ? `/#/quant/operations?event=${encodeURIComponent(currentLog.value.id)}`
+    : '',
+);
 const densityLabel = computed(() => savedDensity.value === 'comfortable' ? '舒适' : '紧凑');
 
 // 演示事件只追加在当前页面内存，不代表服务端审计或真实持久化。
@@ -140,7 +166,7 @@ function resetPreferences() {
 
     <section v-else-if="props.workspace === 'operations'" class="workspace-grid operations">
       <div class="main-column"><div class="section-heading"><div><p class="eyebrow">OPERATIONS LOG</p><h2>运行事件</h2></div><label class="control-label">日志级别<select v-model="logLevel" aria-label="日志级别"><option value="all">全部</option><option value="warning">警告</option><option value="info">信息</option></select></label></div><p class="log-scope" role="note">固定演示日志 · 北京时间 · 操作只追加到当前页面内存，不代表真实服务运行记录</p><div class="log-list" data-testid="log-list"><button v-for="log in filteredLogs" :key="log.id" :data-log="log.id" type="button" class="log-row" :class="{ active: selectedLog === log.id }" @click="selectedLog = log.id"><span class="log-time">{{ log.time }}</span><span class="log-level" :data-level="log.level">{{ log.level === 'warning' ? '警告' : '信息' }}</span><strong>{{ log.title }}</strong><span class="log-stage">阶段 · {{ log.stage }}</span><span class="log-result">结果 · {{ log.result }}</span><span class="log-id">{{ log.id }}</span></button></div></div>
-      <aside class="side-column"><p class="eyebrow">EVENT INSPECTOR</p><h2>事件详情</h2><article class="detail-panel log-inspector" data-testid="log-detail"><span class="log-id">{{ currentLog.id }} · {{ currentLog.time }}</span><h3>{{ currentLog.title }}</h3><p>{{ currentLog.detail }}</p><dl class="log-fields"><div><dt>处理阶段</dt><dd>{{ currentLog.stage }}</dd></div><div><dt>处理结果</dt><dd>{{ currentLog.result }}</dd></div><div><dt>固定原因码</dt><dd><code>{{ currentLog.reason }}</code></dd></div><div><dt>样本耗时</dt><dd>{{ currentLog.duration }}</dd></div></dl></article><p class="scope-note">日志是本地合成证据，时间按北京时间显示；不会替代服务端审计记录。</p></aside>
+      <aside class="side-column"><p class="eyebrow">EVENT INSPECTOR</p><h2>事件详情</h2><article v-if="currentLog && !eventIdIsInvalid && !eventIdIsMissing" class="detail-panel log-inspector" data-testid="log-detail"><span class="log-id">{{ currentLog.id }} · {{ currentLog.time }}</span><h3>{{ currentLog.title }}</h3><p>{{ currentLog.detail }}</p><dl class="log-fields"><div><dt>处理阶段</dt><dd>{{ currentLog.stage }}</dd></div><div><dt>处理结果</dt><dd>{{ currentLog.result }}</dd></div><div><dt>固定原因码</dt><dd><code>{{ currentLog.reason }}</code></dd></div><div><dt>样本耗时</dt><dd>{{ currentLog.duration }}</dd></div></dl><a class="history-locator" data-testid="history-locator" :href="currentLogUrl">打开此事件定位链接</a></article><div v-else-if="eventIdIsInvalid" class="history-state" data-testid="history-invalid" role="status">历史事件编号格式无效：{{ props.eventId }}</div><div v-else-if="eventIdIsMissing" class="history-state" data-testid="history-missing" role="status">固定演示样本中找不到事件 {{ props.eventId }}，没有其他历史记录可展示。</div><div v-else class="history-state" role="status">当前筛选条件下没有可展示的演示事件。</div><p class="scope-note">日志是本地合成证据，时间按北京时间显示；不会替代服务端审计记录。</p></aside>
     </section>
 
     <section v-else class="settings-panel">
@@ -171,7 +197,7 @@ h1,h2,h3,p,dl,dd { margin:0; } h1{font-size:29px;font-weight:600;letter-spacing:
 .detail-panel,.fact-panel,.settings-panel { border:1px solid var(--line); background:var(--surface); } .detail-panel{margin-top:20px;padding:22px;} .detail-topline{align-items:flex-start;} .signal{color:var(--green);font-size:11px;} .detail-value{display:block;margin:24px 0 7px;font-size:31px;font-weight:500;} .detail-panel p{color:var(--muted);font-size:13px;}
 .side-column { display:grid; align-content:start; gap:15px; border-left:1px solid var(--line); padding-left:24px; } .fact-panel{padding:20px;} .fact-panel h2{margin:6px 0 18px;} .gate-state{display:flex;gap:11px;align-items:flex-start;padding:13px;border:1px solid rgba(240,193,123,.45);background:rgba(240,193,123,.07);} .gate-icon{display:grid;width:20px;height:20px;place-items:center;color:var(--warn);border:1px solid var(--warn);font-size:13px;} .gate-state strong{font-size:14px;color:var(--warn);} .gate-state p{margin-top:3px;color:var(--muted);font-size:11px;} .facts{display:grid;gap:10px;margin-top:18px;font-size:12px;} .facts div{display:flex;justify-content:space-between;gap:12px;} .facts dt{color:var(--muted);} .facts dd{text-align:right;}
 .primary-action,.secondary-action { min-height:38px; padding:8px 14px; border:1px solid var(--blue); font:inherit; font-size:12px; cursor:pointer; } .primary-action{color:var(--bg);background:var(--blue);} .secondary-action{color:var(--text);background:var(--surface);} .primary-action:hover{filter:brightness(1.08);} .secondary-action:hover{border-color:var(--blue);color:var(--blue);} button:focus-visible,select:focus-visible{outline:2px solid var(--blue);outline-offset:3px;}
-.scope-note{line-height:1.65;}
+.scope-note{line-height:1.65;} .history-locator{display:inline-block;margin-top:15px;color:var(--blue);font-size:12px;text-decoration:underline;text-underline-offset:3px;} .history-state{padding:16px;border-left:2px solid var(--warn);color:var(--muted);background:var(--surface);font-size:12px;line-height:1.65;overflow-wrap:anywhere;}
 .control-label{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;} select{min-width:130px;padding:8px 28px 8px 9px;border:1px solid var(--line);color:var(--text);background:var(--surface);font:inherit;font-size:12px;}
 .table-scroll{overflow-x:auto;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} table{width:100%;min-width:650px;border-collapse:collapse;font-size:12px;} th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;} th{color:var(--muted);font-weight:500;background:var(--surface);} tbody tr:last-child td{border-bottom:0;} .quality{color:var(--warn);} .quality[data-state='good']{color:var(--green);} .collection-bar{padding:16px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} .collection-bar strong{display:block;margin-top:5px;font-size:14px;font-weight:500;}
 .log-scope{margin:12px 0;color:var(--muted);font-size:11px;} .log-row{display:grid;grid-template-columns:78px 54px minmax(0,1fr) 118px 142px;align-items:center;gap:10px;padding:13px 12px;font-size:12px;} .log-time,.log-id{color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:11px;} .log-level{color:var(--green);}.log-level[data-level='warning']{color:var(--warn);} .log-row strong{font-weight:500;} .log-stage,.log-result{grid-column:3;color:var(--muted);font-size:10px;} .log-id{grid-column:5;grid-row:1 / span 2;text-align:right;} .log-fields{display:grid;gap:0;margin-top:18px;border-top:1px solid var(--line);font-size:11px;} .log-fields div{display:grid;grid-template-columns:78px minmax(0,1fr);gap:9px;padding:9px 0;border-bottom:1px solid var(--line);} .log-fields dt{color:var(--muted);} .log-fields dd{min-width:0;margin:0;text-align:right;overflow-wrap:anywhere;} .log-fields code{color:var(--blue);font-family:'IBM Plex Mono',monospace;font-size:10px;}

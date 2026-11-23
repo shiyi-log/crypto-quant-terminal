@@ -7,10 +7,10 @@ import GovernancePreview from './GovernancePreview.vue';
 
 const mounted: { app: App; element: HTMLDivElement }[] = [];
 
-function open(workspace: string) {
+function open(workspace: string, eventId?: unknown) {
   const element = document.createElement('div');
   document.body.append(element);
-  const app = createApp({ render: () => h(GovernancePreview, { workspace }) });
+  const app = createApp({ render: () => h(GovernancePreview, { workspace, eventId }) });
   app.mount(element);
   mounted.push({ app, element });
   return {
@@ -113,6 +113,36 @@ describe('治理工作区演示交互', () => {
 
     expect(view.get('[data-testid="log-detail"]').textContent).toContain('evt-1042');
     expect(view.get('[data-log="evt-1042"]').classList.contains('active')).toBe(true);
+  });
+
+  it('通过固定演示事件 ID 定位历史日志并生成可复制的深链接', () => {
+    const view = open('operations', 'evt-1042');
+
+    expect(view.get('[data-testid="log-detail"]').textContent).toContain('evt-1042');
+    expect(view.get('[data-testid="history-locator"]').getAttribute('href')).toBe(
+      '/#/quant/operations?event=evt-1042',
+    );
+  });
+
+  it('合法但不存在的历史事件显示缺失状态，不跳转到最新日志', () => {
+    const view = open('operations', 'evt-9999');
+
+    expect(view.get('[data-testid="history-missing"]').textContent).toContain('evt-9999');
+    expect(view.element.querySelector('[data-testid="log-detail"]')).toBeNull();
+  });
+
+  it('格式错误的历史事件 ID 被拒绝并保留安全提示', () => {
+    const view = open('operations', '../../evt-1041');
+
+    expect(view.get('[data-testid="history-invalid"]').textContent).toContain('无效');
+    expect(view.element.querySelector('[data-testid="log-detail"]')).toBeNull();
+  });
+
+  it('重复的历史事件 query 参数按无效输入处理', () => {
+    const view = open('operations', ['evt-1041', 'evt-1042']);
+
+    expect(view.get('[data-testid="history-invalid"]').textContent).toContain('无效');
+    expect(view.element.querySelector('[data-testid="log-detail"]')).toBeNull();
   });
 
   it('设置保存只更新本地偏好回执，可重置为初始值', async () => {

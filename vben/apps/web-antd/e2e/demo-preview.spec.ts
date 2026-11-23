@@ -88,6 +88,19 @@ for (const viewport of viewports) {
     await expect(page.getByTestId('preview-content')).toContainText(
       'funding_fee_observation_delayed',
     );
+    const historyUrl = await page.getByTestId('history-locator').getAttribute('href');
+    expect(historyUrl).toBe('/#/quant/operations?event=evt-1042');
+    await page.goto(historyUrl!);
+    await expect(page.getByTestId('log-detail')).toContainText('evt-1042');
+    await expect(page.getByTestId('log-detail')).toContainText(
+      'funding_fee_observation_delayed',
+    );
+    await page.goto('/#/quant/operations?event=evt-9999');
+    await expect(page.getByTestId('history-missing')).toContainText('evt-9999');
+    await expect(page.getByTestId('log-detail')).toHaveCount(0);
+    await page.goto('/#/quant/operations?event=../../evt-1041');
+    await expect(page.getByTestId('history-invalid')).toContainText('无效');
+    await expect(page.getByTestId('log-detail')).toHaveCount(0);
 
     const dimensions = await page.evaluate(() => ({
       document: document.documentElement.scrollWidth,

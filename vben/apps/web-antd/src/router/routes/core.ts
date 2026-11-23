@@ -135,6 +135,7 @@ const coreRoutes: RouteRecordRaw[] = [
     props: (route) => ({
       preview: route.query.preview,
       workspace: route.query.workspace,
+      eventId: route.query.event,
     }),
     meta: { hideInMenu: true, hideInTab: true, title: '本地演示预览' },
   },

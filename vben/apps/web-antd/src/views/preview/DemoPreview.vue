@@ -10,7 +10,7 @@ import type { DeskScenario } from './deskScenarioData';
 import GovernancePreview from './GovernancePreview.vue';
 import ResearchPreview from './ResearchPreview.vue';
 
-const props = defineProps<{ preview?: unknown; workspace?: unknown }>();
+const props = defineProps<{ preview?: unknown; workspace?: unknown; eventId?: unknown }>();
 const quantVersion = import.meta.env.VITE_QUANT_VERSION;
 const deskScenario = ref<DeskScenario>('normal');
 const riskStrip = computed(() => DEMO_DESK_SCENARIOS[deskScenario.value]);
@@ -275,7 +275,12 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
           :workspace="researchWorkspace"
         />
         <AcceptancePreview v-else-if="governanceWorkspace === 'acceptance'" />
-        <GovernancePreview v-else :workspace="governanceWorkspace" />
+        <!-- 历史事件编号只用于定位页面内固定样本，不发起后端查询。 -->
+        <GovernancePreview
+          v-else
+          :event-id="props.eventId"
+          :workspace="governanceWorkspace"
+        />
       </section>
       <footer class="preview-footer">
         <span><i aria-hidden="true"></i>本地固定样本</span

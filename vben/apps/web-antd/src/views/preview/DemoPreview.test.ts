@@ -8,7 +8,7 @@ import DemoPreview from './DemoPreview.vue';
 
 const mounted: { app: App; element: HTMLDivElement }[] = [];
 
-function open(props: { preview?: unknown; workspace?: unknown } = {}) {
+function open(props: { preview?: unknown; workspace?: unknown; eventId?: unknown } = {}) {
   const element = document.createElement('div');
   document.body.append(element);
   const app = createApp({ render: () => h(DemoPreview, props) });
@@ -184,6 +184,26 @@ describe('本地演示预览壳', () => {
     expect(view.get('[data-testid="log-list"]').textContent).toContain(
       '本地风险快照已封存',
     );
+  });
+
+  it('通过历史事件 query 精确打开固定演示日志详情', () => {
+    const view = open({ preview: 'governance', workspace: 'operations', eventId: 'evt-1042' });
+
+    expect(view.get('[data-testid="log-detail"]').textContent).toContain('evt-1042');
+    expect(view.get('[data-testid="history-locator"]').getAttribute('href')).toBe(
+      '/#/quant/operations?event=evt-1042',
+    );
+  });
+
+  it('重复历史事件 query 不会静默回退到最新演示日志', () => {
+    const view = open({
+      preview: 'governance',
+      workspace: 'operations',
+      eventId: ['evt-1041', 'evt-1042'],
+    });
+
+    expect(view.get('[data-testid="history-invalid"]').textContent).toContain('无效');
+    expect(view.element.querySelector('[data-testid="log-detail"]')).toBeNull();
   });
 
   it('对未知 query 值回退到安全的默认工作区', () => {

@@ -190,6 +190,36 @@ describe('演示研究工作区交互', () => {
     );
   });
 
+  it('实验未知状态不推断进度、暂停或成功且标明 worker 未验证', async () => {
+    const view = open('experiments');
+    const filter = view.get<HTMLSelectElement>('select[aria-label="任务状态"]');
+    filter.value = 'unknown';
+    filter.dispatchEvent(new Event('change', { bubbles: true }));
+    await nextTick();
+
+    expect(view.get('[data-testid="experiment-list"]').textContent).toContain(
+      '任务状态未知',
+    );
+    expect(view.get('[data-testid="experiment-detail"]').textContent).toContain(
+      'worker 未验证',
+    );
+    expect(view.get('[data-testid="experiment-detail"]').textContent).toContain(
+      '无法判定任务是否停止或仍在运行',
+    );
+    expect(view.get('[data-testid="experiment-detail"]').textContent).toContain(
+      '进度未知',
+    );
+    expect(view.get('[data-testid="experiment-detail"]').textContent).not.toContain(
+      '0%',
+    );
+    expect(view.get('[data-testid="experiment-detail"]').textContent).not.toContain(
+      '已暂停',
+    );
+    expect(view.get('[data-testid="experiment-detail"]').textContent).not.toContain(
+      '已完成',
+    );
+  });
+
   it('实验任务搜索跟随可见结果并为空结果清除详情', async () => {
     const view = open('experiments');
     const search = view.get<HTMLInputElement>(

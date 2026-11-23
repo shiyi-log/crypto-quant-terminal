@@ -120,6 +120,42 @@ for (const viewport of viewports) {
     await expect(page.getByTestId('experiment-detail')).toContainText(
       '动量参数搜索',
     );
+    await experimentSearch.fill('波动窗口');
+    await page.getByRole('combobox', { name: '任务状态' }).selectOption('unknown');
+    await expect(page.getByTestId('experiment-list')).toContainText('EXP-022');
+    await expect(page.getByTestId('experiment-detail')).toContainText(
+      'worker 未验证',
+    );
+    await expect(page.getByTestId('experiment-detail')).toContainText(
+      '任务状态未知',
+    );
+    await expect(page.getByTestId('experiment-detail')).toContainText(
+      '进度未知',
+    );
+    await expect(page.getByTestId('experiment-detail')).not.toContainText('0%');
+    await expect(page.getByTestId('experiment-detail')).not.toContainText(
+      '已暂停',
+    );
+    await expect(page.getByTestId('experiment-detail')).not.toContainText(
+      '已完成',
+    );
+    const experimentDimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+    }));
+    expect(experimentDimensions.document).toBeLessThanOrEqual(
+      experimentDimensions.viewport,
+    );
+    await experimentSearch.fill('没有匹配项');
+    await expect(page.getByTestId('experiment-empty')).toContainText(
+      '没有符合条件的实验任务',
+    );
+    await expect(page.getByTestId('experiment-detail')).toHaveCount(0);
+    await page.getByRole('combobox', { name: '任务状态' }).selectOption('all');
+    await experimentSearch.fill('动量');
+    await expect(page.getByTestId('experiment-detail')).toContainText(
+      'EXP-023',
+    );
     await experimentSearch.fill('没有匹配项');
     await expect(page.getByTestId('experiment-empty')).toContainText(
       '没有符合条件的实验任务',

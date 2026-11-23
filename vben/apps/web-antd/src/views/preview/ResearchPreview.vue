@@ -24,7 +24,7 @@ type Strategy = {
 type Experiment = {
   id: string;
   name: string;
-  status: 'running' | 'failed' | 'completed';
+  status: 'running' | 'failed' | 'completed' | 'unknown';
   progress: string;
   reason: string;
 };
@@ -133,6 +133,14 @@ const strategies: Strategy[] = [
   },
 ];
 const experiments: Experiment[] = [
+  // 固定未知样本用于演示不确定回执；不探测 worker，也不推断任务终态。
+  {
+    id: 'EXP-022',
+    name: '波动窗口复核',
+    status: 'unknown',
+    progress: '进度未知',
+    reason: 'worker 未验证，无法判定任务是否停止或仍在运行；不得推断为暂停或完成。',
+  },
   {
     id: 'EXP-024',
     name: '压力成本复核',
@@ -282,7 +290,12 @@ watch(filteredExperiments, (visible) => {
   }
 });
 function statusLabel(status: Experiment['status']) {
-  return { running: '运行中', failed: '失败', completed: '已完成' }[status];
+  return {
+    running: '运行中',
+    failed: '失败',
+    completed: '已完成',
+    unknown: '任务状态未知',
+  }[status];
 }
 </script>
 
@@ -502,6 +515,7 @@ function statusLabel(status: Experiment['status']) {
               <option value="running">运行中</option>
               <option value="failed">失败</option>
               <option value="completed">已完成</option>
+              <option value="unknown">状态未知</option>
             </select>
           </label>
         </div>
@@ -535,7 +549,11 @@ function statusLabel(status: Experiment['status']) {
           <h3>{{ selectedExperiment.name }}</h3>
           <code>{{ selectedExperiment.id }}</code>
           <p>{{ selectedExperiment.reason }}</p>
-          <div class="status-line">
+          <div
+            class="status-line"
+            data-testid="experiment-status"
+            :data-status="selectedExperiment.status"
+          >
             {{ statusLabel(selectedExperiment.status) }} ·
             {{ selectedExperiment.progress }}
           </div>
@@ -1057,6 +1075,9 @@ dd {
 }
 [data-status='completed'] {
   color: var(--profit);
+}
+.status-line[data-status='unknown'] {
+  color: var(--muted);
 }
 .status-line {
   border-top: 1px solid var(--line);

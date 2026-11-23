@@ -674,6 +674,13 @@
 - 中文源码提交 `6b918cdf09f32b393245623e8f36ffa6847d9f6f` 的精确 main CI [`45167165177`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45167165177) 于 `2026-11-23T11:44:06Z` 成功；后端/PostgreSQL 集成、全前端 Vitest、类型检查、生产构建与真实 dist 浏览器流程通过。浏览器证据 artifact `14815456479` 大小 `7210488` 字节，digest `sha256:c78ec30eb93b44f25fad49bca0cdc0b06b4f36c1cf40715c19e4ab9b2dbc1595`，有效至 2026-12-07。
 - 同 SHA 自动归档 CD [`45167833415`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45167833415) 于 `2026-11-23T11:46:51Z` 成功；CI 身份门禁、前后端构建、归档 SHA-256/`build.json` 身份核验和上传均通过。artifact `14814064622` 大小 `147463655` 字节，digest `sha256:28e22dd973633d1d93ac33f9827c298288b218ef6136c6aa4c8c6e9a96caa1f4`，有效至 2026-12-23；无版本标签，Release 按规则跳过。
 
+## 2026-11-23 P3 固定演示运维日志搜索
+
+- 运维与证据页可在本地固定演示样本中按事件编号、标题、阶段、结果、原因码和正文搜索；日志级别筛选与文本搜索组合生效。无匹配时显示空状态并清除旧详情，清空搜索后恢复首个可见事件。简体中文代码注释说明搜索只过滤当前内存样本，不读取或补取服务端日志。
+- TDD RED：组件测试先因缺少“日志搜索”输入控件而失败（其余 14 项通过）；实现后治理组件测试 **15/15 通过**。最新 `main` 基线上 TypeScript 类型检查、生产构建、差异空白检查通过；真实 dist 四视口 Playwright **4/4 通过**（1920、1440、768、390），验证无结果详情清除与恢复、无横向溢出、无账户/API 读取或写请求。
+- 中文源码提交 `f6ab62ec6f970cced9dcde258887cc49439bfcd2` 已推送至 `main`。精确 push CI [`45179262904`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45179262904) 与自动归档 CD [`45180021531`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45180021531) 均成功，后端/PostgreSQL 集成、前端全量单测、类型检查、生产构建、真实 dist 浏览器流程、CI 门禁、归档身份/哈希校验及上传均通过。归档 artifact `14820817935` 大小 `147472450` 字节，digest `sha256:2d8271ace48f134964928049aad4bfce6e51bccd2266f6eee0f74d8e74968a1c`，有效至 2026-12-23；未创建新版本标签，Release job 按规则跳过。
+- 本切片只增加固定演示日志定位能力，不连接真实日志、账户、交易 API 或持久存储，不改变项目版本 `0.2.12`。P0—P4 阶段验收、P3 旧页面读数对照、P1 唯一 writer/完整交易执行接线、P2 来源认证/worker/有效留出消费，以及 P4 连续 30 天 Demo 与分阶段人工校准仍未完成；页面不授予 Demo 或实盘资格。
+
 ## 2026-11-23 版本发布回执 0.2.12
 
 - 项目版本 `pyproject.toml` 与锁文件 `uv.lock` 同步为 `0.2.12`。版本提交 `88049c9c44e3b7b9ac974fcd6f3f89ad111b946b` 已推送到 `main`；精确 main push CI [`45168419466`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45168419466) 与附注标签 `v0.2.12` 的 push CI [`45169621457`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45169621457) 均成功。标签解析到的提交 SHA 与版本提交一致。标签 CI 浏览器证据 artifact `14816432154` 为 `7198682` 字节，digest `sha256:4c8e3e37a6cdcd4b34136f20177c67d96b8a8bca824014ad051cddab1f6effa6`。

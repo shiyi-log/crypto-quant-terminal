@@ -7,6 +7,7 @@
 - 项目版本与锁文件同步为 `0.2.12`。版本提交 `88049c9c44e3b7b9ac974fcd6f3f89ad111b946b` 的精确 main CI `45168419466`、标签 `v0.2.12` CI `45169621457` 均成功；main 归档 CD `45169076974` 与显式标签发布 CD `45170393282` 成功。发布 artifact `14817480078` digest `sha256:de32b7e2381e7bbd91d1c8a85cedef69eab9d1384c344829981e70643e487f76`。
 - [GitHub Release v0.2.12](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.12)（Release ID `455367192`）已发布；TAR 资产 SHA-256 `d845fcfcab9a50655cfbfe13e63cddf717b724a21fd56b4784639300aec7ea01`，sidecar 资产 SHA-256 `69912061e783d54f8f4bec9fbae510d7de1c35688fda0cd5c7f8565266a7559a`。独立下载的 TAR 校验和与 sidecar/资产摘要相同；包内 `build.json` 精确绑定提交 `88049c9c44e3b7b9ac974fcd6f3f89ad111b946b`、版本 `0.2.12` 与包名 `quant-terminal-v0.2.12`。
 - P0—P4 阶段验收、P3 旧读数对照、P1 唯一 writer/交易执行接线、P2 来源认证和留出消费、P4 30 天自然 Demo 与分阶段人工校准仍未完成；该版本不授予 Demo 或实盘资格。
+- P3 运维与证据固定演示日志新增本地搜索，可匹配事件编号、阶段、原因码和内容；无匹配时清除详情并显示空态，清空搜索后恢复原固定事件。搜索只处理当前页面内存中的合成样本，不连接真实日志、账户或下单接口。源码提交 `f6ab62ec6f970cced9dcde258887cc49439bfcd2` 的精确 CI/CD 回执见开发台账。
 
 ## 0.2.11 — 2026-11-23
 

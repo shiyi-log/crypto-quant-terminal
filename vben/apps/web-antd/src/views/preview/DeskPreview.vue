@@ -1,16 +1,10 @@
 <script lang="ts" setup>
 import { computed, ref } from 'vue';
 
+import { DEMO_DESK_SCENARIOS } from './deskScenarioData';
+import type { DeskScenario } from './deskScenarioData';
+
 type SymbolKey = 'BTCUSDT' | 'ETHUSDT' | 'TRXUSDT';
-export type DeskScenario =
-  | 'normal'
-  | 'flat'
-  | 'unknown'
-  | 'stale'
-  | 'read-failure'
-  | 'partial-fill'
-  | 'cooldown'
-  | 'hard-failure';
 
 const props = withDefaults(defineProps<{ scenario?: DeskScenario }>(), {
   scenario: 'normal',
@@ -64,85 +58,7 @@ const price = computed(() => markets[selectedSymbol.value]);
 const isStale = computed(() =>
   ['stale', 'unknown', 'read-failure'].includes(scenario.value),
 );
-const scenarioView = computed(() => {
-  const views: Record<
-    DeskScenario,
-    {
-      label: string;
-      reason: string;
-      entry: string;
-      position: string;
-      protection: string;
-      snapshot: string;
-    }
-  > = {
-    normal: {
-      label: '样本正常 · 固定快照',
-      reason: 'demo_snapshot_observed',
-      entry: '演示状态：允许状态样本',
-      position: '0.002 BTC 固定样本',
-      protection: '已确认样本',
-      snapshot: '样本状态正常 · 仅供演示',
-    },
-    flat: {
-      label: '空仓 · 无活动委托',
-      reason: 'account_flat_observed',
-      entry: '空仓样本：无持仓委托',
-      position: '当前没有持仓或活动委托',
-      protection: '无持仓保护单',
-      snapshot: '空仓样本 · 不代表账户事实',
-    },
-    unknown: {
-      label: '账户快照未知',
-      reason: 'account_snapshot_unknown',
-      entry: '状态未知：禁止新增风险',
-      position: 'BTCUSDT · 上次样本保留',
-      protection: '保护状态未知',
-      snapshot: '账户快照未知 · 保留 14:32:18 样本',
-    },
-    stale: {
-      label: '快照已过期 · 保留最后样本',
-      reason: 'account_snapshot_stale',
-      entry: '快照过期：禁止新增风险',
-      position: 'BTCUSDT · 上次样本保留',
-      protection: '保护状态未知',
-      snapshot: '快照已过期 · 保留最后样本',
-    },
-    'read-failure': {
-      label: '读取失败：保留上次样本',
-      reason: 'account_snapshot_read_failed',
-      entry: '读取失败：禁止新增风险',
-      position: 'BTCUSDT · 上次样本保留',
-      protection: '保护状态未知',
-      snapshot: '读取失败 · 保留 14:32:18 样本',
-    },
-    'partial-fill': {
-      label: '部分成交：保护确认中',
-      reason: 'partial_fill_protection_pending',
-      entry: '保护确认前禁止新增风险',
-      position: '0.001 BTC 已成交 · 剩余 0.001 BTC 未成交',
-      protection: '确认中 · 尚未确认有效保护',
-      snapshot: '部分成交 · 等待保护单确认',
-    },
-    cooldown: {
-      label: '冷却中 · 43 分钟',
-      reason: 'daily_net_loss_cooldown',
-      entry: '禁止新增风险 · 剩余 43 分钟',
-      position: 'BTCUSDT · 持仓样本保留',
-      protection: '保护状态未知',
-      snapshot: '冷却状态演示 · 不会自动恢复开仓',
-    },
-    'hard-failure': {
-      label: '本轮硬失败 · 已终止',
-      reason: 'daily_net_loss_hard_limit_exceeded',
-      entry: '本轮已终止 · 禁止新增风险',
-      position: 'BTCUSDT · 仅展示最后样本',
-      protection: '需人工核验保护事实',
-      snapshot: '硬失败 · 不会自动恢复',
-    },
-  };
-  return views[scenario.value];
-});
+const scenarioView = computed(() => DEMO_DESK_SCENARIOS[scenario.value]);
 const showPosition = computed(() => scenario.value !== 'flat');
 
 function changeScenario(next: DeskScenario) {
@@ -211,19 +127,22 @@ function confirmPause() {
       </div>
     </div>
 
-    <div class="desk-metrics">
+      <div class="desk-metrics" data-testid="desk-metrics">
       <div>
         <span>演示权益</span><strong>1,000.00 <small>USDT</small></strong>
       </div>
       <div>
         <span>今日净损益</span
-        ><strong class="negative">-2.35 <small>USDT</small></strong>
+        ><strong class="negative" data-testid="desk-pnl">{{ scenarioView.pnl }}</strong>
       </div>
       <div>
-        <span>计划风险占用</span><strong>0.42% <small>/ 2.00%</small></strong>
+          <span>计划风险占用</span><strong data-testid="desk-risk-used">{{ scenarioView.riskUsed }}</strong>
       </div>
+        <div>
+          <span>剩余风险预算</span><strong data-testid="desk-risk-budget">{{ scenarioView.budget }}</strong>
+        </div>
       <div>
-        <span>阶段回撤</span><strong>2.35 <small>/ 150 USDT</small></strong>
+          <span>阶段回撤</span><strong data-testid="desk-drawdown">{{ scenarioView.drawdown }}</strong>
       </div>
       <div class="strategy-metric">
         <span>策略状态</span
@@ -325,7 +244,7 @@ function confirmPause() {
           </div>
           <div>
             <dt>保护单状态</dt>
-            <dd><span class="warning-dot" />{{ scenarioView.protection }}</dd>
+            <dd data-testid="desk-risk-protection"><span class="warning-dot" />{{ scenarioView.protection }}</dd>
           </div>
           <div>
             <dt>冷却状态</dt>

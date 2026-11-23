@@ -122,6 +122,44 @@ describe('本地演示预览壳', () => {
     ).toContain('daily_net_loss_hard_limit_exceeded');
   });
 
+  it('常驻风险栏与交易台指标对同一场景显示一致的损益、预算和保护状态', async () => {
+    const view = open();
+    const desk = () => view.get('[data-testid="desk-metrics"]');
+    const strip = () => view.get('[data-testid="terminal-risk-strip"]');
+
+    for (const scenario of [
+      'normal',
+      'flat',
+      'unknown',
+      'stale',
+      'read-failure',
+      'partial-fill',
+      'cooldown',
+      'hard-failure',
+    ]) {
+      view.get('[data-scenario="' + scenario + '"]').click();
+      await nextTick();
+      for (const [deskId, stripId] of [
+        ['desk-pnl', 'risk-pnl'],
+        ['desk-risk-budget', 'risk-budget'],
+      ]) {
+        expect(desk().querySelector('[data-testid="' + deskId + '"]')?.textContent)
+          .toBe(strip().querySelector('[data-testid="' + stripId + '"]')?.textContent);
+      }
+      const protection = strip().querySelector(
+        '[data-testid="risk-protection"]',
+      )?.textContent;
+      const deskProtection = view.get(
+        '[data-testid="desk-risk-protection"]',
+      ).textContent;
+      expect(deskProtection).toContain(protection);
+      const positionProtection = view.element.querySelector(
+        '[data-testid="position-protection"]',
+      )?.textContent;
+      if (positionProtection) expect(positionProtection).toContain(protection);
+    }
+  });
+
   it('按研究 query 直接打开实验任务工作区', () => {
     const view = open({ preview: 'research', workspace: 'experiments' });
 

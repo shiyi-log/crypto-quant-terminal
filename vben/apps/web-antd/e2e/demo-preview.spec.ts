@@ -119,6 +119,30 @@ for (const viewport of viewports) {
     await expect(page.getByTestId('strategy-detail')).toContainText(
       '留出集未评估',
     );
+    await page.getByRole('tab', { name: '订单流', exact: true }).click();
+    await expect(
+      page.getByRole('heading', { name: '订单流与价格', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByTestId('flow-evidence')).toContainText(
+      '事件成熟度已成熟',
+    );
+    await page.getByRole('tab', { name: 'ETHUSDT' }).click();
+    await expect(page.getByTestId('flow-evidence')).toContainText('数据过期');
+    await expect(page.getByTestId('flow-evidence')).toContainText(
+      '观测时间 2026-11-23 14:31',
+    );
+    await page.getByRole('tab', { name: 'TRXUSDT' }).click();
+    await expect(page.getByTestId('flow-evidence')).toContainText('数据未知');
+    await expect(page.getByTestId('flow-evidence')).toContainText('成交率未知');
+    const flowDimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+    }));
+    expect(flowDimensions.document).toBeLessThanOrEqual(flowDimensions.viewport);
+    await page.screenshot({
+      path: test.info().outputPath(`orderflow-${viewport.width}.png`),
+      fullPage: true,
+    });
     await page.getByRole('button', { name: '验收与运维' }).click();
     await expect(
       page.getByRole('heading', { name: '验收与上线', exact: true }),

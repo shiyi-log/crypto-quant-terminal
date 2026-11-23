@@ -218,6 +218,22 @@ describe('演示研究工作区交互', () => {
 
   it('订单流交易对切换更新盘口与逐笔成交', async () => {
     const view = open('orderflow');
+    expect(view.get('[data-testid="flow-evidence"]').textContent).toContain(
+      '成交额',
+    );
+    expect(view.get('[data-testid="flow-evidence"]').textContent).toContain(
+      '主动买',
+    );
+    expect(view.get('[data-testid="flow-evidence"]').textContent).toContain(
+      '事件成熟度已成熟',
+    );
+    expect(view.get('[data-testid="flow-evidence"]').textContent).toContain(
+      '成交率',
+    );
+    expect(view.get('[data-testid="flow-evidence"]').textContent).toContain(
+      '逆向选择',
+    );
+
     view.get<HTMLButtonElement>('[data-symbol="ETHUSDT"]').click();
     await nextTick();
     expect(view.get('[data-testid="flow-price"]').textContent).toContain(
@@ -229,5 +245,18 @@ describe('演示研究工作区交互', () => {
     expect(view.get('[data-testid="flow-trades"]').textContent).not.toContain(
       '91,482',
     );
+    expect(view.get('[data-testid="flow-evidence"]').textContent).toContain(
+      '数据过期',
+    );
+    expect(view.get('[data-testid="flow-evidence"]').textContent).toContain(
+      '观测时间 2026-11-23 14:31',
+    );
+
+    view.get<HTMLButtonElement>('[data-symbol="TRXUSDT"]').click();
+    await nextTick();
+    const unknownEvidence = view.get('[data-testid="flow-evidence"]').textContent;
+    expect(unknownEvidence).toContain('未知');
+    expect(unknownEvidence).not.toContain('成交率0%');
+    expect(unknownEvidence).not.toContain('已通过');
   });
 });

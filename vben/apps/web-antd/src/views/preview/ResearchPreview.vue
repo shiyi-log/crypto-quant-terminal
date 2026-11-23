@@ -31,6 +31,15 @@ type Flow = {
   change: string;
   spread: string;
   depth: string;
+  notional: string;
+  tradeCount: string;
+  aggressiveBuy: string;
+  aggressiveSell: string;
+  maturity: string;
+  fillRate: string;
+  adverseSelection: string;
+  freshness: 'valid' | 'stale' | 'unknown';
+  observedAt: string;
   trades: string[];
 };
 
@@ -133,6 +142,7 @@ const experiments: Experiment[] = [
     reason: '已生成覆盖率摘要与不可评估区间清单。',
   },
 ];
+// 订单流指标和新鲜度均为固定演示事实；此视图不读取行情、账户或执行结果。
 const flows: Flow[] = [
   {
     symbol: 'BTCUSDT',
@@ -140,6 +150,15 @@ const flows: Flow[] = [
     change: '+1.24%',
     spread: '0.80',
     depth: '2.8m USDT',
+    notional: '842.6k USDT',
+    tradeCount: '1,284 笔',
+    aggressiveBuy: '468.2k USDT',
+    aggressiveSell: '374.4k USDT',
+    maturity: '已成熟 · 128 个事件',
+    fillRate: '72.4%',
+    adverseSelection: '3.8 bps',
+    freshness: 'valid',
+    observedAt: '2026-11-23 14:32',
     trades: [
       '91,482.00 · 主动买 · 0.032 BTC',
       '91,520.40 · 主动卖 · 0.018 BTC',
@@ -151,6 +170,15 @@ const flows: Flow[] = [
     change: '+0.82%',
     spread: '0.12',
     depth: '1.4m USDT',
+    notional: '未知',
+    tradeCount: '未知',
+    aggressiveBuy: '未知',
+    aggressiveSell: '未知',
+    maturity: '未知',
+    fillRate: '未知',
+    adverseSelection: '未知',
+    freshness: 'stale',
+    observedAt: '2026-11-23 14:31',
     trades: ['3,184.58 · 主动买 · 1.24 ETH', '3,184.62 · 主动卖 · 0.86 ETH'],
   },
   {
@@ -159,6 +187,15 @@ const flows: Flow[] = [
     change: '-0.18%',
     spread: '0.0001',
     depth: '420k USDT',
+    notional: '未知',
+    tradeCount: '未知',
+    aggressiveBuy: '未知',
+    aggressiveSell: '未知',
+    maturity: '未知',
+    fillRate: '未知',
+    adverseSelection: '未知',
+    freshness: 'unknown',
+    observedAt: '2026-11-23 14:30',
     trades: ['0.2840 · 主动买 · 2,400 TRX', '0.2841 · 主动卖 · 1,800 TRX'],
   },
 ];
@@ -538,6 +575,37 @@ function statusLabel(status: Experiment['status']) {
             ><span class="muted">可见深度 {{ selectedFlow.depth }}</span>
           </article>
         </div>
+        <div
+          class="flow-evidence"
+          data-testid="flow-evidence"
+          :data-freshness="selectedFlow.freshness"
+        >
+          <div class="flow-evidence-heading">
+            <h3>订单流样本摘要</h3>
+            <span
+              class="freshness-status"
+              :class="'freshness-' + selectedFlow.freshness"
+            >
+              {{
+                selectedFlow.freshness === 'valid'
+                  ? '可用演示样本'
+                  : selectedFlow.freshness === 'stale'
+                    ? '数据过期'
+                    : '数据未知'
+              }}
+            </span>
+          </div>
+          <dl>
+            <div><dt>成交额</dt><dd>{{ selectedFlow.notional }}</dd></div>
+            <div><dt>成交笔数</dt><dd>{{ selectedFlow.tradeCount }}</dd></div>
+            <div><dt>主动买</dt><dd>{{ selectedFlow.aggressiveBuy }}</dd></div>
+            <div><dt>主动卖</dt><dd>{{ selectedFlow.aggressiveSell }}</dd></div>
+            <div><dt>事件成熟度</dt><dd>{{ selectedFlow.maturity }}</dd></div>
+            <div><dt>成交率</dt><dd>{{ selectedFlow.fillRate }}</dd></div>
+            <div><dt>逆向选择</dt><dd>{{ selectedFlow.adverseSelection }}</dd></div>
+          </dl>
+          <p>观测时间 {{ selectedFlow.observedAt }} · 固定演示快照，不代表实时市场数据或交易结果。</p>
+        </div>
         <article class="trades-panel" data-testid="flow-trades">
           <div class="panel-heading small-heading">
             <h3>逐笔成交</h3>
@@ -617,6 +685,59 @@ h3 {
   align-items: center;
   justify-content: space-between;
   gap: 18px;
+}
+.flow-evidence {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 14px 0;
+}
+.flow-evidence-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.flow-evidence-heading h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.freshness-status {
+  font-size: 12px;
+  font-weight: 600;
+}
+.freshness-valid {
+  color: var(--profit);
+}
+.freshness-stale,
+.freshness-unknown {
+  color: var(--muted);
+}
+.flow-evidence dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 18px;
+  margin: 14px 0;
+}
+.flow-evidence dl div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.flow-evidence dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+.flow-evidence dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.flow-evidence p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
 }
 .research-header {
   border-bottom: 1px solid var(--line);
@@ -1044,6 +1165,9 @@ dd {
   .flow-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+  .flow-evidence dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .flow-grid article {
     min-width: 0;

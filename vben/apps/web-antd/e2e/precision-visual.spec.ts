@@ -31,6 +31,48 @@ for (const viewport of viewports) {
       page.getByText('仅展示固定示例，不对应交易所账户', { exact: true }),
     ).toBeVisible();
 
+    await page.getByRole('button', { name: '部分成交', exact: true }).click();
+    await expect(page.getByTestId('position-state')).toContainText(
+      '0.001 BTC 已成交',
+    );
+    await expect(page.getByTestId('position-protection')).toContainText(
+      '确认中',
+    );
+    await expect(page.getByTestId('position-protection')).not.toContainText(
+      '保护已确认',
+    );
+    await page.getByRole('button', { name: '空仓', exact: true }).click();
+    await expect(page.getByTestId('positions-empty')).toContainText(
+      '当前没有持仓',
+    );
+    await page.getByRole('button', { name: '未知', exact: true }).click();
+    await expect(page.getByTestId('desk-snapshot-status')).toContainText(
+      '账户快照未知',
+    );
+    await expect(page.getByTestId('position-state')).toContainText(
+      'BTCUSDT · 上次样本保留',
+    );
+    await expect(page.getByTestId('entry-permission')).toContainText(
+      '状态未知：禁止新增风险',
+    );
+    await page.getByRole('button', { name: '过期', exact: true }).click();
+    await expect(page.getByTestId('desk-snapshot-status')).toContainText(
+      '快照已过期',
+    );
+    await page.getByRole('button', { name: '部分成交', exact: true }).click();
+    await page.getByRole('button', { name: '冷却中', exact: true }).click();
+    await expect(page.getByTestId('entry-permission')).toContainText('43 分钟');
+    await expect(page.getByTestId('terminal-risk-strip')).toContainText(
+      '冷却中',
+    );
+    await page.getByRole('button', { name: '硬失败', exact: true }).click();
+    await expect(page.getByTestId('entry-permission')).toContainText(
+      '本轮已终止',
+    );
+    await expect(page.getByTestId('terminal-risk-strip')).toContainText(
+      '本轮硬失败',
+    );
+
     const dimensions = await page.evaluate(() => ({
       document: document.documentElement.scrollWidth,
       viewport: window.innerWidth,
@@ -40,6 +82,15 @@ for (const viewport of viewports) {
     }));
     expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
     expect(dimensions.shellWidth).toBeLessThanOrEqual(dimensions.viewport);
+    expect(fixture.readRequests).toEqual([]);
+    expect(fixture.authRequests).toEqual([]);
+    expect(fixture.mutations).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+    expect(fixture.pageErrors).toEqual([]);
+    await page.getByRole('button', { name: '读取失败', exact: true }).click();
+    await expect(page.getByTestId('desk-snapshot-status')).toContainText(
+      '保留上次样本',
+    );
     expect(fixture.readRequests).toEqual([]);
     expect(fixture.authRequests).toEqual([]);
     expect(fixture.mutations).toEqual([]);

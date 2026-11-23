@@ -5,11 +5,83 @@ import { Bell, CircleAlert, Grid, Search } from '@vben/icons';
 
 import AcceptancePreview from './AcceptancePreview.vue';
 import DeskPreview from './DeskPreview.vue';
+import type { DeskScenario } from './DeskPreview.vue';
 import GovernancePreview from './GovernancePreview.vue';
 import ResearchPreview from './ResearchPreview.vue';
 
 const props = defineProps<{ preview?: unknown; workspace?: unknown }>();
 const quantVersion = import.meta.env.VITE_QUANT_VERSION;
+const deskScenario = ref<DeskScenario>('normal');
+const riskStrip = computed(() => {
+  const states: Record<
+    DeskScenario,
+    {
+      account: string;
+      pnl: string;
+      budget: string;
+      protection: string;
+      reason: string;
+    }
+  > = {
+    normal: {
+      account: '仅演示',
+      pnl: '−2.35 USDT',
+      budget: '15.65 USDT',
+      protection: '待确认样本',
+      reason: 'demo_snapshot_observed',
+    },
+    flat: {
+      account: '空仓样本',
+      pnl: '未评估',
+      budget: '未知',
+      protection: '无持仓保护单',
+      reason: 'account_flat_observed',
+    },
+    unknown: {
+      account: '状态未知',
+      pnl: '未知',
+      budget: '未知',
+      protection: '保护状态未知',
+      reason: 'account_snapshot_unknown',
+    },
+    stale: {
+      account: '快照过期',
+      pnl: '未知',
+      budget: '未知',
+      protection: '保护状态未知',
+      reason: 'account_snapshot_stale',
+    },
+    'read-failure': {
+      account: '读取失败',
+      pnl: '未知',
+      budget: '未知',
+      protection: '保护状态未知',
+      reason: 'account_snapshot_read_failed',
+    },
+    'partial-fill': {
+      account: '部分成交',
+      pnl: '−2.35 USDT',
+      budget: '未知',
+      protection: '确认中',
+      reason: 'partial_fill_protection_pending',
+    },
+    cooldown: {
+      account: '冷却中 · 43 分钟',
+      pnl: '−20.00 USDT',
+      budget: '0.00 USDT',
+      protection: '保护状态未知',
+      reason: 'daily_net_loss_cooldown',
+    },
+    'hard-failure': {
+      account: '本轮硬失败',
+      pnl: '−50.01 USDT',
+      budget: '0.00 USDT',
+      protection: '需人工核验',
+      reason: 'daily_net_loss_hard_limit_exceeded',
+    },
+  };
+  return states[deskScenario.value];
+});
 const previewKeys = ['desk', 'research', 'governance'] as const;
 type PreviewKey = (typeof previewKeys)[number];
 type WorkspaceItem = { key: string; label: string };
@@ -224,20 +296,23 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
           ><strong>风险监控</strong>
         </div>
         <div class="risk-strip-item">
-          <span>账户状态</span><strong class="state-demo">仅演示</strong>
+          <span>账户状态</span
+          ><strong class="state-demo">{{ riskStrip.account }}</strong>
         </div>
         <div class="risk-strip-item">
           <span>日净损益</span
-          ><strong class="negative-value">−2.35 USDT</strong>
+          ><strong class="negative-value">{{ riskStrip.pnl }}</strong>
         </div>
         <div class="risk-strip-item">
-          <span>剩余风险预算</span><strong>15.65 USDT</strong>
+          <span>剩余风险预算</span><strong>{{ riskStrip.budget }}</strong>
         </div>
         <div class="risk-strip-item protection-state">
           <span>保护单状态</span
-          ><strong><i aria-hidden="true"></i>待确认样本</strong>
+          ><strong><i aria-hidden="true"></i>{{ riskStrip.protection }}</strong>
         </div>
-        <span class="risk-strip-clock">更新于 14:32:18</span>
+        <span class="risk-strip-clock" data-testid="risk-strip-reason"
+          >{{ riskStrip.reason }} · 14:32:18</span
+        >
       </section>
       <section
         id="preview-panel"
@@ -248,7 +323,11 @@ function selectWorkspace(section: PreviewKey, workspace: string) {
         tabindex="0"
       >
         <h1 class="sr-only">{{ activeSection.label }}</h1>
-        <DeskPreview v-if="active === 'desk'" />
+        <DeskPreview
+          v-if="active === 'desk'"
+          :scenario="deskScenario"
+          @scenario-change="deskScenario = $event"
+        />
         <ResearchPreview
           v-else-if="active === 'research'"
           :workspace="researchWorkspace"

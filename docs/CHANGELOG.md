@@ -9,6 +9,9 @@
 - [GitHub Release v0.2.8](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.8)（ID `455037419`）于 `2026-11-23T05:53:31Z` 发布。tar.gz 大小 `149475029` 字节，SHA-256 为 `bcc6c3843c49a57111bfac08b618fcee1c350ce0ea0249c5b5d400038b1d7229`；103 字节 sidecar 资产 SHA-256 为 `f02a3ee39e4278e1a3011f763f97ccc772f27bbcfecd4401f54ca8ebb2cf17cf`。这只是当前 P3 验收演示页切片的版本发布，不代表整份重构计划完成或取得 Demo/实盘资格。
 - 发布回执文档提交 `39ed3d79730c303a9d72d165b57eae6912b7fe77` 的 main CI `45120802192`、分支 CI `45120806715` 均成功；main 归档 CD `45121199363` 成功，同 SHA CI 门槛、构建、归档 SHA-256 与 `build.json` 身份核验和上传均通过。artifact `14793872055` 大小 `147423311` 字节，digest 为 `sha256:bd0311642a6ef1a459d5337f4120e653ab808b73904747e1da43db6aa1001530`。无新版本标签，Release job 按条件跳过。
 
+- P1 完整成本事件汇总增加拒绝数与持久化确认语义；重放数量单独记录，存储失败不误报新增。相关运行测试 47 项通过，全量 pytest 3426 passed、458 skipped、3043 subtests passed；Ruff、compileall 与差异检查通过。该切片未改变执行/验收资格，代码及台账提交的精确 CI/CD 回执待补。
+
+
 ## 0.2.7 — 2026-11-23
 
 - 收录 P3 本地演示交易台设计首切片与演示运行日志交互闭环：前端保持固定演示数据，完善结构化中文日志、级别筛选后的详情跟随与重复补采幂等语义。页面不读取真实账户、不连接业务 API、不发送交易命令，也不代表服务端审计或真实交易事实。合并提交 `322eff49c7223e21b8003a9a55e2640afe07b4bf` 的精确 main CI `45106028323` 成功；自动 main 归档 CD `45106450950` 成功，artifact `14788265316` 大小 `147406349` 字节，digest 为 `sha256:fb17279a0c318d392922818d5db1f90fb948277ceaf6d4c9a8a6e45bc5b8f386`，归档 SHA-256 与 `build.json` 身份校验通过；无标签时 Release job 按条件跳过。

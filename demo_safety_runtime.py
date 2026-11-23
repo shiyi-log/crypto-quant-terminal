@@ -327,8 +327,8 @@ class SafetyRuntime:
                     raise ValueError('风险事件历史不可用')
                 candidate = copy.deepcopy(service.risk_policy)
                 ordered = self._ordered_completions(candidate.journal, events)
-                new_count = len(ordered)
-                replay_count = input_count - new_count
+                staged_new_count = len(ordered)
+                replay_count = input_count - staged_new_count
                 events = ordered
                 for event in events:
                     candidate.record_round_trip(timestamp_ms=event['timestamp_ms'],
@@ -336,14 +336,17 @@ class SafetyRuntime:
                 pending = candidate.pending_events()
                 if pending:
                     service.risk_store.append_risk_events(pending)
+                    # 只有风险事件写入成功后，日志才将新事件计为已提交。
+                    new_count = staged_new_count
                     candidate.acknowledge_events(event['event_id'] for event in pending)
                 service.risk_policy = candidate
                 state = candidate.status(now_ms)
                 if state['hard_failure'] or state['entries_mode'] in {
                         'lock_until_reconciled', 'stop_until_next_day', 'cooldown', 'terminated'}:
                     self._pause(service, 'safety_committed_cost_risk_gate', now_ms)
-                LOGGER.info('Demo 完整成本事件处理完成 阶段=风险账本提交 输入数=%d 新增数=%d 重放数=%d 拒绝原因码=none 耗时_ms=%.3f；不记录交易载荷',
-                            input_count, new_count, replay_count, (time.perf_counter() - started) * 1000)
+                LOGGER.info('Demo 完整成本事件处理完成 阶段=风险账本提交 输入数=%d 新增数=%d 重放数=%d 拒绝数=%d 拒绝原因码=none 耗时_ms=%.3f；不记录交易载荷',
+                            input_count, new_count, replay_count, rejected_count,
+                            (time.perf_counter() - started) * 1000)
                 return True
             except Exception as error:
                 rejected_count = 1

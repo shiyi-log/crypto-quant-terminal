@@ -285,8 +285,44 @@ def test_completion_summary_logs_counts_duration_and_no_event_payload(caplog):
     assert '输入数=1' in caplog.text
     assert '新增数=1' in caplog.text
     assert '重放数=0' in caplog.text
+    assert '拒绝数=0' in caplog.text
     assert '拒绝原因码=none' in caplog.text
     assert '耗时_ms=' in caplog.text
+    assert 'secret-event-id' not in caplog.text
+    assert 'secret-trade-id' not in caplog.text
+
+
+def test_replayed_completion_summary_counts_only_durable_replays(caplog):
+    service = make_service()
+    completion = {'committed': True, 'archive_ref': 'cost/archive/1', 'events': [
+        {'event_id': 'closed-1', 'trade_id': 'trade-1', 'timestamp_ms': 1100,
+         'net_pnl_usdt': '-1', 'complete': True, 'funding_complete': True}]}
+    runtime, _, _ = attach_runtime(service, [], completion_provider=lambda **kw: completion)
+    assert runtime.record_completions(service, now_ms=1200) is True
+    caplog.clear()
+    with caplog.at_level('INFO', logger='demo_safety_runtime'):
+        assert runtime.record_completions(service, now_ms=1201) is True
+    assert '输入数=1' in caplog.text
+    assert '新增数=0' in caplog.text
+    assert '重放数=1' in caplog.text
+    assert '拒绝数=0' in caplog.text
+
+
+def test_cost_persistence_failure_does_not_log_uncommitted_events_as_new(caplog):
+    service = make_service()
+    completion = {'committed': True, 'archive_ref': 'cost/archive/1', 'events': [
+        {'event_id': 'secret-event-id', 'trade_id': 'secret-trade-id', 'timestamp_ms': 1100,
+         'net_pnl_usdt': '-1', 'complete': True, 'funding_complete': True}]}
+    runtime, _, _ = attach_runtime(service, [], completion_provider=lambda **kw: completion)
+    service.store.append_risk_events.side_effect = OSError('sensitive store path')
+    with caplog.at_level('WARNING', logger='demo_safety_runtime'):
+        assert runtime.record_completions(service, now_ms=1200) is False
+    assert '输入数=1' in caplog.text
+    assert '新增数=0' in caplog.text
+    assert '重放数=0' in caplog.text
+    assert '拒绝数=1' in caplog.text
+    assert '拒绝原因码=complete_costs_unavailable' in caplog.text
+    assert 'sensitive store path' not in caplog.text
     assert 'secret-event-id' not in caplog.text
     assert 'secret-trade-id' not in caplog.text
 

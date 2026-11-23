@@ -571,3 +571,9 @@
 - 显式标签 CD `45120221988` 以 `ref=v0.2.8` 手动触发并成功；“同一提交 CI 成功”检查、前端与后端构建、源码归档、SHA-256/`build.json` 身份核验、artifact 上传及 GitHub Release 创建均通过。归档 artifact `14793437420` 大小 `147415963` 字节，传输摘要为 `sha256:b5edabc7f41331255a1559d85dd78d29d5dca1991b6e1b0ed1d32f633fca2ee2`。
 - [GitHub Release v0.2.8](https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.8)（Release ID `455037419`）于 `2026-11-23T05:53:31Z` 发布。`quant-terminal-v0.2.8.tar.gz` 为 `149475029` 字节，资产 SHA-256 为 `bcc6c3843c49a57111bfac08b618fcee1c350ce0ea0249c5b5d400038b1d7229`；103 字节 `.sha256` sidecar 的上传资产摘要为 `f02a3ee39e4278e1a3011f763f97ccc772f27bbcfecd4401f54ca8ebb2cf17cf`。上述资产 SHA-256 与 Actions artifact 传输摘要分别记录。该版本不完成 P3 其他页面，也不代表 P1、P2、P4 完成或授予 Demo/实盘资格。
 - 发布回执补记提交 `39ed3d79730c303a9d72d165b57eae6912b7fe77` 的 main CI `45120802192`、分支 CI `45120806715` 均成功；main 归档 CD `45121199363` 成功，精确同 SHA CI 依赖检查、构建、归档 SHA-256 与 `build.json` 身份核验、artifact 上传均通过。artifact `14793872055` 大小 `147423311` 字节，digest 为 `sha256:bd0311642a6ef1a459d5337f4120e653ab808b73904747e1da43db6aa1001530`，尚未过期；没有新标签，Release job 按条件跳过。
+
+## 2026-11-23 P1 完整成本事件日志补强
+
+- SafetyRuntime.record_completions() 成功汇总日志补充拒绝数，并将新增数定义为风险事件已持久写入后才确认的数量；风险存储写入失败时固定原因码拒绝，不会把未提交事件误记为新增。稳定重放与新写入分别计数，日志只输出批次数量、固定原因码、异常类型和单调耗时，不记录事件 ID、交易 ID、账户值或异常正文。
+- 按 TDD 增加重放汇总与持久化失败日志合同；先观察到重放数量不正确、未提交事件被计为新增及缺少拒绝数，再修正并通过。tests/test_demo_safety_runtime.py 47 项通过；完整 pytest 3426 passed、458 skipped、3043 subtests passed，1 条既有 fork DeprecationWarning；Ruff、compileall、git diff --check 通过。
+- 本节仅增强成本事实摄取汇总与安全拒绝日志；没有连接交易所、改变交易授权、验收资格或生产 writer 接线。代码和本节台账/变更记录分开提交；精确 SHA 的 CI/CD 回执待各自提交推送后追加。

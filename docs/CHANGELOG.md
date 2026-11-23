@@ -10,6 +10,7 @@
 - P3 固定演示终端共享视觉 token：各演示视图继承统一的深海蓝、语义色与字体 token，Shell 显示固定样本时间和“界面时间”字段；所有内容仍为本地样本。定向单测 35 项、类型检查、生产构建 11/11、真实 dist 浏览器全套 67/67 通过。全量单测的 form-ui 虚拟依赖路径与 popup-ui 抽屉 overlay 用例仍失败，详见开发台账；不影响本切片定向回归。
 - P3 固定演示运行日志历史定位：运维日志详情提供固定样本深链接，已知编号准确定位，未知、格式错误和重复参数显示明确状态且不回退到其他事件。治理与外壳定向单测 22 项、TypeScript 类型检查、生产构建 11/11、真实 dist 四视口 Playwright 4/4 通过；继续保持本地固定演示数据，不接账户、日志 API 或交易写入。
 - P3 演示研究因子筛选联动：因子详情跟随搜索后的首个可见样本，无匹配时清除旧详情并展示空状态；纯本地同步筛选继续使用固定样本，不触发业务 API 或交易写入。源码提交 `0f83c36e5c659d4c17a0e3ab647f9859f34b1de0` 精确 CI `45140421329` 与自动主线归档 CD `45140981557` 均成功；artifact `14801463523`，digest `sha256:614f1aa21755f5fcbf31442ffd6b98fb716c62a393d9e15800b8202f2ee7ffd9`。本切片留待 `0.2.9` 版本发布收录。
+- 版本 `0.2.9` 已同步至 `pyproject.toml` 与 `uv.lock` 并正式发布。版本提交 `5345805cbc7e2eaf46a214e6a045c992e1c86e85` 的精确 CI `45142438927`、唯一标签 `v0.2.9` 的 CI `45143511269` 均成功；main 自动归档 CD `45142971044` 和显式标签发布 CD `45144269116` 成功。main artifact `14803655259` digest `sha256:05fe19d8ae65dc75ef78800c45da034fe43712fc83aa55feb4c65915950caf2f`；Release `https://github.com/shiyi-log/crypto-quant-terminal/releases/tag/v0.2.9` 含源码归档及 SHA-256 sidecar。独立下载 TAR SHA-256 `b8a751b5c1605d8466b0d25073e3a2a4e62c93ac4420958031bd9ea3bcbb088c` 与 GitHub asset digest 一致；`build.json` 的 commit/version/package 为 `5345805cbc7e2eaf46a214e6a045c992e1c86e85` / `0.2.9` / `quant-terminal-v0.2.9`，归档共 3919 个成员。
 
 ## 0.2.8 — 2026-11-23
 

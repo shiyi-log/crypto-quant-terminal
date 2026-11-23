@@ -629,6 +629,12 @@
 - TDD RED：先为三条原始摘要、原始时间、周期筛选不改变指标范围编写回归；旧的八条逐周期细分行按预期使三行断言失败。修正后 `GovernancePreview.test.ts` **13 项通过**，类型检查通过，生产构建 **11/11** 成功，真实 dist 四视口 Playwright **4/4 通过**。浏览器单独检查数据中心筛选后无横向溢出，并检查组合无样本、重置、零账户/API/认证请求、零写操作及无页面异常；隔离输出为 `/tmp/quant-pw-p3-data-center-summary`。
 - 本切片只筛选本地固定演示样本，不连接真实数据、账户或业务接口，不触发采集器或交易命令。旧版页面已退役，无法提供可运行的新旧读数对照；该限制及 P0/P1/P2/P4 阶段未完成状态保持不变。源码提交 `ecb85942eac7d06ddfb0fcaf8cd8d51c2bc1d5bf` 已推送。精确 main CI [`45151128116`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45151128116) 与自动 main 归档 CD [`45151996985`](https://github.com/shiyi-log/crypto-quant-terminal/actions/runs/45151996985) 均成功；CD 的同 SHA CI 门禁、源码/前端构建、归档 SHA-256、`build.json` 身份校验与 artifact 上传均通过。artifact `14806961993` 大小 `147455118` 字节，digest `sha256:91c5f036427e4271a27f6ace3d4f7f0cc168590b7d7307cf7e2862a4f4be9e1d`，有效至 2026-12-23；无版本标签，Release 按条件跳过。
 
+## 2026-11-23 版本同步至 0.2.10
+
+- `pyproject.toml` 权威项目版本与 `uv.lock` 已同步为 `0.2.10`，变更记录收录 P3 演示实验任务筛选和数据中心固定摘要周期筛选切片。版本身份契约测试 **14 项通过**，`uv lock --check` 与版本一致性检查通过。
+- 数据中心源码提交 `ecb85942eac7d06ddfb0fcaf8cd8d51c2bc1d5bf` 精确 main CI `45151128116` 与归档 CD `45151996985` 成功；回执提交 `2a934ec5db2780c0b4c9b8c8751a059e478e0056` 精确 CI `45152692402` 已成功。版本提交及 `v0.2.10` 标签 CI/CD 回执待完成。
+- 本版本不表示 P0—P4 阶段验收、Demo 准入、生产交易或资金升级批准完成；前端仍只使用本地固定演示数据。
+
 ## 2026-11-23 版本同步至 0.2.9
 
 - 项目版本源 `pyproject.toml` 与 `uv.lock` 同步为 `0.2.9`，更新变更记录；依赖锁、版本一致性和发布身份测试在版本提交前通过。

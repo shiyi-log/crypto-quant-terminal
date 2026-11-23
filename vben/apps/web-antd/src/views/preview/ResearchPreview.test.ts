@@ -116,17 +116,33 @@ describe('演示研究工作区交互', () => {
 
   it('策略选择同时切换参数与曲线说明', async () => {
     const view = open('research');
+    const firstDetail = view.get('[data-testid="strategy-detail"]');
+    expect(firstDetail.textContent).toContain('候选身份');
+    expect(firstDetail.textContent).toContain('数据窗口');
+    expect(firstDetail.textContent).toContain('成本假设');
+    expect(firstDetail.textContent).toContain('留出集');
+    expect(firstDetail.textContent).toContain('未评估');
+    expect(firstDetail.textContent).toContain('未冻结 · 不进入 Demo 预检');
+    const firstIdentity = view.get('[data-testid="strategy-identity"]');
+    expect(firstIdentity.textContent).toContain('STRAT-DEMO-TREND-01');
+
     view.get<HTMLButtonElement>('[data-strategy="range"]').click();
     await nextTick();
-    expect(view.get('[data-testid="strategy-detail"]').textContent).toContain(
+    const selectedDetail = view.get('[data-testid="strategy-detail"]');
+    expect(selectedDetail.textContent).toContain('STRAT-DEMO-RANGE-01');
+    expect(selectedDetail.textContent).toContain('2026-10-01 至 2026-10-31');
+    expect(selectedDetail.textContent).toContain('每边 10 bps');
+    expect(selectedDetail.textContent).toContain('未冻结 · 不进入 Demo 预检');
+    expect(selectedDetail.textContent).toContain(
       '均值回归',
     );
-    expect(view.get('[data-testid="strategy-detail"]').textContent).toContain(
+    expect(selectedDetail.textContent).toContain(
       '布林带偏离',
     );
     expect(
-      view.get('[data-testid="strategy-detail"]').textContent,
+      selectedDetail.textContent,
     ).not.toContain('ATR 跟踪止损');
+    expect(selectedDetail.textContent).not.toContain('已通过');
   });
 
   it('实验队列可筛选失败任务并检查失败原因', async () => {

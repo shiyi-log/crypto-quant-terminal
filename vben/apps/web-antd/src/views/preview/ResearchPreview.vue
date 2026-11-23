@@ -10,6 +10,9 @@ type Factor = {
 };
 type Strategy = {
   id: string;
+  candidateId: string;
+  dataWindow: string;
+  costAssumption: string;
   name: string;
   description: string;
   parameters: string[];
@@ -74,9 +77,13 @@ const factors: Factor[] = [
     detail: '只使用连续可见盘口快照；断档或序列不连续时保留为未知。',
   },
 ];
+// 候选与成本字段都是演示声明；前端展示不产生冻结、准入或运行事件。
 const strategies: Strategy[] = [
   {
     id: 'trend',
+    candidateId: 'STRAT-DEMO-TREND-01',
+    dataWindow: '2026-10-01 至 2026-10-31 · BTC/ETH/TRX · 5m',
+    costAssumption: '每边 10 bps 手续费 + 8 bps 保守滑点；资金费单列',
     name: '趋势跟随',
     description: '用成交量确认的方向突破跟随趋势。',
     parameters: ['EMA 12 / 48', '成交量阈值 2.0x', 'ATR 跟踪止损 1.0'],
@@ -84,6 +91,9 @@ const strategies: Strategy[] = [
   },
   {
     id: 'range',
+    candidateId: 'STRAT-DEMO-RANGE-01',
+    dataWindow: '2026-10-01 至 2026-10-31 · BTC/ETH/TRX · 15m',
+    costAssumption: '每边 10 bps 手续费 + 8 bps 保守滑点；资金费单列',
     name: '均值回归',
     description: '在波动收敛时交易布林带偏离。',
     parameters: ['布林带 20 / 2.0', '偏离阈值 1.5σ', '持仓上限 4 小时'],
@@ -91,6 +101,9 @@ const strategies: Strategy[] = [
   },
   {
     id: 'orderflow',
+    candidateId: 'STRAT-DEMO-ORDERFLOW-01',
+    dataWindow: '2026-10-01 至 2026-10-31 · BTC/ETH/TRX · 1m',
+    costAssumption: '每边 10 bps 手续费 + 12 bps 保守滑点；资金费单列',
     name: '订单流确认',
     description: '结合主动成交和盘口深度判断成交质量。',
     parameters: ['主动买卖差 1.8x', '可见深度 20 档', '最大报价年龄 2 秒'],
@@ -370,15 +383,38 @@ function statusLabel(status: Experiment['status']) {
       </div>
       <article class="strategy-detail" data-testid="strategy-detail">
         <div>
-          <p class="eyebrow">{{ selectedStrategy.id }} · 演示参数</p>
+          <p class="eyebrow">演示候选 · 未冻结</p>
           <h3>{{ selectedStrategy.name }}</h3>
           <p>{{ selectedStrategy.description }}</p>
+          <code data-testid="strategy-identity">{{ selectedStrategy.candidateId }}</code>
         </div>
         <ul>
           <li v-for="parameter in selectedStrategy.parameters" :key="parameter">
             {{ parameter }}
           </li>
         </ul>
+        <dl class="strategy-evidence">
+          <div>
+            <dt>候选身份</dt>
+            <dd>{{ selectedStrategy.candidateId }}</dd>
+          </div>
+          <div>
+            <dt>数据窗口</dt>
+            <dd>{{ selectedStrategy.dataWindow }}</dd>
+          </div>
+          <div>
+            <dt>成本假设</dt>
+            <dd>{{ selectedStrategy.costAssumption }}</dd>
+          </div>
+          <div>
+            <dt>留出集</dt>
+            <dd>未评估</dd>
+          </div>
+          <div>
+            <dt>准入状态</dt>
+            <dd>未冻结 · 不进入 Demo 预检</dd>
+          </div>
+        </dl>
         <p class="curve-note">{{ selectedStrategy.curve }}</p>
       </article>
     </section>
@@ -779,15 +815,18 @@ dd {
   box-shadow: inset 3px 0 var(--accent);
 }
 .strategy-detail {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(180px, 0.7fr) minmax(260px, 1.5fr);
+  gap: 18px;
   align-items: flex-start;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   padding: 18px 0;
 }
 .strategy-detail > div {
-  min-width: 220px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
-.strategy-detail > div p:last-child,
 .curve-note {
   max-width: 54ch;
   color: var(--muted);
@@ -800,6 +839,25 @@ dd {
   margin-left: auto;
   padding-left: 20px;
   color: var(--muted);
+  font-size: 12px;
+}
+.strategy-evidence {
+  min-width: 0;
+}
+.strategy-evidence div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: start;
+}
+.strategy-evidence dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+.strategy-detail code {
+  overflow-wrap: anywhere;
+  color: var(--accent);
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 12px;
 }
 .task-list {
@@ -978,7 +1036,7 @@ dd {
   }
   .strategy-detail {
     align-items: flex-start;
-    flex-direction: column;
+    grid-template-columns: minmax(0, 1fr);
   }
   .strategy-detail ul {
     margin-left: 0;

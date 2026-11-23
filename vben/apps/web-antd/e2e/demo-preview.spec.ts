@@ -102,6 +102,23 @@ for (const viewport of viewports) {
       '没有符合条件的实验任务',
     );
     await expect(page.getByTestId('experiment-detail')).toHaveCount(0);
+    await page.getByRole('button', { name: '策略研究', exact: true }).click();
+    await expect(
+      page.getByRole('heading', { name: '策略研究', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByTestId('strategy-detail')).toContainText(
+      'STRAT-DEMO-TREND-01',
+    );
+    await expect(page.getByTestId('strategy-detail')).toContainText(
+      '未冻结 · 不进入 Demo 预检',
+    );
+    await page.getByRole('button', { name: /均值回归/ }).click();
+    await expect(page.getByTestId('strategy-detail')).toContainText(
+      'STRAT-DEMO-RANGE-01',
+    );
+    await expect(page.getByTestId('strategy-detail')).toContainText(
+      '留出集未评估',
+    );
     await page.getByRole('button', { name: '验收与运维' }).click();
     await expect(
       page.getByRole('heading', { name: '验收与上线', exact: true }),

@@ -15,7 +15,7 @@ const workspaces = [
     preview: 'research',
     workspace: 'experiments',
     heading: '实验任务',
-    marker: '压力成本复核',
+    marker: '波动窗口复核',
   },
   {
     route: 'data-quality',
@@ -66,6 +66,16 @@ for (const viewport of [
             exact: true,
           }),
         ).toBeVisible();
+      } else if (item.route === 'experiments') {
+        await expect(page.getByTestId('experiment-detail')).toContainText(
+          item.marker,
+        );
+        await expect(page.getByTestId('experiment-detail')).toContainText(
+          '进度未知',
+        );
+        await expect(page.getByTestId('experiment-detail')).toContainText(
+          'worker 未验证',
+        );
       } else {
         await expect(
           page.getByRole('heading', { name: item.marker, exact: true }),

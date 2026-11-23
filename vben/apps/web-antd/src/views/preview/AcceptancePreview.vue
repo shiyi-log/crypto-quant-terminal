@@ -5,6 +5,7 @@ type Scenario =
   | 'ongoing'
   | 'missing'
   | 'expired'
+  | 'read-failure'
   | 'cooldown'
   | 'partial-fill-protection'
   | 'hard-failure';
@@ -174,6 +175,13 @@ const verdict = computed(() => {
       reason: 'acceptance_evidence_incomplete',
       detail: '缺失事实保持未知；不得按零值、停机日或未来日期补算。',
     };
+  // 读取故障只是本地静态样本，不触发重试、账户查询或服务端读取。
+  if (scenario.value === 'read-failure')
+    return {
+      title: '读取失败，当前验收未知',
+      reason: 'acceptance_snapshot_read_failed',
+      detail: '本地演示读取失败；当前权益和验收结论未知，最近快照仅供回看。',
+    };
   if (scenario.value === 'cooldown')
     return {
       title: '冷却中，验收未知',
@@ -250,13 +258,16 @@ function changeScenario(value: Scenario) {
     ongoing: '切换到进行中场景',
     missing: '切换到证据缺失场景',
     expired: '切换到证据过期场景',
+    'read-failure': '切换到读取失败场景',
     cooldown: '切换到冷却场景',
     'partial-fill-protection': '切换到部分成交保护待确认场景',
     'hard-failure': '切换到硬失败场景',
   };
   notice.value = labels[value] + '；只更新当前页面演示状态。';
   appendRunLog(
-    value === 'hard-failure' || value === 'partial-fill-protection'
+    value === 'hard-failure' ||
+    value === 'partial-fill-protection' ||
+    value === 'read-failure'
       ? '警告'
       : '信息',
     '验收场景演练',
@@ -374,6 +385,14 @@ function recordApproval() {
       </button
       ><button
         type="button"
+        data-scenario="read-failure"
+        :aria-pressed="scenario === 'read-failure'"
+        @click="changeScenario('read-failure')"
+      >
+        读取失败
+      </button>
+      ><button
+        type="button"
         data-scenario="cooldown"
         :aria-pressed="scenario === 'cooldown'"
         @click="changeScenario('cooldown')"
@@ -413,6 +432,23 @@ function recordApproval() {
       </div>
       <code>demo_equity_snapshot_expired</code>
       <p>固定演示数据保留最后快照供回看，不推算当前账户权益。</p>
+    </section>
+    <section
+      v-if="scenario === 'read-failure'"
+      class="expired-evidence"
+      data-testid="read-failure-evidence"
+      aria-label="读取失败时保留的最近演示快照"
+    >
+      <div>
+        <span class="verdict-label">本地演示读取故障 · 当前权益未知</span>
+        <strong>1,097.00 USDT</strong>
+      </div>
+      <div>
+        <span>最近可查阅快照</span>
+        <time datetime="2026-11-11T06:32:00Z">2026-11-11 14:32 北京时间</time>
+      </div>
+      <code>acceptance_snapshot_read_failed</code>
+      <p>最近快照仅供回看；读取故障未恢复，当前验收未知，不具备 Demo 准入资格。</p>
     </section>
     <section
       v-if="scenario === 'cooldown'"

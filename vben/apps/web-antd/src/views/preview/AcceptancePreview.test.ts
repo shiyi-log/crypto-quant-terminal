@@ -172,6 +172,28 @@ describe('固定演示验收证据视图', () => {
     );
   });
 
+  it('固定演示读取失败时保留最近快照并标记当前值未知，不授予准入资格', async () => {
+    const view = open();
+
+    view.get<HTMLButtonElement>('[data-scenario="read-failure"]').click();
+    await nextTick();
+
+    const verdict = view.get('[data-testid="acceptance-verdict"]');
+    const failure = view.get('[data-testid="read-failure-evidence"]');
+    expect(verdict.textContent).toContain('读取失败，当前验收未知');
+    expect(verdict.textContent).toContain('acceptance_snapshot_read_failed');
+    expect(failure.textContent).toContain('本地演示读取故障');
+    expect(failure.textContent).toContain('1,097.00 USDT');
+    expect(failure.textContent).toContain('当前权益未知');
+    expect(failure.textContent).toContain('不具备 Demo 准入资格');
+    expect(
+      view.get('[data-testid="production-eligibility"]').textContent,
+    ).toContain('未授权');
+    expect(view.get('[data-testid="acceptance-run-log"]').textContent).toContain(
+      'acceptance_snapshot_read_failed',
+    );
+  });
+
   it('冷却演示显示剩余时间、禁止新增风险且不形成验收或生产资格', async () => {
     const view = open();
 

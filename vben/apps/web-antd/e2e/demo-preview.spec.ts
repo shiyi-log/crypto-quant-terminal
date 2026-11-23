@@ -219,6 +219,22 @@ for (const viewport of viewports) {
     await expect(page.getByTestId('production-eligibility')).toContainText(
       '未授权',
     );
+    await page.getByRole('button', { name: '读取失败', exact: true }).click();
+    await expect(page.getByTestId('acceptance-verdict')).toContainText(
+      '读取失败，当前验收未知',
+    );
+    await expect(page.getByTestId('read-failure-evidence')).toContainText(
+      '1,097.00 USDT',
+    );
+    await expect(page.getByTestId('read-failure-evidence')).toContainText(
+      '当前权益未知',
+    );
+    await expect(page.getByTestId('read-failure-evidence')).toContainText(
+      '不具备 Demo 准入资格',
+    );
+    await expect(page.getByTestId('production-eligibility')).toContainText(
+      '未授权',
+    );
     const acceptanceDimensions = await page.evaluate(() => ({
       document: document.documentElement.scrollWidth,
       viewport: window.innerWidth,

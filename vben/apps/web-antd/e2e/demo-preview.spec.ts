@@ -196,6 +196,26 @@ for (const viewport of viewports) {
     await page.goto('/#/quant/operations?event=../../evt-1041');
     await expect(page.getByTestId('history-invalid')).toContainText('无效');
     await expect(page.getByTestId('log-detail')).toHaveCount(0);
+    await page.getByRole('button', { name: '系统设置', exact: true }).click();
+    await expect(
+      page.getByRole('heading', { name: '组件状态', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByTestId('system-status-table')).toContainText(
+      '数据库',
+    );
+    await expect(page.getByTestId('system-status-table')).toContainText(
+      '未连接',
+    );
+    await expect(page.getByTestId('system-status-scope')).toContainText(
+      '不探测真实运行状态',
+    );
+    const settingsDimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+    }));
+    expect(settingsDimensions.document).toBeLessThanOrEqual(
+      settingsDimensions.viewport,
+    );
 
     const dimensions = await page.evaluate(() => ({
       document: document.documentElement.scrollWidth,

@@ -38,6 +38,14 @@ const coverageRows = [
   { symbol: 'ETHUSDT', timeframes: ['5m', '15m', '1h'], timeframeLabel: '5m / 15m / 1h', coverage: '88%', freshness: '18 分钟前', quality: '有缺口' },
   { symbol: 'TRXUSDT', timeframes: ['5m', '15m'], timeframeLabel: '5m / 15m', coverage: '71%', freshness: '42 分钟前', quality: '有缺口' },
 ];
+// 系统状态是冻结的演示快照，不执行健康探测、账户读取或交易所连接。
+const systemStatusRows = [
+  { component: '前端工作区', state: '可查看', detail: '固定演示构建' },
+  { component: '本地 API', state: '未连接', detail: '演示页面不发送 API 请求' },
+  { component: '数据库', state: '未连接', detail: '不读取或写入数据库' },
+  { component: '研究 worker', state: '未知', detail: '没有实时运行探测' },
+  { component: '交易所保护', state: '未核验', detail: '没有交易账户或条件单连接' },
+];
 // 覆盖率是交易对级固定摘要；周期只用于筛选支持范围，不派生周期指标。
 const filteredCoverage = computed(() =>
   coverageRows.filter(
@@ -188,10 +196,25 @@ function resetPreferences() {
       <aside class="side-column"><p class="eyebrow">EVENT INSPECTOR</p><h2>事件详情</h2><article v-if="currentLog && !eventIdIsInvalid && !eventIdIsMissing" class="detail-panel log-inspector" data-testid="log-detail"><span class="log-id">{{ currentLog.id }} · {{ currentLog.time }}</span><h3>{{ currentLog.title }}</h3><p>{{ currentLog.detail }}</p><dl class="log-fields"><div><dt>处理阶段</dt><dd>{{ currentLog.stage }}</dd></div><div><dt>处理结果</dt><dd>{{ currentLog.result }}</dd></div><div><dt>固定原因码</dt><dd><code>{{ currentLog.reason }}</code></dd></div><div><dt>样本耗时</dt><dd>{{ currentLog.duration }}</dd></div></dl><a class="history-locator" data-testid="history-locator" :href="currentLogUrl">打开此事件定位链接</a></article><div v-else-if="eventIdIsInvalid" class="history-state" data-testid="history-invalid" role="status">历史事件编号格式无效：{{ props.eventId }}</div><div v-else-if="eventIdIsMissing" class="history-state" data-testid="history-missing" role="status">固定演示样本中找不到事件 {{ props.eventId }}，没有其他历史记录可展示。</div><div v-else class="history-state" role="status">当前筛选条件下没有可展示的演示事件。</div><p class="scope-note">日志是本地合成证据，时间按北京时间显示；不会替代服务端审计记录。</p></aside>
     </section>
 
-    <section v-else class="settings-panel">
-      <div class="section-heading"><div><p class="eyebrow">LOCAL PREFERENCES</p><h2>演示偏好</h2></div><span class="muted">只保存到当前页面</span></div>
+    <section v-else class="settings-workspace">
+      <section class="system-status" aria-labelledby="system-status-title">
+        <div class="section-heading">
+          <div><p class="eyebrow">SYSTEM STATUS</p><h2 id="system-status-title">组件状态</h2></div>
+          <span class="muted">固定演示状态</span>
+        </div>
+        <p class="system-status-scope" data-testid="system-status-scope">固定演示状态是静态说明，不探测真实运行状态。</p>
+        <div class="system-status-scroll">
+          <table data-testid="system-status-table">
+            <thead><tr><th>组件</th><th>状态</th><th>说明</th></tr></thead>
+            <tbody><tr v-for="row in systemStatusRows" :key="row.component"><th scope="row">{{ row.component }}</th><td><span class="system-state" :data-state="row.state">{{ row.state }}</span></td><td>{{ row.detail }}</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="settings-panel" aria-labelledby="preference-title">
+      <div class="section-heading"><div><p class="eyebrow">LOCAL PREFERENCES</p><h2 id="preference-title">演示偏好</h2></div><span class="muted">只保存到当前页面</span></div>
       <div class="preference-row"><label class="control-label" for="density">信息密度<select id="density" v-model="density" aria-label="信息密度"><option value="compact">紧凑</option><option value="comfortable">舒适</option></select></label><div class="preference-summary" data-testid="preference-summary"><span class="eyebrow">当前演示偏好</span><strong>{{ densityLabel }}</strong></div></div>
       <div class="button-row"><button class="primary-action" data-action="save-preferences" type="button" @click="savePreferences">保存本地偏好</button><button class="secondary-action" data-action="reset-preferences" type="button" @click="resetPreferences">重置</button></div>
+      </section>
     </section>
 
     <div v-if="approvalOpen" class="dialog-backdrop"><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="approval-title"><p class="eyebrow">LOCAL ONLY</p><h2 id="approval-title">记录演示审批？</h2><p>这只是<strong>仅本地演练</strong>，不会改变生产资格，不会发送交易请求。</p><div class="button-row"><button class="secondary-action" data-action="cancel-approval" type="button" @click="approvalOpen = false">取消</button><button class="primary-action" data-action="confirm-approval" type="button" @click="recordApproval">确认记录</button></div></section></div>
@@ -208,7 +231,7 @@ h1,h2,h3,p,dl,dd { margin:0; } h1{font-size:29px;font-weight:600;letter-spacing:
 .eyebrow { color:var(--blue); font-size:11px; letter-spacing:.09em; line-height:1.5; }
 .demo-badge { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; } .badge-dot { width:8px;height:8px;border-radius:50%;background:var(--warn); box-shadow:0 0 0 3px rgba(240,193,123,.16); }
 .status-line { margin:18px 0; padding:11px 14px; border-left:2px solid var(--blue); color:var(--muted); background:rgba(19,43,62,.66); font-size:12px; }
-.workspace-grid { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:30px; } .workspace-stack,.settings-panel { display:grid; gap:20px; } .main-column,.side-column{min-width:0;}
+.workspace-grid { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:30px; } .workspace-stack,.settings-workspace { display:grid; gap:20px; } .main-column,.side-column{min-width:0;}
 .section-heading { align-items:flex-end; } .section-heading .eyebrow { margin-bottom:4px; } .muted,.scope-note{ color:var(--muted); font-size:12px; }
 .evidence-list,.log-list { display:grid; border-top:1px solid var(--line); }
 .evidence-row,.log-row { appearance:none; width:100%; border:0; border-bottom:1px solid var(--line); color:var(--text); background:transparent; text-align:left; cursor:pointer; }
@@ -222,7 +245,7 @@ h1,h2,h3,p,dl,dd { margin:0; } h1{font-size:29px;font-weight:600;letter-spacing:
 .coverage-filters{display:flex;align-items:flex-end;gap:12px;} .coverage-empty{display:grid;min-height:170px;place-items:center;border:1px solid var(--line);padding:20px;color:var(--muted);background:rgba(19,43,62,.45);text-align:center;}
 .table-scroll{overflow-x:auto;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} table{width:100%;min-width:650px;border-collapse:collapse;font-size:12px;} th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;} th{color:var(--muted);font-weight:500;background:var(--surface);} tbody tr:last-child td{border-bottom:0;} .quality{color:var(--warn);} .quality[data-state='good']{color:var(--green);} .collection-bar{padding:16px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} .collection-bar strong{display:block;margin-top:5px;font-size:14px;font-weight:500;}
 .log-scope{margin:12px 0;color:var(--muted);font-size:11px;} .log-row{display:grid;grid-template-columns:78px 54px minmax(0,1fr) 118px 142px;align-items:center;gap:10px;padding:13px 12px;font-size:12px;} .log-time,.log-id{color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:11px;} .log-level{color:var(--green);}.log-level[data-level='warning']{color:var(--warn);} .log-row strong{font-weight:500;} .log-stage,.log-result{grid-column:3;color:var(--muted);font-size:10px;} .log-id{grid-column:5;grid-row:1 / span 2;text-align:right;} .log-fields{display:grid;gap:0;margin-top:18px;border-top:1px solid var(--line);font-size:11px;} .log-fields div{display:grid;grid-template-columns:78px minmax(0,1fr);gap:9px;padding:9px 0;border-bottom:1px solid var(--line);} .log-fields dt{color:var(--muted);} .log-fields dd{min-width:0;margin:0;text-align:right;overflow-wrap:anywhere;} .log-fields code{color:var(--blue);font-family:'IBM Plex Mono',monospace;font-size:10px;}
-.operations .detail-panel{margin-top:0;} .settings-panel{padding:24px;}.preference-row{align-items:flex-end;padding:22px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} .preference-summary{display:grid;gap:6px;min-width:170px;} .preference-summary strong{font-size:22px;font-weight:500;}
+.operations .detail-panel{margin-top:0;} .settings-panel,.system-status{min-width:0;padding:24px;border:1px solid var(--line);background:var(--surface);} .system-status-scope{margin:12px 0;color:var(--muted);font-size:12px;} .system-status-scroll{min-width:0;overflow-x:auto;border-top:1px solid var(--line);} .system-status table{width:100%;min-width:580px;border-collapse:collapse;font-size:12px;} .system-status th,.system-status td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;} .system-status thead th,.system-status tbody th{color:var(--muted);font-weight:500;} .system-state{color:var(--warn);}.system-state[data-state='可查看']{color:var(--green);}.system-state[data-state='未知']{color:var(--muted);} .preference-row{align-items:flex-end;padding:22px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);} .preference-summary{display:grid;gap:6px;min-width:170px;} .preference-summary strong{font-size:22px;font-weight:500;}
 .dialog-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:20px;background:rgba(5,13,22,.76);} .dialog{width:min(430px,100%);padding:25px;border:1px solid var(--blue);background:var(--surface);box-shadow:0 18px 50px rgba(0,0,0,.35);} .dialog h2{margin:7px 0 10px;} .dialog p{color:var(--muted);font-size:13px;} .dialog p strong{color:var(--warn);font-weight:500;} .dialog .button-row{justify-content:flex-end;margin-top:24px;} .approval-note{margin-top:15px;color:var(--green);font-size:12px;}
 @media (max-width:800px){.governance-preview{padding:22px 16px 42px}.preview-header{align-items:flex-start;flex-direction:column;gap:12px}.workspace-grid{grid-template-columns:1fr;gap:24px}.side-column{border-left:0;border-top:1px solid var(--line);padding:22px 0 0}.section-heading{align-items:flex-start;flex-direction:column;gap:12px}.coverage-filters{width:100%;align-items:stretch;flex-direction:column}.coverage-filters .secondary-action{width:100%}.collection-bar,.preference-row{align-items:flex-start;flex-direction:column;gap:16px}.collection-bar .secondary-action{width:100%}.control-label{width:100%;justify-content:space-between}.control-label select{flex:1;max-width:190px}.log-row{grid-template-columns:68px 48px minmax(0,1fr);grid-template-rows:auto auto auto;}.log-row strong{grid-column:3;grid-row:1}.log-stage{grid-column:1 / span 2;grid-row:2}.log-result{grid-column:3;grid-row:2}.log-id{grid-column:3;grid-row:3;text-align:right}.settings-panel{padding:18px 16px}}
 @media (max-width:430px){h1{font-size:25px}.evidence-row{grid-template-columns:1fr auto;gap:5px 10px}.evidence-row strong{grid-column:1}.chevron{grid-column:2;grid-row:1 / span 2}.detail-value{font-size:27px}.button-row{align-items:stretch;flex-direction:column}.button-row button{width:100%}.dialog .button-row{flex-direction:column-reverse}}

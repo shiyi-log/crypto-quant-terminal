@@ -218,4 +218,24 @@ describe('治理工作区演示交互', () => {
     await nextTick();
     expect(view.get<HTMLSelectElement>('select[aria-label="信息密度"]').value).toBe('compact');
   });
+
+  it('系统页展示固定服务状态样本并明确未探测真实运行状态', () => {
+    const view = open('settings');
+
+    expect(view.get('[data-testid="system-status-table"]').textContent).toContain(
+      '组件状态',
+    );
+    expect(view.get('[data-testid="system-status-scope"]').textContent).toContain(
+      '固定演示状态',
+    );
+    expect(view.get('[data-testid="system-status-table"]').textContent).toContain(
+      '数据库',
+    );
+    expect(view.get('[data-testid="system-status-table"]').textContent).toContain(
+      '未连接',
+    );
+    expect(view.get('[data-testid="system-status-scope"]').textContent).toContain(
+      '不探测真实运行状态',
+    );
+  });
 });
